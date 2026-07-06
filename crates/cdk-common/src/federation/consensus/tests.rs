@@ -10,8 +10,9 @@ use super::super::{
 use super::*;
 use crate::mint_url::MintUrl;
 use crate::{
-    Amount, BlindedMessage, CurrencyUnit, Id, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteRequest, MintQuoteResponse, MintRequest, PublicKey, SecretKey,
+    Amount, BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Request, MeltQuoteRequest,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse,
+    MintRequest, PublicKey, SecretKey,
 };
 
 fn federation_id(byte: u8) -> FederationId {
@@ -56,24 +57,52 @@ fn mint_envelope(
 }
 
 fn mint_quote_envelope(federation_id: FederationId) -> FederationOperationEnvelope {
+    mint_quote_envelope_with_amount(federation_id, "quote-1", 1)
+}
+
+fn mint_quote_envelope_with_amount(
+    federation_id: FederationId,
+    quote: &str,
+    amount: u64,
+) -> FederationOperationEnvelope {
     FederationOperationEnvelope::new(
         federation_id,
         super::super::FederationOperation::MintQuote(super::super::FederationMintQuoteOperation {
-            quote: "quote-1".to_string(),
+            quote: quote.to_string(),
             request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
-                amount: Amount::from(1),
+                amount: Amount::from(amount),
                 unit: CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
             }),
             response: MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
-                quote: "quote-1".to_string(),
-                request: "invoice-quote-1".to_string(),
-                amount: Some(Amount::from(1)),
+                quote: quote.to_string(),
+                request: format!("invoice-{quote}-{amount}"),
+                amount: Some(Amount::from(amount)),
                 unit: Some(CurrencyUnit::Sat),
                 state: crate::MintQuoteState::Unpaid,
                 expiry: None,
                 pubkey: None,
+            }),
+        }),
+    )
+}
+
+fn melt_quote_envelope(
+    federation_id: FederationId,
+    quote: &str,
+    unit: CurrencyUnit,
+) -> FederationOperationEnvelope {
+    FederationOperationEnvelope::new(
+        federation_id,
+        super::super::FederationOperation::MeltQuote(super::super::FederationMeltQuoteOperation {
+            quote: quote.to_string(),
+            request: MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq"
+                    .parse()
+                    .expect("bolt11 invoice"),
+                unit,
+                options: None,
             }),
         }),
     )
@@ -450,6 +479,65 @@ fn consensus_item_queue_batches_and_deduplicates_operations() {
     let second_batch = queue.drain_batch(10);
     assert_eq!(second_batch.len(), 2);
     assert!(queue.is_empty());
+}
+
+#[test]
+fn consensus_item_queue_rejects_pending_conflicting_mint_quote() {
+    let federation_id = federation_id(13);
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 1);
+    let conflict = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 2);
+    assert_ne!(
+        first.operation_id().expect("first operation id"),
+        conflict.operation_id().expect("conflict operation id")
+    );
+    let mut queue = FederationConsensusItemQueue::new();
+
+    assert_eq!(
+        queue
+            .submit(FederationConsensusItem::operation(first))
+            .expect("submit first quote"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    let err = queue
+        .submit(FederationConsensusItem::operation(conflict.clone()))
+        .expect_err("conflicting quote should be rejected while first is pending");
+
+    assert!(matches!(err, FederationError::ConflictingOperation { .. }));
+    assert_eq!(queue.len(), 1);
+
+    let batch = queue.drain_batch(1);
+    assert_eq!(batch.len(), 1);
+    assert_eq!(
+        queue
+            .submit(FederationConsensusItem::operation(conflict))
+            .expect("conflict key is released after drain"),
+        FederationConsensusItemAdmission::Accepted
+    );
+}
+
+#[test]
+fn consensus_item_queue_rejects_pending_conflicting_melt_quote() {
+    let federation_id = federation_id(13);
+    let first = melt_quote_envelope(federation_id, "melt-quote-conflict", CurrencyUnit::Sat);
+    let conflict = melt_quote_envelope(federation_id, "melt-quote-conflict", CurrencyUnit::Msat);
+    assert_ne!(
+        first.operation_id().expect("first operation id"),
+        conflict.operation_id().expect("conflict operation id")
+    );
+    let mut queue = FederationConsensusItemQueue::new();
+
+    assert_eq!(
+        queue
+            .submit(FederationConsensusItem::operation(first))
+            .expect("submit first melt quote"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    let err = queue
+        .submit(FederationConsensusItem::operation(conflict))
+        .expect_err("conflicting melt quote should be rejected while first is pending");
+
+    assert!(matches!(err, FederationError::ConflictingOperation { .. }));
+    assert_eq!(queue.len(), 1);
 }
 
 #[test]
@@ -940,6 +1028,27 @@ fn aleph_bft_data_provider_deduplicates_pending_operations() {
     assert_eq!(payload.items.len(), 1);
     assert_eq!(payload.operation_ids, vec![operation_id]);
     assert!(provider.is_empty());
+}
+
+#[test]
+fn aleph_bft_data_provider_rejects_pending_conflicting_quote_operations() {
+    let federation_id = federation_id(13);
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-aleph-conflict", 1);
+    let conflict = mint_quote_envelope_with_amount(federation_id, "quote-aleph-conflict", 2);
+    let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 0);
+
+    assert_eq!(
+        provider
+            .submit_operation(first)
+            .expect("submit first operation"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    let err = provider
+        .submit_operation(conflict)
+        .expect_err("conflicting pending operation should be rejected");
+
+    assert!(matches!(err, FederationError::ConflictingOperation { .. }));
+    assert_eq!(provider.queued_len(), 1);
 }
 
 #[test]

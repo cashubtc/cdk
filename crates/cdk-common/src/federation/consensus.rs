@@ -630,6 +630,7 @@ pub struct FederationConsensusItemQueue {
     max_item_bytes: usize,
     pending: VecDeque<FederationConsensusItem>,
     pending_operation_ids: BTreeSet<FederationOperationId>,
+    pending_conflict_keys: BTreeMap<String, FederationOperationId>,
 }
 
 impl Default for FederationConsensusItemQueue {
@@ -652,6 +653,7 @@ impl FederationConsensusItemQueue {
             max_item_bytes,
             pending: VecDeque::new(),
             pending_operation_ids: BTreeSet::new(),
+            pending_conflict_keys: BTreeMap::new(),
         }
     }
 
@@ -673,9 +675,24 @@ impl FederationConsensusItemQueue {
         item: FederationConsensusItem,
     ) -> Result<FederationConsensusItemAdmission> {
         item.ensure_within_size_limit(self.max_item_bytes)?;
-        if let Some(operation_id) = item.operation_id()? {
-            if !self.pending_operation_ids.insert(operation_id) {
+        let metadata = pending_consensus_item_operation_metadata(&item)?;
+        if let Some((operation_id, conflict_keys)) = &metadata {
+            if self.pending_operation_ids.contains(operation_id) {
                 return Ok(FederationConsensusItemAdmission::DuplicateOperation);
+            }
+            for conflict_key in conflict_keys {
+                if let Some(existing_operation_id) = self.pending_conflict_keys.get(conflict_key) {
+                    return Err(FederationError::ConflictingOperation {
+                        conflict_key: conflict_key.clone(),
+                        existing_operation_id: existing_operation_id.to_string(),
+                        attempted_operation_id: operation_id.to_string(),
+                    });
+                }
+            }
+            self.pending_operation_ids.insert(*operation_id);
+            for conflict_key in conflict_keys {
+                self.pending_conflict_keys
+                    .insert(conflict_key.clone(), *operation_id);
             }
         }
 
@@ -690,9 +707,7 @@ impl FederationConsensusItemQueue {
             let Some(item) = self.pending.pop_front() else {
                 break;
             };
-            if let Ok(Some(operation_id)) = item.operation_id() {
-                self.pending_operation_ids.remove(&operation_id);
-            }
+            self.release_pending_operation_metadata(&item);
             batch.push(item);
         }
         batch
@@ -732,14 +747,46 @@ impl FederationConsensusItemQueue {
             let Some(item) = self.pending.pop_front() else {
                 break;
             };
-            if let Ok(Some(operation_id)) = item.operation_id() {
-                self.pending_operation_ids.remove(&operation_id);
-            }
+            self.release_pending_operation_metadata(&item);
             batch_bytes = batch_bytes.saturating_add(item_size);
             batch.push(item);
         }
 
         Ok(batch)
+    }
+
+    fn release_pending_operation_metadata(&mut self, item: &FederationConsensusItem) {
+        let Ok(Some((operation_id, conflict_keys))) =
+            pending_consensus_item_operation_metadata(item)
+        else {
+            return;
+        };
+        self.pending_operation_ids.remove(&operation_id);
+        for conflict_key in conflict_keys {
+            if self.pending_conflict_keys.get(&conflict_key) == Some(&operation_id) {
+                self.pending_conflict_keys.remove(&conflict_key);
+            }
+        }
+    }
+}
+
+fn pending_consensus_item_operation_metadata(
+    item: &FederationConsensusItem,
+) -> Result<Option<(FederationOperationId, Vec<String>)>> {
+    match item {
+        FederationConsensusItem::Operation(envelope) => {
+            let operation_id = envelope.operation_id()?;
+            let conflict_keys = envelope
+                .operation
+                .conflict_keys()
+                .iter()
+                .map(canonical_json_string)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Some((operation_id, conflict_keys)))
+        }
+        FederationConsensusItem::ModuleFact(_)
+        | FederationConsensusItem::SessionSignature(_)
+        | FederationConsensusItem::Default(_) => Ok(None),
     }
 }
 
@@ -3283,6 +3330,15 @@ where
     let mut value = serde_json::to_value(value)?;
     sort_json_value(&mut value);
     Ok(serde_json::to_vec(&value)?)
+}
+
+fn canonical_json_string<T>(value: &T) -> Result<String>
+where
+    T: Serialize + ?Sized,
+{
+    let mut value = serde_json::to_value(value)?;
+    sort_json_value(&mut value);
+    Ok(serde_json::to_string(&value)?)
 }
 
 fn sort_json_value(value: &mut serde_json::Value) {
