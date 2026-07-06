@@ -370,7 +370,13 @@ where
     let accepted_with_local = remote_accepted_members.len().saturating_add(1);
     if accepted_with_local < required {
         return Err(cdk::Error::Custom(format!(
-            "AlephBFT finalized-unit broadcast reached {accepted_with_local} of {required} required members"
+            "AlephBFT finalized-unit broadcast reached {accepted_with_local} of {required} required members; remote failures {}; remote skipped {}",
+            remote_failed_members.len(),
+            peers
+                .iter()
+                .filter(|peer| peer.member_id != local_member)
+                .filter(|peer| !attempted_members.contains(&peer.member_id))
+                .count()
         )));
     }
     let remote_skipped_members = peers

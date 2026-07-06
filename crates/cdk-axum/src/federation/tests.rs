@@ -9,11 +9,11 @@ use cdk::cdk_payment::PaymentIdentifier;
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
-    FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusBackendKind,
-    FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
+    FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationKeysetRotationOperation, FederationMemberStatusKind,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
@@ -6967,6 +6967,70 @@ async fn aleph_bft_broadcast_round_keeps_queue_when_delivery_lacks_quorum() {
         .get_mint_quote(&quote_id)
         .await
         .expect("quote lookup after rejected broadcast")
+        .is_none());
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    let still_queued = consensus
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview retained unit")
+        .expect("unit retained");
+    assert_eq!(
+        still_queued.canonical_bytes().expect("retained bytes"),
+        unit.canonical_bytes().expect("original bytes")
+    );
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
+async fn aleph_bft_broadcast_round_rejects_invalid_remote_ack_without_draining() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let mut response =
+        finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    response.unit_body_hash = FederationAlephBftUnitBodyHash::from_bytes([9; 32]);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let err =
+        broadcast_next_aleph_bft_finalized_unit_round(&state, &client, std::slice::from_ref(peer))
+            .await
+            .expect_err("invalid remote acknowledgement must not count toward quorum");
+
+    assert!(
+        err.to_string().contains("reached 1 of 2 required"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("remote failures 1"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after invalid ack")
         .is_none());
 
     let consensus = state.federation_consensus.as_ref().expect("consensus");
