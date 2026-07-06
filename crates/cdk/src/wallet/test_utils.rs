@@ -508,6 +508,12 @@ pub struct MockMintConnector {
     pub captured_swap_requests: Mutex<Vec<SwapRequest>>,
     /// Response for post_melt calls
     pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
+    /// Queue of responses for successive post_melt calls.
+    ///
+    /// When non-empty, each `post_melt` call pops the front entry.
+    /// Takes precedence over `post_melt_response`.
+    pub post_melt_responses:
+        Mutex<std::collections::VecDeque<Result<MeltQuoteResponse<String>, Error>>>,
     /// Last post_melt method/request captured by the mock
     pub last_post_melt_request: Mutex<Option<(PaymentMethod, MeltRequest<String>)>>,
     /// Response for LNURL pay request calls
@@ -562,6 +568,7 @@ impl MockMintConnector {
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
             post_melt_response: Mutex::new(None),
+            post_melt_responses: Mutex::new(std::collections::VecDeque::new()),
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
             lnurl_invoice_response: Mutex::new(None),
@@ -749,6 +756,11 @@ impl MockMintConnector {
 
     pub fn set_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
         *self.post_melt_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `post_melt` call.
+    pub fn push_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
+        self.post_melt_responses.lock().unwrap().push_back(response);
     }
 
     pub fn last_post_melt_request(&self) -> Option<(PaymentMethod, MeltRequest<String>)> {
@@ -1022,11 +1034,16 @@ impl MintConnector for MockMintConnector {
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
         *self.last_post_melt_request.lock().unwrap() = Some((method.clone(), request));
-        self.post_melt_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_melt called without configured response")
+        let queued = self.post_melt_responses.lock().unwrap().pop_front();
+        match queued {
+            Some(response) => response,
+            None => self
+                .post_melt_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_melt called without configured response"),
+        }
     }
 
     async fn post_batch_check_mint_quote_status(

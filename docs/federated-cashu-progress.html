@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: certify accepted-before-request routes</span>
+          <span class="value">test: cover mixed federation wallet responses</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public mint, swap, and melt handlers are now certified against the race where peer catch-up applies an accepted operation before the wallet request reaches this member.</span>
+          <span class="value">Wallet mint, swap, and melt fanout now has an explicit regression for a threshold-valid mix of final, retryable pending-finalization, and definitively rejected member responses.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -718,7 +718,7 @@
           </article>
           <article class="item">
             <h3>Wallet federation</h3>
-            <p>The wallet connector discovers federation invites, filters compatible members, fans out requests, handles retries and slow members, aggregates mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
+            <p>The wallet connector discovers federation invites, filters compatible members, fans out requests, handles retries, slow members, and mixed final/pending/rejected value responses, aggregates mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
           </article>
           <article class="item">
             <h3>DKG and rotation path</h3>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, and wallet/member fanout tolerates slow, offline, and rate-limited peers.</p>
+            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, and definitively rejecting peers as long as a threshold of valid final responses is available.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -810,9 +810,9 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: member-mode standalone-path guard tests,
-          public route consensus-gating source audits, the broader `cdk`
-          federation library suite, and compile gates.
+          Current verification target: production AlephBFT finality hardening,
+          larger wallet-operation smoke repetitions, storage-backed partition
+          windows, and compile gates.
         </p>
       </section>
 

@@ -382,6 +382,13 @@ fn share_response(
     }
 }
 
+fn pending_finalization_error(byte: u8) -> crate::Error {
+    crate::Error::Federation(FederationError::OperationPendingFinalization {
+        operation_id: FederationOperationId::from_bytes([byte; 32]),
+        timeout_ms: 25,
+    })
+}
+
 fn member_connectors(
     bundle: &TrustedDealerConfigBundle,
     outputs: &[BlindedMessage],
@@ -2441,6 +2448,110 @@ async fn federated_mint_connector_retries_rate_limited_member_request() {
         .expect("mint response");
 
     assert_aggregate_response_valid(&bundle, &outputs, &response);
+}
+
+#[tokio::test]
+async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_value_responses() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let change_outputs = blinded_change_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    let final_member = MockMintConnector::new();
+    final_member.set_active_keyset(advertised.clone());
+    final_member.set_post_mint_response(Ok(share_response(&bundle, member_id(1), &outputs)));
+    final_member.set_post_swap_response(Ok(SwapResponse {
+        signatures: share_response(&bundle, member_id(1), &outputs).signatures,
+    }));
+    final_member.set_post_melt_response(Ok(melt_response(&bundle, member_id(1), &change_outputs)));
+    connectors.insert(
+        member_id(1),
+        Arc::new(final_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let pending_member = MockMintConnector::new();
+    pending_member.set_active_keyset(advertised.clone());
+    pending_member.push_post_mint_response(Err(pending_finalization_error(1)));
+    pending_member.push_post_mint_response(Ok(share_response(&bundle, member_id(2), &outputs)));
+    pending_member.push_post_swap_response(Err(pending_finalization_error(2)));
+    pending_member.push_post_swap_response(Ok(SwapResponse {
+        signatures: share_response(&bundle, member_id(2), &outputs).signatures,
+    }));
+    pending_member.push_post_melt_response(Err(pending_finalization_error(3)));
+    pending_member.push_post_melt_response(Ok(melt_response(
+        &bundle,
+        member_id(2),
+        &change_outputs,
+    )));
+    connectors.insert(
+        member_id(2),
+        Arc::new(pending_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let rejecting_member = MockMintConnector::new();
+    rejecting_member.set_active_keyset(advertised);
+    rejecting_member.set_post_mint_response(Err(crate::Error::InvalidPaymentMethod));
+    rejecting_member.set_post_swap_response(Err(crate::Error::InvalidPaymentMethod));
+    rejecting_member.set_post_melt_response(Err(crate::Error::InvalidPaymentMethod));
+    connectors.insert(
+        member_id(3),
+        Arc::new(rejecting_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_max_retries: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+
+    let mint_response = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("mint response");
+    assert_aggregate_response_valid(&bundle, &outputs, &mint_response);
+
+    let swap_response = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs.clone()))
+        .await
+        .expect("swap response");
+    assert_aggregate_response_valid(
+        &bundle,
+        &outputs,
+        &MintResponse {
+            signatures: swap_response.signatures,
+        },
+    );
+
+    let melt_response = connector
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltRequest::new(
+                "melt-quote".to_string(),
+                Vec::new(),
+                Some(change_outputs.clone()),
+            ),
+        )
+        .await
+        .expect("melt response");
+    let change = melt_response.change().cloned().expect("change signatures");
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(&change_outputs),
+        &MintResponse { signatures: change },
+    );
 }
 
 #[tokio::test(start_paused = true)]
