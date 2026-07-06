@@ -462,6 +462,25 @@ impl FederationVerifiedOperationAdmission {
             item,
         })
     }
+
+    /// Return the operation envelope carried by this verified admission.
+    #[must_use]
+    pub fn operation_envelope(&self) -> &FederationOperationEnvelope {
+        match &self.item {
+            FederationConsensusItem::Operation(envelope) => envelope,
+            FederationConsensusItem::ModuleFact(_)
+            | FederationConsensusItem::SessionSignature(_)
+            | FederationConsensusItem::Default(_) => {
+                unreachable!("verified operation admissions always carry operation items")
+            }
+        }
+    }
+
+    /// Return the sender and sequence covered by the signed REST request.
+    #[must_use]
+    pub fn sender_sequence(&self) -> (MemberId, u64) {
+        (self.sender, self.sequence)
+    }
 }
 
 /// Module-defined fact to order through consensus.

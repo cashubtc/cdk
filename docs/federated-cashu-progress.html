@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Signed private REST submit-operation requests can now be verified and mapped into consensus items without changing the canonical operation envelope bytes.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. The live private REST operation route now uses the shared signed submit-operation admission helper before forwarding or local consensus submission.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: admit signed rest operations to consensus</span>
+          <span class="value">feat: route private operations through verified admission</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationVerifiedOperationAdmission` verifies signed submit-operation envelopes, rejects wrong REST kinds or unknown member signers, preserves sender sequence metadata, and wraps the exact operation envelope for consensus ordering.</span>
+          <span class="value">Axum verifies signed submit-operation envelopes through `FederationVerifiedOperationAdmission`, checks the already-authenticated sender sequence, and submits the admitted canonical operation envelope without reinterpreting the REST payload.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -814,7 +814,7 @@
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
-            <p>Signed private REST submit-operation envelopes now verify sender identity, receiver, federation ID, body hash, message kind, and operation size before producing a consensus item that preserves the submitted canonical operation bytes.</p>
+            <p>Signed private REST submit-operation envelopes now verify sender identity, receiver, federation ID, body hash, message kind, and operation size before producing a consensus item that preserves the submitted canonical operation bytes; the private operation route uses the same verified admission before forwarding or local submission.</p>
           </article>
           <article class="item">
             <h3>AlephBFT finalization boundary</h3>
@@ -2312,8 +2312,8 @@
             <tr>
               <td>Signed REST consensus admission</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation signed_submit_request_ -- --test-threads 1` passed. The tests cover signed submit-operation mapping into a consensus item without changing canonical operation bytes, wrong REST message-kind rejection, and unknown-member signer rejection before admission.</td>
-              <td>Feed verified admissions into the AlephBFT unit provider so private REST transport and production ordering share one operation-envelope boundary.</td>
+              <td>`cargo test -p cdk-common --features federation signed_submit_request_ -- --test-threads 1`, `cargo test -p cdk-common --features federation sequence_tracker_verifies_authenticated_sequence_without_rechecking_request -- --test-threads 1`, and `cargo test -p cdk-axum --features federation private_operation_route_ -- --test-threads 1` passed. The tests cover signed submit-operation mapping into a consensus item without changing canonical operation bytes, wrong REST message-kind rejection, unknown-member signer rejection before admission, sequence-only replay checks after authentication, accepted private operation submission, and failed route admission without consensus or sequence mutation.</td>
+              <td>Wire the same admitted operation envelope into the AlephBFT unit provider so private REST transport and production ordering share one proposal boundary.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>

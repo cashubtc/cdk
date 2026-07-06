@@ -117,6 +117,13 @@ async fn private_operation_route_rejects_unknown_sender_before_mutation() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(consensus_operation_count(&state).await, 0);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert!(sequences.is_empty());
 }
 
 #[tokio::test]
@@ -140,6 +147,13 @@ async fn private_operation_route_rejects_kind_mismatch_before_mutation() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(consensus_operation_count(&state).await, 0);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert!(sequences.is_empty());
 }
 
 #[tokio::test]

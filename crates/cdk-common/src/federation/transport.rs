@@ -512,6 +512,11 @@ impl FederationRestSequenceTracker {
         self.prune_recent_sequences(sender);
     }
 
+    /// Verify an already-authenticated sender sequence without rechecking the request signature.
+    pub fn verify_next_sequence(&self, sender: MemberId, sequence: u64) -> Result<()> {
+        self.ensure_sequence_advances(sender, sequence)
+    }
+
     fn ensure_sequence_advances(&self, sender: MemberId, sequence: u64) -> Result<()> {
         let Some(last) = self.highest_by_sender.get(&sender).copied() else {
             return Ok(());
@@ -2403,6 +2408,29 @@ mod tests {
         tracker
             .verify_and_record(&second, &config, receiver)
             .expect("higher sequence accepted");
+    }
+
+    #[test]
+    fn sequence_tracker_verifies_authenticated_sequence_without_rechecking_request() {
+        let first_member = roster_member_id(1);
+        let second_member = roster_member_id(2);
+        let mut tracker = FederationRestSequenceTracker::new();
+
+        tracker.record_sequence(first_member, 5);
+        tracker
+            .verify_next_sequence(first_member, 6)
+            .expect("higher authenticated sequence accepted");
+        assert!(matches!(
+            tracker.verify_next_sequence(first_member, 5),
+            Err(FederationError::RestStaleSequence {
+                member_id,
+                last: 5,
+                found: 5,
+            }) if member_id == first_member
+        ));
+        tracker
+            .verify_next_sequence(second_member, 1)
+            .expect("independent sender sequence accepted");
     }
 
     #[test]

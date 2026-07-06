@@ -16,7 +16,7 @@ use cdk::federation::{
     FederationPeerStatus, FederationRestMessageKind, FederationRestSequenceTracker,
     FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
     FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
+    FederationVerifiedOperationAdmission, InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -131,16 +131,13 @@ async fn post_operation(
 ) -> Result<Json<FederationSubmitOperationResponse>, Response> {
     let _permit =
         acquire_private_rest_admission(&state, FederationRestMessageKind::SubmitOperation)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::SubmitOperation)
-            .await?;
-    if let Some(response) = submit_operation_to_primary_if_needed(
-        &state,
-        payload.payload.envelope.clone(),
-        Some((verified.sender, verified.sequence)),
-    )
-    .await
-    .map_err(cdk_error_response)?
+    let admission = verify_operation_admission(&state, &payload).await?;
+    let sequence = Some(admission.sender_sequence());
+    let envelope = admission.operation_envelope().clone();
+    if let Some(response) =
+        submit_operation_to_primary_if_needed(&state, envelope.clone(), sequence)
+            .await
+            .map_err(cdk_error_response)?
     {
         tracing::debug!(
             "Forwarded federation operation {} to primary member",
@@ -150,14 +147,32 @@ async fn post_operation(
     }
 
     let response = state
-        .submit_federation_envelope_with_sequence(
-            payload.payload.envelope,
-            Some((verified.sender, verified.sequence)),
-        )
+        .submit_federation_envelope_with_sequence(envelope, sequence)
         .await
         .map_err(cdk_error_response)?;
     tracing::debug!("Accepted federation operation {}", response.operation_id);
     Ok(Json(response))
+}
+
+async fn verify_operation_admission(
+    state: &MintState,
+    request: &FederationSignedRequest<FederationSubmitOperationRequest>,
+) -> Result<FederationVerifiedOperationAdmission, Response> {
+    let runtime_config = federation_runtime_config(state)?;
+    let admission = FederationVerifiedOperationAdmission::from_signed_submit_request(
+        request,
+        runtime_config.public_config(),
+        runtime_config.member_id(),
+    )
+    .map_err(federation_error_response)?;
+
+    let sequences = federation_sequences(state)?;
+    let sequences = sequences.lock().await;
+    sequences
+        .verify_next_sequence(admission.sender, admission.sequence)
+        .map_err(federation_error_response)?;
+
+    Ok(admission)
 }
 
 async fn verify_federation_request<T>(
