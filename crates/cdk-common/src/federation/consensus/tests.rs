@@ -3180,6 +3180,10 @@ fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalizatio
         initial.consensus_backend,
         FederationConsensusBackendKind::AlephBft
     );
+    assert_eq!(
+        initial.finality,
+        FederationAlephBftFinalityMode::ExternalFinalizationRequired
+    );
     assert_eq!(initial.federation_id, federation_id);
     assert_eq!(initial.local_member, members[0]);
     assert_eq!(initial.session, 0);

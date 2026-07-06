@@ -371,8 +371,9 @@ fn option_u64(value: Option<u64>) -> String {
 fn aleph_bft_status_fields(status: &FederationLocalStatusResponse) -> String {
     match &status.aleph_bft_status {
         Some(aleph) => format!(
-            "backend:{} local_member:{} session:{} queued:{} pending_finalization:{} finalized:{} accepted:{} next_unit:{} next_finalization_unit:{} next_item:{} latest_accepted:{} members:{}",
+            "backend:{} finality:{} local_member:{} session:{} queued:{} pending_finalization:{} finalized:{} accepted:{} next_unit:{} next_finalization_unit:{} next_item:{} latest_accepted:{} members:{}",
             aleph.consensus_backend,
+            aleph.finality,
             aleph.local_member,
             aleph.session,
             aleph.queued_item_count,

@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: bound AlephBFT finalized-unit delivery</span>
+          <span class="value">feat: expose AlephBFT finality mode</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private REST AlephBFT finalized-unit delivery now uses the peer request timeout instead of the longer wallet operation timeout. Paused-time driver coverage proves one slow member is counted as failed while the next member can still satisfy quorum and apply the unit exactly once.</span>
+          <span class="value">AlephBFT adapter status now exposes the current finality mode as external_finalization_required through signed local status and mintd status output, so the private REST finalized-unit handoff is visibly distinct from future production network finality.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -849,7 +849,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, public mint retry after pending-finalization timeout, live duplicate public mint joining while pending, semantic conflict-key rejection for queued and drained quote operations, deterministic rejected outcomes for finalized semantic conflicts, drained-unit pending-finalization accounting with peer-decided duplicate/conflict cleanup, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters for queued, pending-finalization, finalized, and accepted work so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, public mint retry after pending-finalization timeout, live duplicate public mint joining while pending, semantic conflict-key rejection for queued and drained quote operations, deterministic rejected outcomes for finalized semantic conflicts, drained-unit pending-finalization accounting with peer-decided duplicate/conflict cleanup, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, explicit external-finalization-required status, and signed local-status counters for queued, pending-finalization, finalized, and accepted work so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>

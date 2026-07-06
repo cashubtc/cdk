@@ -322,11 +322,36 @@ impl FederationAlephBftFinalizedItem {
     }
 }
 
+/// Finality mode currently feeding the AlephBFT adapter boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationAlephBftFinalityMode {
+    /// Finalized units are injected through the CDK external-finalization boundary.
+    ExternalFinalizationRequired,
+}
+
+impl Default for FederationAlephBftFinalityMode {
+    fn default() -> Self {
+        Self::ExternalFinalizationRequired
+    }
+}
+
+impl fmt::Display for FederationAlephBftFinalityMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExternalFinalizationRequired => f.write_str("external_finalization_required"),
+        }
+    }
+}
+
 /// Operator-facing status for the AlephBFT adapter boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationAlephBftAdapterStatus {
     /// Consensus backend represented by this status snapshot.
     pub consensus_backend: FederationConsensusBackendKind,
+    /// Finality source currently feeding the adapter.
+    #[serde(default)]
+    pub finality: FederationAlephBftFinalityMode,
     /// Federation whose operations are being ordered.
     pub federation_id: FederationId,
     /// Local member producing unit payloads.
@@ -1598,6 +1623,7 @@ impl FederationAlephBftConsensusAdapter {
     pub fn status(&self) -> FederationAlephBftAdapterStatus {
         FederationAlephBftAdapterStatus {
             consensus_backend: self.backend_kind(),
+            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             federation_id: self.data_provider.federation_id,
             local_member: self.data_provider.submitting_member,
             session: self.session(),

@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationConsensusBackendKind, FederationJournalDigest,
-    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
-    FederationStateDigest, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederationAlephBftFinalityMode,
+    FederationConsensusBackendKind, FederationJournalDigest, FederationPaymentObservationContext,
+    FederationPaymentObservationEvidenceGroupSummary, FederationStateDigest, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
@@ -448,6 +449,7 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
     let mut status = local_status(&public_config, 1, 2);
     status.aleph_bft_status = Some(FederationAlephBftAdapterStatus {
         consensus_backend: cdk_common::federation::FederationConsensusBackendKind::AlephBft,
+        finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
         federation_id: public_config.federation_id,
         local_member: MemberId::new(1).expect("member one"),
         session: 4,
@@ -465,7 +467,7 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
     let line = member_status_line(&status);
 
     assert!(line.contains(
-        "aleph_bft=backend:aleph_bft local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
+        "aleph_bft=backend:aleph_bft finality:external_finalization_required local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
     ));
 }
 

@@ -89,6 +89,10 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
         aleph_bft_status.consensus_backend,
         FederationConsensusBackendKind::AlephBft
     );
+    assert_eq!(
+        aleph_bft_status.finality,
+        FederationAlephBftFinalityMode::ExternalFinalizationRequired
+    );
     assert!(!status.sync_ready);
     assert_eq!(status.sync_state, "halted");
     assert!(
