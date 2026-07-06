@@ -421,10 +421,9 @@ async fn federation_signature_share_provenance_for_operation(
     db: &DynMintDatabase,
     federation_operation_id: FederationOperationId,
 ) -> Result<FederationSignatureShareProvenance, Error> {
-    let entries = db.get_federation_journal_entries().await?;
-    let entry = entries
-        .into_iter()
-        .find(|entry| entry.operation_id == federation_operation_id)
+    let entry = db
+        .get_federation_journal_entry_by_operation_id(federation_operation_id)
+        .await?
         .ok_or_else(|| {
             Error::Custom(
                 "federation operation must be accepted in the journal before signing change"

@@ -765,6 +765,12 @@ pub trait FederationJournalDatabase {
         &self,
     ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
 
+    /// Get one accepted federation journal entry by operation ID.
+    async fn get_federation_journal_entry_by_operation_id(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
+
     /// Get accepted federation journal entries starting at `next_index`.
     async fn get_federation_journal_entries_from(
         &self,

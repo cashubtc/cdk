@@ -377,6 +377,39 @@ where
     );
     assert_eq!(entries[1].state_digest, second.state_digest);
 
+    let first_by_operation_id = db
+        .get_federation_journal_entry_by_operation_id(first.operation_id)
+        .await
+        .expect("first entry by operation id")
+        .expect("first entry");
+    assert_eq!(first_by_operation_id.index, first.index);
+    assert_eq!(
+        first_by_operation_id.status,
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(
+        first_by_operation_id.consensus_evidence,
+        Some(first_evidence)
+    );
+
+    let second_by_operation_id = db
+        .get_federation_journal_entry_by_operation_id(second.operation_id)
+        .await
+        .expect("second entry by operation id")
+        .expect("second entry");
+    assert_eq!(second_by_operation_id.index, second.index);
+    assert_eq!(
+        second_by_operation_id.operation_outcome_hash,
+        second.operation_outcome_hash
+    );
+    assert_eq!(second_by_operation_id.state_digest, second.state_digest);
+
+    let missing_by_operation_id = db
+        .get_federation_journal_entry_by_operation_id(FederationOperationId::from_bytes([99; 32]))
+        .await
+        .expect("missing entry by operation id");
+    assert!(missing_by_operation_id.is_none());
+
     let catch_up_entries = db
         .get_federation_journal_entries_from(1)
         .await

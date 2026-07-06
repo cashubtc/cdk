@@ -1268,6 +1268,40 @@ where
         .collect()
     }
 
+    async fn get_federation_journal_entry_by_operation_id(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                operation_index,
+                operation_id,
+                envelope_json,
+                conflict_key_json,
+                conflict_keys_json,
+                previous_order_digest,
+                order_digest,
+                operation_outcome_hash,
+                state_digest,
+                consensus_evidence_json,
+                status
+            FROM federation_journal_entries
+            WHERE operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_journal_entry)
+        .transpose()
+    }
+
     async fn get_federation_journal_entries_from(
         &self,
         next_index: u64,
