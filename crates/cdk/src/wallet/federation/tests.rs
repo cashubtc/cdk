@@ -1454,6 +1454,54 @@ async fn federated_mint_connector_mints_after_threshold_keyset_advertisements() 
 }
 
 #[tokio::test]
+async fn federated_mint_connector_excludes_bad_keyset_member_from_mint_fanout() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut bad_advertised = advertised.clone();
+    bad_advertised.input_fee_ppk = bad_advertised.input_fee_ppk.saturating_add(1);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2)] {
+        let connector = MockMintConnector::new();
+        connector.set_active_keyset(advertised.clone());
+        connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let bad_member = MockMintConnector::new();
+    bad_member.set_active_keyset(bad_advertised);
+    bad_member.set_post_mint_barrier(Arc::new(tokio::sync::Barrier::new(2)));
+    bad_member.set_post_mint_response(Ok(share_response(&bundle, member_id(3), &outputs)));
+    connectors.insert(
+        member_id(3),
+        Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        connector.post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        ),
+    )
+    .await
+    .expect("bad keyset member should not receive mint fanout")
+    .expect("mint response");
+
+    assert_aggregate_response_valid(&bundle, &outputs, &response);
+}
+
+#[tokio::test]
 async fn federated_mint_connector_gets_keyset_after_threshold_member_advertisements() {
     let bundle = threshold_bundle();
     let keyset_id = bundle.public_config.keysets[0].id;
@@ -2523,7 +2571,10 @@ async fn federated_mint_connector_honors_configured_fanout_concurrency() {
 
     assert_aggregate_response_valid(&bundle, &outputs, &response);
     assert_eq!(max_active_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(total_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        total_calls.load(Ordering::SeqCst),
+        usize::from(bundle.public_config.threshold_params.signature_threshold)
+    );
     assert_eq!(active_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -3284,7 +3335,7 @@ async fn federated_mint_connector_rejects_non_v3_melt_change_outputs() {
 }
 
 #[tokio::test]
-async fn federated_mint_connector_rejects_non_v3_member_advertisement() {
+async fn federated_mint_connector_fails_without_threshold_v3_member_advertisements() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);
     let mut connectors = member_connectors(&bundle, &outputs);
@@ -3296,65 +3347,73 @@ async fn federated_mint_connector_rejects_non_v3_member_advertisement() {
         expected.input_fee_ppk,
         expected.final_expiry,
     );
-    let bad_member = MockMintConnector::new();
-    bad_member.set_active_keyset(advertised);
-    connectors.insert(
-        member_id(1),
-        Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    for member_id in [member_id(1), member_id(2)] {
+        let bad_member = MockMintConnector::new();
+        bad_member.set_active_keyset(advertised.clone());
+        connectors.insert(
+            member_id,
+            Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
 
     let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
         .expect("federated mint connector");
-    let result = connector
-        .post_mint(
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        connector.post_mint(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MintRequest {
                 quote: "paid-quote".to_string(),
                 outputs,
                 signature: None,
             },
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("mint should fail before signing fanout");
 
     assert!(matches!(
         result,
-        Err(crate::Error::Federation(
-            FederationError::InvalidFederatedKeysetVersion { .. }
-        ))
+        Err(crate::Error::InvalidMintResponse(message))
+            if message.contains("insufficient federation keyset advertisements")
     ));
 }
 
 #[tokio::test]
-async fn federated_mint_connector_rejects_mismatched_member_advertisement() {
+async fn federated_mint_connector_fails_without_threshold_matching_member_advertisements() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);
     let mut connectors = member_connectors(&bundle, &outputs);
     let mut advertised = advertised_keyset(&bundle);
     advertised.keys = cdk_common::Keys::new(BTreeMap::new());
-    let bad_member = MockMintConnector::new();
-    bad_member.set_active_keyset(advertised);
-    connectors.insert(
-        member_id(1),
-        Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    for member_id in [member_id(1), member_id(2)] {
+        let bad_member = MockMintConnector::new();
+        bad_member.set_active_keyset(advertised.clone());
+        connectors.insert(
+            member_id,
+            Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
 
     let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
         .expect("federated mint connector");
-    let result = connector
-        .post_mint(
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        connector.post_mint(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MintRequest {
                 quote: "paid-quote".to_string(),
                 outputs,
                 signature: None,
             },
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("mint should fail before signing fanout");
 
     assert!(matches!(
         result,
-        Err(crate::Error::Federation(
-            FederationError::AdvertisedFederatedKeysetMismatch { .. }
-        ))
+        Err(crate::Error::InvalidMintResponse(message))
+            if message.contains("insufficient federation keyset advertisements")
     ));
 }

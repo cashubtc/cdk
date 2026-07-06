@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, and signed session-outcome quorum ranges in signed local status, retry rate-limited wallet member requests, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, and signed session-outcome quorum ranges in signed local status, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: retry rate-limited federation members</span>
+          <span class="value">fix: filter federation wallet fanout</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation fanout now treats HTTP 429 rate limits as retryable member failures so a temporarily rate-limited member can still contribute after retry.</span>
+          <span class="value">Wallet federation fanout now validates active aggregate v3/BLS keyset advertisements first, excludes incompatible members from signing/state fanout, and fails before signing when a threshold compatible subset is unavailable.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -2460,6 +2460,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation test_is_definitive_failure -- --test-threads 1`, `cargo test -p cdk-common --features federation federation_pending_finalization_maps_to_retryable_error_response -- --test-threads 1`, `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_retries_rate_limited_member_request -- --test-threads 1`, and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_retries_retryable_member_request -- --test-threads 1` passed. The wallet regression proves a 2-of-3 mint can still aggregate after one member returns HTTP 429 on the first attempt, retries successfully, and a third member returns a definitive error.</td>
               <td>Carry the same retryable-member semantics through any future richer federation wallet operation response types.</td>
+            </tr>
+            <tr>
+              <td>Wallet compatible-member fanout</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1`, `cargo check -p cdk --features wallet,mint,federation`, and `cargo fmt --all -- --check` passed. The connector suite now covers excluding a member with a mismatched active aggregate keyset before mint signing, failing before signing when fewer than threshold members advertise compatible active v3/BLS keysets, and preserving mint, batch mint, swap, melt change, restore, check-state, retry, and timeout behavior over the validated compatible-member subset.</td>
+              <td>Add explicit per-member federation ID and protocol-version advertisement checks once that metadata has a Cashu info extension rather than only public-config validation.</td>
             </tr>
             <tr>
               <td>Federation response-cache retention</td>
