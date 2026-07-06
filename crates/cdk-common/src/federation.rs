@@ -25,14 +25,15 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
-    FederationAlephBftConsensusAdapter, FederationAlephBftFinalizationHandler,
-    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftFinalizedUnitOutcome, FederationAlephBftUnitBodyHash,
-    FederationAlephBftUnitDataProvider, FederationAlephBftUnitPayload,
-    FederationConsensusBackendAdapter, FederationConsensusBackendAdapterRuntime,
-    FederationConsensusBackendKind, FederationConsensusDefaultItem, FederationConsensusEngine,
-    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusItemQueue,
-    FederationConsensusModuleFact, FederationConsensusRuntime, FederationQuorumVerifiedCatchUp,
+    FederationAlephBftAdapterStatus, FederationAlephBftConsensusAdapter,
+    FederationAlephBftFinalizationHandler, FederationAlephBftFinalizedItem,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftFinalizedUnitOutcome,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitDataProvider,
+    FederationAlephBftUnitPayload, FederationConsensusBackendAdapter,
+    FederationConsensusBackendAdapterRuntime, FederationConsensusBackendKind,
+    FederationConsensusDefaultItem, FederationConsensusEngine, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
+    FederationConsensusRuntime, FederationQuorumVerifiedCatchUp,
     FederationVerifiedOperationAdmission, InMemoryFederationConsensus,
     InMemoryFederationConsensusAdapter, InMemoryFederationConsensusNetwork,
     FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,

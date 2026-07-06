@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationMaterializedStateRowFingerprint, FederationPaymentObservationReportSummary,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationSignedRequest, FEDERATION_REST_API_VERSION,
+    FederationAlephBftAdapterStatus, FederationMaterializedStateRowFingerprint,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationSignedRequest, FEDERATION_REST_API_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -68,6 +68,7 @@ pub(super) async fn post_local_status(
         .await
         .map_err(cdk_error_response)?;
     let pending_mempool_items = state.federation_pending_mempool_len().await;
+    let aleph_bft_status = state.federation_aleph_bft_status().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
         peer_status,
@@ -76,6 +77,7 @@ pub(super) async fn post_local_status(
         payment_observation_reports,
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
+        aleph_bft_status,
         invalid_operation_alerts,
     );
     #[cfg(feature = "prometheus")]
@@ -98,6 +100,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -112,6 +116,7 @@ impl FederationLocalStatusResponse {
         payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
         materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
         pending_mempool_items: u64,
+        aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
         let session_outcome_quorum_operation_count = session_outcome_quorum
@@ -130,6 +135,7 @@ impl FederationLocalStatusResponse {
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
             payment_observation_reports,
+            aleph_bft_status,
             materialized_state_rows,
             invalid_operation_alerts,
         }

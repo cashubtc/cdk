@@ -56,6 +56,48 @@ fn signed_aleph_bft_finalized_unit_request(
 }
 
 #[tokio::test]
+async fn local_status_includes_aleph_bft_adapter_counters() {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    {
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus handle");
+        consensus
+            .lock()
+            .await
+            .submit_aleph_bft_envelope(envelope)
+            .expect("queued AlephBFT operation");
+    }
+
+    let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+    let response = post_local_status(State(state), Json(request))
+        .await
+        .expect("local status response");
+    let status = response.0;
+    let aleph_bft_status = status.aleph_bft_status.expect("AlephBFT status");
+
+    assert_eq!(status.pending_mempool_items, 1);
+    assert_eq!(
+        aleph_bft_status.consensus_backend,
+        FederationConsensusBackendKind::AlephBft
+    );
+    assert_eq!(aleph_bft_status.local_member, local_member);
+    assert_eq!(aleph_bft_status.session, 0);
+    assert_eq!(aleph_bft_status.queued_item_count, 1);
+    assert_eq!(aleph_bft_status.finalized_item_count, 0);
+    assert_eq!(aleph_bft_status.accepted_operation_count, 0);
+    assert_eq!(aleph_bft_status.allowed_member_count, Some(2));
+}
+
+#[tokio::test]
 async fn private_aleph_bft_finalized_unit_route_persists_applies_and_records_sequence() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let quote_id = QuoteId::new();

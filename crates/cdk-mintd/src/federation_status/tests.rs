@@ -161,6 +161,7 @@ fn local_status(
         session_outcome_quorum_operation_count: None,
         session_outcome_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
+        aleph_bft_status: None,
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
     }
@@ -379,6 +380,32 @@ fn status_line_prints_consensus_backend() {
     let line = member_status_line(&status);
 
     assert!(line.contains("consensus_backend=in_memory"));
+    assert!(line.contains("aleph_bft=none"));
+}
+
+#[test]
+fn status_line_includes_aleph_bft_adapter_counters_when_present() {
+    let (public_config, _) = status_fixture();
+    let mut status = local_status(&public_config, 1, 2);
+    status.aleph_bft_status = Some(FederationAlephBftAdapterStatus {
+        consensus_backend: cdk_common::federation::FederationConsensusBackendKind::AlephBft,
+        federation_id: public_config.federation_id,
+        local_member: MemberId::new(1).expect("member one"),
+        session: 4,
+        next_unit_index: 7,
+        next_unit_finalization_index: 8,
+        next_item_index: 9,
+        queued_item_count: 2,
+        finalized_item_count: 3,
+        accepted_operation_count: 1,
+        latest_accepted_operation_index: Some(0),
+        allowed_member_count: Some(2),
+    });
+
+    let line = member_status_line(&status);
+
+    assert!(line
+        .contains("aleph_bft=session:4 queued:2 finalized:3 accepted:1 next_unit:7 next_item:9"));
 }
 
 #[test]

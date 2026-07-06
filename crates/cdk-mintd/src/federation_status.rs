@@ -3,12 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationConfig, FederationId,
-    FederationMaterializedStateRowFingerprint, FederationPaymentObservationReportAction,
-    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    FEDERATION_REST_API_VERSION,
+    redact_federation_operator_message, FederationAlephBftAdapterStatus, FederationConfig,
+    FederationId, FederationMaterializedStateRowFingerprint,
+    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -286,8 +288,9 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
         payment_report_counts(status);
     let invalid_operation_alerts = invalid_operation_alert_count(status);
+    let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
@@ -305,8 +308,24 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_stale,
         payment_quarantine,
         invalid_operation_alerts,
+        aleph_bft,
         redact_federation_operator_message(&status.sync_message)
     )
+}
+
+fn aleph_bft_status_fields(status: &FederationLocalStatusResponse) -> String {
+    match &status.aleph_bft_status {
+        Some(aleph) => format!(
+            "session:{} queued:{} finalized:{} accepted:{} next_unit:{} next_item:{}",
+            aleph.session,
+            aleph.queued_item_count,
+            aleph.finalized_item_count,
+            aleph.accepted_operation_count,
+            aleph.next_unit_index,
+            aleph.next_item_index
+        ),
+        None => "none".to_string(),
+    }
 }
 
 fn invalid_operation_alert_count(status: &FederationLocalStatusResponse) -> u64 {

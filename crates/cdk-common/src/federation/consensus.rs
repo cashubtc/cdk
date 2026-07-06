@@ -1863,6 +1863,20 @@ impl FederationConsensusRuntime {
         }
     }
 
+    /// Return AlephBFT adapter status when this runtime uses the AlephBFT adapter.
+    pub fn aleph_bft_status(&self) -> Result<FederationAlephBftAdapterStatus> {
+        match &self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => Ok(adapter.status()),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
     /// Rebuild an in-memory runtime from persisted journal entries.
     pub fn in_memory_from_entries(
         federation_id: FederationId,

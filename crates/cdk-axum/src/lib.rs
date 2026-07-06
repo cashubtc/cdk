@@ -15,10 +15,10 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    redact_federation_operator_message, FederationAlephBftFinalizedItem,
-    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusRuntime,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    redact_federation_operator_message, FederationAlephBftAdapterStatus,
+    FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload, FederationConfig,
+    FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
+    FederationConsensusRuntime, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
     FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationError,
@@ -1033,6 +1033,13 @@ impl MintState {
             Some(consensus) => consensus.lock().await.pending_mempool_len(),
             None => 0,
         }
+    }
+
+    pub(crate) async fn federation_aleph_bft_status(
+        &self,
+    ) -> Option<FederationAlephBftAdapterStatus> {
+        let consensus = self.federation_consensus.as_ref()?;
+        consensus.lock().await.aleph_bft_status().ok()
     }
 
     pub(crate) async fn federation_invalid_operation_alert_summaries(
