@@ -265,6 +265,7 @@ struct MockFederationTransportState {
     submit_response: Option<FederationSubmitOperationResponse>,
     aleph_bft_finalized_unit_response: Option<FederationAlephBftFinalizedUnitResponse>,
     aleph_bft_finalized_unit_responses: VecDeque<FederationAlephBftFinalizedUnitResponse>,
+    aleph_bft_finalized_unit_delays: VecDeque<Duration>,
     dkg_setup_responses: VecDeque<FederationDkgSetupResponse>,
     catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
     status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
@@ -361,6 +362,18 @@ impl MockFederationTransport {
             .expect("mock transport lock")
             .aleph_bft_finalized_unit_responses
             .extend(responses);
+        self
+    }
+
+    fn with_aleph_bft_finalized_unit_delays<I>(self, delays: I) -> Self
+    where
+        I: IntoIterator<Item = Duration>,
+    {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .aleph_bft_finalized_unit_delays
+            .extend(delays);
         self
     }
 
@@ -530,6 +543,35 @@ impl Transport for MockFederationTransport {
         P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
+        if url
+            .path()
+            .ends_with("/federation/v1/aleph-bft/finalized-units")
+        {
+            let request = serde_json::from_value::<
+                FederationSignedRequest<FederationAlephBftFinalizedUnitRequest>,
+            >(serde_json::to_value(payload)?)?;
+            let (delay, response) = {
+                let mut state = self.state.lock().expect("mock transport lock");
+                state.aleph_bft_finalized_unit_requests.push(request);
+                let delay = state
+                    .aleph_bft_finalized_unit_delays
+                    .pop_front()
+                    .unwrap_or_default();
+                let response = state
+                    .aleph_bft_finalized_unit_responses
+                    .pop_front()
+                    .or_else(|| state.aleph_bft_finalized_unit_response.clone())
+                    .ok_or_else(|| {
+                        HttpError::Other("missing AlephBFT finalized-unit response".to_string())
+                    })?;
+                (delay, response)
+            };
+            if !delay.is_zero() {
+                time::sleep(delay).await;
+            }
+            return json_response(response);
+        }
+
         let mut state = self.state.lock().expect("mock transport lock");
         match url.path() {
             path if path.ends_with("/federation/v1/status") => {
@@ -596,20 +638,6 @@ impl Transport for MockFederationTransport {
                     .submit_response
                     .clone()
                     .ok_or_else(|| HttpError::Other("missing submit response".to_string()))?;
-                json_response(response)
-            }
-            path if path.ends_with("/federation/v1/aleph-bft/finalized-units") => {
-                let request = serde_json::from_value::<
-                    FederationSignedRequest<FederationAlephBftFinalizedUnitRequest>,
-                >(serde_json::to_value(payload)?)?;
-                state.aleph_bft_finalized_unit_requests.push(request);
-                let response = state
-                    .aleph_bft_finalized_unit_responses
-                    .pop_front()
-                    .or_else(|| state.aleph_bft_finalized_unit_response.clone())
-                    .ok_or_else(|| {
-                        HttpError::Other("missing AlephBFT finalized-unit response".to_string())
-                    })?;
                 json_response(response)
             }
             path if path.ends_with("/federation/v1/journal") => {
@@ -1758,6 +1786,61 @@ async fn rest_peer_client_applies_configured_operation_submission_timeout() {
 
     assert!(
         err.to_string().contains("operation submission timed out"),
+        "unexpected timeout error: {err}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn rest_peer_client_applies_peer_request_timeout_to_aleph_bft_finalized_units() {
+    let (public_config, local_private, _) = transport_config();
+    let federation_id = public_config.federation_id;
+    let member = public_config
+        .member(member_id(2))
+        .expect("peer member")
+        .clone();
+    let timeout = Duration::from_secs(2);
+    let request = FederationAlephBftFinalizedUnitRequest::new(
+        FederationAlephBftUnitPayload::new(
+            federation_id,
+            local_private.member_id,
+            0,
+            0,
+            vec![FederationConsensusItem::operation(restore_envelope(
+                federation_id,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f42",
+            ))],
+        )
+        .expect("AlephBFT unit"),
+    );
+    let client = FederationRestPeerClient::new_with_config(
+        DelayTransport {
+            delay: timeout + Duration::from_secs(60),
+        },
+        &public_config,
+        local_private,
+        FederationPeerSyncConfig {
+            peer_request_timeout: timeout,
+            operation_submission_timeout: Duration::from_secs(3600),
+            ..FederationPeerSyncConfig::default()
+        },
+    )
+    .expect("client");
+
+    let task = tokio::spawn(async move {
+        client
+            .submit_aleph_bft_finalized_unit(&member, &request)
+            .await
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(timeout).await;
+    let err = task
+        .await
+        .expect("AlephBFT finalized-unit task")
+        .expect_err("AlephBFT finalized-unit submission should time out");
+
+    assert!(
+        err.to_string()
+            .contains("AlephBFT finalized-unit submission timed out"),
         "unexpected timeout error: {err}"
     );
 }
@@ -7973,6 +8056,109 @@ async fn aleph_bft_broadcast_round_stops_remote_delivery_after_quorum() {
     assert!(outcome.remote_failed_members.is_empty());
     assert_eq!(outcome.local_responses.len(), 1);
     assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn aleph_bft_broadcast_round_times_out_slow_peer_and_uses_next_for_quorum() {
+    let (public_config, local_private, second_private, third_private) = transport_config_three();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = queue_local_aleph_bft_unit(&state, envelope).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let timeout = Duration::from_secs(2);
+    let transport = MockFederationTransport::default()
+        .with_aleph_bft_finalized_unit_responses(vec![response.clone(), response])
+        .with_aleph_bft_finalized_unit_delays(vec![
+            timeout + Duration::from_secs(60),
+            Duration::ZERO,
+        ]);
+    let client = FederationRestPeerClient::new_with_config(
+        transport.clone(),
+        &public_config,
+        local_private.clone(),
+        FederationPeerSyncConfig {
+            peer_request_timeout: timeout,
+            operation_submission_timeout: Duration::from_secs(3600),
+            ..FederationPeerSyncConfig::default()
+        },
+    )
+    .expect("peer client");
+    let second_peer = public_config
+        .member(second_private.member_id)
+        .expect("second peer")
+        .clone();
+    let third_peer = public_config
+        .member(third_private.member_id)
+        .expect("third peer")
+        .clone();
+    let peers = vec![second_peer, third_peer];
+    let state_for_broadcast = state.clone();
+
+    let task = tokio::spawn(async move {
+        broadcast_next_aleph_bft_finalized_unit_round_with_config(
+            &state_for_broadcast,
+            &client,
+            &peers,
+            FederationAlephBftDriverTickConfig {
+                max_remote_peer_deliveries_per_unit: 2,
+                ..FederationAlephBftDriverTickConfig::default()
+            },
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    tokio::time::advance(timeout - Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !task.is_finished(),
+        "broadcast should still wait before the peer timeout elapses"
+    );
+    tokio::time::advance(Duration::from_millis(1)).await;
+
+    let outcome = task
+        .await
+        .expect("broadcast task")
+        .expect("broadcast round")
+        .expect("unit broadcast");
+
+    assert_eq!(
+        outcome.remote_failed_members,
+        vec![second_private.member_id]
+    );
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![third_private.member_id]
+    );
+    assert!(outcome.remote_skipped_members.is_empty());
+    assert_eq!(outcome.local_responses.len(), 1);
+    assert_eq!(outcome.local_responses[0].operation_id, operation_id);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 2);
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after timeout recovery")
+        .expect("mint quote applied");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
 
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;

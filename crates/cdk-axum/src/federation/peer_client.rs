@@ -180,7 +180,7 @@ where
                 "aleph-bft/finalized-units",
                 "AlephBFT finalized-unit submission",
                 &request,
-                self.sync_config.operation_submission_timeout,
+                self.sync_config.peer_request_timeout,
             )
             .await?;
         response.validate(self.federation_id, &request.payload.unit)?;

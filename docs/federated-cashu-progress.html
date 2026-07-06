@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: make AlephBFT replay idempotent</span>
+          <span class="value">fix: bound AlephBFT finalized-unit delivery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Exact duplicate private REST AlephBFT finalized-unit delivery now returns the already accepted response without appending another finalized item or journal entry, while still recording the newer sender sequence. A partial-delivery driver retry test now proves the local unit remains queued until quorum returns.</span>
+          <span class="value">Private REST AlephBFT finalized-unit delivery now uses the peer request timeout instead of the longer wallet operation timeout. Paused-time driver coverage proves one slow member is counted as failed while the next member can still satisfy quorum and apply the unit exactly once.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
