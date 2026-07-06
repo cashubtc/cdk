@@ -442,6 +442,14 @@ pub enum FederationError {
         /// Maximum pending item count.
         max: usize,
     },
+    /// Waiting for an accepted operation response would exceed the configured limit.
+    #[error("Federation response waiter limit exceeded: waiting={waiting}, max={max}")]
+    ResponseWaiterLimitExceeded {
+        /// Number of response waiters already registered.
+        waiting: usize,
+        /// Maximum response waiter count.
+        max: usize,
+    },
     /// A consensus batching or payload limit must be non-zero.
     #[error("Invalid federation consensus limit {field}: value={value}")]
     InvalidConsensusLimit {

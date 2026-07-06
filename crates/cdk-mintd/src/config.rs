@@ -1121,6 +1121,9 @@ pub struct FederationPeerSync {
     /// Maximum number of locally queued consensus items awaiting finalization.
     #[serde(default = "default_federation_pending_mempool_item_limit")]
     pub pending_mempool_item_limit: usize,
+    /// Maximum number of local requests waiting for accepted operation responses.
+    #[serde(default = "default_federation_response_waiter_limit")]
+    pub response_waiter_limit: usize,
 }
 
 #[cfg(feature = "federation")]
@@ -1146,6 +1149,7 @@ impl Default for FederationPeerSync {
             state_digest_checkpoint_retention: default_federation_state_digest_checkpoint_retention(
             ),
             pending_mempool_item_limit: default_federation_pending_mempool_item_limit(),
+            response_waiter_limit: default_federation_response_waiter_limit(),
         }
     }
 }
@@ -1212,6 +1216,11 @@ fn default_federation_state_digest_checkpoint_retention() -> usize {
 
 #[cfg(feature = "federation")]
 fn default_federation_pending_mempool_item_limit() -> usize {
+    1024
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_response_waiter_limit() -> usize {
     1024
 }
 

@@ -188,6 +188,10 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             pending_mempool_item_limit: 0,
             ..valid
         },
+        FederationPeerSyncConfig {
+            response_waiter_limit: 0,
+            ..valid
+        },
     ];
 
     for config in cases {
@@ -5743,6 +5747,7 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
             .contains("timed out waiting for AlephBFT finalization"),
         "unexpected error: {err}"
     );
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
     assert!(state
         .mint
         .localstore()
@@ -5755,6 +5760,119 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert!(consensus.journal().entries().is_empty());
+}
+
+#[tokio::test]
+async fn aleph_bft_submit_envelope_releases_response_waiter_after_timeout() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        response_waiter_limit: 1,
+        ..FederationPeerSyncConfig::default()
+    });
+
+    let first_err = state
+        .submit_federation_envelope_with_sequence(
+            mint_quote_envelope(&state, &QuoteId::new()),
+            None,
+        )
+        .await
+        .expect_err("first unfinalized submit should time out");
+    assert!(
+        first_err
+            .to_string()
+            .contains("timed out waiting for AlephBFT finalization"),
+        "unexpected first error: {first_err}"
+    );
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+
+    let second_err = state
+        .submit_federation_envelope_with_sequence(
+            mint_quote_envelope(&state, &QuoteId::new()),
+            None,
+        )
+        .await
+        .expect_err("second unfinalized submit should time out after waiter cleanup");
+    assert!(
+        second_err
+            .to_string()
+            .contains("timed out waiting for AlephBFT finalization"),
+        "unexpected second error: {second_err}"
+    );
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+}
+
+#[tokio::test]
+async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_secs(5),
+        response_waiter_limit: 1,
+        ..FederationPeerSyncConfig::default()
+    });
+    let first_state = state.clone();
+    let first_submit = tokio::spawn(async move {
+        first_state
+            .submit_federation_envelope_with_sequence(
+                mint_quote_envelope(&first_state, &QuoteId::new()),
+                None,
+            )
+            .await
+    });
+    for _ in 0..50 {
+        if state.federation_pending_response_waiter_count() == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 1);
+
+    let err = state
+        .submit_federation_envelope_with_sequence(
+            mint_quote_envelope(&state, &QuoteId::new()),
+            None,
+        )
+        .await
+        .expect_err("full response waiter set should reject");
+    assert!(
+        err.to_string().contains("response waiter limit exceeded"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(state.federation_pending_response_waiter_count(), 1);
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    drop(consensus);
+
+    first_submit.abort();
+    let _ = first_submit.await;
+    for _ in 0..50 {
+        if state.federation_pending_response_waiter_count() == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
 }
 
 #[tokio::test]

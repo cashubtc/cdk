@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, retain private REST sequence metadata until finalized units apply, wait for finalized notifications, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist aleph bft submit sequences</span>
+          <span class="value">feat: bound aleph bft response waiters</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT submit-operation sequences are cached by operation ID while queued, persisted atomically with finalized units, and durable duplicate sequence watermarks no longer requeue finalized operations.</span>
+          <span class="value">AlephBFT local submitters now reserve bounded response-waiter slots before a new operation enters the pending queue; timeout or cancellation releases the slot, and signed status exposes pending waiter counts.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the bounded driver into real AlephBFT production startup once the backend is enabled, then replace the REST broadcast stand-in with real BFT finality.</span>
+          <span class="value">Wire the bounded driver into real AlephBFT production startup once the backend is enabled, then replace the REST broadcast stand-in with real BFT finality and production wire-message queue limits.</span>
         </div>
       </aside>
     </header>
@@ -846,7 +846,7 @@
           </article>
           <article class="item">
             <h3>AlephBFT submit waiters</h3>
-            <p>AlephBFT state-layer submits now queue proposals and wait for finalized notifications with a timeout, while already finalized duplicates return without requeueing.</p>
+            <p>AlephBFT state-layer submits now reserve bounded response waiters before queue admission, wait for finalized notifications with a timeout, release waiter slots on timeout or cancellation, and return already finalized duplicates without requeueing.</p>
           </article>
           <article class="item">
             <h3>AlephBFT sequence handoff</h3>
@@ -2396,6 +2396,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo fmt --all -- --check`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1` passed. The 18-test slice covers signed finalized-unit private REST routing, peer-client validation, durable apply, startup reload, quorum-gated broadcast success, failed-delivery retention without queue drain or mint-state materialization, local exact-drain mismatch safety, idle driver ticks with no peer request, zero-work-bound rejection before networking, bounded tick success followed by idle stop, AlephBFT submit waiting for driver finalization, timeout without finalization, finalized duplicate submit without requeueing, and submit-operation sequence persistence after driver finalization.</td>
               <td>Promote the helper into a live AlephBFT proposal/finalization task that continuously previews, broadcasts through real BFT finality, drains, and preserves the same sequence persistence guarantees.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT response-waiter backpressure</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo fmt --all -- --check`, `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config_maps_mintd_settings -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line_prints_consensus_backend -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The tests cover configured waiter-limit validation, timeout cleanup, cancellation cleanup, full-waiter rejection before queue growth, pending waiter status exposure, and mintd config/status wiring.</td>
+              <td>Carry the same bounded-waiter pattern into the live AlephBFT task once real finality replaces the current private-REST broadcast stand-in.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>
@@ -4054,7 +4060,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, queue-and-wait submit, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, queue-and-wait submit, bounded response waiters, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>

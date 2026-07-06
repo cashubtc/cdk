@@ -68,6 +68,7 @@ pub(super) async fn post_local_status(
         .await
         .map_err(cdk_error_response)?;
     let pending_mempool_items = state.federation_pending_mempool_len().await;
+    let pending_response_waiters = state.federation_pending_response_waiter_count();
     let aleph_bft_status = state.federation_aleph_bft_status().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
@@ -77,6 +78,7 @@ pub(super) async fn post_local_status(
         payment_observation_reports,
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
+        usize_to_u64_saturating(pending_response_waiters),
         aleph_bft_status,
         invalid_operation_alerts,
     );
@@ -94,6 +96,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_message: String,
     #[serde(default)]
     pub(crate) pending_mempool_items: u64,
+    #[serde(default)]
+    pub(crate) pending_response_waiters: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -116,6 +120,7 @@ impl FederationLocalStatusResponse {
         payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
         materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
         pending_mempool_items: u64,
+        pending_response_waiters: u64,
         aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
@@ -132,6 +137,7 @@ impl FederationLocalStatusResponse {
             sync_ready: sync_status.is_ready(),
             sync_message: sync_status.not_ready_message(),
             pending_mempool_items,
+            pending_response_waiters,
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
             payment_observation_reports,

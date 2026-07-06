@@ -710,6 +710,7 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
         private_rest_outbound_concurrency_limit: peer_sync.private_rest_outbound_concurrency_limit,
         state_digest_checkpoint_retention: peer_sync.state_digest_checkpoint_retention,
         pending_mempool_item_limit: peer_sync.pending_mempool_item_limit,
+        response_waiter_limit: peer_sync.response_waiter_limit,
     }
 }
 
@@ -2432,6 +2433,7 @@ mod tests {
                     private_rest_outbound_concurrency_limit: 43,
                     state_digest_checkpoint_retention: 47,
                     pending_mempool_item_limit: 53,
+                    response_waiter_limit: 59,
                 },
             }),
             ..Default::default()
@@ -2470,6 +2472,7 @@ mod tests {
         assert_eq!(sync_config.private_rest_outbound_concurrency_limit, 43);
         assert_eq!(sync_config.state_digest_checkpoint_retention, 47);
         assert_eq!(sync_config.pending_mempool_item_limit, 53);
+        assert_eq!(sync_config.response_waiter_limit, 59);
         sync_config.validate().expect("valid sync config");
     }
 

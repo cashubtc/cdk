@@ -26,6 +26,7 @@ fn local_status(
         sync_ready: true,
         sync_message: "federation member is healthy".to_string(),
         pending_mempool_items: 0,
+        pending_response_waiters: 0,
         session_outcome_quorum_operation_count: None,
         session_outcome_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
