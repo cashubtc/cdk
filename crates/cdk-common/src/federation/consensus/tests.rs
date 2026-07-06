@@ -79,6 +79,10 @@ fn mint_quote_envelope(federation_id: FederationId) -> FederationOperationEnvelo
     )
 }
 
+fn module_fact_item(kind: &str) -> FederationConsensusItem {
+    FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new("test", kind, json!({})))
+}
+
 fn oversized_mint_quote_envelope(federation_id: FederationId) -> FederationOperationEnvelope {
     let mut envelope = mint_quote_envelope(federation_id);
     let super::super::FederationOperation::MintQuote(operation) = &mut envelope.operation else {
@@ -1155,9 +1159,14 @@ fn aleph_bft_finalization_handler_flags_duplicate_operations_in_order() {
 #[test]
 fn aleph_bft_finalization_handler_rejects_duplicate_member_unit_replay() {
     let federation_id = federation_id(13);
-    let payload =
-        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
-            .expect("payload");
+    let payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![module_fact_item("duplicate-unit-replay")],
+    )
+    .expect("payload");
     let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
 
     handler
@@ -1173,6 +1182,36 @@ fn aleph_bft_finalization_handler_rejects_duplicate_member_unit_replay() {
         }) if member_id == member_id_value(2)
     ));
     assert_eq!(handler.next_unit_finalization_index(), 1);
+}
+
+#[test]
+fn aleph_bft_finalization_handler_rejects_empty_unit_before_state_change() {
+    let federation_id = federation_id(13);
+    let empty_unit =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
+            .expect("empty unit");
+    let non_empty_replay = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![module_fact_item("empty-unit-replay")],
+    )
+    .expect("non-empty replay");
+    let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
+
+    assert!(matches!(
+        handler.finalize_next_unit(empty_unit),
+        Err(FederationError::EmptyAlephBftUnit)
+    ));
+    assert_eq!(handler.next_unit_finalization_index(), 0);
+    assert_eq!(handler.next_item_index(), 0);
+
+    let outcome = handler
+        .finalize_next_unit(non_empty_replay)
+        .expect("same unit can finalize after empty rejection");
+    assert_eq!(outcome.unit_finalization_index, 0);
+    assert_eq!(outcome.items.len(), 1);
 }
 
 #[test]
@@ -1198,9 +1237,14 @@ fn aleph_bft_finalization_handler_rejects_unknown_submitter_before_state_change(
     assert_eq!(handler.next_unit_finalization_index(), 0);
     assert_eq!(handler.next_item_index(), 0);
 
-    let known_unit =
-        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
-            .expect("known member unit");
+    let known_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![module_fact_item("known-member")],
+    )
+    .expect("known member unit");
     handler
         .finalize_next_unit(known_unit)
         .expect("known member unit finalized");
@@ -1211,19 +1255,29 @@ fn aleph_bft_finalization_handler_rejects_unknown_submitter_before_state_change(
 fn aleph_bft_finalization_handler_advances_to_later_sessions() {
     let federation_id = federation_id(13);
     let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
-    let first =
-        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
-            .expect("first payload");
+    let first = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![module_fact_item("session-0")],
+    )
+    .expect("first payload");
     handler.finalize_next_unit(first).expect("first finalized");
 
     handler.begin_session(1).expect("begin next session");
     assert_eq!(handler.session(), 1);
     assert_eq!(handler.next_unit_finalization_index(), 0);
-    assert_eq!(handler.next_item_index(), 0);
+    assert_eq!(handler.next_item_index(), 1);
 
-    let next =
-        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 1, 0, Vec::new())
-            .expect("next payload");
+    let next = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        1,
+        0,
+        vec![module_fact_item("session-1")],
+    )
+    .expect("next payload");
     handler.finalize_next_unit(next).expect("next finalized");
     assert!(matches!(
         handler.begin_session(1),

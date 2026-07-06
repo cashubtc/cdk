@@ -495,6 +495,9 @@ pub enum FederationError {
     /// An AlephBFT unit operation ID list does not match the canonical item body.
     #[error("Federation AlephBFT unit operation ids do not match item body")]
     AlephBftUnitOperationIdsMismatch,
+    /// An AlephBFT unit must contain at least one consensus item.
+    #[error("Federation AlephBFT unit cannot be empty")]
+    EmptyAlephBftUnit,
     /// An AlephBFT unit belongs to a different finalization session.
     #[error("Federation AlephBFT unit session mismatch: expected={expected}, found={found}")]
     AlephBftUnitSessionMismatch {

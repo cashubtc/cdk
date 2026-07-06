@@ -1236,6 +1236,9 @@ impl FederationAlephBftFinalizationHandler {
                 });
             }
         }
+        if payload.items.is_empty() {
+            return Err(FederationError::EmptyAlephBftUnit);
+        }
 
         let unit_key = (
             payload.session,
