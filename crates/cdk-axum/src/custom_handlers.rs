@@ -4360,6 +4360,68 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn batch_mint_rejects_same_quote_with_different_outputs_without_signing() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let first_outputs = outputs_for_amount_with_label(&state, 2, "same-quote-first-output");
+        let second_outputs = outputs_for_amount_with_label(&state, 2, "same-quote-second-output");
+
+        let _first_response = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchMintRequest {
+                quotes: vec![quote_id.clone()],
+                quote_amounts: None,
+                outputs: first_outputs,
+                signatures: None,
+            }),
+        )
+        .await
+        .expect("first mint request should succeed");
+
+        let error = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchMintRequest {
+                quotes: vec![quote_id],
+                quote_amounts: None,
+                outputs: second_outputs.clone(),
+                signatures: None,
+            }),
+        )
+        .await
+        .expect_err("same quote with different outputs should be rejected");
+        let body = response_error_detail(error).await.to_lowercase();
+        assert!(
+            body.contains("conflict") || body.contains("issued"),
+            "rejection should mention conflicting or already-issued quote state: {body}"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let unsigned_output = second_outputs
+            .first()
+            .expect("second output")
+            .blinded_secret;
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_blind_signatures(&[unsigned_output])
+                .await
+                .expect("blind signature lookup"),
+            vec![None],
+            "conflicting mint output must not receive a member signature share"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
