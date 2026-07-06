@@ -810,14 +810,25 @@ async fn federation_route_state_for_private_with_db_and_backend(
     MintState {
         mint: Arc::new(mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
-        federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
-            FederationConsensusRuntime::with_backend(
+        federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(match consensus_backend {
+            FederationConsensusBackendKind::InMemory => FederationConsensusRuntime::with_backend(
                 runtime_config.consensus_backend(),
                 runtime_config.federation_id(),
                 runtime_config.member_id(),
             )
             .expect("consensus runtime"),
-        ))),
+            FederationConsensusBackendKind::AlephBft => {
+                FederationConsensusRuntime::aleph_bft_from_finalized_items(
+                    runtime_config.federation_id(),
+                    runtime_config.member_id(),
+                    0,
+                    public_config.members.keys().copied(),
+                    public_config.threshold_params.consensus_threshold,
+                    Vec::new(),
+                )
+                .expect("AlephBFT consensus runtime")
+            }
+        }))),
         federation_peer_sync_config: Some(FederationPeerSyncConfig::default()),
         federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
             FederationRestSequenceTracker::new(),
@@ -5229,6 +5240,176 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
         err.to_string().contains("journal entry mismatch"),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = {
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let mut consensus = consensus.lock().await;
+        consensus
+            .submit_aleph_bft_envelope(envelope)
+            .expect("queue AlephBFT envelope");
+        consensus
+            .next_aleph_bft_unit_payload()
+            .expect("next AlephBFT unit")
+            .expect("queued unit")
+    };
+
+    let wait_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        wait_state
+            .wait_for_federation_operation_acceptance(operation_id)
+            .await
+            .expect("notified operation")
+    });
+    tokio::task::yield_now().await;
+
+    let responses = state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect("apply finalized AlephBFT unit");
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0].operation_id, operation_id);
+    let notified = waiter.await.expect("waiter task");
+    assert_eq!(notified.operation_id, operation_id);
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after finalization")
+        .expect("mint quote applied");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+
+    let stored_finalized_items = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("stored finalized items");
+    assert_eq!(stored_finalized_items.len(), 1);
+    assert_eq!(stored_finalized_items[0].operation_id, Some(operation_id));
+    let stored_entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("stored journal entries");
+    assert_eq!(stored_entries.len(), 1);
+    assert_eq!(stored_entries[0].operation_id, operation_id);
+    assert_eq!(stored_entries[0].status, FederationOperationStatus::Applied);
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus.journal().entries()[0].status,
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
+async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(mint_quote_envelope(
+            &state, &quote_id,
+        ))],
+    )
+    .expect("AlephBFT finalized unit");
+
+    let mut conflicting_adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("conflicting AlephBFT adapter");
+    let conflicting_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(mint_quote_envelope(
+            &state,
+            &QuoteId::new(),
+        ))],
+    )
+    .expect("conflicting finalized unit");
+    conflicting_adapter
+        .finalize_unit(conflicting_unit)
+        .expect("conflicting finalized item");
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin conflicting finalized item transaction");
+    tx.add_federation_aleph_bft_finalized_items(conflicting_adapter.finalized_items())
+        .await
+        .expect("persist conflicting finalized item");
+    tx.commit()
+        .await
+        .expect("commit conflicting finalized item");
+
+    let err = state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect_err("conflicting finalized item should reject");
+    assert!(
+        err.to_string()
+            .contains("Conflicting federation AlephBFT finalized item"),
+        "unexpected error: {err}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after rejected finalization")
+        .is_none());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries after rejected finalization")
+        .is_empty());
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.peer_status().operation_count, 0);
 }
 
 #[tokio::test]

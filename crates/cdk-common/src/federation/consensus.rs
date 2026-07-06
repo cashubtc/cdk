@@ -1702,6 +1702,70 @@ impl FederationConsensusRuntime {
             .saturating_add(self.pending_finalization_len())
     }
 
+    /// Queue one operation for AlephBFT unit construction.
+    pub fn submit_aleph_bft_envelope(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                adapter.submit_operation(envelope)
+            }
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Pull the next local AlephBFT unit payload from the runtime.
+    pub fn next_aleph_bft_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.next_unit_payload(),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Apply one externally finalized AlephBFT unit payload.
+    pub fn finalize_aleph_bft_unit(
+        &mut self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> Result<Vec<FederationSubmitOperationResponse>> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.finalize_unit(payload),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Return finalized AlephBFT items held by this runtime.
+    pub fn aleph_bft_finalized_items(&self) -> Result<&[FederationAlephBftFinalizedItem]> {
+        match &self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => Ok(adapter.finalized_items()),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
     /// Rebuild an in-memory runtime from persisted journal entries.
     pub fn in_memory_from_entries(
         federation_id: FederationId,

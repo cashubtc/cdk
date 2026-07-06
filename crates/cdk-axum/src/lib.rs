@@ -15,7 +15,8 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    redact_federation_operator_message, FederationConfig, FederationConfigSnapshot,
+    redact_federation_operator_message, FederationAlephBftFinalizedItem,
+    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
     FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusRuntime,
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
@@ -1231,6 +1232,41 @@ impl MintState {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn apply_federation_aleph_bft_finalized_unit(
+        &self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        let mut next_consensus = consensus.clone();
+        let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
+        let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
+        let finalized_items =
+            next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
+        let entries = responses
+            .iter()
+            .filter_map(|response| match &response.outcome {
+                FederationJournalAppendOutcome::Appended(entry) => Some(entry.clone()),
+                FederationJournalAppendOutcome::Duplicate(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        self.persist_federation_aleph_bft_finalization(&finalized_items, &entries)
+            .await?;
+        *consensus = next_consensus;
+        drop(consensus);
+
+        self.apply_federation_journal_entries(&entries).await?;
+        for response in &responses {
+            self.notify_federation_operation(response.clone()).await;
+        }
+
+        Ok(responses)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn apply_federation_catch_up_response(
         &self,
         response: &FederationJournalCatchUpResponse,
@@ -1710,6 +1746,22 @@ impl MintState {
         }
         if let Some((sender, sequence)) = sequence {
             tx.set_federation_member_sequence(sender, sequence).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn persist_federation_aleph_bft_finalization(
+        &self,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+        entries: &[FederationJournalEntry],
+    ) -> Result<(), cdk::Error> {
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_aleph_bft_finalized_items(finalized_items)
+            .await?;
+        for entry in entries {
+            tx.add_federation_journal_entry(entry).await?;
         }
         tx.commit().await?;
         Ok(())

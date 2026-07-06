@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum startup can now reload durable AlephBFT finalized-item metadata into a fail-closed runtime boundary.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now durably apply externally finalized AlephBFT units while the live BFT driver remains intentionally unwired.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: reload aleph bft finalized items at startup</span>
+          <span class="value">feat: apply aleph bft finalized units durably</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`create_federation_runtime_state` rebuilds AlephBFT runtime state from persisted finalized items, replays recovered operations into mint state, rejects journal/finalized-item mismatches, and rejects synchronous submits until external finalization is wired.</span>
+          <span class="value">Externally finalized AlephBFT unit payloads can now be validated, persisted as finalized-item metadata plus appended journal rows in one transaction, applied to mint state, and delivered to response waiters without treating local queueing as consensus acceptance.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the live AlephBFT unit proposal/finalization driver so accepted units are durably stored and response notifications can unblock public federation routes.</span>
+          <span class="value">Wire the live AlephBFT unit proposal/finalization driver into this durable landing path so public federation routes can wait on real BFT output.</span>
         </div>
       </aside>
     </header>
@@ -823,6 +823,10 @@
           <article class="item">
             <h3>AlephBFT startup reload</h3>
             <p>Axum startup now rebuilds AlephBFT runtime state from persisted finalized items, verifies any stored journal rows match the recovered order and evidence, replays accepted operations into mint state, and fails closed for new synchronous submissions until the external finalization loop is connected.</p>
+          </article>
+          <article class="item">
+            <h3>AlephBFT finalized-unit apply path</h3>
+            <p>Axum can now take an externally finalized AlephBFT unit, validate it through the roster-bound runtime, persist finalized-item metadata and appended journal rows atomically, swap runtime state only after persistence, materialize mint changes, and notify waiting public handlers.</p>
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
@@ -2344,6 +2348,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, and `cargo test -p cdk-axum --features federation federation_runtime_startup_ -- --test-threads 1` passed. The tests cover AlephBFT runtime status with synchronous-submit fail-closed behavior, startup reload from durable finalized items into mint materialized state, applied-status restoration, and rejection when stored journal rows disagree with finalized-item recovery.</td>
               <td>Connect the live AlephBFT unit proposal/finalization task and persist newly finalized items from that driver.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT finalized-unit apply path</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo fmt --all -- --check`, `cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_aleph_bft_finalized_unit_ -- --test-threads 1`, and `cargo test -p cdk-axum --features federation federation_runtime_startup_ -- --test-threads 1` passed. The tests cover externally finalized unit persistence, mint-state materialization, response waiter notification, and conflict rejection without runtime or journal mutation.</td>
+              <td>Attach the real AlephBFT task to this explicit unit-pull/finalize boundary and then exercise member restart/catch-up across live finalized units.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>
