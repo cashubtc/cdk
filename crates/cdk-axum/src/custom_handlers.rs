@@ -3110,6 +3110,17 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    async fn bolt11_melt_quote_response_from_response(
+        response: Response,
+    ) -> cdk::nuts::MeltQuoteBolt11Response<QuoteId> {
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("melt quote response body");
+        serde_json::from_slice(&bytes).expect("bolt11 melt quote response")
+    }
+
+    #[cfg(feature = "federation")]
     async fn assert_aleph_bft_http_response_not_ready(response: Response) {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_error_detail(response).await;
@@ -6429,6 +6440,152 @@ mod tests {
             .await
             .expect("saga lookup")
             .is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn pending_federated_melt_public_quote_check_observes_only_terminal_settlement() {
+        let backend = Arc::new(DelayedStatusFakeWallet::new(3, Some(MeltQuoteState::Paid)));
+        let state = create_federated_test_state_with_backend(backend).await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let input = proof_for_amount(&state, 4, "pending-public-route-paid");
+        let input_y = input.y().expect("input y");
+        let mut change_output =
+            outputs_for_amount_with_label(&state, 2, "pending-public-route-change")
+                .into_iter()
+                .next()
+                .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            vec![input],
+            Some(vec![change_output.clone()]),
+        );
+
+        let pending = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("federated fake-wallet melt should initially remain pending");
+        assert_eq!(pending.state(), MeltQuoteState::Pending);
+        assert!(pending.change().is_none());
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("pending proof state lookup"),
+            vec![Some(cdk::nuts::State::Pending)]
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("pending change signature lookup")[0]
+            .is_none());
+
+        let still_pending = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id.clone())),
+        )
+        .await
+        .expect("pending public quote check should succeed");
+        let still_pending = bolt11_melt_quote_response_from_response(still_pending).await;
+        assert_eq!(still_pending.state, MeltQuoteState::Pending);
+        assert!(still_pending.change.is_none());
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                &quote_id.to_string(),
+            )
+            .await
+            .expect("pending melt payment observations")
+            .is_empty());
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("still-pending proof state lookup"),
+            vec![Some(cdk::nuts::State::Pending)]
+        );
+
+        let settled = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id.clone())),
+        )
+        .await
+        .expect("terminal public quote check should succeed");
+        let settled = bolt11_melt_quote_response_from_response(settled).await;
+        assert_eq!(settled.state, MeltQuoteState::Paid);
+        let change = settled.change.expect("settled public change");
+        assert_eq!(change.len(), 1);
+        assert_eq!(change[0].amount, Amount::from(2));
+
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Melt,
+                cdk::federation::FederationOperationKind::MeltQuotePayment,
+            ]
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("settled proof state lookup"),
+            vec![Some(cdk::nuts::State::Spent)]
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("settled saga lookup")
+            .is_none());
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("settled change signature lookup")[0]
+            .is_some());
+
+        let observations = state
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                &quote_id.to_string(),
+            )
+            .await
+            .expect("settled melt payment observations");
+        assert_eq!(observations.len(), 1);
+        assert!(matches!(
+            &observations[0].observation,
+            cdk::federation::FederationPaymentObservation::MeltQuote(observation)
+                if observation.state == MeltQuoteState::Paid
+                    && observation.quote == quote_id.to_string()
+                    && observation.payment_proof.is_some()
+        ));
     }
 
     #[cfg(feature = "federation")]
