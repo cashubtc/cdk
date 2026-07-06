@@ -793,6 +793,14 @@ pub enum FederationError {
         /// Output amount.
         amount: Amount,
     },
+    /// Signature-share provenance referenced a different accepted operation.
+    #[error("Federation signature-share operation mismatch: expected={expected}, found={found}")]
+    SignatureShareOperationMismatch {
+        /// Operation ID from the accepted journal entry or provenance.
+        expected: FederationOperationId,
+        /// Operation ID embedded in the signature share set.
+        found: FederationOperationId,
+    },
     /// An operation conflicts with an existing quote-scoped operation.
     #[error(
         "Conflicting federation operation for key {conflict_key}: existing={existing_operation_id}, attempted={attempted_operation_id}"

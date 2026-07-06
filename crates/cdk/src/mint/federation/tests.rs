@@ -2592,6 +2592,7 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
         FederationJournalConsensusEvidence::new(7, 11, 13, effective.member_id(), 17);
     let signature_share_provenance =
         super::super::melt::shared::FederationSignatureShareProvenance::new(
+            operation_id,
             23,
             Some(consensus_evidence),
         );

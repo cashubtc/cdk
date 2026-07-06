@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    FederationConfig, FederationError, FederationJournalConsensusEvidence, FederationOperationId,
-    MemberConfigPrivate, MemberId, Result,
+    FederationConfig, FederationError, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationOperationId, MemberConfigPrivate, MemberId, Result,
 };
 use crate::nuts::nut01::{verify_blind_signature_share, BlsBlindSignatureShare};
 use crate::{Amount, BlindedMessage, Id, PublicKey};
@@ -90,6 +90,10 @@ impl FederationSignatureShareRecord {
     }
 
     /// Build durable rows for all shares in a share set with accepted-order provenance.
+    ///
+    /// Prefer [`Self::from_accepted_operation`] or
+    /// [`Self::from_accepted_journal_entry`] when the accepted operation ID is
+    /// available, so provenance cannot be attached to the wrong share set.
     pub fn from_accepted_share_set(
         share_set: &FederationBlindSignatureShareSet,
         accepted_operation_index: u64,
@@ -101,6 +105,40 @@ impl FederationSignatureShareRecord {
             record.consensus_evidence = consensus_evidence;
         }
         records
+    }
+
+    /// Build durable rows with accepted-order provenance after checking the operation ID.
+    pub fn from_accepted_operation(
+        share_set: &FederationBlindSignatureShareSet,
+        operation_id: FederationOperationId,
+        accepted_operation_index: u64,
+        consensus_evidence: Option<FederationJournalConsensusEvidence>,
+    ) -> Result<Vec<Self>> {
+        if share_set.operation_id != operation_id {
+            return Err(FederationError::SignatureShareOperationMismatch {
+                expected: operation_id,
+                found: share_set.operation_id,
+            });
+        }
+
+        Ok(Self::from_accepted_share_set(
+            share_set,
+            accepted_operation_index,
+            consensus_evidence,
+        ))
+    }
+
+    /// Build durable rows using provenance from the accepted journal entry.
+    pub fn from_accepted_journal_entry(
+        share_set: &FederationBlindSignatureShareSet,
+        entry: &FederationJournalEntry,
+    ) -> Result<Vec<Self>> {
+        Self::from_accepted_operation(
+            share_set,
+            entry.operation_id,
+            entry.index,
+            entry.consensus_evidence,
+        )
     }
 }
 
@@ -187,12 +225,16 @@ mod tests {
     use std::str::FromStr;
 
     use crate::nuts::nut01::{aggregate_blind_signature_shares, BlsG1PublicKey, BlsSecretKey};
-    use crate::{mint_url::MintUrl, CurrencyUnit, SecretKey};
+    use crate::{
+        mint_url::MintUrl, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response,
+        MintQuoteRequest, MintQuoteResponse, MintQuoteState, SecretKey,
+    };
 
     use super::*;
     use crate::federation::{
-        generate_trusted_dealer_configs, ThresholdParams, TrustedDealerKeysetSpec,
-        TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationId, FederationMintQuoteOperation,
+        FederationOperation, FederationOperationEnvelope, InMemoryFederationJournal,
+        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
 
     fn member_id(id: u16) -> MemberId {
@@ -218,6 +260,33 @@ mod tests {
 
     fn bls_key(byte: u8) -> BlsSecretKey {
         BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn mint_quote_envelope(
+        federation_id: FederationId,
+        quote: &str,
+    ) -> FederationOperationEnvelope {
+        FederationOperationEnvelope::new(
+            federation_id,
+            FederationOperation::MintQuote(FederationMintQuoteOperation {
+                quote: quote.to_string(),
+                request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                    amount: Amount::from(1),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }),
+                response: MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+                    quote: quote.to_string(),
+                    request: format!("invoice-{quote}"),
+                    amount: Some(Amount::from(1)),
+                    unit: Some(CurrencyUnit::Sat),
+                    state: MintQuoteState::Unpaid,
+                    expiry: None,
+                    pubkey: None,
+                }),
+            }),
+        )
     }
 
     fn bundle() -> super::super::TrustedDealerConfigBundle {
@@ -322,6 +391,77 @@ mod tests {
             &shares,
         )
         .expect("aggregate signature");
+    }
+
+    #[test]
+    fn accepted_share_records_bind_to_journal_entry() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(
+                bundle.public_config.federation_id,
+                "share-provenance",
+            ))
+            .expect("append accepted operation")
+            .entry()
+            .clone();
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"accepted share provenance");
+        let output =
+            BlindedMessage::new(Amount::from(1), keyset.id, PublicKey::from(blinded_message));
+        let private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config");
+        let share_set = private
+            .sign_blinded_messages(&bundle.public_config, entry.operation_id, &[output.clone()])
+            .expect("signature share set");
+
+        let records =
+            FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, &entry)
+                .expect("accepted records");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].operation_id, entry.operation_id);
+        assert_eq!(records[0].accepted_operation_index, Some(entry.index));
+        assert_eq!(records[0].consensus_evidence, entry.consensus_evidence);
+        assert_eq!(records[0].output_index, 0);
+        assert_eq!(records[0].member_id, member_id(1));
+        assert_eq!(records[0].keyset_id, output.keyset_id);
+        assert_eq!(records[0].amount, output.amount);
+        assert_eq!(records[0].blinded_secret, output.blinded_secret);
+    }
+
+    #[test]
+    fn accepted_share_records_reject_wrong_operation_provenance() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(
+                bundle.public_config.federation_id,
+                "share-provenance-mismatch",
+            ))
+            .expect("append accepted operation")
+            .entry()
+            .clone();
+        let wrong_operation_id = FederationOperationId::from_bytes([99; 32]);
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"wrong accepted share provenance");
+        let output =
+            BlindedMessage::new(Amount::from(1), keyset.id, PublicKey::from(blinded_message));
+        let private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config");
+        let share_set = private
+            .sign_blinded_messages(&bundle.public_config, wrong_operation_id, &[output])
+            .expect("signature share set");
+
+        assert!(matches!(
+            FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, &entry),
+            Err(FederationError::SignatureShareOperationMismatch { expected, found })
+                if expected == entry.operation_id && found == wrong_operation_id
+        ));
     }
 
     #[test]

@@ -724,7 +724,9 @@ Mint-side restructuring checklist:
   hash, output index, blinded message, amount, keyset ID, member ID, and
   accepted session/index are known and persisted together. Current coverage
   includes an unpaid-quote regression proving federated mint apply fails before
-  storing blind signatures or federation signature-share rows.
+  storing blind signatures or federation signature-share rows, plus checked
+  accepted-share provenance constructors used by mint, swap, and melt-change
+  signing paths that reject operation-ID mismatches before persistence.
 - [ ] Make all federation output paths v3/BLS-only: admission rejects non-v3
   output keysets, accepted apply rechecks the same condition, and startup
   rejects non-v3 aggregate federation keysets. Current coverage includes
@@ -1049,6 +1051,7 @@ Implementation checklist:
 - [x] Reject all non-v3 keysets in federation signing paths unless a future protocol explicitly supports them.
 - [x] Persist signature shares in `federation_signature_share`, keyed by operation hash, output index, member ID, blinded message, amount, and keyset ID.
 - [x] Persist accepted journal index and consensus evidence with signature-share records so shares can be traced to accepted ordering provenance.
+- [x] Build accepted signature-share records through checked constructors that reject mismatched share-set and journal/provenance operation IDs before persistence.
 - [x] Return existing share for idempotent repeat requests.
 
 Tests and success criteria:

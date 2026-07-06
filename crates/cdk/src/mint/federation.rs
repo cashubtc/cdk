@@ -1415,11 +1415,8 @@ impl Mint {
         };
 
         let share_set = config.mint_signature_shares(operation_id, &input)?;
-        let signature_share_records = FederationSignatureShareRecord::from_accepted_share_set(
-            &share_set,
-            entry.index,
-            entry.consensus_evidence,
-        );
+        let signature_share_records =
+            FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
         tx.add_federation_signature_shares(&signature_share_records)
             .await?;
         let mut issued_notifications = Vec::new();
@@ -1543,11 +1540,7 @@ impl Mint {
             State::Spent if signatures_present == existing_signatures.len() => {
                 let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
                 let signature_share_records =
-                    FederationSignatureShareRecord::from_accepted_share_set(
-                        &share_set,
-                        entry.index,
-                        entry.consensus_evidence,
-                    );
+                    FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
                 tx.add_federation_signature_shares(&signature_share_records)
                     .await?;
                 tx.update_federation_operation_status(
@@ -1579,11 +1572,8 @@ impl Mint {
 
         if signatures_present == 0 {
             let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
-            let signature_share_records = FederationSignatureShareRecord::from_accepted_share_set(
-                &share_set,
-                entry.index,
-                entry.consensus_evidence,
-            );
+            let signature_share_records =
+                FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
             let signatures = federation_share_signatures(share_set);
             tx.add_federation_signature_shares(&signature_share_records)
                 .await?;

@@ -399,6 +399,7 @@ struct PreparedFederationMeltChange {
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FederationSignatureShareProvenance {
+    operation_id: FederationOperationId,
     accepted_operation_index: u64,
     consensus_evidence: Option<FederationJournalConsensusEvidence>,
 }
@@ -406,10 +407,12 @@ pub(crate) struct FederationSignatureShareProvenance {
 #[cfg(feature = "federation")]
 impl FederationSignatureShareProvenance {
     pub(crate) fn new(
+        operation_id: FederationOperationId,
         accepted_operation_index: u64,
         consensus_evidence: Option<FederationJournalConsensusEvidence>,
     ) -> Self {
         Self {
+            operation_id,
             accepted_operation_index,
             consensus_evidence,
         }
@@ -432,6 +435,7 @@ async fn federation_signature_share_provenance_for_operation(
         })?;
 
     Ok(FederationSignatureShareProvenance::new(
+        federation_operation_id,
         entry.index,
         entry.consensus_evidence,
     ))
@@ -528,11 +532,12 @@ async fn prepare_federation_melt_change(
         started.elapsed().as_secs_f64(),
     );
     let share_set = share_set?;
-    let signature_share_records = FederationSignatureShareRecord::from_accepted_share_set(
+    let signature_share_records = FederationSignatureShareRecord::from_accepted_operation(
         &share_set,
+        signature_share_provenance.operation_id,
         signature_share_provenance.accepted_operation_index,
         signature_share_provenance.consensus_evidence,
-    );
+    )?;
     let change_sigs = share_set
         .shares
         .into_iter()
