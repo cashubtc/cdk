@@ -4873,6 +4873,186 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
 }
 
 #[tokio::test]
+async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let (request, input_ys, change_output, melt_entry) = (0..128)
+        .find_map(|index| {
+            let proofs = vec![
+                proof_for_runtime(&runtime_config, &format!("catch-up-paid-input-{index}-one")),
+                proof_for_runtime(&runtime_config, &format!("catch-up-paid-input-{index}-two")),
+                proof_for_runtime(
+                    &runtime_config,
+                    &format!("catch-up-paid-input-{index}-three"),
+                ),
+            ];
+            let input_ys = proofs.ys().expect("catch-up paid input ys");
+            let mut change_output = output_for_runtime(
+                &runtime_config,
+                format!("catch-up-paid-change-{index}").as_bytes(),
+            );
+            change_output.amount = Amount::ZERO;
+            let request =
+                MeltRequest::new(quote.clone(), proofs, Some(vec![change_output.clone()]));
+            let envelope = runtime_config
+                .melt_operation(request.clone())
+                .expect("melt operation envelope");
+            let operation_id = envelope.operation_id().expect("melt operation id");
+            if runtime_config.should_attempt_melt_payment(operation_id) {
+                return None;
+            }
+
+            Some((
+                request,
+                input_ys,
+                change_output,
+                appended_entry(&mut journal, envelope),
+            ))
+        })
+        .expect("non-local elected melt operation");
+
+    assert!(
+        !runtime_config.should_attempt_melt_payment(melt_entry.operation_id),
+        "catch-up replay member must not be elected for the outgoing payment"
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        0,
+        "non-elected catch-up member must reserve without paying"
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("reserved proof states"),
+        vec![
+            Some(State::Pending),
+            Some(State::Pending),
+            Some(State::Pending)
+        ]
+    );
+    assert!(localstore
+        .get_blind_signatures(&[change_output.blinded_secret])
+        .await
+        .expect("pre-observation change signature lookup")[0]
+        .is_none());
+
+    let first_observation = appended_entry(
+        &mut journal,
+        melt_payment_observation_envelope(
+            &runtime_config,
+            &quote,
+            MeltPaymentObservationFixture {
+                observer: 2,
+                state: MeltQuoteState::Paid,
+                amount: Amount::from(1),
+                fee_reserve: Amount::from(1),
+                payment_id: None,
+                payment_proof: Some("catch-up-paid-preimage"),
+                failure_reason: None,
+            },
+        ),
+    );
+    persist_and_apply_entry(&mint, &first_observation).await;
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        0,
+        "first catch-up observation must not pay"
+    );
+    let quote_after_single = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("single-observation quote lookup")
+        .expect("melt quote");
+    assert_eq!(quote_after_single.state, MeltQuoteState::Pending);
+
+    let matching_second = appended_entry(
+        &mut journal,
+        melt_payment_observation_envelope(
+            &runtime_config,
+            &quote,
+            MeltPaymentObservationFixture {
+                observer: 3,
+                state: MeltQuoteState::Paid,
+                amount: Amount::from(1),
+                fee_reserve: Amount::from(1),
+                payment_id: None,
+                payment_proof: Some("catch-up-paid-preimage"),
+                failure_reason: None,
+            },
+        ),
+    );
+    persist_and_apply_entry(&mint, &matching_second).await;
+
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        0,
+        "catch-up paid quorum must not duplicate the outgoing payment"
+    );
+    let quote_after_quorum = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("quorum quote lookup")
+        .expect("melt quote");
+    assert_eq!(quote_after_quorum.state, MeltQuoteState::Paid);
+    assert_eq!(
+        quote_after_quorum.payment_proof,
+        Some("catch-up-paid-preimage".to_string())
+    );
+    assert!(
+        localstore
+            .get_melt_saga_by_quote_id(&quote)
+            .await
+            .expect("quorum saga lookup")
+            .is_none(),
+        "paid catch-up quorum should clear the melt saga"
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("quorum proof states"),
+        vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
+    );
+    let change = localstore
+        .get_blind_signatures(&[change_output.blinded_secret])
+        .await
+        .expect("quorum change signature lookup")[0]
+        .clone()
+        .expect("catch-up paid change signature");
+    assert_eq!(change.amount, Amount::from(1));
+
+    let duplicate = mint
+        .melt_federation(&request, melt_entry.operation_id)
+        .await
+        .expect("duplicate catch-up melt should return persisted final response");
+    assert_eq!(duplicate.state(), MeltQuoteState::Paid);
+    let duplicate_change = duplicate.change().expect("duplicate catch-up change");
+    assert_eq!(duplicate_change.len(), 1);
+    assert_eq!(duplicate_change[0].amount, Amount::from(1));
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        0,
+        "duplicate final response after catch-up must not pay"
+    );
+}
+
+#[tokio::test]
 async fn stale_pending_melt_observation_after_paid_settlement_is_idempotent() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

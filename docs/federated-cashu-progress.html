@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover pending melt retries</span>
+          <span class="value">test: cover melt observation catch-up</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Duplicate pending public federated melts now return the persisted pending response without a second outgoing payment attempt, including after SQLite restart, while deterministic actor-selection tests remain green.</span>
+          <span class="value">Offline/catch-up melt payment-observation replay now proves a non-elected member finalizes paid state, signs change, returns the final melt response, and never calls the outgoing payment backend.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -752,7 +752,7 @@
           </article>
           <article class="item">
             <h3>Recovery and convergence</h3>
-            <p>Offline, lagging, restarted, and partially-applied members can replay accepted history, verify digests and quorum evidence, rebuild materialized mint state, and refuse public signing until healthy.</p>
+            <p>Offline, lagging, restarted, and partially-applied members can replay accepted history, verify digests and quorum evidence, rebuild materialized mint state, catch up across paid melt observations without duplicate outgoing payments, and refuse public signing until healthy.</p>
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
