@@ -986,6 +986,25 @@ fn signed_catch_up_request(
     .expect("signed catch-up request")
 }
 
+fn signed_catch_up_request_with_kind(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    receiver: MemberId,
+    sequence: u64,
+    kind: FederationRestMessageKind,
+    request: FederationJournalCatchUpRequest,
+) -> FederationSignedRequest<FederationJournalCatchUpRequest> {
+    FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        receiver,
+        sequence,
+        kind,
+        request,
+        private_config,
+    )
+    .expect("signed catch-up request")
+}
+
 fn signed_catch_up_response(
     response: FederationJournalCatchUpResponse,
     private_config: &MemberConfigPrivate,
@@ -8811,4 +8830,38 @@ async fn private_journal_route_returns_signed_session_outcome() {
     response
         .verify_session_outcome(public_config.member(local_member).expect("local member"))
         .expect("session outcome verifies");
+}
+
+#[tokio::test]
+async fn private_journal_route_rejects_wrong_message_kind_before_sequence_persistence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let request = signed_catch_up_request_with_kind(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        FederationRestMessageKind::Status,
+        FederationJournalCatchUpRequest::new(0),
+    );
+
+    let response = post_journal(State(state.clone()), Json(request))
+        .await
+        .expect_err("wrong message kind must fail");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert!(
+        sequences.is_empty(),
+        "wrong-kind catch-up requests must not persist the sender sequence"
+    );
 }
