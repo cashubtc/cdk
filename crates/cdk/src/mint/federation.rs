@@ -1103,6 +1103,24 @@ impl Mint {
         &self,
         entry: &FederationJournalEntry,
     ) -> Result<bool, Error> {
+        if let Some(persisted_entry) = self
+            .localstore
+            .get_federation_journal_entry_by_operation_id(entry.operation_id)
+            .await?
+        {
+            match persisted_entry.status {
+                FederationOperationStatus::Applied => return Ok(false),
+                FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
+                    return Err(Error::Custom(format!(
+                        "federation operation {} has local status {} and is not accepted for apply",
+                        persisted_entry.operation_id,
+                        federation_operation_status_label(persisted_entry.status)
+                    )));
+                }
+                FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
+            }
+        }
+
         match entry.status {
             FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
             FederationOperationStatus::Applied => return Ok(false),
@@ -1859,12 +1877,27 @@ impl Mint {
             ));
         }
 
-        self.melt_federation_with_accepted_time(
-            &request,
-            operation_id,
-            federation_accepted_logical_time(entry),
-        )
-        .await?;
+        match self
+            .melt_federation_with_accepted_time(
+                &request,
+                operation_id,
+                federation_accepted_logical_time(entry),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(Error::PaymentFailed) => {
+                let mut tx = self.localstore.begin_transaction().await?;
+                tx.update_federation_operation_status(
+                    operation_id,
+                    FederationOperationStatus::Applied,
+                )
+                .await?;
+                tx.commit().await?;
+                return Err(Error::PaymentFailed);
+            }
+            Err(err) => return Err(err),
+        }
 
         let mut tx = self.localstore.begin_transaction().await?;
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)

@@ -967,7 +967,14 @@ async fn process_federation_melt_request(
         return Ok(None);
     };
     let envelope = config.melt_operation(payload.clone())?;
-    state.submit_federation_envelope(envelope).await?;
+    let response = state.submit_federation_envelope(envelope).await?;
+    if matches!(
+        response.outcome,
+        cdk::federation::FederationJournalAppendOutcome::Duplicate(_)
+    ) && federation_melt_quote_is_failed_terminal(state, payload.quote()).await?
+    {
+        return Err(cdk::Error::PaymentFailed);
+    }
 
     Ok(Some(
         federation_melt_response_from_store(state, payload.quote()).await?,
@@ -997,6 +1004,26 @@ async fn federation_melt_response_from_store(
     };
 
     Ok(quote.into_response(change_opt))
+}
+
+#[cfg(feature = "federation")]
+async fn federation_melt_quote_is_failed_terminal(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> Result<bool, cdk::Error> {
+    let Some(quote) = state.mint.localstore().get_melt_quote(quote_id).await? else {
+        return Ok(false);
+    };
+    if quote.state != cdk::nuts::MeltQuoteState::Unpaid {
+        return Ok(false);
+    }
+    let saga = state
+        .mint
+        .localstore()
+        .get_melt_saga_by_quote_id(quote_id)
+        .await?;
+
+    Ok(saga.is_none())
 }
 
 // ============================================================================
@@ -1850,6 +1877,99 @@ mod tests {
                 response.total_spent = Amount::new(0, CurrencyUnit::Sat);
             }
             Ok(response)
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    struct CountingFakeWallet {
+        inner: FakeWallet,
+        make_payment_calls: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "federation")]
+    impl CountingFakeWallet {
+        fn new() -> (Arc<Self>, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let fee_reserve = FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            };
+            let wallet = Self {
+                inner: FakeWallet::new(
+                    fee_reserve,
+                    HashMap::default(),
+                    HashSet::default(),
+                    0,
+                    CurrencyUnit::Sat,
+                ),
+                make_payment_calls: calls.clone(),
+            };
+
+            (Arc::new(wallet), calls)
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[async_trait]
+    impl MintPayment for CountingFakeWallet {
+        type Err = cdk_payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            self.inner.create_incoming_payment_request(options).await
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.make_payment_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.make_payment(unit, options).await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            self.inner.wait_payment_event().await
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            self.inner.is_payment_event_stream_active()
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            self.inner.cancel_payment_event_stream();
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.check_outgoing_payment(payment_identifier).await
         }
     }
 
@@ -5310,7 +5430,8 @@ mod tests {
     #[cfg(feature = "federation")]
     #[tokio::test]
     async fn process_failed_melt_request_releases_inputs_without_change_shares() {
-        let state = create_federated_test_state().await;
+        let (backend, make_payment_calls) = CountingFakeWallet::new();
+        let state = create_federated_test_state_with_backend(backend).await;
         let fake_description = FakeInvoiceDescription {
             pay_invoice_state: MeltQuoteState::Failed,
             check_payment_state: MeltQuoteState::Failed,
@@ -5339,6 +5460,7 @@ mod tests {
         .expect_err("federated fake-wallet melt should fail and compensate");
 
         assert!(matches!(error, cdk::Error::PaymentFailed));
+        assert_eq!(make_payment_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Melt]
@@ -5381,6 +5503,51 @@ mod tests {
             .await
             .expect("change signature lookup")
             .is_empty());
+
+        let duplicate_error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("duplicate failed federated fake-wallet melt should stay failed");
+
+        assert!(matches!(duplicate_error, cdk::Error::PaymentFailed));
+        assert_eq!(
+            make_payment_calls.load(Ordering::SeqCst),
+            1,
+            "duplicate failed melt must not attempt a second outgoing payment"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("duplicate quote lookup")
+            .expect("duplicate quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("duplicate proof state lookup");
+        assert!(
+            matches!(
+                proof_states.as_slice(),
+                [None | Some(cdk::nuts::State::Unspent)]
+            ),
+            "duplicate failed federated melt should leave its input released: {proof_states:?}"
+        );
     }
 
     #[cfg(feature = "federation")]
