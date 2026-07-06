@@ -178,6 +178,148 @@ fn consensus_config_three() -> (FederationConfig, Vec<MemberConfigPrivate>) {
     (config, private_members)
 }
 
+fn member_roster(count: u16) -> Vec<MemberId> {
+    (1..=count).map(member_id_value).collect()
+}
+
+fn aleph_adapters_for_roster(
+    federation_id: FederationId,
+    members: &[MemberId],
+) -> Vec<FederationAlephBftConsensusAdapter> {
+    members
+        .iter()
+        .map(|member| {
+            FederationAlephBftConsensusAdapter::for_members(
+                federation_id,
+                *member,
+                0,
+                members.iter().copied(),
+            )
+            .expect("roster-bound AlephBFT adapter")
+        })
+        .collect()
+}
+
+fn aleph_operation_unit(
+    federation_id: FederationId,
+    submitting_member: MemberId,
+    session: u64,
+    unit_index: u64,
+    envelopes: Vec<FederationOperationEnvelope>,
+) -> FederationAlephBftUnitPayload {
+    FederationAlephBftUnitPayload::new(
+        federation_id,
+        submitting_member,
+        session,
+        unit_index,
+        envelopes
+            .into_iter()
+            .map(FederationConsensusItem::operation)
+            .collect(),
+    )
+    .expect("AlephBFT operation unit")
+}
+
+fn journal_fingerprint(
+    adapter: &FederationAlephBftConsensusAdapter,
+) -> Vec<(
+    u64,
+    String,
+    FederationOperationStatus,
+    String,
+    String,
+    Option<String>,
+)> {
+    adapter
+        .journal()
+        .entries()
+        .iter()
+        .map(|entry| {
+            (
+                entry.index,
+                entry.operation_id.to_string(),
+                entry.status,
+                entry.previous_order_digest.to_string(),
+                entry.order_digest.to_string(),
+                entry.state_digest.map(|digest| digest.to_string()),
+            )
+        })
+        .collect()
+}
+
+fn finalized_item_fingerprint(
+    adapter: &FederationAlephBftConsensusAdapter,
+) -> Vec<(
+    u64,
+    u64,
+    u64,
+    u16,
+    u64,
+    u64,
+    Option<String>,
+    FederationAlephBftFinalizedItemStatus,
+)> {
+    adapter
+        .finalized_items()
+        .iter()
+        .map(|item| {
+            (
+                item.accepted_item_index,
+                item.session,
+                item.unit_finalization_index,
+                item.unit_submitting_member.get(),
+                item.unit_index,
+                item.item_index_in_unit,
+                item.operation_id
+                    .map(|operation_id| operation_id.to_string()),
+                item.status,
+            )
+        })
+        .collect()
+}
+
+fn assert_aleph_adapters_converged(adapters: &[FederationAlephBftConsensusAdapter]) {
+    let first = adapters.first().expect("at least one adapter");
+    let expected_journal = journal_fingerprint(first);
+    let expected_finalized = finalized_item_fingerprint(first);
+    let expected_status = first.status();
+
+    for adapter in adapters.iter().skip(1) {
+        assert_eq!(journal_fingerprint(adapter), expected_journal);
+        assert_eq!(finalized_item_fingerprint(adapter), expected_finalized);
+        let status = adapter.status();
+        assert_eq!(status.consensus_backend, expected_status.consensus_backend);
+        assert_eq!(status.federation_id, expected_status.federation_id);
+        assert_eq!(status.session, expected_status.session);
+        assert_eq!(
+            status.next_unit_finalization_index,
+            expected_status.next_unit_finalization_index
+        );
+        assert_eq!(status.next_item_index, expected_status.next_item_index);
+        assert_eq!(status.queued_item_count, expected_status.queued_item_count);
+        assert_eq!(
+            status.pending_finalization_item_count,
+            expected_status.pending_finalization_item_count
+        );
+        assert_eq!(
+            status.finalized_item_count,
+            expected_status.finalized_item_count
+        );
+        assert_eq!(
+            status.accepted_operation_count,
+            expected_status.accepted_operation_count
+        );
+        assert_eq!(
+            status.latest_accepted_operation_index,
+            expected_status.latest_accepted_operation_index
+        );
+        assert_eq!(
+            status.allowed_member_count,
+            expected_status.allowed_member_count
+        );
+    }
+}
+
 #[test]
 fn dummy_consensus_accepts_duplicates_and_rejects_conflicts() {
     let federation_id = federation_id(13);
@@ -1520,6 +1662,219 @@ fn aleph_bft_consensus_adapter_marks_duplicate_finalized_operations_idempotently
         adapter.finalized_items()[1].status,
         FederationAlephBftFinalizedItemStatus::DuplicateOperation
     );
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_finalizes_four_member_order_with_faulty_duplicates() {
+    let federation_id = federation_id(13);
+    let members = member_roster(4);
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-four-a", 1);
+    let second = mint_quote_envelope_with_amount(federation_id, "quote-four-b", 1);
+    let duplicate_second = second.clone();
+    let conflicting_first = mint_quote_envelope_with_amount(federation_id, "quote-four-a", 2);
+    let first_id = first.operation_id().expect("first operation id");
+    let second_id = second.operation_id().expect("second operation id");
+    let conflict_id = conflicting_first
+        .operation_id()
+        .expect("conflict operation id");
+    let units = vec![
+        aleph_operation_unit(
+            federation_id,
+            members[0],
+            0,
+            0,
+            vec![first.clone(), second.clone()],
+        ),
+        aleph_operation_unit(federation_id, members[1], 0, 0, vec![duplicate_second]),
+        aleph_operation_unit(federation_id, members[2], 0, 0, vec![conflicting_first]),
+    ];
+    let mut adapters = aleph_adapters_for_roster(federation_id, &members);
+
+    for adapter in &mut adapters {
+        let first_responses = adapter
+            .finalize_unit(units[0].clone())
+            .expect("first four-member unit finalizes");
+        assert_eq!(first_responses.len(), 2);
+        assert_eq!(first_responses[0].operation_id, first_id);
+        assert_eq!(first_responses[1].operation_id, second_id);
+
+        let duplicate_responses = adapter
+            .finalize_unit(units[1].clone())
+            .expect("duplicate four-member unit finalizes idempotently");
+        assert_eq!(duplicate_responses.len(), 1);
+        assert_eq!(duplicate_responses[0].operation_id, second_id);
+        assert_eq!(duplicate_responses[0].outcome.entry().index, 1);
+
+        let conflict_responses = adapter
+            .finalize_unit(units[2].clone())
+            .expect("conflicting four-member unit finalizes deterministically");
+        assert_eq!(conflict_responses.len(), 1);
+        assert_eq!(conflict_responses[0].operation_id, conflict_id);
+        assert_eq!(
+            conflict_responses[0].outcome.entry().status,
+            FederationOperationStatus::Rejected
+        );
+    }
+
+    assert_aleph_adapters_converged(&adapters);
+    let first_adapter = &adapters[0];
+    assert_eq!(first_adapter.journal().len(), 3);
+    assert_eq!(
+        first_adapter
+            .journal()
+            .entries()
+            .iter()
+            .map(|entry| entry.status)
+            .collect::<Vec<_>>(),
+        vec![
+            FederationOperationStatus::Accepted,
+            FederationOperationStatus::Accepted,
+            FederationOperationStatus::Rejected,
+        ]
+    );
+    assert_eq!(
+        first_adapter
+            .finalized_items()
+            .iter()
+            .map(|item| item.status)
+            .collect::<Vec<_>>(),
+        vec![
+            FederationAlephBftFinalizedItemStatus::Accepted,
+            FederationAlephBftFinalizedItemStatus::Accepted,
+            FederationAlephBftFinalizedItemStatus::DuplicateOperation,
+            FederationAlephBftFinalizedItemStatus::Accepted,
+        ]
+    );
+    let status = first_adapter.status();
+    assert_eq!(status.allowed_member_count, Some(4));
+    assert_eq!(status.finalized_item_count, 4);
+    assert_eq!(status.accepted_operation_count, 3);
+    assert_eq!(status.latest_accepted_operation_index, Some(2));
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_finalizes_five_member_sessions_with_silent_member() {
+    let federation_id = federation_id(14);
+    let members = member_roster(5);
+    let session_zero_first = mint_quote_envelope_with_amount(federation_id, "quote-five-a", 1);
+    let session_zero_second = mint_quote_envelope_with_amount(federation_id, "quote-five-b", 1);
+    let session_one_first = mint_quote_envelope_with_amount(federation_id, "quote-five-c", 1);
+    let session_one_second = mint_quote_envelope_with_amount(federation_id, "quote-five-d", 1);
+    let session_one_duplicate = session_zero_first.clone();
+    let units = vec![
+        aleph_operation_unit(
+            federation_id,
+            members[0],
+            0,
+            0,
+            vec![session_zero_first.clone()],
+        ),
+        aleph_operation_unit(
+            federation_id,
+            members[1],
+            0,
+            0,
+            vec![session_zero_second.clone()],
+        ),
+    ];
+    let session_one_units = vec![
+        aleph_operation_unit(
+            federation_id,
+            members[3],
+            1,
+            0,
+            vec![session_one_first.clone(), session_one_duplicate],
+        ),
+        aleph_operation_unit(
+            federation_id,
+            members[4],
+            1,
+            0,
+            vec![session_one_second.clone()],
+        ),
+    ];
+    let mut adapters = aleph_adapters_for_roster(federation_id, &members);
+
+    for adapter in &mut adapters {
+        for unit in &units {
+            adapter
+                .finalize_unit(unit.clone())
+                .expect("five-member session zero unit finalizes");
+        }
+        adapter.begin_session(1).expect("begin session one");
+        for unit in &session_one_units {
+            adapter
+                .finalize_unit(unit.clone())
+                .expect("five-member session one unit finalizes");
+        }
+    }
+
+    assert_aleph_adapters_converged(&adapters);
+    let first_adapter = &adapters[0];
+    assert_eq!(first_adapter.journal().len(), 4);
+    assert_eq!(
+        first_adapter
+            .journal()
+            .entries()
+            .iter()
+            .map(|entry| entry.status)
+            .collect::<Vec<_>>(),
+        vec![
+            FederationOperationStatus::Accepted,
+            FederationOperationStatus::Accepted,
+            FederationOperationStatus::Accepted,
+            FederationOperationStatus::Accepted,
+        ]
+    );
+    assert_eq!(
+        first_adapter
+            .finalized_items()
+            .iter()
+            .map(|item| (item.session, item.unit_submitting_member, item.status))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                0,
+                members[0],
+                FederationAlephBftFinalizedItemStatus::Accepted,
+            ),
+            (
+                0,
+                members[1],
+                FederationAlephBftFinalizedItemStatus::Accepted,
+            ),
+            (
+                1,
+                members[3],
+                FederationAlephBftFinalizedItemStatus::Accepted,
+            ),
+            (
+                1,
+                members[3],
+                FederationAlephBftFinalizedItemStatus::DuplicateOperation,
+            ),
+            (
+                1,
+                members[4],
+                FederationAlephBftFinalizedItemStatus::Accepted,
+            ),
+        ]
+    );
+    assert!(
+        first_adapter
+            .finalized_items()
+            .iter()
+            .all(|item| item.unit_submitting_member != members[2]),
+        "member three is intentionally silent in this five-member finalization run"
+    );
+    let status = first_adapter.status();
+    assert_eq!(status.allowed_member_count, Some(5));
+    assert_eq!(status.session, 1);
+    assert_eq!(status.next_unit_finalization_index, 2);
+    assert_eq!(status.next_item_index, 5);
+    assert_eq!(status.finalized_item_count, 5);
+    assert_eq!(status.accepted_operation_count, 4);
+    assert_eq!(status.latest_accepted_operation_index, Some(3));
 }
 
 #[test]
