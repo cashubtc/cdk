@@ -2475,6 +2475,161 @@ fn backend_adapter_runtime_dispatches_selected_aleph_bft_backend() {
 }
 
 #[test]
+fn backend_adapter_runtime_aleph_bft_rejects_conflicts_while_unit_awaits_finalization() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-drained-conflict", 1);
+    let duplicate = first.clone();
+    let conflict = mint_quote_envelope_with_amount(federation_id, "quote-drained-conflict", 2);
+    let first_operation_id = first.operation_id().expect("first operation id");
+
+    assert_eq!(
+        adapter.submit_operation(first).expect("submit first"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    let preview = adapter
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview unit")
+        .expect("unit");
+    let unit = adapter
+        .drain_next_aleph_bft_unit_payload_matching(&preview)
+        .expect("drain unit");
+    assert_eq!(unit.operation_ids, vec![first_operation_id]);
+    assert_eq!(adapter.queued_len(), 0);
+    assert_eq!(adapter.pending_finalization_len(), 1);
+
+    assert_eq!(
+        adapter
+            .submit_operation(duplicate)
+            .expect("duplicate in-flight operation"),
+        FederationConsensusItemAdmission::DuplicateOperation
+    );
+    assert!(matches!(
+        adapter.submit_operation(conflict),
+        Err(FederationError::ConflictingOperation { .. })
+    ));
+    assert_eq!(adapter.pending_finalization_len(), 1);
+
+    let responses = adapter
+        .finalize_aleph_bft_unit(unit)
+        .expect("finalize in-flight unit");
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0].operation_id, first_operation_id);
+    assert_eq!(adapter.pending_finalization_len(), 0);
+}
+
+#[test]
+fn backend_adapter_runtime_aleph_bft_releases_pending_duplicate_after_peer_finalizes() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-peer-duplicate", 1);
+    let duplicate = first.clone();
+    let first_operation_id = first.operation_id().expect("first operation id");
+
+    assert_eq!(
+        adapter.submit_operation(first).expect("submit first"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    let local_unit = adapter
+        .next_aleph_bft_unit_payload()
+        .expect("next unit")
+        .expect("local unit");
+    assert_eq!(local_unit.operation_ids, vec![first_operation_id]);
+    assert_eq!(adapter.pending_finalization_len(), 1);
+
+    let peer_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        members[1],
+        0,
+        0,
+        vec![FederationConsensusItem::operation(duplicate)],
+    )
+    .expect("peer unit");
+    let responses = adapter
+        .finalize_aleph_bft_unit(peer_unit)
+        .expect("peer finalized duplicate");
+
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0].operation_id, first_operation_id);
+    assert_eq!(adapter.pending_finalization_len(), 0);
+}
+
+#[test]
+fn backend_adapter_runtime_aleph_bft_releases_only_decided_pending_items() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-peer-conflict", 1);
+    let retained = mint_quote_envelope_with_amount(federation_id, "quote-peer-retained", 1);
+    let retained_duplicate = retained.clone();
+    let retained_conflict =
+        mint_quote_envelope_with_amount(federation_id, "quote-peer-retained", 2);
+    let peer_conflict = mint_quote_envelope_with_amount(federation_id, "quote-peer-conflict", 2);
+
+    assert_eq!(
+        adapter.submit_operation(first).expect("submit first"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    assert_eq!(
+        adapter.submit_operation(retained).expect("submit retained"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    let local_unit = adapter
+        .next_aleph_bft_unit_payload()
+        .expect("next unit")
+        .expect("local unit");
+    assert_eq!(local_unit.operation_ids.len(), 2);
+    assert_eq!(adapter.pending_finalization_len(), 2);
+
+    let peer_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        members[1],
+        0,
+        0,
+        vec![FederationConsensusItem::operation(peer_conflict)],
+    )
+    .expect("peer unit");
+    adapter
+        .finalize_aleph_bft_unit(peer_unit)
+        .expect("peer finalized conflict");
+
+    assert_eq!(adapter.pending_finalization_len(), 1);
+    assert_eq!(
+        adapter
+            .submit_operation(retained_duplicate)
+            .expect("retained duplicate"),
+        FederationConsensusItemAdmission::DuplicateOperation
+    );
+    assert!(matches!(
+        adapter.submit_operation(retained_conflict),
+        Err(FederationError::ConflictingOperation { .. })
+    ));
+}
+
+#[test]
 fn backend_adapter_runtime_aleph_bft_generic_dispatch_fails_closed() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];

@@ -775,19 +775,25 @@ fn pending_consensus_item_operation_metadata(
 ) -> Result<Option<(FederationOperationId, Vec<String>)>> {
     match item {
         FederationConsensusItem::Operation(envelope) => {
-            let operation_id = envelope.operation_id()?;
-            let conflict_keys = envelope
-                .operation
-                .conflict_keys()
-                .iter()
-                .map(canonical_json_string)
-                .collect::<Result<Vec<_>>>()?;
-            Ok(Some((operation_id, conflict_keys)))
+            Ok(Some(pending_operation_metadata_from_envelope(envelope)?))
         }
         FederationConsensusItem::ModuleFact(_)
         | FederationConsensusItem::SessionSignature(_)
         | FederationConsensusItem::Default(_) => Ok(None),
     }
+}
+
+fn pending_operation_metadata_from_envelope(
+    envelope: &FederationOperationEnvelope,
+) -> Result<(FederationOperationId, Vec<String>)> {
+    let operation_id = envelope.operation_id()?;
+    let conflict_keys = envelope
+        .operation
+        .conflict_keys()
+        .iter()
+        .map(canonical_json_string)
+        .collect::<Result<Vec<_>>>()?;
+    Ok((operation_id, conflict_keys))
 }
 
 /// Bounded AlephBFT data provider for local pending CDK consensus items.
@@ -1370,7 +1376,13 @@ pub struct FederationAlephBftConsensusAdapter {
     finalization_handler: FederationAlephBftFinalizationHandler,
     journal: InMemoryFederationJournal,
     finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    pending_finalization_units:
+        BTreeMap<FederationAlephBftPendingUnitKey, Vec<FederationConsensusItem>>,
+    pending_finalization_operation_ids: BTreeSet<FederationOperationId>,
+    pending_finalization_conflict_keys: BTreeMap<String, FederationOperationId>,
 }
+
+type FederationAlephBftPendingUnitKey = (u64, MemberId, u64, FederationAlephBftUnitBodyHash);
 
 impl FederationAlephBftConsensusAdapter {
     /// Create an AlephBFT adapter boundary with default limits.
@@ -1391,6 +1403,9 @@ impl FederationAlephBftConsensusAdapter {
             .expect("default AlephBFT finalization limits are non-zero"),
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: BTreeMap::new(),
         }
     }
 
@@ -1419,6 +1434,9 @@ impl FederationAlephBftConsensusAdapter {
             )?,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: BTreeMap::new(),
         })
     }
 
@@ -1449,6 +1467,9 @@ impl FederationAlephBftConsensusAdapter {
             )?,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: BTreeMap::new(),
         })
     }
 
@@ -1516,6 +1537,9 @@ impl FederationAlephBftConsensusAdapter {
             finalization_handler,
             journal,
             finalized_items,
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: BTreeMap::new(),
         })
     }
 
@@ -1535,6 +1559,12 @@ impl FederationAlephBftConsensusAdapter {
     #[must_use]
     pub fn queued_len(&self) -> usize {
         self.data_provider.queued_len()
+    }
+
+    /// Return the number of drained local consensus items awaiting finalization.
+    #[must_use]
+    pub fn pending_finalization_len(&self) -> usize {
+        self.pending_finalization_units.values().map(Vec::len).sum()
     }
 
     /// Return the next unit index that the local data provider will use.
@@ -1608,12 +1638,35 @@ impl FederationAlephBftConsensusAdapter {
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationConsensusItemAdmission> {
+        let (operation_id, conflict_keys) = pending_operation_metadata_from_envelope(&envelope)?;
+        if self
+            .pending_finalization_operation_ids
+            .contains(&operation_id)
+        {
+            return Ok(FederationConsensusItemAdmission::DuplicateOperation);
+        }
+        for conflict_key in &conflict_keys {
+            if let Some(existing_operation_id) =
+                self.pending_finalization_conflict_keys.get(conflict_key)
+            {
+                return Err(FederationError::ConflictingOperation {
+                    conflict_key: conflict_key.clone(),
+                    existing_operation_id: existing_operation_id.to_string(),
+                    attempted_operation_id: operation_id.to_string(),
+                });
+            }
+        }
+
         self.data_provider.submit_operation(envelope)
     }
 
     /// Pull the next local unit payload for the AlephBFT data provider.
     pub fn next_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
-        self.data_provider.next_unit_payload()
+        let Some(payload) = self.data_provider.next_unit_payload()? else {
+            return Ok(None);
+        };
+        self.remember_pending_finalization_unit(&payload)?;
+        Ok(Some(payload))
     }
 
     /// Preview the next local unit payload without draining it.
@@ -1626,8 +1679,11 @@ impl FederationAlephBftConsensusAdapter {
         &mut self,
         expected: &FederationAlephBftUnitPayload,
     ) -> Result<FederationAlephBftUnitPayload> {
-        self.data_provider
-            .drain_next_unit_payload_matching(expected)
+        let payload = self
+            .data_provider
+            .drain_next_unit_payload_matching(expected)?;
+        self.remember_pending_finalization_unit(&payload)?;
+        Ok(payload)
     }
 
     /// Apply one finalized AlephBFT unit to the local accepted-operation journal.
@@ -1635,6 +1691,7 @@ impl FederationAlephBftConsensusAdapter {
         &mut self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>> {
+        let pending_payload = payload.clone();
         let outcome = self.finalization_handler.finalize_next_unit(payload)?;
         let mut responses = Vec::new();
 
@@ -1650,9 +1707,150 @@ impl FederationAlephBftConsensusAdapter {
             }
             self.finalized_items.push(finalized_item);
         }
+        self.release_pending_finalization_unit(&pending_payload);
+        self.release_pending_finalization_decisions(&pending_payload.items);
 
         Ok(responses)
     }
+
+    fn remember_pending_finalization_unit(
+        &mut self,
+        payload: &FederationAlephBftUnitPayload,
+    ) -> Result<()> {
+        let mut operation_ids = BTreeSet::new();
+        let mut conflict_keys = BTreeMap::new();
+        for item in &payload.items {
+            let Some((operation_id, item_conflict_keys)) =
+                pending_consensus_item_operation_metadata(item)?
+            else {
+                continue;
+            };
+            operation_ids.insert(operation_id);
+            for conflict_key in item_conflict_keys {
+                if let Some(existing_operation_id) = self
+                    .pending_finalization_conflict_keys
+                    .get(&conflict_key)
+                    .or_else(|| conflict_keys.get(&conflict_key))
+                {
+                    return Err(FederationError::ConflictingOperation {
+                        conflict_key,
+                        existing_operation_id: existing_operation_id.to_string(),
+                        attempted_operation_id: operation_id.to_string(),
+                    });
+                }
+                conflict_keys.insert(conflict_key, operation_id);
+            }
+        }
+
+        self.pending_finalization_units
+            .insert(aleph_bft_pending_unit_key(payload), payload.items.clone());
+        for operation_id in operation_ids {
+            self.pending_finalization_operation_ids.insert(operation_id);
+        }
+        for (conflict_key, operation_id) in conflict_keys {
+            self.pending_finalization_conflict_keys
+                .insert(conflict_key, operation_id);
+        }
+
+        Ok(())
+    }
+
+    fn release_pending_finalization_unit(&mut self, payload: &FederationAlephBftUnitPayload) {
+        let Some(items) = self
+            .pending_finalization_units
+            .remove(&aleph_bft_pending_unit_key(payload))
+        else {
+            return;
+        };
+        for item in &items {
+            self.release_pending_finalization_item_metadata(item);
+        }
+    }
+
+    fn release_pending_finalization_decisions(&mut self, items: &[FederationConsensusItem]) {
+        let mut operation_ids = BTreeSet::new();
+        let mut conflict_keys = BTreeSet::new();
+        for item in items {
+            let Ok(Some((operation_id, item_conflict_keys))) =
+                pending_consensus_item_operation_metadata(item)
+            else {
+                continue;
+            };
+            operation_ids.insert(operation_id);
+            conflict_keys.extend(item_conflict_keys);
+        }
+        if operation_ids.is_empty() && conflict_keys.is_empty() {
+            return;
+        }
+
+        let pending_unit_keys = self
+            .pending_finalization_units
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for unit_key in pending_unit_keys {
+            let Some(unit_items) = self.pending_finalization_units.remove(&unit_key) else {
+                continue;
+            };
+            let mut retained_items = Vec::new();
+            for item in unit_items {
+                if pending_finalization_item_matches_decision(&item, &operation_ids, &conflict_keys)
+                {
+                    self.release_pending_finalization_item_metadata(&item);
+                } else {
+                    retained_items.push(item);
+                }
+            }
+            if !retained_items.is_empty() {
+                self.pending_finalization_units
+                    .insert(unit_key, retained_items);
+            }
+        }
+    }
+
+    fn release_pending_finalization_item_metadata(&mut self, item: &FederationConsensusItem) {
+        let Ok(Some((operation_id, conflict_keys))) =
+            pending_consensus_item_operation_metadata(item)
+        else {
+            return;
+        };
+        self.pending_finalization_operation_ids
+            .remove(&operation_id);
+        for conflict_key in conflict_keys {
+            if self.pending_finalization_conflict_keys.get(&conflict_key) == Some(&operation_id) {
+                self.pending_finalization_conflict_keys
+                    .remove(&conflict_key);
+            }
+        }
+    }
+}
+
+fn pending_finalization_item_matches_decision(
+    item: &FederationConsensusItem,
+    operation_ids: &BTreeSet<FederationOperationId>,
+    conflict_keys: &BTreeSet<String>,
+) -> bool {
+    let Ok(Some((operation_id, item_conflict_keys))) =
+        pending_consensus_item_operation_metadata(item)
+    else {
+        return false;
+    };
+
+    operation_ids.contains(&operation_id)
+        || item_conflict_keys
+            .iter()
+            .any(|conflict_key| conflict_keys.contains(conflict_key))
+}
+
+fn aleph_bft_pending_unit_key(
+    payload: &FederationAlephBftUnitPayload,
+) -> FederationAlephBftPendingUnitKey {
+    (
+        payload.session,
+        payload.submitting_member,
+        payload.unit_index,
+        payload.body_hash,
+    )
 }
 
 fn ensure_non_zero_consensus_limit(field: &'static str, value: usize) -> Result<()> {
@@ -1898,7 +2096,9 @@ impl FederationConsensusRuntime {
     pub fn pending_finalization_len(&self) -> usize {
         match &self.backend {
             FederationConsensusRuntimeBackend::InMemory(_) => 0,
-            FederationConsensusRuntimeBackend::AlephBft(_) => 0,
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                adapter.pending_finalization_len()
+            }
         }
     }
 
@@ -2816,7 +3016,9 @@ impl FederationConsensusBackendAdapter for FederationConsensusBackendAdapterRunt
             FederationConsensusBackendAdapterRuntimeBackend::InMemory(adapter) => {
                 adapter.pending_finalization_len()
             }
-            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(_) => 0,
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                adapter.pending_finalization_len()
+            }
         }
     }
 
