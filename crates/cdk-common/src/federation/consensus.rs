@@ -328,6 +328,8 @@ impl FederationAlephBftFinalizedItem {
 pub enum FederationAlephBftFinalityMode {
     /// Finalized units are injected through the CDK external-finalization boundary.
     ExternalFinalizationRequired,
+    /// A live network finality task owns finalized-unit delivery for public routes.
+    NetworkFinalityAvailable,
 }
 
 impl Default for FederationAlephBftFinalityMode {
@@ -340,6 +342,7 @@ impl fmt::Display for FederationAlephBftFinalityMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ExternalFinalizationRequired => f.write_str("external_finalization_required"),
+            Self::NetworkFinalityAvailable => f.write_str("network_finality_available"),
         }
     }
 }
@@ -1401,6 +1404,7 @@ impl FederationAlephBftFinalizationHandler {
 pub struct FederationAlephBftConsensusAdapter {
     data_provider: FederationAlephBftUnitDataProvider,
     finalization_handler: FederationAlephBftFinalizationHandler,
+    finality: FederationAlephBftFinalityMode,
     journal: InMemoryFederationJournal,
     finalized_items: Vec<FederationAlephBftFinalizedItem>,
     pending_finalization_units:
@@ -1428,6 +1432,7 @@ impl FederationAlephBftConsensusAdapter {
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
             )
             .expect("default AlephBFT finalization limits are non-zero"),
+            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
@@ -1459,6 +1464,7 @@ impl FederationAlephBftConsensusAdapter {
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
                 allowed_members,
             )?,
+            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
@@ -1492,6 +1498,7 @@ impl FederationAlephBftConsensusAdapter {
                 0,
                 max_unit_payload_bytes,
             )?,
+            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
@@ -1562,6 +1569,7 @@ impl FederationAlephBftConsensusAdapter {
                 session,
             ),
             finalization_handler,
+            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal,
             finalized_items,
             pending_finalization_units: BTreeMap::new(),
@@ -1623,7 +1631,7 @@ impl FederationAlephBftConsensusAdapter {
     pub fn status(&self) -> FederationAlephBftAdapterStatus {
         FederationAlephBftAdapterStatus {
             consensus_backend: self.backend_kind(),
-            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
+            finality: self.finality,
             federation_id: self.data_provider.federation_id,
             local_member: self.data_provider.submitting_member,
             session: self.session(),
@@ -1639,6 +1647,17 @@ impl FederationAlephBftConsensusAdapter {
             latest_accepted_operation_index: self.journal.entries().last().map(|entry| entry.index),
             allowed_member_count: self.finalization_handler.allowed_member_count(),
         }
+    }
+
+    /// Return the finality source currently feeding this adapter boundary.
+    #[must_use]
+    pub fn finality_mode(&self) -> FederationAlephBftFinalityMode {
+        self.finality
+    }
+
+    /// Set the finality source once a live network finality task owns delivery.
+    pub fn set_finality_mode(&mut self, finality: FederationAlephBftFinalityMode) {
+        self.finality = finality;
     }
 
     /// Return this member's current peer status from finalized operations.
@@ -2244,6 +2263,26 @@ impl FederationConsensusRuntime {
     pub fn aleph_bft_status(&self) -> Result<FederationAlephBftAdapterStatus> {
         match &self.backend {
             FederationConsensusRuntimeBackend::AlephBft(adapter) => Ok(adapter.status()),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Set the AlephBFT finality mode after a live finality task is attached.
+    pub fn set_aleph_bft_finality_mode(
+        &mut self,
+        finality: FederationAlephBftFinalityMode,
+    ) -> Result<()> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                adapter.set_finality_mode(finality);
+                Ok(())
+            }
             FederationConsensusRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {
                     backend: FederationConsensusBackendKind::AlephBft
@@ -2967,6 +3006,26 @@ impl FederationConsensusBackendAdapterRuntime {
         match &self.backend {
             FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
                 Ok(adapter.status())
+            }
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Set the AlephBFT finality mode after a live finality task is attached.
+    pub fn set_aleph_bft_finality_mode(
+        &mut self,
+        finality: FederationAlephBftFinalityMode,
+    ) -> Result<()> {
+        match &mut self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                adapter.set_finality_mode(finality);
+                Ok(())
             }
             FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {

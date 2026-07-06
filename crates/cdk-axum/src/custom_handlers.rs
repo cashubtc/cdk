@@ -4587,6 +4587,9 @@ mod tests {
     async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
+        state
+            .mark_aleph_bft_network_finality_available_for_tests()
+            .await;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
@@ -4775,6 +4778,9 @@ mod tests {
     async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
+        state
+            .mark_aleph_bft_network_finality_available_for_tests()
+            .await;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,

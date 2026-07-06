@@ -18,17 +18,18 @@ use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationAlephBftAdapterStatus,
-    FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
-    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
+    FederationAlephBftFinalityMode, FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload,
+    FederationConfig, FederationConfigSnapshot, FederationConsensusBackendKind,
+    FederationConsensusEngine, FederationConsensusItemAdmission, FederationConsensusRuntime,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationStateDigestCheckpoint,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -3035,6 +3036,19 @@ impl MintState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn mark_aleph_bft_network_finality_available_for_tests(&self) {
+        let Some(consensus) = &self.federation_consensus else {
+            return;
+        };
+        let mut consensus = consensus.lock().await;
+        if let Err(err) = consensus
+            .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
+        {
+            panic!("test AlephBFT finality hook must target AlephBFT runtime: {err}");
+        }
+    }
+
     pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {
         let Some(sync) = &self.federation_sync else {
             return;
@@ -3084,10 +3098,31 @@ impl MintState {
         };
         let status = sync.lock().await.status();
         if status.is_ready() {
-            return Ok(());
+            return self.ensure_aleph_bft_network_finality_available().await;
         }
 
         Err(cdk::Error::Custom(status.not_ready_message()))
+    }
+
+    async fn ensure_aleph_bft_network_finality_available(&self) -> Result<(), cdk::Error> {
+        let Some(config) = self.mint.federation_config() else {
+            return Ok(());
+        };
+        if config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
+            return Ok(());
+        }
+        let Some(status) = self.federation_aleph_bft_status().await else {
+            return Err(cdk::Error::Custom(
+                ALEPH_BFT_UNAVAILABLE_SYNC_REASON.to_string(),
+            ));
+        };
+        if status.finality == FederationAlephBftFinalityMode::NetworkFinalityAvailable {
+            return Ok(());
+        }
+
+        Err(cdk::Error::Custom(
+            ALEPH_BFT_UNAVAILABLE_SYNC_REASON.to_string(),
+        ))
     }
 
     async fn ensure_federation_can_forward_public_submit(&self) -> Result<(), cdk::Error> {

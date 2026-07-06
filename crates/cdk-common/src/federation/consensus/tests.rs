@@ -3234,6 +3234,36 @@ fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalizatio
 }
 
 #[test]
+fn backend_adapter_runtime_reports_configured_aleph_bft_finality_mode() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+
+    assert_eq!(
+        adapter.aleph_bft_status().expect("default status").finality,
+        FederationAlephBftFinalityMode::ExternalFinalizationRequired
+    );
+    adapter
+        .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
+        .expect("set finality mode");
+    assert_eq!(
+        adapter.aleph_bft_status().expect("network status").finality,
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable
+    );
+    assert_eq!(
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable.to_string(),
+        "network_finality_available"
+    );
+}
+
+#[test]
 fn backend_adapter_runtime_rejects_aleph_bft_status_for_in_memory_backend() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
