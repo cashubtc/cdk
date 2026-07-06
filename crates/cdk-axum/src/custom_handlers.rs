@@ -1248,6 +1248,36 @@ mod tests {
     use crate::cache::HttpCache;
 
     #[cfg(feature = "federation")]
+    struct TempMintDbFile {
+        path: String,
+    }
+
+    #[cfg(feature = "federation")]
+    impl TempMintDbFile {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("{name}-{}.sqlite", uuid::Uuid::new_v4()))
+                .to_string_lossy()
+                .to_string();
+
+            Self { path }
+        }
+
+        fn path(&self) -> &str {
+            &self.path
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    impl Drop for TempMintDbFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = std::fs::remove_file(format!("{}-shm", self.path));
+            let _ = std::fs::remove_file(format!("{}-wal", self.path));
+        }
+    }
+
+    #[cfg(feature = "federation")]
     fn production_section<'a>(source: &'a str, test_marker: &str) -> &'a str {
         source
             .split_once(test_marker)
@@ -1890,6 +1920,21 @@ mod tests {
         payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
     ) -> MintState {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        create_federated_test_state_with_backend_db_and_seed(
+            payment_processor,
+            db,
+            &mnemonic.to_seed_normalized(""),
+        )
+        .await
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_test_state_with_backend_db_and_seed(
+        payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
+        db: Arc<cdk_sqlite::MintSqliteDatabase>,
+        seed: &[u8],
+    ) -> MintState {
         let runtime_config = test_federation_runtime_config();
         let mut builder = MintBuilder::new(db.clone())
             .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
@@ -1904,11 +1949,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mnemonic = Mnemonic::generate(12).unwrap();
-        let mint = builder
-            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
-            .await
-            .unwrap();
+        let mint = builder.build_with_seed(db, seed).await.unwrap();
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
             .await
             .unwrap();
@@ -1944,6 +1985,36 @@ mod tests {
                 HashMap::new(),
             ))),
         }
+    }
+
+    #[cfg(feature = "federation")]
+    async fn restart_federated_test_state_from_db(
+        db_file: &TempMintDbFile,
+        seed: &[u8],
+    ) -> MintState {
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("restarted mint db"),
+        );
+        let mut state =
+            create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, seed).await;
+        let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("recreate federation runtime state from sqlite");
+        state.federation_consensus = consensus;
+        state.federation_sequences = sequences;
+        state
     }
 
     #[cfg(feature = "federation")]
@@ -3536,6 +3607,78 @@ mod tests {
             ]
         );
         let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_federation_mint_after_sqlite_restart_returns_persisted_shares() {
+        let db_file = TempMintDbFile::new("cdk-axum-fed-public-mint-restart");
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("mint db"),
+        );
+        let state =
+            create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, &seed).await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let outputs = outputs_for_amount_with_label(&state, 2, "mint-sqlite-restart");
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs,
+            signatures: None,
+        };
+
+        let first = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(batch_request.clone()),
+        )
+        .await
+        .expect("first federation batch mint should return share response")
+        .0;
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        drop(state);
+
+        let restarted_state = restart_federated_test_state_from_db(&db_file, &seed).await;
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+
+        let duplicate = cache_post_batch_mint(
+            AuthHeader::None,
+            State(restarted_state.clone()),
+            Path("bolt11".to_string()),
+            Json(batch_request),
+        )
+        .await
+        .expect("duplicate federation batch mint after restart should return persisted shares")
+        .0;
+
+        assert_eq!(duplicate, first);
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        let stats = restarted_state.federation_operation_notification_stats();
         assert_eq!(stats.duplicate_submissions, 1);
     }
 
