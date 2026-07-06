@@ -420,6 +420,22 @@ mod test {
         );
         assert_uses_indexed_search(&operation_id_plan, "federation_journal_entries");
 
+        let operation_lookup_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_index, operation_id, consensus_evidence_json, status
+                FROM federation_journal_entries
+                WHERE operation_id = '0000000000000000000000000000000000000000000000000000000000000000'
+                "#,
+            )
+            .expect("operation lookup plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("operation lookup query plan"),
+        );
+        assert_uses_indexed_search(&operation_lookup_plan, "federation_journal_entries");
+
         let session_outcome_plan = explain_details(
             query(
                 r#"
