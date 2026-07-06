@@ -6584,6 +6584,89 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
 }
 
 #[tokio::test]
+async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let submit_state = state.clone();
+    let submit = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await
+    });
+    let unit = wait_for_local_aleph_bft_unit(&state).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+    let accepted_response = submit.await.expect("submit task").expect("submit response");
+    assert_eq!(accepted_response.operation_id, operation_id);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+    // Simulate a restart after accepted apply where in-memory waiters/cache are gone.
+    state.federation_notifications =
+        Some(Arc::new(crate::FederationOperationNotifications::default()));
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(state.federation_response_cache_entry_count(), 0);
+
+    let duplicate_response = state
+        .submit_federation_envelope_with_sequence(mint_quote_envelope(&state, &quote_id), None)
+        .await
+        .expect("duplicate submit after lost waiters");
+    assert_eq!(duplicate_response.operation_id, operation_id);
+    assert!(matches!(
+        duplicate_response.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(state.federation_response_cache_entry_count(), 0);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus
+            .journal()
+            .entry_by_operation_id(operation_id)
+            .expect("operation remains durable")
+            .operation_id,
+        operation_id
+    );
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.duplicate_submissions, 1);
+    assert_eq!(stats.response_cache_lookups, 0);
+}
+
+#[tokio::test]
 async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

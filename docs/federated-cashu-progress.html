@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover threshold-live wallet operations</span>
+          <span class="value">test: cover lost-waiter duplicate replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet mint, swap, melt with change, restore, and check-state now have a 3-of-5 threshold-live regression with one member offline during key discovery.</span>
+          <span class="value">AlephBFT duplicate submission now returns the durable journal duplicate after accepted apply even when in-memory waiter and response-cache state have disappeared.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
+            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, duplicate submissions replay from the durable journal after lost in-memory waiters, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
