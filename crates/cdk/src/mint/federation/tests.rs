@@ -14,14 +14,15 @@ use cdk_common::database::{
 use cdk_common::error::Error;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintQuoteOperation,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationContext, FederationPaymentObservationPolicy,
     FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
-    FederationSwapOperation, InMemoryFederationConsensus, InMemoryFederationJournal, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationRestoreOperation, FederationSwapOperation, InMemoryFederationConsensus,
+    InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut00::KnownMethod;
@@ -3742,6 +3743,109 @@ fn runtime_config_rejects_non_v3_swap_restore_and_change_outputs() {
             FederationError::InvalidFederatedKeysetVersion { .. }
         ))
     ));
+}
+
+#[test]
+fn runtime_config_operation_submission_admission_rejects_invalid_wallet_operations() {
+    let runtime_config = runtime_config();
+    let non_v3_output = non_v3_output_for_runtime(&runtime_config);
+    let mint =
+        runtime_config.operation_envelope(FederationOperation::Mint(FederationMintOperation {
+            request: FederationMintRequest::Single(MintRequest {
+                quote: QuoteId::new().to_string(),
+                outputs: vec![non_v3_output.clone()],
+                signature: None,
+            }),
+        }));
+    let swap =
+        runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(Vec::new(), vec![non_v3_output.clone()]),
+        }));
+    let melt =
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(
+                QuoteId::new().to_string(),
+                Vec::new(),
+                Some(vec![non_v3_output.clone()]),
+            ),
+        }));
+    let restore = runtime_config.operation_envelope(FederationOperation::Restore(
+        FederationRestoreOperation {
+            request: RestoreRequest {
+                outputs: vec![non_v3_output],
+            },
+        },
+    ));
+    let mut inactive_keyset = runtime_config.public_config().keysets[0].clone();
+    inactive_keyset.active = false;
+    let rotation = runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+        FederationKeysetRotationOperation {
+            keyset: inactive_keyset,
+        },
+    ));
+
+    for envelope in [mint, swap, melt, restore, rotation] {
+        assert!(runtime_config
+            .validate_federated_operation_submission(&envelope.operation)
+            .is_err());
+    }
+}
+
+#[test]
+fn runtime_config_operation_submission_admission_accepts_valid_wallet_operations() {
+    let runtime_config = runtime_config();
+    let mint = runtime_config
+        .mint_operation(super::MintInput::Single(MintRequest {
+            quote: QuoteId::new(),
+            outputs: vec![output_for_runtime(&runtime_config, b"valid routed mint")],
+            signature: None,
+        }))
+        .expect("mint operation");
+    let swap = runtime_config
+        .swap_operation(SwapRequest::new(
+            Vec::new(),
+            vec![output_for_runtime(&runtime_config, b"valid routed swap")],
+        ))
+        .expect("swap operation");
+    let mut change = output_for_runtime(&runtime_config, b"valid routed melt change");
+    change.amount = Amount::ZERO;
+    let melt = runtime_config
+        .melt_operation(MeltRequest::new(
+            QuoteId::new(),
+            Vec::new(),
+            Some(vec![change]),
+        ))
+        .expect("melt operation");
+    let restore = runtime_config.operation_envelope(FederationOperation::Restore(
+        FederationRestoreOperation {
+            request: RestoreRequest {
+                outputs: vec![output_for_runtime(&runtime_config, b"valid routed restore")],
+            },
+        },
+    ));
+    let rotation_runtime_config = runtime_config_with_inactive_rotation_keyset();
+    let mut rotation_keyset = rotation_runtime_config
+        .public_config()
+        .keysets
+        .iter()
+        .find(|keyset| !keyset.active)
+        .expect("inactive rotation keyset")
+        .clone();
+    rotation_keyset.active = true;
+    let rotation = rotation_runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+        FederationKeysetRotationOperation {
+            keyset: rotation_keyset,
+        },
+    ));
+
+    for envelope in [mint, swap, melt, restore] {
+        runtime_config
+            .validate_federated_operation_submission(&envelope.operation)
+            .expect("valid wallet operation admission");
+    }
+    rotation_runtime_config
+        .validate_federated_operation_submission(&rotation.operation)
+        .expect("valid keyset rotation admission");
 }
 
 #[test]

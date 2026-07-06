@@ -27,9 +27,9 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::nut01::{evaluate_secret_key_coefficients, BlsG1PublicKey, BlsSecretKey};
 use cdk::nuts::nut22::AuthToken;
 use cdk::nuts::{
-    BlindedMessage, CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, PublicKey, RestoreRequest,
-    SecretKey,
+    BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Request, MeltQuoteState,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod,
+    PublicKey, RestoreRequest, SecretKey,
 };
 use cdk::types::FeeReserve;
 use cdk::Amount;
@@ -1389,6 +1389,34 @@ fn invalid_mint_quote_transcript_envelope(
         response.quote = QuoteId::new().to_string();
     }
     envelope
+}
+
+fn non_v3_output_for_state(state: &MintState, label: &[u8]) -> BlindedMessage {
+    let config = state.mint.federation_config().expect("federation config");
+    let keyset = &config.public_config().keysets[0];
+    BlindedMessage::new(
+        Amount::from(1),
+        Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        ),
+        PublicKey::from(BlsG1PublicKey::hash_to_curve(label)),
+    )
+}
+
+fn invalid_mint_operation_keyset_envelope(state: &MintState) -> FederationOperationEnvelope {
+    let config = state.mint.federation_config().expect("federation config");
+    config.operation_envelope(FederationOperation::Mint(
+        cdk::federation::FederationMintOperation {
+            request: cdk::federation::FederationMintRequest::Single(MintRequest {
+                quote: QuoteId::new().to_string(),
+                outputs: vec![non_v3_output_for_state(state, b"invalid route mint output")],
+                signature: None,
+            }),
+        },
+    ))
 }
 
 fn paid_observation_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOperationEnvelope {
@@ -7425,6 +7453,29 @@ async fn submit_mint_quote_rejects_invalid_admission_before_journal_append() {
         .await
         .expect("quote lookup")
         .is_none());
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert!(entries.is_empty());
+}
+
+#[tokio::test]
+async fn submit_mint_operation_rejects_invalid_admission_before_journal_append() {
+    let (state, _, _) = federation_route_state().await;
+    let envelope = invalid_mint_operation_keyset_envelope(&state);
+
+    let err = state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect_err("invalid mint operation should fail before consensus");
+
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::InvalidFederatedKeysetVersion { .. })
+    ));
     let entries = state
         .mint
         .localstore()

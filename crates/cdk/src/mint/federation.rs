@@ -20,7 +20,8 @@ use cdk_common::federation::{
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationRestoreOperation, FederationSignatureShareRecord, FederationSwapOperation,
+    MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
@@ -501,9 +502,9 @@ impl FederationRuntimeConfig {
 
     /// Validate side-effect-free federation operation admission rules.
     ///
-    /// This protects consensus submission paths for operation-local quote and
-    /// payment-observation material. Wallet request operations keep their
-    /// dedicated builders and accepted-state apply checks.
+    /// This protects consensus submission paths with the same pure checks used
+    /// by wallet-facing operation builders. Accepted-state apply remains the
+    /// authoritative validity decision against ordered quote and proof state.
     pub fn validate_federated_operation_submission(
         &self,
         operation: &FederationOperation,
@@ -524,11 +525,21 @@ impl FederationRuntimeConfig {
             FederationOperation::PaymentObservationQuarantine(operation) => {
                 self.validate_federated_payment_observation_quarantine_submission(operation)
             }
-            FederationOperation::Mint(_)
-            | FederationOperation::Melt(_)
-            | FederationOperation::Swap(_)
-            | FederationOperation::Restore(_)
-            | FederationOperation::KeysetRotation(_) => Ok(()),
+            FederationOperation::Mint(operation) => {
+                self.validate_federated_mint_operation_submission(operation)
+            }
+            FederationOperation::Melt(operation) => {
+                self.validate_federated_melt_operation_submission(operation)
+            }
+            FederationOperation::Swap(operation) => {
+                self.validate_federated_swap_submission(&operation.request)
+            }
+            FederationOperation::Restore(operation) => {
+                self.validate_federated_restore_submission(operation)
+            }
+            FederationOperation::KeysetRotation(operation) => {
+                self.validate_federated_keyset_rotation_submission(operation)
+            }
         }
     }
 
@@ -620,6 +631,15 @@ impl FederationRuntimeConfig {
         self.validate_output_keysets(input.outputs())
     }
 
+    /// Validate a federated mint operation envelope before consensus admission.
+    pub fn validate_federated_mint_operation_submission(
+        &self,
+        operation: &FederationMintOperation,
+    ) -> Result<(), Error> {
+        let input = mint_input_from_federation_request(&operation.request)?;
+        self.validate_federated_mint_submission(&input)
+    }
+
     /// Sign an accepted mint operation into local threshold BLS signature shares.
     pub fn mint_signature_shares(
         &self,
@@ -700,6 +720,15 @@ impl FederationRuntimeConfig {
         Ok(())
     }
 
+    /// Validate a federated melt operation envelope before consensus admission.
+    pub fn validate_federated_melt_operation_submission(
+        &self,
+        operation: &FederationMeltOperation,
+    ) -> Result<(), Error> {
+        let request: MeltRequest<QuoteId> = operation.request.clone().try_into()?;
+        self.validate_federated_melt_submission(&request)
+    }
+
     /// Build the consensus operation for signing swap outputs.
     pub fn swap_operation(
         &self,
@@ -721,6 +750,23 @@ impl FederationRuntimeConfig {
         self.validate_swap_outputs(request)?;
         self.verify_proofs(request.inputs())?;
         request.verify_spending_conditions()?;
+        Ok(())
+    }
+
+    /// Validate a federated restore operation envelope before consensus admission.
+    pub fn validate_federated_restore_submission(
+        &self,
+        operation: &FederationRestoreOperation,
+    ) -> Result<(), Error> {
+        self.validate_restore_outputs(&operation.request)
+    }
+
+    /// Validate a federated keyset rotation operation before consensus admission.
+    pub fn validate_federated_keyset_rotation_submission(
+        &self,
+        operation: &FederationKeysetRotationOperation,
+    ) -> Result<(), Error> {
+        self.apply_keyset_rotation(operation)?;
         Ok(())
     }
 
