@@ -55,6 +55,10 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) duplicate_pending_waiter_joins: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_outcome_quorum_from_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_outcome_quorum_latest_index: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -304,6 +308,8 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .session_outcome_quorum_operation_count
         .map(|count| count.to_string())
         .unwrap_or_else(|| "none".to_string());
+    let session_outcome_quorum_from = option_u64(status.session_outcome_quorum_from_index);
+    let session_outcome_quorum_latest = option_u64(status.session_outcome_quorum_latest_index);
     let session_outcome_quorum_signers = member_list(&status.session_outcome_quorum_signers);
     let sync_peer = status
         .sync_peer
@@ -317,7 +323,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
@@ -339,6 +345,8 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         status.duplicate_submissions,
         status.duplicate_pending_waiter_joins,
         session_outcome_quorum_operations,
+        session_outcome_quorum_from,
+        session_outcome_quorum_latest,
         session_outcome_quorum_signers,
         payment_reports,
         payment_conflicts,

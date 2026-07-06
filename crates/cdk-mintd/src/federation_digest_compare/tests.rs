@@ -37,6 +37,8 @@ fn local_status(
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
         session_outcome_quorum_operation_count: None,
+        session_outcome_quorum_from_index: None,
+        session_outcome_quorum_latest_index: None,
         session_outcome_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,

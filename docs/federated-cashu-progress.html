@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, and structured sync lag/catch-up counters in signed local status, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, and signed session-outcome quorum ranges in signed local status, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: expose federation sync details</span>
+          <span class="value">feat: expose session outcome status range</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Signed local status and `cdk-mintd federation status` now expose structured sync peer and operation-count fields for lagging, catch-up, session-outcome verification, and materialized-state mismatch states.</span>
+          <span class="value">Signed local status and `cdk-mintd federation status` now expose signed session-outcome quorum `from_index`, `latest_index`, operation count, and signer set.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -2435,13 +2435,19 @@
               <td>Federation duplicate/cache status</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeueing -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeueing -- --test-threads 1`, `cargo test -p cdk-axum --features federation submit_federation_envelope_bounds_response_cache -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The regressions prove local notification stats count response-cache lookups/hits, duplicate submissions, and duplicate pending-waiter joins, then expose those values through signed local status and the mintd status line.</td>
-              <td>Wire remaining production AlephBFT status concepts such as round, member lag, signed-session-outcome height, and live consensus height once the real BFT task owns them.</td>
+              <td>Wire remaining production AlephBFT status concepts such as round and live consensus height once the real BFT task owns them.</td>
             </tr>
             <tr>
               <td>Federation structured sync status</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation lagging_member_refuses_public_federation_submit_until_healthy -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line_includes_structured_lagging_sync_fields -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The regressions prove signed local status now carries `sync_peer`, `sync_local_operation_count`, `sync_peer_operation_count`, and `sync_operation_count`, and mintd prints the same data without scraping the redacted sync message.</td>
-              <td>Wire production AlephBFT round, signed-session-outcome height, and live consensus-height status once the real BFT task owns those concepts.</td>
+              <td>Wire production AlephBFT round and live consensus-height status once the real BFT task owns those concepts.</td>
+            </tr>
+            <tr>
+              <td>Signed session-outcome range status</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation private_local_status_route_reports_session_outcome_quorum_evidence -- --test-threads 1`, `cargo test -p cdk-axum --features federation private_local_status_route_returns_consensus_and_sync_state -- --test-threads 1`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line_includes_session_outcome_quorum_evidence -- --test-threads 1` passed. The regressions prove signed local status now carries `session_outcome_quorum_from_index` and `session_outcome_quorum_latest_index` beside operation count and signers, and mintd prints `session_outcome_quorum_from` plus `session_outcome_quorum_latest` in the status line.</td>
+              <td>Wire production AlephBFT round and live consensus-height status once the real BFT task owns those concepts.</td>
             </tr>
             <tr>
               <td>AlephBFT retryable pending finalization</td>

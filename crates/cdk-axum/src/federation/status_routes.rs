@@ -123,6 +123,10 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) duplicate_pending_waiter_joins: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_outcome_quorum_from_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_outcome_quorum_latest_index: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -152,12 +156,20 @@ impl FederationLocalStatusResponse {
         aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
-        let session_outcome_quorum_operation_count = session_outcome_quorum
-            .as_ref()
-            .map(|quorum| quorum.operation_count);
-        let session_outcome_quorum_signers = session_outcome_quorum
-            .map(|quorum| quorum.signers.into_iter().collect())
-            .unwrap_or_default();
+        let (
+            session_outcome_quorum_operation_count,
+            session_outcome_quorum_from_index,
+            session_outcome_quorum_latest_index,
+            session_outcome_quorum_signers,
+        ) = match session_outcome_quorum {
+            Some(quorum) => (
+                Some(quorum.operation_count),
+                Some(quorum.from_index),
+                Some(quorum.latest_index),
+                quorum.signers.into_iter().collect(),
+            ),
+            None => (None, None, None, Vec::new()),
+        };
         Self {
             version: FEDERATION_REST_API_VERSION,
             peer_status,
@@ -176,6 +188,8 @@ impl FederationLocalStatusResponse {
             duplicate_submissions,
             duplicate_pending_waiter_joins,
             session_outcome_quorum_operation_count,
+            session_outcome_quorum_from_index,
+            session_outcome_quorum_latest_index,
             session_outcome_quorum_signers,
             payment_observation_reports,
             aleph_bft_status,

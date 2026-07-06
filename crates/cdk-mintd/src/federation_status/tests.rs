@@ -169,6 +169,8 @@ fn local_status(
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
         session_outcome_quorum_operation_count: None,
+        session_outcome_quorum_from_index: None,
+        session_outcome_quorum_latest_index: None,
         session_outcome_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
@@ -537,6 +539,8 @@ fn status_lines_include_payment_observation_report_counts() {
     let member_line = member_status_line(&status);
     assert!(member_line.contains("materialized_rows=0"));
     assert!(member_line.contains("session_outcome_quorum_operations=none"));
+    assert!(member_line.contains("session_outcome_quorum_from=none"));
+    assert!(member_line.contains("session_outcome_quorum_latest=none"));
     assert!(member_line.contains("session_outcome_quorum_signers=none"));
     assert!(member_line.contains("payment_reports=1"));
     assert!(member_line.contains("payment_conflicts=1"));
@@ -653,6 +657,8 @@ fn status_line_includes_session_outcome_quorum_evidence() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
     status.session_outcome_quorum_operation_count = Some(3);
+    status.session_outcome_quorum_from_index = Some(0);
+    status.session_outcome_quorum_latest_index = Some(2);
     status.session_outcome_quorum_signers = vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
@@ -661,6 +667,8 @@ fn status_line_includes_session_outcome_quorum_evidence() {
     let member_line = member_status_line(&status);
 
     assert!(member_line.contains("session_outcome_quorum_operations=3"));
+    assert!(member_line.contains("session_outcome_quorum_from=0"));
+    assert!(member_line.contains("session_outcome_quorum_latest=2"));
     assert!(member_line.contains("session_outcome_quorum_signers=1,2"));
 }
 

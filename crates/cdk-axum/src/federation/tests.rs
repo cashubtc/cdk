@@ -7854,6 +7854,8 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
     assert!(response.sync_ready);
     assert_eq!(response.sync_message, "federation member is healthy");
     assert_eq!(response.session_outcome_quorum_operation_count, None);
+    assert_eq!(response.session_outcome_quorum_from_index, None);
+    assert_eq!(response.session_outcome_quorum_latest_index, None);
     assert!(response.session_outcome_quorum_signers.is_empty());
     assert!(response.payment_observation_reports.is_empty());
     assert!(response.materialized_state_rows.is_empty());
@@ -8130,6 +8132,8 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
 
     assert_eq!(response.peer_status.operation_count, 1);
     assert_eq!(response.session_outcome_quorum_operation_count, Some(1));
+    assert_eq!(response.session_outcome_quorum_from_index, Some(0));
+    assert_eq!(response.session_outcome_quorum_latest_index, Some(0));
     assert_eq!(response.session_outcome_quorum_signers.len(), 2);
     assert!(response
         .session_outcome_quorum_signers
