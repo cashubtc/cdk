@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover catching-up value routes</span>
+          <span class="value">test: cover concurrent value route idempotency</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public mint, swap, and melt routes now fail before consensus mutation while a member is catching up, then resume once the member is healthy.</span>
+          <span class="value">Concurrent identical public mint, swap, and melt requests now converge to one accepted operation and one cached member response; duplicate melts make one fake-wallet payment attempt.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
+            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, concurrent duplicate public value routes are member-local idempotent for mint, swap, and melt, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>

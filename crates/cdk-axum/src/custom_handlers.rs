@@ -4214,6 +4214,152 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn concurrent_identical_value_routes_are_idempotent() {
+        let (wallet, payment_calls) = CountingFakeWallet::new();
+        let state = create_federated_test_state_with_backend(wallet).await;
+        let request_count = 8;
+
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let mint_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs_for_amount_with_label(&state, 2, "concurrent-mint-output"),
+            signatures: None,
+        };
+        let mint_results = futures::future::join_all((0..request_count).map(|_| {
+            let state = state.clone();
+            let request = mint_request.clone();
+            async move {
+                cache_post_batch_mint(
+                    AuthHeader::None,
+                    State(state),
+                    Path("bolt11".to_string()),
+                    Json(request),
+                )
+                .await
+            }
+        }))
+        .await;
+        let mut mint_responses = Vec::new();
+        for result in mint_results {
+            match result {
+                Ok(response) => mint_responses.push(response.0),
+                Err(error) => {
+                    panic!(
+                        "concurrent identical mint request failed: {}",
+                        response_error_detail(error).await
+                    );
+                }
+            }
+        }
+        for response in mint_responses.iter().skip(1) {
+            assert_eq!(response, &mint_responses[0]);
+        }
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let swap_request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "concurrent-swap-input")],
+            outputs_for_amount_with_label(&state, 2, "concurrent-swap-output"),
+        );
+        let swap_results = futures::future::join_all((0..request_count).map(|_| {
+            let state = state.clone();
+            let request = swap_request.clone();
+            async move {
+                crate::router_handlers::post_swap(AuthHeader::None, State(state), Json(request))
+                    .await
+            }
+        }))
+        .await;
+        let mut swap_responses = Vec::new();
+        for result in swap_results {
+            match result {
+                Ok(response) => swap_responses.push(response.0),
+                Err(error) => {
+                    panic!(
+                        "concurrent identical swap request failed: {}",
+                        response_error_detail(error).await
+                    );
+                }
+            }
+        }
+        for response in swap_responses.iter().skip(1) {
+            assert_eq!(response, &swap_responses[0]);
+        }
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Mint,
+                cdk::federation::FederationOperationKind::Swap,
+            ]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 2);
+
+        let melt_quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut change_output = outputs_for_amount_with_label(&state, 2, "concurrent-melt-change")
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            melt_quote_id,
+            vec![proof_for_amount(&state, 4, "concurrent-melt-input")],
+            Some(vec![change_output]),
+        );
+        let melt_results = futures::future::join_all((0..request_count).map(|_| {
+            let state = state.clone();
+            let request = melt_request.clone();
+            async move {
+                process_melt_request(
+                    PreferHeader {
+                        respond_async: false,
+                    },
+                    &state,
+                    "bolt11",
+                    &request,
+                )
+                .await
+            }
+        }))
+        .await;
+        let mut melt_responses = Vec::new();
+        for result in melt_results {
+            match result {
+                Ok(response) => melt_responses.push(response),
+                Err(error) => panic!("concurrent identical melt request failed: {error}"),
+            }
+        }
+        for response in melt_responses.iter().skip(1) {
+            assert_eq!(response, &melt_responses[0]);
+        }
+        assert_eq!(melt_responses[0].state(), MeltQuoteState::Paid);
+        assert!(melt_responses[0].change().is_some());
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Mint,
+                cdk::federation::FederationOperationKind::Swap,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 3);
+        assert_eq!(
+            payment_calls.load(Ordering::SeqCst),
+            1,
+            "concurrent identical melt requests must make one outgoing payment attempt"
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert!(
+            stats.duplicate_submissions >= (request_count - 1) as u64,
+            "concurrent duplicate requests should be recorded as duplicate submissions"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
