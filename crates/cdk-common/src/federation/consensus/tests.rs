@@ -779,6 +779,42 @@ fn aleph_bft_data_provider_drains_bounded_batches_without_empty_units() {
 }
 
 #[test]
+fn aleph_bft_data_provider_empty_queue_repeated_polls_do_not_advance() {
+    let federation_id = federation_id(13);
+    let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 11);
+
+    for _ in 0..8 {
+        assert!(provider
+            .preview_next_unit_payload()
+            .expect("empty preview")
+            .is_none());
+        assert!(provider
+            .next_unit_payload()
+            .expect("empty next unit")
+            .is_none());
+        assert!(provider.is_empty());
+        assert_eq!(provider.session(), 11);
+        assert_eq!(provider.queued_len(), 0);
+        assert_eq!(provider.next_unit_index(), 0);
+    }
+
+    provider
+        .submit_item(FederationConsensusItem::Default(
+            FederationConsensusDefaultItem::new("after-empty-polls", json!({"ready": true})),
+        ))
+        .expect("submit item after empty polls");
+    let payload = provider
+        .next_unit_payload()
+        .expect("first non-empty unit")
+        .expect("unit present");
+
+    assert_eq!(payload.session, 11);
+    assert_eq!(payload.unit_index, 0);
+    assert_eq!(payload.items.len(), 1);
+    assert_eq!(provider.next_unit_index(), 1);
+}
+
+#[test]
 fn aleph_bft_data_provider_previews_without_draining_and_drains_matching_unit() {
     let federation_id = federation_id(13);
     let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 0);

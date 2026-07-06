@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, and expanded AlephBFT adapter counters in operator status, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, expanded AlephBFT adapter counters in operator status, and empty-queue data-provider liveness coverage, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: expand aleph bft status line</span>
+          <span class="value">test: cover idle aleph bft data provider</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation status` now prints the full adapter-visible AlephBFT status subset, including backend, local member, next finalization unit, latest accepted operation index, and roster-bound member count.</span>
+          <span class="value">AlephBFT data-provider liveness now has direct coverage proving repeated empty-queue polls do not advance unit indexes, create phantom work, or prevent the next real item from becoming unit index zero.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -2400,6 +2400,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo fmt --all -- --check`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1` passed. The 18-test slice covers signed finalized-unit private REST routing, peer-client validation, durable apply, startup reload, quorum-gated broadcast success, failed-delivery retention without queue drain or mint-state materialization, local exact-drain mismatch safety, idle driver ticks with no peer request, zero-work-bound rejection before networking, bounded tick success followed by idle stop, AlephBFT submit waiting for driver finalization, timeout without finalization, finalized duplicate submit without requeueing, and submit-operation sequence persistence after driver finalization.</td>
               <td>Promote the helper into a live AlephBFT proposal/finalization task that continuously previews, broadcasts through real BFT finality, drains, and preserves the same sequence persistence guarantees.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT data-provider idle liveness</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation aleph_bft_data_provider_empty_queue_repeated_polls_do_not_advance -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_driver_tick_returns_idle_without_peer_request -- --test-threads 1`, `cargo check -p cdk-common --features federation`, and `cargo fmt --all -- --check` passed. The consensus regression repeatedly previews and drains an empty provider, proving the session and next unit index stay fixed at zero work, then submits one item and confirms the first real unit still uses index zero.</td>
+              <td>Keep this regression near any future live AlephBFT data-provider loop so empty queues, duplicate operations, and backpressure cases cannot reintroduce a tight CPU loop.</td>
             </tr>
             <tr>
               <td>AlephBFT router driver startup</td>
