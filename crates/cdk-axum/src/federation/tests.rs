@@ -1377,6 +1377,20 @@ fn mint_quote_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOpera
     )
 }
 
+fn invalid_mint_quote_transcript_envelope(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> FederationOperationEnvelope {
+    let mut envelope = mint_quote_envelope(state, quote_id);
+    let FederationOperation::MintQuote(operation) = &mut envelope.operation else {
+        panic!("expected mint quote operation");
+    };
+    if let cdk::mint::MintQuoteResponse::Bolt11(response) = &mut operation.response {
+        response.quote = QuoteId::new().to_string();
+    }
+    envelope
+}
+
 fn paid_observation_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOperationEnvelope {
     let config = state.mint.federation_config().expect("federation config");
     config.mint_quote_payment_observation(
@@ -2067,7 +2081,7 @@ async fn rest_peer_client_rejects_submit_response_with_mismatched_outcome_operat
 
 #[tokio::test]
 async fn non_primary_submit_forwards_to_primary_and_catches_up() {
-    let (public_config, primary_private, local_private) = transport_config();
+    let (public_config, primary_private, local_private, witness_private) = transport_config_three();
     let federation_id = public_config.federation_id;
     let state =
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
@@ -2102,6 +2116,7 @@ async fn non_primary_submit_forwards_to_primary_and_catches_up() {
         .digest()
         .expect("state digest");
     catch_up_response.state_digest = state_digest;
+    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let catch_up_response = signed_catch_up_response(catch_up_response, &primary_private);
     let primary_status = FederationPeerStatus::new_with_state_digest(
         federation_id,
@@ -2114,7 +2129,8 @@ async fn non_primary_submit_forwards_to_primary_and_catches_up() {
     let transport = MockFederationTransport::default()
         .with_submit_response(submit_response.clone())
         .with_status_response(primary_status)
-        .with_catch_up_response(catch_up_response);
+        .with_catch_up_response(catch_up_response)
+        .with_catch_up_response(witness_response);
 
     let response = submit_operation_to_primary_if_needed_with_transport(
         &state,
@@ -2181,6 +2197,38 @@ async fn non_primary_submit_uses_configured_operation_submission_timeout() {
     assert!(
         err.to_string().contains("operation submission timed out"),
         "unexpected forwarding timeout error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn non_primary_submit_rejects_invalid_quote_admission_before_forwarding() {
+    let (public_config, _, local_private) = transport_config();
+    let state =
+        federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+    let quote_id = QuoteId::new();
+    let envelope = invalid_mint_quote_transcript_envelope(&state, &quote_id);
+    let transport = MockFederationTransport::default();
+
+    let err = submit_operation_to_primary_if_needed_with_transport(
+        &state,
+        envelope,
+        None,
+        transport.clone(),
+    )
+    .await
+    .expect_err("invalid quote transcript should fail before forwarding");
+
+    assert!(matches!(err, cdk::Error::UnknownQuote));
+    assert!(transport.submitted_operations().is_empty());
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    assert!(
+        entries.is_empty(),
+        "invalid forwarded admission must not append locally"
     );
 }
 
@@ -7355,6 +7403,74 @@ async fn submit_mint_quote_operation_applies_quote_to_local_store() {
             .expect("runtime entry")
             .status,
         FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
+async fn submit_mint_quote_rejects_invalid_admission_before_journal_append() {
+    let (state, _, _) = federation_route_state().await;
+    let quote_id = QuoteId::new();
+    let envelope = invalid_mint_quote_transcript_envelope(&state, &quote_id);
+
+    let err = state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect_err("invalid quote transcript should fail before consensus");
+
+    assert!(matches!(err, cdk::Error::UnknownQuote));
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup")
+        .is_none());
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert!(entries.is_empty());
+}
+
+#[tokio::test]
+async fn submit_payment_observation_rejects_invalid_private_admission_before_sequence_persistence()
+{
+    let (state, _, peer_private) = federation_route_state().await;
+    let quote_id = QuoteId::new();
+    let mut envelope = paid_observation_envelope(&state, &quote_id);
+    let FederationOperation::MintQuotePayment(observation) = &mut envelope.operation else {
+        panic!("expected mint quote payment observation");
+    };
+    observation.method = PaymentMethod::Custom("bad/method".to_string());
+    let sender_sequence = 33;
+
+    let err = state
+        .submit_federation_envelope_with_sequence(
+            envelope,
+            Some((peer_private.member_id, sender_sequence)),
+        )
+        .await
+        .expect_err("invalid payment observation should fail before consensus");
+
+    assert!(matches!(err, cdk::Error::InvalidPaymentMethod));
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert!(entries.is_empty());
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequence lookup");
+    assert!(
+        sequences.is_empty(),
+        "invalid private admission must not persist the sender sequence"
     );
 }
 

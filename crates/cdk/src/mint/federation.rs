@@ -499,6 +499,39 @@ impl FederationRuntimeConfig {
         Ok(())
     }
 
+    /// Validate side-effect-free federation operation admission rules.
+    ///
+    /// This protects consensus submission paths for operation-local quote and
+    /// payment-observation material. Wallet request operations keep their
+    /// dedicated builders and accepted-state apply checks.
+    pub fn validate_federated_operation_submission(
+        &self,
+        operation: &FederationOperation,
+    ) -> Result<(), Error> {
+        match operation {
+            FederationOperation::MintQuote(operation) => {
+                self.validate_federated_mint_quote_submission(operation)
+            }
+            FederationOperation::MintQuotePayment(observation) => {
+                self.validate_federated_mint_payment_observation_submission(observation)
+            }
+            FederationOperation::MeltQuote(operation) => {
+                self.validate_federated_melt_quote_submission(operation)
+            }
+            FederationOperation::MeltQuotePayment(observation) => {
+                self.validate_federated_melt_payment_observation_submission(observation)
+            }
+            FederationOperation::PaymentObservationQuarantine(operation) => {
+                self.validate_federated_payment_observation_quarantine_submission(operation)
+            }
+            FederationOperation::Mint(_)
+            | FederationOperation::Melt(_)
+            | FederationOperation::Swap(_)
+            | FederationOperation::Restore(_)
+            | FederationOperation::KeysetRotation(_) => Ok(()),
+        }
+    }
+
     /// Validate outputs against the active v3/BLS aggregate keysets.
     pub fn validate_output_keysets(&self, outputs: &[BlindedMessage]) -> Result<(), Error> {
         Ok(self.public_config.validate_blinded_outputs(outputs)?)

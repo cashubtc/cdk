@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, reject invalid finalized-unit acknowledgements before quorum accounting, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses and AlephBFT finalized-unit acknowledgements against their embedded journal outcomes, reject wrong-kind private REST catch-up requests before sequence persistence, reject empty finalized units plus corrupted retained AlephBFT finalized-item body hashes, accepted-order metadata, unit-finalization gaps, and backwards session order during recovery, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after response-cache eviction, expose response-cache hit/rate, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, reject unsupported catch-up response versions before replay mutation, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, prove pending-mempool backpressure preserves admitted work through durable finalization, reject unpaid federated mint quotes before blind-signature or share storage, route mint/swap/melt operation construction through pure submission admission helpers, and expose pure quote/payment-observation admission helpers for quote creation, payment evidence, and quarantine operations.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, reject invalid finalized-unit acknowledgements before quorum accounting, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses and AlephBFT finalized-unit acknowledgements against their embedded journal outcomes, reject wrong-kind private REST catch-up requests before sequence persistence, reject empty finalized units plus corrupted retained AlephBFT finalized-item body hashes, accepted-order metadata, unit-finalization gaps, and backwards session order during recovery, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after response-cache eviction, expose response-cache hit/rate, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, reject unsupported catch-up response versions before replay mutation, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, prove pending-mempool backpressure preserves admitted work through durable finalization, reject unpaid federated mint quotes before blind-signature or share storage, route mint/swap/melt operation construction through pure submission admission helpers, expose pure quote/payment-observation admission helpers for quote creation, payment evidence, and quarantine operations, and run those quote/payment admission helpers at Axum public submit, private submit-with-sequence, and non-primary forwarding boundaries before append, sequence persistence, or peer forwarding.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: validate federation quote admission</span>
+          <span class="value">test: route federation quote admission</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation runtime configs now expose pure quote creation, payment-observation, and quarantine admission helpers alongside the existing mint, swap, and melt request validators.</span>
+          <span class="value">Axum now rejects invalid quote/payment/quarantine operation envelopes before public journal append, private sequence persistence, or non-primary forwarding.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the new quote and payment-observation helpers into public and private federation submission routes where doing so does not disturb existing idempotent replay behavior.</span>
+          <span class="value">Continue the mint-side route audit for every federated public path that can sign, mutate, restore, or return change after consensus acceptance.</span>
         </div>
       </aside>
     </header>
@@ -548,11 +548,10 @@
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
-          explicit Milestone 16A convergence certification gate. The current
-          checklist has 561 checked entries and 28 remaining entries. The
-          ordered list below names the milestone points one by one with status
-          derived from the latest implementation plan; milestones with any
-          remaining checklist item stay in progress.
+          explicit Milestone 16A convergence certification gate. The ordered
+          list below names the milestone points one by one with status derived
+          from the latest implementation plan; milestones with any remaining
+          checklist item stay in progress.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
           <li>Milestone 0: written RFC and feature gate. <span class="status progress">In progress</span></li>
@@ -2807,7 +2806,13 @@
               <td>Quote and payment-observation admission</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation runtime_config_admission_validates_quote_and_payment_observation_submissions -- --test-threads 1` and `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed. The runtime config now validates mint quote transcripts, mint payment observations, melt quote requests, melt payment observations, and payment-observation quarantines without mutating quote, proof, payment, or signature-share state.</td>
-              <td>Thread these helpers through the Axum public/private submission path and preserve idempotent replay semantics.</td>
+              <td>Keep these pure helpers as the source of route-level admission policy when new quote or payment-observation variants are added.</td>
+            </tr>
+            <tr>
+              <td>Route-level quote admission</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation submit_mint_quote_rejects_invalid_admission_before_journal_append -- --test-threads 1`, `submit_payment_observation_rejects_invalid_private_admission_before_sequence_persistence`, and `non_primary_submit_rejects_invalid_quote_admission_before_forwarding` passed. `cargo test -p cdk-axum --features federation non_primary_submit_forwards_to_primary_and_catches_up -- --test-threads 1` also passed after the fixture collected quorum catch-up evidence from a witness member.</td>
+              <td>Continue the route audit for remaining operation envelopes whose safe dry-run admission can be enforced before consensus append without breaking duplicate replay behavior.</td>
             </tr>
             <tr>
               <td>Locked swap canonical transcripts</td>
@@ -4234,6 +4239,10 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Route admission audit</h3>
+            <p>Continue tightening the public and private federation route boundaries so every value-changing operation reaches signing or mutation only from accepted consensus state.</p>
+          </article>
           <article class="item">
             <h3>Larger live-smoke repetition</h3>
             <p>Repeat the now-passing federation smoke against larger rosters and Postgres-backed members to catch any storage contention or slow catch-up path that the focused tests cannot show.</p>
