@@ -1213,9 +1213,9 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationConfig, FederationConsensusEngine,
         FederationJournalEntry, FederationKeysetRotationOperation, FederationOperation,
-        FederationOperationEnvelope, FederationOperationId, InMemoryFederationJournal,
-        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationOperationEnvelope, FederationOperationId, InMemoryFederationConsensus,
+        InMemoryFederationJournal, MemberConfigPrivate, MemberId, ThresholdParams,
+        TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
@@ -2058,6 +2058,22 @@ mod tests {
             .find(|entry| entry.envelope.operation.kind() == kind)
             .expect("federation operation entry")
             .operation_id
+    }
+
+    #[cfg(feature = "federation")]
+    async fn apply_peer_catch_up(state: &MintState, peer_consensus: &InMemoryFederationConsensus) {
+        let local_consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("federation consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("peer catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply peer catch-up response");
     }
 
     async fn create_test_state_with_custom_methods(methods: &[&str]) -> MintState {
@@ -3684,6 +3700,91 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_federation_mint_after_catch_up_returns_persisted_shares() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let quote_id = QuoteId::new();
+        let quote_request = cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(2),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        });
+        let quote_response = cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote_id.to_string(),
+            request: format!("invoice-{quote_id}"),
+            amount: Some(Amount::from(2)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: Some(10_000),
+            pubkey: None,
+        });
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id.clone()],
+            quote_amounts: None,
+            outputs: outputs_for_amount_with_label(&state, 2, "mint-catch-up-output"),
+            signatures: None,
+        };
+        let mint_input = cdk::mint::MintInput::Batch(batch_request.clone());
+        let mint_envelope = config
+            .mint_operation(mint_input.clone())
+            .expect("mint operation envelope");
+        let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
+        peer_consensus
+            .submit_envelope(config.mint_quote_operation(
+                quote_id.clone(),
+                quote_request,
+                quote_response,
+            ))
+            .expect("peer accepted mint quote");
+        peer_consensus
+            .submit_envelope(config.mint_quote_payment_observation(
+                quote_id,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(2),
+                Amount::ZERO,
+                Some("mint-catch-up-payment-proof".to_string()),
+            ))
+            .expect("peer accepted mint quote payment");
+        peer_consensus
+            .submit_envelope(mint_envelope)
+            .expect("peer accepted mint operation");
+
+        apply_peer_catch_up(&state, &peer_consensus).await;
+        let expected = state
+            .mint
+            .persisted_mint_share_response(mint_operation_id, &mint_input)
+            .await
+            .expect("persisted mint response after catch-up");
+
+        let duplicate = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(batch_request),
+        )
+        .await
+        .expect("duplicate federation batch mint after catch-up should return persisted shares")
+        .0;
+
+        assert_eq!(duplicate, expected);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+                cdk::federation::FederationOperationKind::Mint,
+            ]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
@@ -3914,6 +4015,50 @@ mod tests {
             vec![cdk::federation::FederationOperationKind::Swap]
         );
         let stats = restarted_state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_post_swap_after_catch_up_returns_persisted_signature_shares() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "swap-catch-up-input")],
+            outputs_for_amount_with_label(&state, 2, "swap-catch-up-output"),
+        );
+        let swap_envelope = config
+            .swap_operation(request.clone())
+            .expect("swap operation envelope");
+        let swap_operation_id = swap_envelope.operation_id().expect("swap operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
+        peer_consensus
+            .submit_envelope(swap_envelope)
+            .expect("peer accepted swap operation");
+
+        apply_peer_catch_up(&state, &peer_consensus).await;
+        let expected = state
+            .mint
+            .persisted_swap_share_response(swap_operation_id, &request)
+            .await
+            .expect("persisted swap response after catch-up");
+
+        let duplicate = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(request),
+        )
+        .await
+        .expect("duplicate federation swap after catch-up should return persisted shares")
+        .0;
+
+        assert_eq!(duplicate, expected);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+        let stats = state.federation_operation_notification_stats();
         assert_eq!(stats.duplicate_submissions, 1);
     }
 
@@ -4288,6 +4433,60 @@ mod tests {
             vec![cdk::federation::FederationOperationKind::Melt]
         );
         let stats = restarted_state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_federation_melt_after_catch_up_returns_persisted_response() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut change_output = outputs_for_amount_with_label(&state, 2, "melt-catch-up")
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id,
+            vec![proof_for_amount(&state, 4, "melt-catch-up")],
+            Some(vec![change_output]),
+        );
+        let melt_envelope = config
+            .melt_operation(request.clone())
+            .expect("melt operation envelope");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted melt operation");
+
+        apply_peer_catch_up(&state, &peer_consensus).await;
+        let expected = federation_melt_response_from_store(&state, request.quote())
+            .await
+            .expect("persisted melt response after catch-up");
+
+        let duplicate = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect(
+            "duplicate federated fake-wallet melt after catch-up should return persisted response",
+        );
+
+        assert_eq!(duplicate, expected);
+        assert_eq!(duplicate.state(), MeltQuoteState::Paid);
+        assert!(duplicate.change().is_some());
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = state.federation_operation_notification_stats();
         assert_eq!(stats.duplicate_submissions, 1);
     }
 
