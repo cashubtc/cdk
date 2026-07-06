@@ -1131,6 +1131,9 @@ impl FederationAlephBftFinalizedUnitResponse {
         if response_operation_ids != self.operation_ids {
             return Err(FederationError::AlephBftUnitOperationIdsMismatch);
         }
+        for (expected_operation_id, response) in self.operation_ids.iter().zip(&self.responses) {
+            response.validate(*expected_operation_id)?;
+        }
 
         Ok(())
     }
@@ -2159,6 +2162,44 @@ mod tests {
 
         assert!(matches!(
             response.validate(expected_operation_id),
+            Err(FederationError::SubmitOperationResponseMismatch { expected, found })
+                if expected == expected_operation_id && found == found_operation_id
+        ));
+    }
+
+    #[test]
+    fn finalized_unit_response_validation_rejects_mismatched_outcome_operation_id() {
+        let (config, first_private, _) = transport_config();
+        let expected = mint_quote_envelope();
+        let expected_operation_id = expected.operation_id().expect("expected operation id");
+        let unit = FederationAlephBftUnitPayload::new(
+            config.federation_id,
+            first_private.member_id,
+            0,
+            0,
+            vec![FederationConsensusItem::operation(expected)],
+        )
+        .expect("AlephBFT unit");
+        let other = mint_envelope(
+            "quote-2",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let mut journal = InMemoryFederationJournal::new();
+        let mut submit_response = FederationSubmitOperationResponse::from_outcome(
+            journal.append(other).expect("journal append"),
+        );
+        let found_operation_id = submit_response.operation_id;
+        assert_ne!(expected_operation_id, found_operation_id);
+
+        submit_response.operation_id = expected_operation_id;
+        let response = FederationAlephBftFinalizedUnitResponse::new(
+            config.federation_id,
+            &unit,
+            vec![submit_response],
+        );
+
+        assert!(matches!(
+            response.validate(config.federation_id, &unit),
             Err(FederationError::SubmitOperationResponseMismatch { expected, found })
                 if expected == expected_operation_id && found == found_operation_id
         ));

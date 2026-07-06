@@ -378,3 +378,50 @@ async fn federation_peer_client_posts_signed_aleph_bft_finalized_unit() {
         .verify(&public_config, peer_private.member_id)
         .expect("signed request verifies");
 }
+
+#[tokio::test]
+async fn rest_peer_client_rejects_aleph_bft_response_with_mismatched_outcome_operation_id() {
+    let (state, public_config, local_private, peer_private) =
+        federation_route_state_with_local_private().await;
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("peer member");
+    let quote_id = QuoteId::new();
+    let unit = aleph_bft_unit(&state, local_private.member_id, &quote_id);
+    let expected_operation_id = *unit.operation_ids.first().expect("unit operation id");
+    let other_quote_id = QuoteId::new();
+    let other_envelope = mint_quote_envelope(&state, &other_quote_id);
+    let mut submit_response = FederationSubmitOperationResponse::from_outcome(
+        InMemoryFederationJournal::new()
+            .append(other_envelope)
+            .expect("journal append"),
+    );
+    let found_operation_id = submit_response.operation_id;
+    assert_ne!(expected_operation_id, found_operation_id);
+    submit_response.operation_id = expected_operation_id;
+    let response = FederationAlephBftFinalizedUnitResponse::new(
+        public_config.federation_id,
+        &unit,
+        vec![submit_response],
+    );
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let request = FederationAlephBftFinalizedUnitRequest::new(unit.clone());
+
+    let err = client
+        .submit_aleph_bft_finalized_unit(peer_member, &request)
+        .await
+        .expect_err("mismatched embedded outcome should be rejected");
+
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::SubmitOperationResponseMismatch { expected, found })
+            if *expected == expected_operation_id && *found == found_operation_id
+    ));
+    let requests = transport.aleph_bft_finalized_unit_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].payload.unit.body_hash, unit.body_hash);
+}
