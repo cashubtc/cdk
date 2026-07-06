@@ -886,6 +886,9 @@ async fn federation_route_state_for_private_with_db_and_backend(
         federation_invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
             crate::FederationInvalidOperationAlertTracker::default(),
         ))),
+        federation_aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(
+            HashMap::new(),
+        ))),
     }
 }
 
@@ -5643,6 +5646,71 @@ async fn aleph_bft_submit_envelope_waits_for_driver_finalization() {
 }
 
 #[tokio::test]
+async fn aleph_bft_submit_envelope_persists_sequence_after_driver_finalization() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let sender_sequence = 42;
+    let submit_state = state.clone();
+    let sender = peer_private.member_id;
+    let submit = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_with_sequence(envelope, Some((sender, sender_sequence)))
+            .await
+            .expect("AlephBFT submit response")
+    });
+    let unit = wait_for_local_aleph_bft_unit(&state).await;
+    let sequences_before = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences before finalization");
+    assert!(sequences_before.is_empty());
+
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+    run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+
+    submit.await.expect("submit task");
+    let sequences_after = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after finalization");
+    assert_eq!(
+        sequences_after.get(&peer_private.member_id).copied(),
+        Some(sender_sequence)
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_submit_envelope_times_out_without_finalization() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -5721,17 +5789,41 @@ async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuein
     .await
     .expect("driver tick");
 
+    let duplicate_sequence = 24;
     let duplicate = state
         .submit_federation_envelope_with_sequence(envelope, None)
         .await
         .expect("duplicate response");
+    let duplicate_with_sequence = state
+        .submit_federation_envelope_with_sequence(
+            mint_quote_envelope(&state, &quote_id),
+            Some((peer_private.member_id, duplicate_sequence)),
+        )
+        .await
+        .expect("duplicate response with sequence");
 
     assert_eq!(duplicate.operation_id, operation_id);
     assert!(matches!(
         duplicate.outcome,
         FederationJournalAppendOutcome::Duplicate(_)
     ));
+    assert_eq!(duplicate_with_sequence.operation_id, operation_id);
+    assert!(matches!(
+        duplicate_with_sequence.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
     assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted duplicate sequence");
+    assert_eq!(
+        sequences.get(&peer_private.member_id).copied(),
+        Some(duplicate_sequence)
+    );
 
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;

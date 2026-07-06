@@ -61,6 +61,9 @@ type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
 #[cfg(feature = "federation")]
 type FederationInvalidOperationAlertHandle =
     Arc<tokio::sync::Mutex<FederationInvalidOperationAlertTracker>>;
+#[cfg(feature = "federation")]
+type FederationAlephBftPendingSequenceHandle =
+    Arc<tokio::sync::Mutex<HashMap<FederationOperationId, BTreeMap<MemberId, u64>>>>;
 
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
@@ -965,6 +968,8 @@ pub struct MintState {
     federation_private_rest_admission: Option<FederationRestAdmissionHandle>,
     #[cfg(feature = "federation")]
     federation_invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
+    #[cfg(feature = "federation")]
+    federation_aleph_bft_pending_sequences: Option<FederationAlephBftPendingSequenceHandle>,
 }
 
 #[cfg(feature = "federation")]
@@ -1164,12 +1169,6 @@ impl MintState {
         envelope: FederationOperationEnvelope,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
-        if sequence.is_some() {
-            return Err(cdk::Error::Custom(
-                "AlephBFT private REST sequence handoff is not wired yet".to_string(),
-            ));
-        }
-
         #[cfg(feature = "prometheus")]
         let operation_label = envelope.operation.kind().to_string();
         let operation_id = envelope.operation_id()?;
@@ -1178,9 +1177,17 @@ impl MintState {
         })?;
         let mut consensus = consensus.lock().await;
         if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
-            return Ok(FederationSubmitOperationResponse::from_outcome(
+            let response = FederationSubmitOperationResponse::from_outcome(
                 FederationJournalAppendOutcome::Duplicate(entry.clone()),
-            ));
+            );
+            drop(consensus);
+            if let Some(sequence) = sequence {
+                self.persist_federation_journal_entries(&[], None, Some(sequence))
+                    .await?;
+                self.record_federation_sequence(sequence.0, sequence.1)
+                    .await;
+            }
+            return Ok(response);
         }
 
         let mut next_consensus = consensus.clone();
@@ -1191,6 +1198,10 @@ impl MintState {
         }
         *consensus = next_consensus;
         drop(consensus);
+        if let Some((sender, sequence)) = sequence {
+            self.remember_federation_aleph_bft_pending_sequence(operation_id, sender, sequence)
+                .await;
+        }
         #[cfg(feature = "prometheus")]
         self.record_federation_pending_mempool_metric().await;
 
@@ -1304,6 +1315,63 @@ impl MintState {
         }
     }
 
+    async fn remember_federation_aleph_bft_pending_sequence(
+        &self,
+        operation_id: FederationOperationId,
+        sender: MemberId,
+        sequence: u64,
+    ) {
+        let Some(pending) = &self.federation_aleph_bft_pending_sequences else {
+            return;
+        };
+        pending
+            .lock()
+            .await
+            .entry(operation_id)
+            .or_default()
+            .insert(sender, sequence);
+    }
+
+    async fn pending_federation_aleph_bft_sequences_for_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) -> Vec<(MemberId, u64)> {
+        let Some(pending) = &self.federation_aleph_bft_pending_sequences else {
+            return Vec::new();
+        };
+        let pending = pending.lock().await;
+        let mut sequences = Vec::new();
+        for entry in entries {
+            if let Some(entry_sequences) = pending.get(&entry.operation_id) {
+                sequences.extend(
+                    entry_sequences
+                        .iter()
+                        .map(|(member, sequence)| (*member, *sequence)),
+                );
+            }
+        }
+        sequences
+    }
+
+    async fn clear_federation_aleph_bft_pending_sequences_for_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) {
+        let Some(pending) = &self.federation_aleph_bft_pending_sequences else {
+            return;
+        };
+        let mut pending = pending.lock().await;
+        for entry in entries {
+            pending.remove(&entry.operation_id);
+        }
+    }
+
+    async fn record_federation_sequences(&self, sequences: &[(MemberId, u64)]) {
+        for (sender, sequence) in sequences {
+            self.record_federation_sequence(*sender, *sequence).await;
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn apply_federation_aleph_bft_finalized_unit(
         &self,
@@ -1328,6 +1396,10 @@ impl MintState {
         let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
         let finalized_items =
             next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
+        let outcome_entries = responses
+            .iter()
+            .map(|response| response.outcome.entry().clone())
+            .collect::<Vec<_>>();
         let entries = responses
             .iter()
             .filter_map(|response| match &response.outcome {
@@ -1335,16 +1407,26 @@ impl MintState {
                 FederationJournalAppendOutcome::Duplicate(_) => None,
             })
             .collect::<Vec<_>>();
+        let mut sequences = self
+            .pending_federation_aleph_bft_sequences_for_entries(&outcome_entries)
+            .await;
+        if let Some(sequence) = sequence {
+            sequences.push(sequence);
+        }
 
-        self.persist_federation_aleph_bft_finalization(&finalized_items, &entries, sequence)
-            .await?;
+        self.persist_federation_aleph_bft_finalization_with_sequences(
+            &finalized_items,
+            &entries,
+            &sequences,
+        )
+        .await?;
         *consensus = next_consensus;
         drop(consensus);
+        self.clear_federation_aleph_bft_pending_sequences_for_entries(&outcome_entries)
+            .await;
 
         self.apply_federation_journal_entries(&entries).await?;
-        if let Some((sender, sequence)) = sequence {
-            self.record_federation_sequence(sender, sequence).await;
-        }
+        self.record_federation_sequences(&sequences).await;
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
         }
@@ -1367,6 +1449,10 @@ impl MintState {
         let responses = next_consensus.finalize_aleph_bft_unit(drained)?;
         let finalized_items =
             next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
+        let outcome_entries = responses
+            .iter()
+            .map(|response| response.outcome.entry().clone())
+            .collect::<Vec<_>>();
         let entries = responses
             .iter()
             .filter_map(|response| match &response.outcome {
@@ -1374,13 +1460,23 @@ impl MintState {
                 FederationJournalAppendOutcome::Duplicate(_) => None,
             })
             .collect::<Vec<_>>();
+        let sequences = self
+            .pending_federation_aleph_bft_sequences_for_entries(&outcome_entries)
+            .await;
 
-        self.persist_federation_aleph_bft_finalization(&finalized_items, &entries, None)
-            .await?;
+        self.persist_federation_aleph_bft_finalization_with_sequences(
+            &finalized_items,
+            &entries,
+            &sequences,
+        )
+        .await?;
         *consensus = next_consensus;
         drop(consensus);
+        self.clear_federation_aleph_bft_pending_sequences_for_entries(&outcome_entries)
+            .await;
 
         self.apply_federation_journal_entries(&entries).await?;
+        self.record_federation_sequences(&sequences).await;
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
         }
@@ -1873,11 +1969,11 @@ impl MintState {
         Ok(())
     }
 
-    async fn persist_federation_aleph_bft_finalization(
+    async fn persist_federation_aleph_bft_finalization_with_sequences(
         &self,
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
-        sequence: Option<(MemberId, u64)>,
+        sequences: &[(MemberId, u64)],
     ) -> Result<(), cdk::Error> {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1886,8 +1982,9 @@ impl MintState {
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
-        if let Some((sender, sequence)) = sequence {
-            tx.set_federation_member_sequence(sender, sequence).await?;
+        for (sender, sequence) in sequences {
+            tx.set_federation_member_sequence(*sender, *sequence)
+                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -2443,6 +2540,10 @@ async fn create_mint_router_with_custom_cache_inner(
                 FederationInvalidOperationAlertTracker::default(),
             ))
         }),
+        #[cfg(feature = "federation")]
+        federation_aleph_bft_pending_sequences: federation_consensus
+            .as_ref()
+            .map(|_| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
     };
     #[cfg(feature = "federation")]
     state.restore_federation_sync_status().await;

@@ -260,6 +260,8 @@ mod tests {
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
             federation_invalid_operation_alerts: None,
+            #[cfg(feature = "federation")]
+            federation_aleph_bft_pending_sequences: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

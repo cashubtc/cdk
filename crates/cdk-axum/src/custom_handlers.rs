@@ -1655,6 +1655,8 @@ mod tests {
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
             federation_invalid_operation_alerts: None,
+            #[cfg(feature = "federation")]
+            federation_aleph_bft_pending_sequences: None,
         }
     }
 
@@ -1895,6 +1897,9 @@ mod tests {
             federation_invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
+            federation_aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(
+                HashMap::new(),
+            ))),
         }
     }
 
@@ -1981,6 +1986,8 @@ mod tests {
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
             federation_invalid_operation_alerts: None,
+            #[cfg(feature = "federation")]
+            federation_aleph_bft_pending_sequences: None,
         }
     }
 
