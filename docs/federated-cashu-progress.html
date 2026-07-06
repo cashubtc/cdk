@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, and prove pending-mempool backpressure preserves admitted work through durable finalization.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, and prove pending-mempool backpressure preserves admitted work through durable finalization.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: preserve aleph bft queue under backpressure</span>
+          <span class="value">fix: bind aleph bft finalized unit sender</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT pending-mempool backpressure now has retained-finalization coverage: overflow rejects only new work, keeps the admitted unit previewable, and persists finalized-item metadata after the bounded driver applies it.</span>
+          <span class="value">Signed AlephBFT finalized-unit delivery now rejects a valid member signature if the unit is attributed to another submitting member, before durable or materialized state changes.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -2388,6 +2388,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::transport::tests::signed_aleph_bft_finalized_unit_request_verifies_and_response_validates -- --test-threads 1`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, and `cargo test -p cdk-axum --features federation aleph_bft -- --test-threads 1` passed. The tests cover signed request round-trip, response validation, peer-client URL/message-kind signing, route acceptance into durable finalized-item storage, materialized mint quote apply, sequence persistence, wrong-kind rejection without mutation, and storage-conflict rejection without runtime or journal mutation.</td>
               <td>Connect live AlephBFT finalization output to this private REST delivery surface and add multi-member delivery/catch-up tests around reordered and duplicate finalized-unit broadcasts.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT finalized-unit sender binding</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation private_aleph_bft_finalized_unit_route_rejects_sender_unit_member_mismatch -- --test-threads 1` and `cargo test -p cdk-axum --features federation aleph_bft_routes -- --test-threads 1` passed. The regression signs a finalized-unit request as one roster member while setting the unit submitter to another member, then verifies the route rejects it before finalized-item storage, journal append, sequence persistence, mint quote materialization, or runtime operation-count mutation.</td>
+              <td>Apply the same authenticated-sender binding to future non-REST AlephBFT network messages before they can enter finalization.</td>
             </tr>
             <tr>
               <td>AlephBFT proposal preview and exact drain</td>

@@ -2,7 +2,7 @@ use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
-    FederationRestMessageKind, FederationSignedRequest,
+    FederationError, FederationRestMessageKind, FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -26,6 +26,14 @@ pub(super) async fn post_aleph_bft_finalized_unit(
         FederationRestMessageKind::AlephBftFinalizedUnit,
     )
     .await?;
+    if payload.payload.unit.submitting_member != verified.sender {
+        return Err(federation_error_response(
+            FederationError::MemberIdMismatch {
+                expected: verified.sender,
+                found: payload.payload.unit.submitting_member,
+            },
+        ));
+    }
     payload
         .payload
         .ensure_admissible_size()
