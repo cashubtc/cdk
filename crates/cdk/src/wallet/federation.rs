@@ -578,7 +578,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MintResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (mut responses, failures) = self
+        let (responses, failures) = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
@@ -590,7 +590,6 @@ impl FederatedMintConnector {
             .await;
 
         if responses.len() >= threshold {
-            responses.truncate(threshold);
             return Ok(responses);
         }
 
@@ -612,7 +611,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MeltQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (mut responses, failures) = self
+        let (responses, failures) = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
@@ -624,7 +623,6 @@ impl FederatedMintConnector {
             .await;
 
         if responses.len() >= threshold {
-            responses.truncate(threshold);
             return Ok(responses);
         }
 
@@ -872,19 +870,95 @@ impl FederatedMintConnector {
             )));
         }
 
+        let mut matching_share_sets = Vec::<(
+            Vec<(Amount, Id)>,
+            Vec<(MemberId, Vec<BlsBlindSignatureShare>)>,
+        )>::new();
+        let mut invalid_members = Vec::new();
+
+        for (member_id, response) in member_responses {
+            match self.valid_member_share_set(outputs, *member_id, response, amount_validation) {
+                Ok((metadata, shares)) => match matching_share_sets
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == &metadata)
+                {
+                    Some((_, members)) => members.push((*member_id, shares)),
+                    None => matching_share_sets.push((metadata, vec![(*member_id, shares)])),
+                },
+                Err(err) => invalid_members.push(format!("member {} ignored: {}", member_id, err)),
+            }
+        }
+
+        let max_valid_group = matching_share_sets
+            .iter()
+            .map(|(_, members)| members.len())
+            .max()
+            .unwrap_or(0);
+        let (metadata, selected_members) = matching_share_sets
+            .into_iter()
+            .find_map(|(metadata, members)| {
+                if members.len() >= threshold {
+                    Some((metadata, members.into_iter().take(threshold).collect::<Vec<_>>()))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                let invalid = if invalid_members.is_empty() {
+                    "none".to_string()
+                } else {
+                    invalid_members.join("; ")
+                };
+                Error::InvalidMintResponse(format!(
+                    "insufficient valid federation signature shares: required {}, largest compatible set {}, invalid responses: {}",
+                    threshold, max_valid_group, invalid
+                ))
+            })?;
+
         let mut aggregate_signatures = Vec::with_capacity(outputs.len());
-        for (index, output) in outputs.iter().enumerate() {
-            let first_signature = member_responses
-                .first()
-                .and_then(|(_, response)| response.signatures.get(index))
-                .ok_or_else(|| {
-                    Error::InvalidMintResponse(
-                        "missing federation signature share for output".to_string(),
-                    )
-                })?;
+        for (index, (amount, keyset_id)) in metadata.into_iter().enumerate() {
+            let shares = selected_members
+                .iter()
+                .map(|(_, shares)| shares[index])
+                .collect::<Vec<_>>();
+            let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
+            aggregate_signatures.push(BlindSignature {
+                amount,
+                keyset_id,
+                c: aggregate_signature.into(),
+                dleq: None,
+            });
+        }
+
+        Ok(MintResponse {
+            signatures: aggregate_signatures,
+        })
+    }
+
+    fn valid_member_share_set(
+        &self,
+        outputs: &[BlindedMessage],
+        member_id: MemberId,
+        response: &MintResponse,
+        amount_validation: ShareAmountValidation,
+    ) -> Result<(Vec<(Amount, Id)>, Vec<BlsBlindSignatureShare>), Error> {
+        if response.signatures.len() != outputs.len() {
+            return Err(Error::InvalidMintResponse(format!(
+                "member {} returned {} signature shares for {} outputs",
+                member_id,
+                response.signatures.len(),
+                outputs.len()
+            )));
+        }
+
+        let mut metadata = Vec::with_capacity(outputs.len());
+        let mut shares = Vec::with_capacity(outputs.len());
+        for (output, signature) in outputs.iter().zip(response.signatures.iter()) {
+            validate_signature_metadata(signature, output, member_id, amount_validation)?;
+
             let mut signed_output = output.clone();
-            signed_output.amount = first_signature.amount;
-            signed_output.keyset_id = first_signature.keyset_id;
+            signed_output.amount = signature.amount;
+            signed_output.keyset_id = signature.keyset_id;
             let keyset = match amount_validation {
                 ShareAmountValidation::Exact
                 | ShareAmountValidation::AllowZeroAmountPlaceholder => {
@@ -894,76 +968,35 @@ impl FederatedMintConnector {
                     .public_config
                     .validate_blinded_restore_output(&signed_output)?,
             };
-            let blinded_message = output.blinded_secret.as_bls_g1()?;
-            let mut shares = Vec::with_capacity(member_responses.len());
-
-            for (member_id, response) in member_responses {
-                let signature = response.signatures.get(index).ok_or_else(|| {
-                    Error::InvalidMintResponse(format!(
-                        "member {} returned too few signature shares",
-                        member_id
-                    ))
-                })?;
-                validate_signature_metadata(signature, output, *member_id, amount_validation)?;
-                if signature.amount != signed_output.amount
-                    || signature.keyset_id != signed_output.keyset_id
-                {
-                    return Err(Error::InvalidMintResponse(format!(
-                        "member {} returned a share that does not match the threshold set",
-                        member_id
-                    )));
-                }
-
-                let public_share = keyset
-                    .public_shares
-                    .get(member_id)
-                    .ok_or(FederationError::MissingPublicShares {
-                        keyset_id: keyset.id,
-                        member_id: *member_id,
-                    })?
-                    .get(&signed_output.amount)
-                    .ok_or(FederationError::MissingPublicShareAmount {
-                        keyset_id: keyset.id,
-                        member_id: *member_id,
-                        amount: signed_output.amount,
-                    })?;
-                let share = BlsBlindSignatureShare::new(
-                    member_id.to_bls_signer_id(),
-                    signature.c.as_bls_g1()?,
-                );
-
-                if !verify_blind_signature_share(&share, &blinded_message, public_share)? {
-                    return Err(Error::InvalidMintResponse(format!(
-                        "member {} returned an invalid signature share for keyset {} amount {}",
-                        member_id, output.keyset_id, output.amount
-                    )));
-                }
-                shares.push(share);
-            }
-
-            let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
-            aggregate_signatures.push(BlindSignature {
-                amount: signed_output.amount,
-                keyset_id: signed_output.keyset_id,
-                c: aggregate_signature.into(),
-                dleq: None,
-            });
-        }
-
-        for (member_id, response) in member_responses {
-            if response.signatures.len() != outputs.len() {
-                return Err(Error::InvalidMintResponse(format!(
-                    "member {} returned {} signature shares for {} outputs",
+            let public_share = keyset
+                .public_shares
+                .get(&member_id)
+                .ok_or(FederationError::MissingPublicShares {
+                    keyset_id: keyset.id,
                     member_id,
-                    response.signatures.len(),
-                    outputs.len()
+                })?
+                .get(&signature.amount)
+                .ok_or(FederationError::MissingPublicShareAmount {
+                    keyset_id: keyset.id,
+                    member_id,
+                    amount: signature.amount,
+                })?;
+            let blinded_message = output.blinded_secret.as_bls_g1()?;
+            let share =
+                BlsBlindSignatureShare::new(member_id.to_bls_signer_id(), signature.c.as_bls_g1()?);
+
+            if !verify_blind_signature_share(&share, &blinded_message, public_share)? {
+                return Err(Error::InvalidMintResponse(format!(
+                    "member {} returned an invalid signature share for keyset {} amount {}",
+                    member_id, output.keyset_id, output.amount
                 )));
             }
+
+            metadata.push((signature.amount, signature.keyset_id));
+            shares.push(share);
         }
 
-        Ok(MintResponse {
-            signatures: aggregate_signatures,
-        })
+        Ok((metadata, shares))
     }
 
     fn aggregate_melt_response(

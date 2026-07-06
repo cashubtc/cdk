@@ -150,6 +150,57 @@ fn threshold_bundle() -> TrustedDealerConfigBundle {
         .clone()
 }
 
+fn threshold_five_bundle() -> TrustedDealerConfigBundle {
+    static THRESHOLD_FIVE_BUNDLE: OnceLock<TrustedDealerConfigBundle> = OnceLock::new();
+    THRESHOLD_FIVE_BUNDLE
+        .get_or_init(|| {
+            generate_trusted_dealer_configs(
+                ThresholdParams::with_bft_consensus(5, 3).expect("params"),
+                vec![
+                    member(member_id(1)),
+                    member(member_id(2)),
+                    member(member_id(3)),
+                    member(member_id(4)),
+                    member(member_id(5)),
+                ],
+                vec![TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    BTreeMap::from([
+                        (
+                            Amount::from(1),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(2),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[5; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(4),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[7; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[8; 32]),
+                            ],
+                        ),
+                    ]),
+                )],
+            )
+            .expect("trusted dealer bundle")
+        })
+        .clone()
+}
+
 fn threshold_rotation_bundle() -> TrustedDealerConfigBundle {
     static THRESHOLD_ROTATION_BUNDLE: OnceLock<TrustedDealerConfigBundle> = OnceLock::new();
     THRESHOLD_ROTATION_BUNDLE
@@ -2504,6 +2555,125 @@ async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_val
         connectors,
         FederatedMintConnectorConfig {
             member_request_max_retries: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+
+    let mint_response = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("mint response");
+    assert_aggregate_response_valid(&bundle, &outputs, &mint_response);
+
+    let swap_response = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs.clone()))
+        .await
+        .expect("swap response");
+    assert_aggregate_response_valid(
+        &bundle,
+        &outputs,
+        &MintResponse {
+            signatures: swap_response.signatures,
+        },
+    );
+
+    let melt_response = connector
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltRequest::new(
+                "melt-quote".to_string(),
+                Vec::new(),
+                Some(change_outputs.clone()),
+            ),
+        )
+        .await
+        .expect("melt response");
+    let change = melt_response.change().cloned().expect("change signatures");
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(&change_outputs),
+        &MintResponse { signatures: change },
+    );
+}
+
+#[tokio::test]
+async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let change_outputs = blinded_change_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let slow_delay = Duration::from_millis(10);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2)] {
+        let connector = MockMintConnector::new();
+        connector.set_active_keyset(advertised.clone());
+        connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+        connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: share_response(&bundle, member_id, &outputs).signatures,
+        }));
+        connector.set_post_melt_response(Ok(melt_response(&bundle, member_id, &change_outputs)));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let offline_member = MockMintConnector::new();
+    offline_member.set_active_keyset(advertised.clone());
+    offline_member.set_post_mint_response(Err(crate::Error::Custom("member offline".to_string())));
+    offline_member.set_post_swap_response(Err(crate::Error::Custom("member offline".to_string())));
+    offline_member.set_post_melt_response(Err(crate::Error::Custom("member offline".to_string())));
+    connectors.insert(
+        member_id(3),
+        Arc::new(offline_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let bad_share_member = MockMintConnector::new();
+    bad_share_member.set_active_keyset(advertised.clone());
+    bad_share_member.set_post_mint_response(Ok(share_response(&bundle, member_id(5), &outputs)));
+    bad_share_member.set_post_swap_response(Ok(SwapResponse {
+        signatures: share_response(&bundle, member_id(5), &outputs).signatures,
+    }));
+    bad_share_member.set_post_melt_response(Ok(melt_response(
+        &bundle,
+        member_id(5),
+        &change_outputs,
+    )));
+    connectors.insert(
+        member_id(4),
+        Arc::new(bad_share_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let slow_member = MockMintConnector::new();
+    slow_member.set_active_keyset(advertised);
+    slow_member.set_post_mint_delay(slow_delay);
+    slow_member.set_post_swap_delay(slow_delay);
+    slow_member.set_post_melt_delay(slow_delay);
+    slow_member.set_post_mint_response(Ok(share_response(&bundle, member_id(5), &outputs)));
+    slow_member.set_post_swap_response(Ok(SwapResponse {
+        signatures: share_response(&bundle, member_id(5), &outputs).signatures,
+    }));
+    slow_member.set_post_melt_response(Ok(melt_response(&bundle, member_id(5), &change_outputs)));
+    connectors.insert(
+        member_id(5),
+        Arc::new(slow_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_timeout: Duration::from_secs(1),
             ..FederatedMintConnectorConfig::default()
         },
     )

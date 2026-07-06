@@ -499,6 +499,8 @@ pub struct MockMintConnector {
     pub post_batch_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
+    /// Optional delay used by tests to simulate a slow swap member.
+    pub post_swap_delay: Mutex<Option<Duration>>,
     /// Queue of responses for successive post_swap calls.
     ///
     /// When non-empty, each `post_swap` call pops the front entry.
@@ -508,6 +510,8 @@ pub struct MockMintConnector {
     pub captured_swap_requests: Mutex<Vec<SwapRequest>>,
     /// Response for post_melt calls
     pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
+    /// Optional delay used by tests to simulate a slow melt member.
+    pub post_melt_delay: Mutex<Option<Duration>>,
     /// Queue of responses for successive post_melt calls.
     ///
     /// When non-empty, each `post_melt` call pops the front entry.
@@ -565,9 +569,11 @@ impl MockMintConnector {
             post_mint_barrier: Mutex::new(None),
             post_batch_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
+            post_swap_delay: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
             post_melt_response: Mutex::new(None),
+            post_melt_delay: Mutex::new(None),
             post_melt_responses: Mutex::new(std::collections::VecDeque::new()),
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
@@ -744,6 +750,10 @@ impl MockMintConnector {
         *self.post_swap_response.lock().unwrap() = Some(response);
     }
 
+    pub fn set_post_swap_delay(&self, delay: Duration) {
+        *self.post_swap_delay.lock().unwrap() = Some(delay);
+    }
+
     /// Enqueue a response for the next `post_swap` call.
     pub fn push_post_swap_response(&self, response: Result<SwapResponse, Error>) {
         self.post_swap_responses.lock().unwrap().push_back(response);
@@ -756,6 +766,10 @@ impl MockMintConnector {
 
     pub fn set_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
         *self.post_melt_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_melt_delay(&self, delay: Duration) {
+        *self.post_melt_delay.lock().unwrap() = Some(delay);
     }
 
     /// Enqueue a response for the next `post_melt` call.
@@ -975,6 +989,11 @@ impl MintConnector for MockMintConnector {
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
         self.captured_swap_requests.lock().unwrap().push(request);
+        let delay = *self.post_swap_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+
         let queued = self.post_swap_responses.lock().unwrap().pop_front();
         match queued {
             Some(response) => response,
@@ -1034,6 +1053,11 @@ impl MintConnector for MockMintConnector {
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
         *self.last_post_melt_request.lock().unwrap() = Some((method.clone(), request));
+        let delay = *self.post_melt_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+
         let queued = self.post_melt_responses.lock().unwrap().pop_front();
         match queued {
             Some(response) => response,
