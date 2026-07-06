@@ -459,8 +459,9 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
 
     let line = member_status_line(&status);
 
-    assert!(line
-        .contains("aleph_bft=session:4 queued:2 finalized:3 accepted:1 next_unit:7 next_item:9"));
+    assert!(line.contains(
+        "aleph_bft=backend:aleph_bft local_member:1 session:4 queued:2 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
+    ));
 }
 
 #[test]
