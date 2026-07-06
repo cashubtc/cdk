@@ -473,6 +473,52 @@ impl FederationOperationNotifications {
         ))
     }
 
+    fn register_existing_waiter(
+        &self,
+        operation_id: FederationOperationId,
+        waiter_limit: usize,
+    ) -> Result<Option<FederationOperationWaitRegistration<'_>>, cdk::Error> {
+        let mut inner = self.lock_inner();
+        if let Some(response) = inner.outcomes.get(&operation_id) {
+            return Ok(Some(FederationOperationWaitRegistration::Outcome(
+                response.clone(),
+            )));
+        }
+
+        if let Some(response) = inner
+            .notifiers
+            .get(&operation_id)
+            .and_then(|notifier| notifier.response.clone())
+        {
+            return Ok(Some(FederationOperationWaitRegistration::Outcome(response)));
+        }
+        if !inner.notifiers.contains_key(&operation_id) {
+            return Ok(None);
+        }
+        if inner.waiter_count >= waiter_limit {
+            return Err(cdk::Error::from(
+                FederationError::ResponseWaiterLimitExceeded {
+                    waiting: inner.waiter_count,
+                    max: waiter_limit,
+                },
+            ));
+        }
+        let notifier = inner
+            .notifiers
+            .get_mut(&operation_id)
+            .expect("checked federation operation notifier exists");
+        notifier.waiters = notifier.waiters.saturating_add(1);
+        let notified = notifier.notify.clone().notified_owned();
+        inner.waiter_count = inner.waiter_count.saturating_add(1);
+        Ok(Some(FederationOperationWaitRegistration::Waiting(
+            FederationOperationWaiter {
+                notifications: self,
+                operation_id,
+                notified: Some(notified),
+            },
+        )))
+    }
+
     fn release_waiter(&self, operation_id: FederationOperationId) {
         let mut inner = self.lock_inner();
         inner.waiter_count = inner.waiter_count.saturating_sub(1);
@@ -1340,6 +1386,29 @@ impl MintState {
             return Ok(response);
         }
 
+        let sync_config = self.federation_peer_sync_config.unwrap_or_default();
+        let notifications = self.federation_notifications.as_ref().ok_or_else(|| {
+            cdk::Error::Custom(
+                "federation operation notifications are unavailable for AlephBFT submit"
+                    .to_string(),
+            )
+        })?;
+        if let Some(wait_registration) = notifications
+            .register_existing_waiter(operation_id, sync_config.response_waiter_limit)?
+        {
+            drop(consensus);
+            if let Some((sender, sequence)) = sequence {
+                self.remember_federation_aleph_bft_pending_sequence(operation_id, sender, sequence)
+                    .await;
+            }
+            return Self::wait_for_aleph_bft_operation_acceptance(
+                operation_id,
+                sync_config,
+                wait_registration,
+            )
+            .await;
+        }
+
         let queued_before = consensus.pending_mempool_len();
         let mut next_consensus = consensus.clone();
         let admission = match next_consensus.submit_aleph_bft_envelope(envelope) {
@@ -1374,13 +1443,6 @@ impl MintState {
                 "Duplicate AlephBFT federation operation is already pending"
             );
         }
-        let sync_config = self.federation_peer_sync_config.unwrap_or_default();
-        let notifications = self.federation_notifications.as_ref().ok_or_else(|| {
-            cdk::Error::Custom(
-                "federation operation notifications are unavailable for AlephBFT submit"
-                    .to_string(),
-            )
-        })?;
         let wait_registration =
             notifications.register_waiter(operation_id, sync_config.response_waiter_limit)?;
 
@@ -1393,6 +1455,15 @@ impl MintState {
         #[cfg(feature = "prometheus")]
         self.record_federation_pending_mempool_metric().await;
 
+        Self::wait_for_aleph_bft_operation_acceptance(operation_id, sync_config, wait_registration)
+            .await
+    }
+
+    async fn wait_for_aleph_bft_operation_acceptance(
+        operation_id: FederationOperationId,
+        sync_config: FederationPeerSyncConfig,
+        wait_registration: FederationOperationWaitRegistration<'_>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         let wait_timeout = sync_config.operation_submission_timeout;
         tokio::time::timeout(wait_timeout, wait_registration.wait())
             .await

@@ -5880,6 +5880,95 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
 }
 
 #[tokio::test]
+async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeueing() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_secs(5),
+        response_waiter_limit: 3,
+        ..FederationPeerSyncConfig::default()
+    });
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+
+    let first_state = state.clone();
+    let first_envelope = envelope.clone();
+    let first_submit = tokio::spawn(async move {
+        first_state
+            .submit_federation_envelope_with_sequence(first_envelope, None)
+            .await
+    });
+    for _ in 0..50 {
+        if state.federation_pending_response_waiter_count() == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 1);
+
+    let second_state = state.clone();
+    let second_submit = tokio::spawn(async move {
+        second_state
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await
+    });
+    for _ in 0..50 {
+        if state.federation_pending_response_waiter_count() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 2);
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    drop(consensus);
+
+    let unit = wait_for_local_aleph_bft_unit(&state).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+    run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+
+    let first_response = first_submit
+        .await
+        .expect("first submit task")
+        .expect("first submit response");
+    let second_response = second_submit
+        .await
+        .expect("second submit task")
+        .expect("second submit response");
+    assert_eq!(first_response.operation_id, operation_id);
+    assert_eq!(second_response.operation_id, operation_id);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+}
+
+#[tokio::test]
 async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
