@@ -4722,6 +4722,137 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn concurrent_conflicting_swaps_spend_one_input_once_without_signing_losers() {
+        let state = create_federated_test_state().await;
+        let request_count = 6;
+        let proof = proof_for_amount(&state, 2, "concurrent-conflicting-swap-input");
+        let input_y = proof.y().expect("input y");
+        let mut requests = Vec::new();
+        let mut output_secrets = Vec::new();
+
+        for index in 0..request_count {
+            let outputs = outputs_for_amount_with_label(
+                &state,
+                2,
+                &format!("concurrent-conflicting-swap-output-{index}"),
+            );
+            output_secrets.push(outputs[0].blinded_secret);
+            requests.push(cdk::nuts::SwapRequest::new(vec![proof.clone()], outputs));
+        }
+
+        let results =
+            futures::future::join_all(requests.into_iter().enumerate().map(|(index, request)| {
+                let state = state.clone();
+                async move {
+                    (
+                        index,
+                        crate::router_handlers::post_swap(
+                            AuthHeader::None,
+                            State(state),
+                            Json(request),
+                        )
+                        .await,
+                    )
+                }
+            }))
+            .await;
+        let mut successes = Vec::new();
+        let mut errors = Vec::new();
+        for (index, result) in results {
+            match result {
+                Ok(response) => successes.push((index, response.0)),
+                Err(error) => errors.push((index, response_error_detail(error).await)),
+            }
+        }
+
+        assert_eq!(
+            successes.len(),
+            1,
+            "exactly one conflicting swap should spend the shared input"
+        );
+        assert_eq!(
+            errors.len(),
+            request_count - 1,
+            "all other conflicting swaps should be rejected"
+        );
+        for (_, body) in &errors {
+            let body = body.to_lowercase();
+            assert!(
+                body.contains("spent") || body.contains("conflict"),
+                "conflicting swap rejection should mention spent input or conflict: {body}"
+            );
+        }
+
+        let winner = &successes[0];
+        assert_eq!(winner.1.signatures.len(), 1);
+        let winner_signature = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output_secrets[winner.0]])
+            .await
+            .expect("winner signature lookup");
+        assert_eq!(winner_signature, vec![Some(winner.1.signatures[0].clone())]);
+
+        let loser_outputs = output_secrets
+            .iter()
+            .enumerate()
+            .filter_map(|(index, output)| (index != winner.0).then_some(*output))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_blind_signatures(&loser_outputs)
+                .await
+                .expect("loser signature lookup"),
+            vec![None; loser_outputs.len()],
+            "conflicting swap outputs must not receive member signature shares"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("proof state lookup"),
+            vec![Some(cdk::nuts::State::Spent)]
+        );
+        let journal_entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(journal_entries.len(), request_count);
+        assert!(journal_entries
+            .iter()
+            .all(|entry| entry.envelope.operation.kind()
+                == cdk::federation::FederationOperationKind::Swap));
+        assert_eq!(
+            journal_entries
+                .iter()
+                .filter(|entry| entry.status == cdk::federation::FederationOperationStatus::Applied)
+                .count(),
+            1,
+            "exactly one conflicting swap should apply"
+        );
+        assert_eq!(
+            journal_entries
+                .iter()
+                .filter(|entry| matches!(
+                    entry.status,
+                    cdk::federation::FederationOperationStatus::Rejected
+                        | cdk::federation::FederationOperationStatus::Failed
+                ))
+                .count(),
+            request_count - 1,
+            "losing conflicting swaps should be terminal rejected or failed outcomes"
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_rejects_non_v3_outputs_before_consensus() {
         let state = create_federated_test_state().await;
         let outputs = vec![non_v3_output_for_state(

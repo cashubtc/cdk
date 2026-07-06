@@ -1795,8 +1795,7 @@ impl MintState {
         if let Some((sender, sequence)) = sequence {
             self.record_federation_sequence(sender, sequence).await;
         }
-        self.apply_federation_journal_entries(std::slice::from_ref(&entry))
-            .await?;
+        self.apply_federation_journal_entry(&entry).await?;
         self.notify_federation_operation(response.clone()).await;
 
         Ok(response)
@@ -2675,13 +2674,33 @@ impl MintState {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
-        let applied = self.mint.apply_federation_journal_entries(entries).await?;
+        let mut applied = Vec::new();
+        for entry in entries {
+            if self.apply_federation_journal_entry(entry).await? {
+                applied.push(entry.operation_id);
+            }
+        }
         self.mark_federation_operations_applied(&applied).await?;
         if let Some(entry) = entries.last() {
             self.record_federation_state_digest_checkpoint(entry)
                 .await?;
         }
         Ok(applied)
+    }
+
+    async fn apply_federation_journal_entry(
+        &self,
+        entry: &FederationJournalEntry,
+    ) -> Result<bool, cdk::Error> {
+        match self.mint.apply_accepted_federation_operation(entry).await {
+            Ok(applied) => Ok(applied),
+            Err(err) => {
+                let status = federation_operation_status_for_apply_error(&err);
+                self.mark_federation_operation_status(entry.operation_id, status)
+                    .await?;
+                Err(err)
+            }
+        }
     }
 
     async fn record_federation_state_digest_checkpoint(
@@ -2728,6 +2747,24 @@ impl MintState {
         for operation_id in operation_ids {
             consensus.update_status(*operation_id, FederationOperationStatus::Applied)?;
         }
+        Ok(())
+    }
+
+    async fn mark_federation_operation_status(
+        &self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+    ) -> Result<(), cdk::Error> {
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.update_federation_operation_status(operation_id, status)
+            .await?;
+        tx.commit().await?;
+
+        if let Some(consensus) = &self.federation_consensus {
+            consensus.lock().await.update_status(operation_id, status)?;
+        }
+
         Ok(())
     }
 
@@ -2926,6 +2963,15 @@ fn accepted_federation_journal_entries(
         })
         .cloned()
         .collect()
+}
+
+#[cfg(feature = "federation")]
+fn federation_operation_status_for_apply_error(error: &cdk::Error) -> FederationOperationStatus {
+    if error.is_definitive_failure() {
+        FederationOperationStatus::Rejected
+    } else {
+        FederationOperationStatus::Failed
+    }
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
