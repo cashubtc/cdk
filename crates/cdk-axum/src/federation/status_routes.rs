@@ -6,7 +6,7 @@ use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftAdapterStatus, FederationMaterializedStateRowFingerprint,
     FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, FEDERATION_REST_API_VERSION,
+    FederationRestMessageKind, FederationSignedRequest, MemberId, FEDERATION_REST_API_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -99,6 +99,14 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_peer: Option<MemberId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_local_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_peer_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_operation_count: Option<u64>,
     #[serde(default)]
     pub(crate) pending_mempool_items: u64,
     #[serde(default)]
@@ -156,6 +164,10 @@ impl FederationLocalStatusResponse {
             sync_state: sync_status.state_name().to_string(),
             sync_ready: sync_status.is_ready(),
             sync_message: sync_status.not_ready_message(),
+            sync_peer: sync_status.peer(),
+            sync_local_operation_count: sync_status.local_operation_count(),
+            sync_peer_operation_count: sync_status.peer_operation_count(),
+            sync_operation_count: sync_status.operation_count(),
             pending_mempool_items,
             pending_response_waiters,
             response_cache_items,

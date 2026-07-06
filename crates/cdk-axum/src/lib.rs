@@ -767,6 +767,59 @@ impl FederationSyncStatus {
         }
     }
 
+    pub(crate) fn peer(&self) -> Option<MemberId> {
+        match self {
+            Self::Lagging { peer, .. }
+            | Self::CatchingUp { peer }
+            | Self::VerifyingSessionOutcome { peer, .. }
+            | Self::MaterializedStateMismatch { peer, .. } => Some(*peer),
+            Self::Healthy | Self::Halted { .. } => None,
+        }
+    }
+
+    pub(crate) fn local_operation_count(&self) -> Option<u64> {
+        match self {
+            Self::Lagging {
+                local_operation_count,
+                ..
+            } => Some(*local_operation_count),
+            Self::Healthy
+            | Self::CatchingUp { .. }
+            | Self::VerifyingSessionOutcome { .. }
+            | Self::MaterializedStateMismatch { .. }
+            | Self::Halted { .. } => None,
+        }
+    }
+
+    pub(crate) fn peer_operation_count(&self) -> Option<u64> {
+        match self {
+            Self::Lagging {
+                peer_operation_count,
+                ..
+            } => Some(*peer_operation_count),
+            Self::Healthy
+            | Self::CatchingUp { .. }
+            | Self::VerifyingSessionOutcome { .. }
+            | Self::MaterializedStateMismatch { .. }
+            | Self::Halted { .. } => None,
+        }
+    }
+
+    pub(crate) fn operation_count(&self) -> Option<u64> {
+        match self {
+            Self::VerifyingSessionOutcome {
+                operation_count, ..
+            }
+            | Self::MaterializedStateMismatch {
+                operation_count, ..
+            } => Some(*operation_count),
+            Self::Healthy
+            | Self::Lagging { .. }
+            | Self::CatchingUp { .. }
+            | Self::Halted { .. } => None,
+        }
+    }
+
     pub(crate) fn not_ready_message(&self) -> String {
         match self {
             Self::Healthy => "federation member is healthy".to_string(),

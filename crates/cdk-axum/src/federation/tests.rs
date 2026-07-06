@@ -2359,7 +2359,7 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
 
 #[tokio::test]
 async fn lagging_member_refuses_public_federation_submit_until_healthy() {
-    let (state, public_config, _) = federation_route_state().await;
+    let (state, public_config, peer_private) = federation_route_state().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     state
         .mark_federation_lagging(peer_member.member_id, 0, 1)
@@ -2376,6 +2376,16 @@ async fn lagging_member_refuses_public_federation_submit_until_healthy() {
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Lagging { .. })
     ));
+    let status_request = signed_status_request(&public_config, &peer_private, member_id(1), 1);
+    let status = post_local_status(State(state.clone()), Json(status_request))
+        .await
+        .expect("lagging local status")
+        .0;
+    assert_eq!(status.sync_state, "lagging");
+    assert_eq!(status.sync_peer, Some(peer_member.member_id));
+    assert_eq!(status.sync_local_operation_count, Some(0));
+    assert_eq!(status.sync_peer_operation_count, Some(1));
+    assert_eq!(status.sync_operation_count, None);
 
     state.mark_federation_healthy().await;
     state

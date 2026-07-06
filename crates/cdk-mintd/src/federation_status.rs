@@ -31,6 +31,14 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_peer: Option<MemberId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_local_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_peer_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_operation_count: Option<u64>,
     #[serde(default)]
     pub(crate) pending_mempool_items: u64,
     #[serde(default)]
@@ -297,16 +305,27 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .map(|count| count.to_string())
         .unwrap_or_else(|| "none".to_string());
     let session_outcome_quorum_signers = member_list(&status.session_outcome_quorum_signers);
+    let sync_peer = status
+        .sync_peer
+        .map(|peer| peer.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let sync_local_operation_count = option_u64(status.sync_local_operation_count);
+    let sync_peer_operation_count = option_u64(status.sync_peer_operation_count);
+    let sync_operation_count = option_u64(status.sync_operation_count);
     let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
         payment_report_counts(status);
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
         status.sync_ready,
+        sync_peer,
+        sync_local_operation_count,
+        sync_peer_operation_count,
+        sync_operation_count,
         peer.operation_count,
         latest_index,
         peer.latest_order_digest,
@@ -330,6 +349,12 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         aleph_bft,
         redact_federation_operator_message(&status.sync_message)
     )
+}
+
+fn option_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn aleph_bft_status_fields(status: &FederationLocalStatusResponse) -> String {

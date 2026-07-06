@@ -157,6 +157,10 @@ fn local_status(
         sync_state: "healthy".to_string(),
         sync_ready: true,
         sync_message: "federation member is healthy".to_string(),
+        sync_peer: None,
+        sync_local_operation_count: None,
+        sync_peer_operation_count: None,
+        sync_operation_count: None,
         pending_mempool_items: 0,
         pending_response_waiters: 0,
         response_cache_items: 0,
@@ -181,6 +185,9 @@ fn not_ready_status(
     status.sync_state = "lagging".to_string();
     status.sync_ready = false;
     status.sync_message = "federation member is lagging behind peer 2".to_string();
+    status.sync_peer = Some(MemberId::new(2).expect("peer member"));
+    status.sync_local_operation_count = Some(0);
+    status.sync_peer_operation_count = Some(1);
     status
 }
 
@@ -386,6 +393,10 @@ fn status_line_prints_consensus_backend() {
     let line = member_status_line(&status);
 
     assert!(line.contains("consensus_backend=in_memory"));
+    assert!(line.contains("sync_peer=none"));
+    assert!(line.contains("sync_local_operations=none"));
+    assert!(line.contains("sync_peer_operations=none"));
+    assert!(line.contains("sync_operations=none"));
     assert!(line.contains("pending_mempool_items=0"));
     assert!(line.contains("pending_response_waiters=0"));
     assert!(line.contains("response_cache_items=0"));
@@ -393,6 +404,20 @@ fn status_line_prints_consensus_backend() {
     assert!(line.contains("duplicate_submissions=0"));
     assert!(line.contains("duplicate_pending_waiter_joins=0"));
     assert!(line.contains("aleph_bft=none"));
+}
+
+#[test]
+fn status_line_includes_structured_lagging_sync_fields() {
+    let (public_config, _) = status_fixture();
+    let status = not_ready_status(&public_config, 1);
+
+    let line = member_status_line(&status);
+
+    assert!(line.contains("sync=lagging"));
+    assert!(line.contains("sync_peer=2"));
+    assert!(line.contains("sync_local_operations=0"));
+    assert!(line.contains("sync_peer_operations=1"));
+    assert!(line.contains("sync_operations=none"));
 }
 
 #[test]
