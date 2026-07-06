@@ -13,16 +13,16 @@ use cdk_common::database::{
 };
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederatedKeyset, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationContext, FederationPaymentObservationPolicy,
-    FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
-    FederationRestoreOperation, FederationSwapOperation, InMemoryFederationConsensus,
-    InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    generate_trusted_dealer_configs, FederatedKeyset, FederationError,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
+    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
+    FederationPaymentTrustModel, FederationRestoreOperation, FederationSwapOperation,
+    InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut00::KnownMethod;
@@ -1700,6 +1700,14 @@ async fn apply_federation_mint_uses_rotated_keyset_for_signing() {
     assert_eq!(share_records[0].keyset_id, next_keyset.id);
     assert_eq!(share_records[0].amount, Amount::from(1));
     assert_eq!(share_records[0].blinded_secret, output.blinded_secret);
+    assert_eq!(
+        share_records[0].accepted_operation_index,
+        Some(mint_entry.index)
+    );
+    assert_eq!(
+        share_records[0].consensus_evidence,
+        mint_entry.consensus_evidence
+    );
 
     let blinded_message_share_records = localstore
         .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
@@ -2308,6 +2316,14 @@ async fn apply_federation_swap_spends_old_proofs_and_signs_rotated_outputs() {
     assert_eq!(share_records[0].keyset_id, next_keyset.id);
     assert_eq!(share_records[0].amount, Amount::from(1));
     assert_eq!(share_records[0].blinded_secret, output.blinded_secret);
+    assert_eq!(
+        share_records[0].accepted_operation_index,
+        Some(swap_entry.index)
+    );
+    assert_eq!(
+        share_records[0].consensus_evidence,
+        swap_entry.consensus_evidence
+    );
 
     let input_states = mint
         .check_state(&cdk_common::CheckStateRequest {
@@ -2572,6 +2588,13 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
         .expect("melt operation")
         .operation_id()
         .expect("operation id");
+    let consensus_evidence =
+        FederationJournalConsensusEvidence::new(7, 11, 13, effective.member_id(), 17);
+    let signature_share_provenance =
+        super::super::melt::shared::FederationSignatureShareProvenance::new(
+            23,
+            Some(consensus_evidence),
+        );
 
     let db = mint.localstore();
     let (change_sigs, tx) = super::super::melt::shared::process_federation_melt_change(
@@ -2579,6 +2602,7 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
         &db,
         &quote,
         operation_id,
+        signature_share_provenance,
         Amount::new(3, CurrencyUnit::Sat),
         Amount::new(2, CurrencyUnit::Sat),
         Amount::ZERO.with_unit(CurrencyUnit::Sat),
@@ -2614,6 +2638,11 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
     assert_eq!(share_records[0].keyset_id, next_keyset.id);
     assert_eq!(share_records[0].amount, Amount::from(1));
     assert_eq!(share_records[0].blinded_secret, change_secret);
+    assert_eq!(share_records[0].accepted_operation_index, Some(23));
+    assert_eq!(
+        share_records[0].consensus_evidence,
+        Some(consensus_evidence)
+    );
 }
 
 #[tokio::test]
@@ -2716,6 +2745,14 @@ async fn restore_returns_old_keyset_signature_after_rotation() {
     assert_eq!(share_records[0].operation_id, mint_entry.operation_id);
     assert_eq!(share_records[0].output_index, 1);
     assert_eq!(share_records[0].keyset_id, old_keyset.id);
+    assert_eq!(
+        share_records[0].accepted_operation_index,
+        Some(mint_entry.index)
+    );
+    assert_eq!(
+        share_records[0].consensus_evidence,
+        mint_entry.consensus_evidence
+    );
     assert_eq!(
         restored.signatures[0].c,
         PublicKey::from(share_records[0].share.signature())

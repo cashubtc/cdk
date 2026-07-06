@@ -1010,7 +1010,6 @@ where
               AND federation_signature_shares.amount = EXCLUDED.amount
               AND federation_signature_shares.keyset_id = EXCLUDED.keyset_id
               AND federation_signature_shares.signature_share = EXCLUDED.signature_share
-              AND federation_signature_shares.share_json = EXCLUDED.share_json
             "#,
         )?
         .bind("operation_id", share.operation_id.to_string())

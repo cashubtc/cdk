@@ -1081,8 +1081,7 @@ impl Mint {
                 Ok(true)
             }
             FederationOperation::Swap(operation) => {
-                self.apply_federation_swap(entry.operation_id, operation)
-                    .await?;
+                self.apply_federation_swap(entry, operation).await?;
                 Ok(true)
             }
             FederationOperation::Melt(operation) => {
@@ -1416,7 +1415,11 @@ impl Mint {
         };
 
         let share_set = config.mint_signature_shares(operation_id, &input)?;
-        let signature_share_records = FederationSignatureShareRecord::from_share_set(&share_set);
+        let signature_share_records = FederationSignatureShareRecord::from_accepted_share_set(
+            &share_set,
+            entry.index,
+            entry.consensus_evidence,
+        );
         tx.add_federation_signature_shares(&signature_share_records)
             .await?;
         let mut issued_notifications = Vec::new();
@@ -1467,9 +1470,10 @@ impl Mint {
 
     async fn apply_federation_swap(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         operation: &FederationSwapOperation,
     ) -> Result<(), Error> {
+        let operation_id = entry.operation_id;
         let config = self
             .effective_federation_config()
             .await?
@@ -1539,7 +1543,11 @@ impl Mint {
             State::Spent if signatures_present == existing_signatures.len() => {
                 let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
                 let signature_share_records =
-                    FederationSignatureShareRecord::from_share_set(&share_set);
+                    FederationSignatureShareRecord::from_accepted_share_set(
+                        &share_set,
+                        entry.index,
+                        entry.consensus_evidence,
+                    );
                 tx.add_federation_signature_shares(&signature_share_records)
                     .await?;
                 tx.update_federation_operation_status(
@@ -1571,8 +1579,11 @@ impl Mint {
 
         if signatures_present == 0 {
             let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
-            let signature_share_records =
-                FederationSignatureShareRecord::from_share_set(&share_set);
+            let signature_share_records = FederationSignatureShareRecord::from_accepted_share_set(
+                &share_set,
+                entry.index,
+                entry.consensus_evidence,
+            );
             let signatures = federation_share_signatures(share_set);
             tx.add_federation_signature_shares(&signature_share_records)
                 .await?;

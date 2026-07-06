@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    FederationConfig, FederationError, FederationOperationId, MemberConfigPrivate, MemberId, Result,
+    FederationConfig, FederationError, FederationJournalConsensusEvidence, FederationOperationId,
+    MemberConfigPrivate, MemberId, Result,
 };
 use crate::nuts::nut01::{verify_blind_signature_share, BlsBlindSignatureShare};
 use crate::{Amount, BlindedMessage, Id, PublicKey};
@@ -41,6 +42,12 @@ pub struct FederationBlindSignatureShareSet {
 pub struct FederationSignatureShareRecord {
     /// Operation that authorized this signature share.
     pub operation_id: FederationOperationId,
+    /// Zero-based accepted operation index in the federation journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_operation_index: Option<u64>,
+    /// Ordering-backend evidence for the accepted operation, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consensus_evidence: Option<FederationJournalConsensusEvidence>,
     /// Zero-based output index inside the accepted operation.
     pub output_index: u32,
     /// Federation member that produced the share.
@@ -60,6 +67,8 @@ impl FederationSignatureShareRecord {
     pub fn new(output_index: u32, share: FederationBlindSignatureShare) -> Self {
         Self {
             operation_id: share.operation_id,
+            accepted_operation_index: None,
+            consensus_evidence: None,
             output_index,
             member_id: share.member_id,
             keyset_id: share.keyset_id,
@@ -78,6 +87,20 @@ impl FederationSignatureShareRecord {
             .enumerate()
             .map(|(index, share)| Self::new(index as u32, share))
             .collect()
+    }
+
+    /// Build durable rows for all shares in a share set with accepted-order provenance.
+    pub fn from_accepted_share_set(
+        share_set: &FederationBlindSignatureShareSet,
+        accepted_operation_index: u64,
+        consensus_evidence: Option<FederationJournalConsensusEvidence>,
+    ) -> Vec<Self> {
+        let mut records = Self::from_share_set(share_set);
+        for record in &mut records {
+            record.accepted_operation_index = Some(accepted_operation_index);
+            record.consensus_evidence = consensus_evidence;
+        }
+        records
     }
 }
 

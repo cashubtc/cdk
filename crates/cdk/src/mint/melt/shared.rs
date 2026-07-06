@@ -10,7 +10,9 @@ use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase};
 #[cfg(feature = "federation")]
-use cdk_common::federation::{FederationOperationId, FederationSignatureShareRecord};
+use cdk_common::federation::{
+    FederationJournalConsensusEvidence, FederationOperationId, FederationSignatureShareRecord,
+};
 use cdk_common::mint::{self as mint_types};
 #[cfg(feature = "federation")]
 use cdk_common::nuts::MintQuoteState;
@@ -395,6 +397,48 @@ struct PreparedFederationMeltChange {
 }
 
 #[cfg(feature = "federation")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FederationSignatureShareProvenance {
+    accepted_operation_index: u64,
+    consensus_evidence: Option<FederationJournalConsensusEvidence>,
+}
+
+#[cfg(feature = "federation")]
+impl FederationSignatureShareProvenance {
+    pub(crate) fn new(
+        accepted_operation_index: u64,
+        consensus_evidence: Option<FederationJournalConsensusEvidence>,
+    ) -> Self {
+        Self {
+            accepted_operation_index,
+            consensus_evidence,
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+async fn federation_signature_share_provenance_for_operation(
+    db: &DynMintDatabase,
+    federation_operation_id: FederationOperationId,
+) -> Result<FederationSignatureShareProvenance, Error> {
+    let entries = db.get_federation_journal_entries().await?;
+    let entry = entries
+        .into_iter()
+        .find(|entry| entry.operation_id == federation_operation_id)
+        .ok_or_else(|| {
+            Error::Custom(
+                "federation operation must be accepted in the journal before signing change"
+                    .to_string(),
+            )
+        })?;
+
+    Ok(FederationSignatureShareProvenance::new(
+        entry.index,
+        entry.consensus_evidence,
+    ))
+}
+
+#[cfg(feature = "federation")]
 impl PreparedFederationMeltChange {
     fn empty() -> Self {
         Self {
@@ -420,6 +464,7 @@ async fn prepare_federation_melt_change(
     mint: &super::super::Mint,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
+    signature_share_provenance: FederationSignatureShareProvenance,
     inputs_amount: Amount<CurrencyUnit>,
     total_spent: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
@@ -484,7 +529,11 @@ async fn prepare_federation_melt_change(
         started.elapsed().as_secs_f64(),
     );
     let share_set = share_set?;
-    let signature_share_records = FederationSignatureShareRecord::from_share_set(&share_set);
+    let signature_share_records = FederationSignatureShareRecord::from_accepted_share_set(
+        &share_set,
+        signature_share_provenance.accepted_operation_index,
+        signature_share_provenance.consensus_evidence,
+    );
     let change_sigs = share_set
         .shares
         .into_iter()
@@ -513,6 +562,7 @@ pub async fn process_federation_melt_change(
     db: &DynMintDatabase,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
+    signature_share_provenance: FederationSignatureShareProvenance,
     inputs_amount: Amount<CurrencyUnit>,
     total_spent: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
@@ -528,6 +578,7 @@ pub async fn process_federation_melt_change(
         mint,
         quote_id,
         federation_operation_id,
+        signature_share_provenance,
         inputs_amount,
         total_spent,
         inputs_fee,
@@ -907,10 +958,13 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
     read_tx.rollback().await?;
 
     let total_spent = quote.amount();
+    let signature_share_provenance =
+        federation_signature_share_provenance_for_operation(db, federation_operation_id).await?;
     let prepared_change = prepare_federation_melt_change(
         mint,
         &quote.id,
         federation_operation_id,
+        signature_share_provenance,
         melt_request_info.inputs_amount.clone(),
         total_spent.clone(),
         melt_request_info.inputs_fee.clone(),
@@ -1231,11 +1285,15 @@ async fn finalize_melt_quote_inner(
     // Process change (if needed) - opens new transaction.
     #[cfg(feature = "federation")]
     let (change_sigs, mut tx) = if let Some(federation_operation_id) = federation_operation_id {
+        let signature_share_provenance =
+            federation_signature_share_provenance_for_operation(db, federation_operation_id)
+                .await?;
         process_federation_melt_change(
             mint,
             db,
             &quote.id,
             federation_operation_id,
+            signature_share_provenance,
             melt_request_info.inputs_amount.clone(),
             total_spent.clone(),
             melt_request_info.inputs_fee.clone(),

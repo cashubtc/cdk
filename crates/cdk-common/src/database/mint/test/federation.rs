@@ -245,6 +245,8 @@ fn signature_share_record(
 
     FederationSignatureShareRecord {
         operation_id,
+        accepted_operation_index: None,
+        consensus_evidence: None,
         output_index,
         member_id,
         keyset_id: Id::from_bytes(&keyset_id_bytes).expect("keyset id"),
