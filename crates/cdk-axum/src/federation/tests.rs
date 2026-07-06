@@ -3740,6 +3740,136 @@ async fn catch_up_applies_swap_operation_to_local_store() {
 }
 
 #[tokio::test]
+async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
+    let (state, public_config, _) = federation_route_state().await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let first_input = proof_for_amount(&state, 1, "catch-up-conflict-first");
+    let first_input_y = first_input.y().expect("first input y");
+    let first_output = swap_output(&state, "catch-up-conflict-first");
+    let first_request =
+        cdk::nuts::SwapRequest::new(vec![first_input.clone()], vec![first_output.clone()]);
+    let first_envelope = config
+        .swap_operation(first_request.clone())
+        .expect("first swap envelope");
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+
+    let conflicting_output = swap_output(&state, "catch-up-conflict-loser");
+    let conflicting_request =
+        cdk::nuts::SwapRequest::new(vec![first_input], vec![conflicting_output.clone()]);
+    let conflicting_envelope = config
+        .swap_operation(conflicting_request)
+        .expect("conflicting swap envelope");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("conflicting operation id");
+
+    let later_input = proof_for_amount(&state, 1, "catch-up-conflict-later");
+    let later_input_y = later_input.y().expect("later input y");
+    let later_output = swap_output(&state, "catch-up-conflict-later");
+    let later_request = cdk::nuts::SwapRequest::new(vec![later_input], vec![later_output.clone()]);
+    let later_envelope = config
+        .swap_operation(later_request.clone())
+        .expect("later swap envelope");
+    let later_operation_id = later_envelope.operation_id().expect("later operation id");
+
+    let mut peer_consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+    for envelope in [first_envelope, conflicting_envelope, later_envelope] {
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted swap operation");
+    }
+    let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+    let catch_up_response = peer_consensus
+        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+        .expect("catch-up response");
+    assert_eq!(catch_up_response.entries.len(), 3);
+
+    let applied = state
+        .apply_federation_catch_up_response(&catch_up_response)
+        .await
+        .expect("catch-up should continue past deterministic rejected swap");
+
+    assert_eq!(applied.len(), 3);
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_proofs_states(&[first_input_y, later_input_y])
+            .await
+            .expect("proof state lookup"),
+        vec![Some(cdk::nuts::State::Spent), Some(cdk::nuts::State::Spent)]
+    );
+
+    let first_response = config
+        .swap_share_response(first_operation_id, &first_request)
+        .expect("first expected share response");
+    let later_response = config
+        .swap_share_response(later_operation_id, &later_request)
+        .expect("later expected share response");
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[
+                first_output.blinded_secret,
+                conflicting_output.blinded_secret,
+                later_output.blinded_secret,
+            ])
+            .await
+            .expect("signature lookup"),
+        vec![
+            Some(first_response.signatures[0].clone()),
+            None,
+            Some(later_response.signatures[0].clone()),
+        ]
+    );
+
+    let persisted = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert_eq!(persisted.len(), 3);
+    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].operation_id, conflicting_operation_id);
+    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
+    assert_eq!(persisted[2].status, FederationOperationStatus::Applied);
+
+    let runtime_consensus = local_consensus.lock().await;
+    assert_eq!(
+        runtime_consensus
+            .journal()
+            .entry_by_operation_id(first_operation_id)
+            .expect("first runtime entry")
+            .status,
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(
+        runtime_consensus
+            .journal()
+            .entry_by_operation_id(conflicting_operation_id)
+            .expect("conflicting runtime entry")
+            .status,
+        FederationOperationStatus::Rejected
+    );
+    assert_eq!(
+        runtime_consensus
+            .journal()
+            .entry_by_operation_id(later_operation_id)
+            .expect("later runtime entry")
+            .status,
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
 async fn catch_up_applies_melt_operation_to_local_store() {
     let (state, public_config, _) = federation_route_state().await;
     let config = state

@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover conflicting swap races</span>
+          <span class="value">fix: continue catch-up past rejected swaps</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Concurrent same-proof public swaps now produce one applied spend, terminal loser outcomes, and no signature shares for losing outputs.</span>
+          <span class="value">Catch-up replay now marks deterministic same-input swap losers rejected and continues applying later independent swaps.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -744,7 +744,7 @@
         <div class="stack">
           <article class="item">
             <h3>Consensus-before-signing</h3>
-            <p>Naive threshold mix-and-match signing is covered by attack regressions, same-quote/different-output public mint attempts store no conflicting signature share, same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
+            <p>Naive threshold mix-and-match signing is covered by attack regressions, same-quote/different-output public mint attempts store no conflicting signature share, same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, catch-up replay continues past deterministic rejected swap losers, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>

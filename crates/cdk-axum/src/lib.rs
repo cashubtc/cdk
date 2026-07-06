@@ -2676,8 +2676,11 @@ impl MintState {
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
         let mut applied = Vec::new();
         for entry in entries {
-            if self.apply_federation_journal_entry(entry).await? {
-                applied.push(entry.operation_id);
+            if let Some(operation_id) = self
+                .apply_federation_journal_entry_for_replay(entry)
+                .await?
+            {
+                applied.push(operation_id);
             }
         }
         self.mark_federation_operations_applied(&applied).await?;
@@ -2695,10 +2698,29 @@ impl MintState {
         match self.mint.apply_accepted_federation_operation(entry).await {
             Ok(applied) => Ok(applied),
             Err(err) => {
-                let status = federation_operation_status_for_apply_error(&err);
-                self.mark_federation_operation_status(entry.operation_id, status)
+                self.mark_federation_operation_apply_failure(entry.operation_id, &err)
                     .await?;
                 Err(err)
+            }
+        }
+    }
+
+    async fn apply_federation_journal_entry_for_replay(
+        &self,
+        entry: &FederationJournalEntry,
+    ) -> Result<Option<FederationOperationId>, cdk::Error> {
+        match self.mint.apply_accepted_federation_operation(entry).await {
+            Ok(true) => Ok(Some(entry.operation_id)),
+            Ok(false) => Ok(None),
+            Err(err) => {
+                let status = self
+                    .mark_federation_operation_apply_failure(entry.operation_id, &err)
+                    .await?;
+                if status == FederationOperationStatus::Rejected {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
             }
         }
     }
@@ -2766,6 +2788,17 @@ impl MintState {
         }
 
         Ok(())
+    }
+
+    async fn mark_federation_operation_apply_failure(
+        &self,
+        operation_id: FederationOperationId,
+        error: &cdk::Error,
+    ) -> Result<FederationOperationStatus, cdk::Error> {
+        let status = federation_operation_status_for_apply_error(error);
+        self.mark_federation_operation_status(operation_id, status)
+            .await?;
+        Ok(status)
     }
 
     pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
