@@ -3438,6 +3438,37 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_federation_batch_mint_returns_persisted_signature_shares() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let outputs = outputs_for_amount(&state, 2);
+        let input = cdk::mint::MintInput::Batch(BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs,
+            signatures: None,
+        });
+
+        let first = process_federation_mint_input(&state, &input)
+            .await
+            .expect("first federation mint submit")
+            .expect("first federation mint response");
+        let duplicate = process_federation_mint_input(&state, &input)
+            .await
+            .expect("duplicate federation mint submit")
+            .expect("duplicate federation mint response");
+
+        assert_eq!(duplicate, first);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
@@ -3517,6 +3548,38 @@ mod tests {
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Swap]
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_post_swap_returns_persisted_signature_shares() {
+        let state = create_federated_test_state().await;
+        let outputs = outputs_for_amount(&state, 2);
+        let inputs = vec![proof_for_amount(&state, 2, "duplicate-swap-input")];
+        let request = cdk::nuts::SwapRequest::new(inputs, outputs);
+
+        let first = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(request.clone()),
+        )
+        .await
+        .expect("first federation swap should return share response");
+        let duplicate = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(request),
+        )
+        .await
+        .expect("duplicate federation swap should return persisted share response");
+
+        assert_eq!(duplicate.0, first.0);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
     }
 
     #[cfg(feature = "federation")]
