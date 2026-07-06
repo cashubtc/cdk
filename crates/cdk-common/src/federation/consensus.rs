@@ -986,6 +986,10 @@ impl FederationAlephBftFinalizationHandler {
         let mut finalized_unit_metadata = BTreeMap::new();
         let mut finalized_unit_items = BTreeMap::new();
         let mut finalized_operation_ids = BTreeSet::new();
+        let mut last_unit_key = None;
+        let mut closed_unit_keys = BTreeSet::new();
+        let mut next_item_index_by_unit = BTreeMap::new();
+        let mut last_unit_finalization_index_by_session = BTreeMap::new();
         let mut next_unit_finalization_index = 0;
         let mut next_item_index = 0;
 
@@ -1051,6 +1055,48 @@ impl FederationAlephBftFinalizationHandler {
                 finalized_item.unit_submitting_member,
                 finalized_item.unit_index,
             );
+            if last_unit_key != Some(unit_key) {
+                if let Some(previous_unit_key) = last_unit_key {
+                    closed_unit_keys.insert(previous_unit_key);
+                }
+                if closed_unit_keys.contains(&unit_key) {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "finalized unit items are not contiguous in accepted item order"
+                            .to_string(),
+                    });
+                }
+                last_unit_key = Some(unit_key);
+            }
+
+            let expected_item_index = next_item_index_by_unit.entry(unit_key).or_insert(0);
+            if finalized_item.item_index_in_unit != *expected_item_index {
+                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                    reason: format!(
+                        "non-contiguous item index in finalized unit accepted order: expected {}, found {}",
+                        *expected_item_index, finalized_item.item_index_in_unit
+                    ),
+                });
+            }
+            *expected_item_index = (*expected_item_index).saturating_add(1);
+
+            let is_new_unit = !finalized_unit_metadata.contains_key(&unit_key);
+            if is_new_unit {
+                let previous_index = last_unit_finalization_index_by_session.insert(
+                    finalized_item.session,
+                    finalized_item.unit_finalization_index,
+                );
+                if let Some(previous_index) = previous_index {
+                    if finalized_item.unit_finalization_index <= previous_index {
+                        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                            reason: format!(
+                                "unit finalization index did not advance in retained order: previous {previous_index}, found {}",
+                                finalized_item.unit_finalization_index
+                            ),
+                        });
+                    }
+                }
+            }
+
             let unit_metadata = (
                 finalized_item.unit_finalization_index,
                 finalized_item.unit_body_hash,

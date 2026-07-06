@@ -1492,6 +1492,50 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     adapter.finalize_unit(unit).expect("finalized");
     let finalized_items = adapter.finalized_items().to_vec();
 
+    let first_ordered_envelope = mint_envelope(
+        federation_id,
+        "quote-3",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let second_ordered_envelope = mint_envelope(
+        federation_id,
+        "quote-4",
+        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+    );
+    let ordered_first_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(first_ordered_envelope),
+            FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+                "mint",
+                "payment_observation",
+                json!({"quote": "quote-3", "paid": true}),
+            )),
+        ],
+    )
+    .expect("ordered first unit");
+    let ordered_second_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(3),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(second_ordered_envelope)],
+    )
+    .expect("ordered second unit");
+    let mut ordered_adapter =
+        FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    ordered_adapter
+        .finalize_unit(ordered_first_unit)
+        .expect("first ordered unit finalized");
+    ordered_adapter
+        .finalize_unit(ordered_second_unit)
+        .expect("second ordered unit finalized");
+    let ordered_finalized_items = ordered_adapter.finalized_items().to_vec();
+    assert_eq!(ordered_finalized_items.len(), 3);
+
     let mut gap = finalized_items.clone();
     gap[0].accepted_item_index = 7;
     assert!(matches!(
@@ -1543,6 +1587,49 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
         ),
         Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
             if reason.contains("non-contiguous item index")
+    ));
+
+    let mut out_of_order_unit_items = ordered_finalized_items.clone();
+    out_of_order_unit_items.swap(0, 1);
+    out_of_order_unit_items[0].accepted_item_index = 0;
+    out_of_order_unit_items[1].accepted_item_index = 1;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            out_of_order_unit_items,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("accepted order")
+    ));
+
+    let mut interleaved_unit_items = ordered_finalized_items.clone();
+    interleaved_unit_items.swap(1, 2);
+    interleaved_unit_items[1].accepted_item_index = 1;
+    interleaved_unit_items[2].accepted_item_index = 2;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            interleaved_unit_items,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("not contiguous in accepted item order")
+    ));
+
+    let mut non_advancing_unit_finalization = ordered_finalized_items.clone();
+    non_advancing_unit_finalization[2].unit_finalization_index = 0;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            non_advancing_unit_finalization,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("unit finalization index did not advance")
     ));
 
     let mut impossible_duplicate = finalized_items;
