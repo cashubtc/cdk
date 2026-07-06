@@ -434,6 +434,14 @@ pub enum FederationError {
         /// Maximum allowed canonical item size.
         max: usize,
     },
+    /// Pending consensus item admission would exceed the configured queue limit.
+    #[error("Federation pending consensus mempool full: pending={pending}, max={max}")]
+    PendingConsensusMempoolFull {
+        /// Number of items already pending.
+        pending: usize,
+        /// Maximum pending item count.
+        max: usize,
+    },
     /// A consensus batching or payload limit must be non-zero.
     #[error("Invalid federation consensus limit {field}: value={value}")]
     InvalidConsensusLimit {

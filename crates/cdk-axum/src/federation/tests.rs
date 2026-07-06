@@ -184,6 +184,10 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             state_digest_checkpoint_retention: 0,
             ..valid
         },
+        FederationPeerSyncConfig {
+            pending_mempool_item_limit: 0,
+            ..valid
+        },
     ];
 
     for config in cases {
@@ -5751,6 +5755,81 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert!(consensus.journal().entries().is_empty());
+}
+
+#[tokio::test]
+async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        pending_mempool_item_limit: 1,
+        ..FederationPeerSyncConfig::default()
+    });
+    let queued_quote_id = QuoteId::new();
+    {
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus handle");
+        consensus
+            .lock()
+            .await
+            .submit_aleph_bft_envelope(mint_quote_envelope(&state, &queued_quote_id))
+            .expect("prequeued AlephBFT operation");
+    }
+    let rejected_quote_id = QuoteId::new();
+
+    let err = state
+        .submit_federation_envelope_with_sequence(
+            mint_quote_envelope(&state, &rejected_quote_id),
+            None,
+        )
+        .await
+        .expect_err("full pending mempool should reject new operation");
+
+    assert!(
+        err.to_string().contains("pending consensus mempool full"),
+        "unexpected error: {err}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&rejected_quote_id)
+        .await
+        .expect("quote lookup after mempool rejection")
+        .is_none());
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    assert!(consensus.journal().entries().is_empty());
+    drop(consensus);
+
+    let duplicate_err = state
+        .submit_federation_envelope_with_sequence(
+            mint_quote_envelope(&state, &queued_quote_id),
+            None,
+        )
+        .await
+        .expect_err("duplicate pending operation should wait on existing queue entry");
+    assert!(
+        duplicate_err
+            .to_string()
+            .contains("timed out waiting for AlephBFT finalization"),
+        "unexpected duplicate error: {duplicate_err}"
+    );
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
 }
 
 #[tokio::test]

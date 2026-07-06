@@ -1118,6 +1118,9 @@ pub struct FederationPeerSync {
     /// Number of materialized state digest checkpoints retained locally.
     #[serde(default = "default_federation_state_digest_checkpoint_retention")]
     pub state_digest_checkpoint_retention: usize,
+    /// Maximum number of locally queued consensus items awaiting finalization.
+    #[serde(default = "default_federation_pending_mempool_item_limit")]
+    pub pending_mempool_item_limit: usize,
 }
 
 #[cfg(feature = "federation")]
@@ -1142,6 +1145,7 @@ impl Default for FederationPeerSync {
                 default_federation_private_rest_outbound_concurrency_limit(),
             state_digest_checkpoint_retention: default_federation_state_digest_checkpoint_retention(
             ),
+            pending_mempool_item_limit: default_federation_pending_mempool_item_limit(),
         }
     }
 }
@@ -1204,6 +1208,11 @@ fn default_federation_private_rest_outbound_concurrency_limit() -> usize {
 #[cfg(feature = "federation")]
 fn default_federation_state_digest_checkpoint_retention() -> usize {
     10_000
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_pending_mempool_item_limit() -> usize {
+    1024
 }
 
 /// Transaction limits configuration

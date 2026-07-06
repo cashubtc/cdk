@@ -17,6 +17,7 @@ const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(6
 const DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT: usize = 128;
 const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
 const DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION: usize = 10_000;
+const DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT: usize = 1024;
 
 /// Private federation peer synchronization policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,8 @@ pub struct FederationPeerSyncConfig {
     pub private_rest_outbound_concurrency_limit: usize,
     /// Number of materialized state digest checkpoints retained locally.
     pub state_digest_checkpoint_retention: usize,
+    /// Maximum number of locally queued consensus items awaiting finalization.
+    pub pending_mempool_item_limit: usize,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -65,6 +68,7 @@ impl Default for FederationPeerSyncConfig {
             private_rest_outbound_concurrency_limit:
                 DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT,
             state_digest_checkpoint_retention: DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION,
+            pending_mempool_item_limit: DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT,
         }
     }
 }
@@ -123,6 +127,9 @@ impl FederationPeerSyncConfig {
         }
         if self.state_digest_checkpoint_retention == 0 {
             anyhow::bail!("federation state digest checkpoint retention must be greater than zero");
+        }
+        if self.pending_mempool_item_limit == 0 {
+            anyhow::bail!("federation pending mempool item limit must be greater than zero");
         }
 
         Ok(())

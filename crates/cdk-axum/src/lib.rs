@@ -18,15 +18,15 @@ use cdk::federation::{
     redact_federation_operator_message, FederationAlephBftAdapterStatus,
     FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload, FederationConfig,
     FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
-    FederationConsensusRuntime, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationStateDigestCheckpoint,
-    FederationSubmitOperationResponse, MemberId,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
+    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
+    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -1197,11 +1197,39 @@ impl MintState {
             return Ok(response);
         }
 
+        let queued_before = consensus.pending_mempool_len();
         let mut next_consensus = consensus.clone();
-        if let Err(err) = next_consensus.submit_aleph_bft_envelope(envelope) {
-            #[cfg(feature = "prometheus")]
-            self.record_federation_rejected_operation_metric(&operation_label, "consensus");
-            return Err(cdk::Error::from(err));
+        let admission = match next_consensus.submit_aleph_bft_envelope(envelope) {
+            Ok(admission) => admission,
+            Err(err) => {
+                #[cfg(feature = "prometheus")]
+                self.record_federation_rejected_operation_metric(&operation_label, "consensus");
+                return Err(cdk::Error::from(err));
+            }
+        };
+        if matches!(admission, FederationConsensusItemAdmission::Accepted) {
+            let limit = self
+                .federation_peer_sync_config
+                .unwrap_or_default()
+                .pending_mempool_item_limit;
+            if queued_before >= limit {
+                let err = FederationError::PendingConsensusMempoolFull {
+                    pending: queued_before,
+                    max: limit,
+                };
+                #[cfg(feature = "prometheus")]
+                self.record_federation_rejected_operation_metric(&operation_label, "mempool_full");
+                return Err(cdk::Error::from(err));
+            }
+        }
+        if matches!(
+            admission,
+            FederationConsensusItemAdmission::DuplicateOperation
+        ) {
+            tracing::debug!(
+                operation_id = %operation_id,
+                "Duplicate AlephBFT federation operation is already pending"
+            );
         }
         *consensus = next_consensus;
         drop(consensus);
@@ -1238,24 +1266,21 @@ impl MintState {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
-        match &envelope.operation {
-            FederationOperation::MintQuotePayment(_) | FederationOperation::MeltQuotePayment(_) => {
-            }
-            _ => {
-                return Err(cdk::Error::Custom(
-                    "internal federation payment observation submit received non-observation operation"
-                        .to_string(),
-                ));
+        match envelope.operation.kind() {
+            FederationOperationKind::MintQuotePayment
+            | FederationOperationKind::MeltQuotePayment => {}
+            other => {
+                return Err(cdk::Error::Custom(format!(
+                    "federation payment observation expected payment operation, got {other}"
+                )));
             }
         }
-
         if let Some(response) =
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
                 .await?
         {
             return Ok(response);
         }
-
         self.submit_federation_envelope_with_sequence(envelope, None)
             .await
     }

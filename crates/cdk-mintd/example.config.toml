@@ -378,6 +378,7 @@ max_delay_time = 3
 # reconnect_max_backoff_secs = 60
 # private_rest_inbound_concurrency_limit = 128
 # private_rest_outbound_concurrency_limit = 64
+# pending_mempool_item_limit = 1024
 
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]
