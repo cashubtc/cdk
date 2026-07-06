@@ -85,16 +85,14 @@ Last code-confirmed audit: 2026-07-05. This checklist marks items as done only w
 
 Current confirmed shape:
 
-- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
+- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, signed REST submit-operation consensus admission, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, future deterministic binary operation encoding if a later operation version needs it, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, remote pubsub reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, live Postgres federation migration/storage coverage, feature-disabled SQLite legacy migration, standalone mint issue/swap regressions, standalone builder keyset-version regression, standalone DbSignatory regressions, session-outcome, trusted-dealer setup, trusted-dealer fakewallet regtest opt-in, deterministic accepted-time mint quote replay, operation balance audit, source- and manifest-enforced fakewallet coupling audits, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, payment-observation metadata/idempotence, backend-agnostic production payment-path audits, deterministic single-member production melt payment actor tests, mint storage hot-path index query-plan tests, always-on mint payment observer, durable state-digest checkpoint persistence and retention, backend-agnostic signature-share persistence, operation-hash/output-index restore provenance, fakewallet coupling audit, wallet member request timeout/retry policy tests, federation invite-code discovery tests, wallet quote-visibility and matching mint-quote status quorum tests, consensus test-module split coverage, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, federation protocol-version metadata, mixed-version runtime and wallet rejection, stale-upgrade consensus item and catch-up rejection, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: Axum REST peer sync now gathers matching quorum-signed
-  session outcomes for a catch-up range before applying peer journal entries,
-  persists the evidence atomically with the replayed entries, keeps the
-  materialized-state digest/readiness guard after replay, and startup replay now
-  re-enters quorum-evidence verification instead of serving value-changing
-  routes when durable journal entries are not certified by a contiguous
-  session-outcome quorum.
+- Latest checkpoint: signed private REST submit-operation requests can now be
+  verified and mapped into consensus items while preserving the exact submitted
+  operation envelope bytes. The admission helper rejects wrong REST message
+  kinds and unknown member signers before producing an item for the consensus
+  queue or future AlephBFT proposal path.
 
 ## Key observations
 
@@ -511,10 +509,14 @@ Architecture checklist:
   hash, and protocol-version metadata. The payload includes member/session/unit
   metadata, current federation protocol versions, derived operation IDs, and a
   length-prefixed hash over the ordered canonical item body.
-- [ ] Reuse the existing signed private REST envelope as the authenticated
+- [x] Reuse the existing signed private REST envelope as the authenticated
   admission and transport envelope where practical, but make it explicitly
   mappable into AlephBFT proposals without changing the canonical operation
-  bytes.
+  bytes. `FederationVerifiedOperationAdmission` now verifies the signed
+  `SubmitOperation` REST envelope, enforces the expected message kind and
+  configured sender roster, carries sender sequence metadata, computes the
+  operation ID, and wraps the exact operation envelope as a consensus item
+  without changing its canonical bytes.
 - [ ] Add peer identity allowlist validation before any AlephBFT message,
   private REST submit, catch-up response, or signed session outcome is accepted.
   The existing signed private REST envelope verifies sender membership against
@@ -523,6 +525,8 @@ Architecture checklist:
   finalization handler from the configured members and rejects finalized units
   whose `submitting_member` is not in the roster before advancing unit indexes,
   marking duplicates, appending journal entries, or recording finalized items.
+  Signed submit-operation admission now reuses that private REST roster check
+  before producing any consensus item.
   Future AlephBFT wire messages still need to reuse the same roster check at
   the networking boundary.
 - [ ] Add a Fedimint-like data-provider loop that drains a bounded pending queue,

@@ -13,10 +13,11 @@ use super::{
     FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPeerStatus, FederationProtocolVersions, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationPeerStatus, FederationProtocolVersions, FederationRestMessageKind,
+    FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
+    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -418,6 +419,48 @@ impl FederationConsensusItem {
             }
             Self::Default(item) => item.ensure_supported_version(),
         }
+    }
+}
+
+/// A member-to-member operation submission that passed signed REST admission checks.
+#[derive(Debug, Clone)]
+pub struct FederationVerifiedOperationAdmission {
+    /// Member that signed the private REST submission.
+    pub sender: MemberId,
+    /// Sender-local private REST sequence covered by the signature.
+    pub sequence: u64,
+    /// Operation ID computed from the exact submitted operation envelope.
+    pub operation_id: FederationOperationId,
+    /// Consensus item preserving the submitted operation envelope.
+    pub item: FederationConsensusItem,
+}
+
+impl FederationVerifiedOperationAdmission {
+    /// Verify a signed private REST operation submission and prepare it for consensus admission.
+    pub fn from_signed_submit_request(
+        request: &FederationSignedRequest<FederationSubmitOperationRequest>,
+        public_config: &FederationConfig,
+        expected_receiver: MemberId,
+    ) -> Result<Self> {
+        request.verify(public_config, expected_receiver)?;
+        if request.kind != FederationRestMessageKind::SubmitOperation {
+            return Err(FederationError::RestMessageKindMismatch {
+                expected: FederationRestMessageKind::SubmitOperation,
+                found: request.kind,
+            });
+        }
+
+        request.payload.ensure_admissible_size()?;
+        let operation_id = request.payload.operation_id()?;
+        let item = FederationConsensusItem::operation(request.payload.envelope.clone());
+        item.ensure_admissible_size()?;
+
+        Ok(Self {
+            sender: request.sender,
+            sequence: request.sequence,
+            operation_id,
+            item,
+        })
     }
 }
 

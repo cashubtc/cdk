@@ -3,7 +3,10 @@ use std::str::FromStr;
 
 use serde_json::json;
 
-use super::super::{FederationConfig, MemberConfigPrivate, MemberConfigPublic, ThresholdParams};
+use super::super::{
+    FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate,
+    MemberConfigPublic, ThresholdParams,
+};
 use super::*;
 use crate::mint_url::MintUrl;
 use crate::{
@@ -466,6 +469,106 @@ fn consensus_item_canonical_bytes_sort_json_payload_keys() {
         first.canonical_bytes().expect("first canonical bytes"),
         second.canonical_bytes().expect("second canonical bytes")
     );
+}
+
+#[test]
+fn signed_submit_request_maps_to_consensus_item_without_changing_operation_bytes() {
+    let (config, private_members) = consensus_config_three();
+    let receiver = private_members[1].member_id;
+    let envelope = mint_envelope(
+        config.federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let canonical_operation = envelope.canonical_bytes().expect("canonical operation");
+    let request = FederationSignedRequest::new_signed(
+        config.federation_id,
+        receiver,
+        7,
+        FederationRestMessageKind::SubmitOperation,
+        FederationSubmitOperationRequest::new(envelope),
+        &private_members[0],
+    )
+    .expect("signed request");
+
+    let admission = FederationVerifiedOperationAdmission::from_signed_submit_request(
+        &request, &config, receiver,
+    )
+    .expect("verified admission");
+
+    assert_eq!(admission.sender, private_members[0].member_id);
+    assert_eq!(admission.sequence, 7);
+    assert_eq!(admission.operation_id, operation_id);
+    assert_eq!(
+        admission.item.operation_id().expect("item operation id"),
+        Some(operation_id)
+    );
+
+    let FederationConsensusItem::Operation(admitted_envelope) = &admission.item else {
+        panic!("operation item");
+    };
+    assert_eq!(
+        admitted_envelope
+            .canonical_bytes()
+            .expect("admitted canonical operation"),
+        canonical_operation
+    );
+}
+
+#[test]
+fn signed_submit_request_admission_rejects_wrong_rest_kind() {
+    let (config, private_members) = consensus_config_three();
+    let receiver = private_members[1].member_id;
+    let request = FederationSignedRequest::new_signed(
+        config.federation_id,
+        receiver,
+        7,
+        FederationRestMessageKind::Status,
+        FederationSubmitOperationRequest::new(mint_envelope(
+            config.federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        )),
+        &private_members[0],
+    )
+    .expect("signed request");
+
+    assert!(matches!(
+        FederationVerifiedOperationAdmission::from_signed_submit_request(
+            &request, &config, receiver
+        ),
+        Err(FederationError::RestMessageKindMismatch {
+            expected: FederationRestMessageKind::SubmitOperation,
+            found: FederationRestMessageKind::Status,
+        })
+    ));
+}
+
+#[test]
+fn signed_submit_request_admission_rejects_unknown_member() {
+    let (config, private_members) = consensus_config_three();
+    let receiver = private_members[1].member_id;
+    let unknown_member = private_member(4, identity_secret(4));
+    let request = FederationSignedRequest::new_signed(
+        config.federation_id,
+        receiver,
+        7,
+        FederationRestMessageKind::SubmitOperation,
+        FederationSubmitOperationRequest::new(mint_envelope(
+            config.federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        )),
+        &unknown_member,
+    )
+    .expect("signed request");
+
+    assert!(matches!(
+        FederationVerifiedOperationAdmission::from_signed_submit_request(&request, &config, receiver),
+        Err(FederationError::UnknownMember { member_id })
+            if member_id == unknown_member.member_id
+    ));
 }
 
 #[test]

@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items while Milestone 4A continues. Core consensus now has a quorum-certified catch-up replay path that verifies signed session-outcome evidence before appending peer journal entries.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Signed private REST submit-operation requests can now be verified and mapped into consensus items without changing the canonical operation envelope bytes.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: expose aleph bft adapter status</span>
+          <span class="value">feat: admit signed rest operations to consensus</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The AlephBFT adapter runtime now exposes a typed status snapshot for session, local unit progress, finalization progress, queued items, finalized items, accepted operations, and roster-bound member count.</span>
+          <span class="value">`FederationVerifiedOperationAdmission` verifies signed submit-operation envelopes, rejects wrong REST kinds or unknown member signers, preserves sender sequence metadata, and wraps the exact operation envelope for consensus ordering.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Connect the adapter boundary to an actual AlephBFT runtime/network task, then re-audit startup recovery against the production finalized-item store.</span>
+          <span class="value">Connect the verified private REST admission path to the AlephBFT unit provider/finalization task, then persist production finalized-item metadata before feeding the durable CDK journal.</span>
         </div>
       </aside>
     </header>
@@ -811,6 +811,10 @@
           <article class="item">
             <h3>AlephBFT adapter status</h3>
             <p>`cdk-common` now exposes a typed AlephBFT adapter status snapshot with backend, federation, local member, session, next unit indexes, queued item count, finalized item count, accepted operation count, latest accepted operation index, and roster-bound member count.</p>
+          </article>
+          <article class="item">
+            <h3>Signed REST consensus admission</h3>
+            <p>Signed private REST submit-operation envelopes now verify sender identity, receiver, federation ID, body hash, message kind, and operation size before producing a consensus item that preserves the submitted canonical operation bytes.</p>
           </article>
           <article class="item">
             <h3>AlephBFT finalization boundary</h3>
@@ -2304,6 +2308,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, adapter queue draining, externally finalized operation application, accepted-item evidence population, idempotent duplicate responses, invalid-unit rejection before journal append, AlephBFT adapter runtime selection, roster validation before queueing, explicit unit-pull/finalize delivery, fail-closed generic dispatch when no external finalization has occurred, roster-bound rejection of finalized units from unknown submitting members before state mutation, and status snapshot counters across queue, unit-pull, and finalization transitions.</td>
               <td>Wire the explicit AlephBFT unit-pull/finalize adapter runtime methods into the real AlephBFT runtime/network task before feeding the durable accepted-item journal.</td>
+            </tr>
+            <tr>
+              <td>Signed REST consensus admission</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation signed_submit_request_ -- --test-threads 1` passed. The tests cover signed submit-operation mapping into a consensus item without changing canonical operation bytes, wrong REST message-kind rejection, and unknown-member signer rejection before admission.</td>
+              <td>Feed verified admissions into the AlephBFT unit provider so private REST transport and production ordering share one operation-envelope boundary.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>

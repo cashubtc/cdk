@@ -33,11 +33,11 @@ pub use self::consensus::{
     FederationConsensusBackendKind, FederationConsensusDefaultItem, FederationConsensusEngine,
     FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusItemQueue,
     FederationConsensusModuleFact, FederationConsensusRuntime, FederationQuorumVerifiedCatchUp,
-    InMemoryFederationConsensus, InMemoryFederationConsensusAdapter,
-    InMemoryFederationConsensusNetwork, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
-    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
-    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationVerifiedOperationAdmission, InMemoryFederationConsensus,
+    InMemoryFederationConsensusAdapter, InMemoryFederationConsensusNetwork,
+    FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
