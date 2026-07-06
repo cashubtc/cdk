@@ -158,15 +158,7 @@ where
                 self.sync_config.operation_submission_timeout,
             )
             .await?;
-
-        if response.operation_id != expected_operation_id {
-            anyhow::bail!(
-                "federation peer {} returned operation id {} for submitted operation {}",
-                member.member_id,
-                response.operation_id,
-                expected_operation_id
-            );
-        }
+        response.validate(expected_operation_id)?;
 
         Ok(response)
     }

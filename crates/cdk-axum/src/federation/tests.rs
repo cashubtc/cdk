@@ -2005,6 +2005,48 @@ async fn rest_peer_client_submits_payment_observation_operations() {
 }
 
 #[tokio::test]
+async fn rest_peer_client_rejects_submit_response_with_mismatched_outcome_operation_id() {
+    let (public_config, local_private, _) = transport_config();
+    let federation_id = public_config.federation_id;
+    let member = public_config.member(member_id(2)).expect("peer member");
+    let envelope = payment_observation_envelope(federation_id);
+    let request = FederationSubmitOperationRequest::new(envelope);
+    let expected_operation_id = request.operation_id().expect("expected operation id");
+    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, member.member_id);
+    let other_envelope = restore_envelope(
+        federation_id,
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let mut mismatched_response = peer_consensus
+        .submit_operation(FederationSubmitOperationRequest::new(other_envelope))
+        .expect("peer submit response");
+    let found_operation_id = mismatched_response.outcome.entry().operation_id;
+    assert_ne!(expected_operation_id, found_operation_id);
+    mismatched_response.operation_id = expected_operation_id;
+    let transport =
+        MockFederationTransport::default().with_submit_response(mismatched_response.clone());
+    let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+        .expect("client");
+
+    let err = client
+        .submit_operation(member, &request)
+        .await
+        .expect_err("mismatched embedded outcome should be rejected");
+
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::SubmitOperationResponseMismatch { expected, found })
+            if *expected == expected_operation_id && *found == found_operation_id
+    ));
+    let submitted = transport.submitted_operations();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(
+        submitted[0].payload.operation_id().expect("operation id"),
+        expected_operation_id
+    );
+}
+
+#[tokio::test]
 async fn non_primary_submit_forwards_to_primary_and_catches_up() {
     let (public_config, primary_private, local_private) = transport_config();
     let federation_id = public_config.federation_id;

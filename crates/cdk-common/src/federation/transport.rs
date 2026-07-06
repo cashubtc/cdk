@@ -1021,6 +1021,26 @@ impl FederationSubmitOperationResponse {
             outcome,
         }
     }
+
+    /// Verify this response matches the operation that was submitted.
+    pub fn validate(&self, expected_operation_id: FederationOperationId) -> Result<()> {
+        if self.operation_id != expected_operation_id {
+            return Err(FederationError::SubmitOperationResponseMismatch {
+                expected: expected_operation_id,
+                found: self.operation_id,
+            });
+        }
+
+        let outcome_operation_id = self.outcome.entry().operation_id;
+        if outcome_operation_id != self.operation_id {
+            return Err(FederationError::SubmitOperationResponseMismatch {
+                expected: self.operation_id,
+                found: outcome_operation_id,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 /// Request to deliver one already-finalized AlephBFT unit to a federation peer.
@@ -2118,6 +2138,30 @@ mod tests {
             .validate(config.federation_id, &unit)
             .expect("response validates");
         assert_eq!(response.operation_ids, vec![operation_id]);
+    }
+
+    #[test]
+    fn submit_operation_response_validation_rejects_mismatched_outcome_operation_id() {
+        let expected = mint_quote_envelope();
+        let expected_operation_id = expected.operation_id().expect("expected operation id");
+        let other = mint_envelope(
+            "quote-2",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let mut journal = InMemoryFederationJournal::new();
+        let mut response = FederationSubmitOperationResponse::from_outcome(
+            journal.append(other).expect("journal append"),
+        );
+        let found_operation_id = response.operation_id;
+        assert_ne!(expected_operation_id, found_operation_id);
+
+        response.operation_id = expected_operation_id;
+
+        assert!(matches!(
+            response.validate(expected_operation_id),
+            Err(FederationError::SubmitOperationResponseMismatch { expected, found })
+                if expected == expected_operation_id && found == found_operation_id
+        ));
     }
 
     #[test]

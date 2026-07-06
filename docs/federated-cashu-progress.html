@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after cache eviction, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, and prove pending-mempool backpressure preserves admitted work through durable finalization.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses against their embedded journal outcomes, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after cache eviction, expose response-cache hit, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, and prove pending-mempool backpressure preserves admitted work through durable finalization.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover aleph bft duplicate after cache eviction</span>
+          <span class="value">test: validate private rest submit responses</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT duplicate submits now prove an already accepted operation can be returned from the durable journal after the bounded accepted-response cache evicts the original response.</span>
+          <span class="value">Private REST peer clients now reject submit-operation responses whose top-level operation ID matches the request but whose embedded accepted journal outcome belongs to another operation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -2460,6 +2460,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation aleph_bft_duplicate_after_response_cache_eviction_returns_journal_duplicate -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_driver -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, `cargo fmt --all -- --check`, and `git diff --check` passed. The new regression finalizes two AlephBFT operations through the bounded driver with `response_cache_limit = 1`, evicts the first accepted response, resubmits the first operation, and proves the member returns a durable journal duplicate without requeueing work or registering a waiter.</td>
               <td>Carry this durable-journal fallback through the future live AlephBFT finality task and any typed response caches for operation-specific public APIs.</td>
+            </tr>
+            <tr>
+              <td>Private REST submit-response validation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation submit_operation_response_validation_rejects_mismatched_outcome_operation_id -- --test-threads 1`, `cargo test -p cdk-axum --features federation rest_peer_client_rejects_submit_response_with_mismatched_outcome_operation_id -- --test-threads 1`, `cargo check -p cdk-common --features federation`, and `cargo check -p cdk-axum --features federation` passed. The common response validator now rejects either a top-level operation-id mismatch or an embedded accepted-outcome mismatch, and the REST peer-client regression proves a malicious peer cannot return a matching top-level id while smuggling a different journal outcome. A broader `rest_peer_client` slice passed 19 of 20 sandbox-runnable tests; the remaining live HTTP DKG bind test was blocked by sandbox loopback permissions.</td>
+              <td>Apply the same embedded-outcome binding to any future non-REST submit/ack path before it can drive wallet-visible signing, mint, swap, melt, restore, or check-state responses.</td>
             </tr>
             <tr>
               <td>Federation structured sync status</td>

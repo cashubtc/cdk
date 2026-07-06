@@ -460,6 +460,14 @@ pub enum FederationError {
         /// Timeout that elapsed before finalization was observed.
         timeout_ms: u64,
     },
+    /// A peer returned a submit-operation response for a different operation.
+    #[error("Federation submit-operation response mismatch: expected={expected}, found={found}")]
+    SubmitOperationResponseMismatch {
+        /// Expected submitted operation ID.
+        expected: FederationOperationId,
+        /// Operation ID found in the peer response.
+        found: FederationOperationId,
+    },
     /// A consensus batching or payload limit must be non-zero.
     #[error("Invalid federation consensus limit {field}: value={value}")]
     InvalidConsensusLimit {
