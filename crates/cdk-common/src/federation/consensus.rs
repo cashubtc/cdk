@@ -2175,6 +2175,33 @@ impl FederationConsensusBackendAdapterRuntime {
         })
     }
 
+    /// Recover an AlephBFT adapter runtime from retained finalized items.
+    pub fn aleph_bft_from_finalized_items<I>(
+        federation_id: FederationId,
+        member_ids: I,
+        consensus_threshold: u16,
+        local_member: MemberId,
+        session: u64,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        let allowed_members =
+            validate_adapter_roster(member_ids, consensus_threshold, local_member)?;
+        Ok(Self {
+            backend: FederationConsensusBackendAdapterRuntimeBackend::AlephBft(
+                FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+                    federation_id,
+                    local_member,
+                    session,
+                    allowed_members,
+                    finalized_items,
+                )?,
+            ),
+        })
+    }
+
     /// Create an adapter runtime for the selected backend.
     pub fn with_backend<I>(
         backend: FederationConsensusBackendKind,

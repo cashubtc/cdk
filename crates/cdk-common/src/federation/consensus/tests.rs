@@ -1227,6 +1227,30 @@ fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
         .finalize_unit(duplicate_unit.clone())
         .expect("duplicate finalized");
     let finalized_items = adapter.finalized_items().to_vec();
+    let recovered_runtime =
+        FederationConsensusBackendAdapterRuntime::aleph_bft_from_finalized_items(
+            federation_id,
+            [member_id_value(1), member_id_value(2), member_id_value(3)],
+            2,
+            member_id_value(1),
+            0,
+            finalized_items.clone(),
+        )
+        .expect("recovered runtime");
+    assert_eq!(
+        recovered_runtime
+            .aleph_bft_finalized_items()
+            .expect("runtime finalized items")
+            .len(),
+        2
+    );
+    assert_eq!(
+        recovered_runtime
+            .aleph_bft_status()
+            .expect("runtime AlephBFT status")
+            .next_unit_finalization_index,
+        2
+    );
 
     let mut recovered =
         FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(

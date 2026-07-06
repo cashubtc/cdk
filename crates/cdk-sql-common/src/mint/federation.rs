@@ -4,15 +4,16 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTransaction};
 use cdk_common::database::Error;
 use cdk_common::federation::{
-    FederationConfigDigest, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
-    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationOperationConflictKey, FederationOperationId, FederationOperationOutcomeHash,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
-    FederationStateDigest, FederationStateDigestCheckpoint, MemberId,
+    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus, FederationConfigDigest,
+    FederationConfigSnapshot, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationOperationConflictKey, FederationOperationId,
+    FederationOperationOutcomeHash, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigest,
+    FederationStateDigestCheckpoint, MemberId,
 };
 use cdk_common::PublicKey;
 
@@ -56,6 +57,15 @@ fn payment_observation_context_to_str(
     match context {
         FederationPaymentObservationContext::MintQuote => "mint_quote",
         FederationPaymentObservationContext::MeltQuote => "melt_quote",
+    }
+}
+
+fn aleph_bft_finalized_item_status_to_str(
+    status: FederationAlephBftFinalizedItemStatus,
+) -> &'static str {
+    match status {
+        FederationAlephBftFinalizedItemStatus::Accepted => "accepted",
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation => "duplicate_operation",
     }
 }
 
@@ -229,6 +239,103 @@ fn sql_row_to_federation_signature_share_record(
     unpack_into!(let (share_json) = row);
     serde_json::from_str::<FederationSignatureShareRecord>(&column_as_string!(&share_json))
         .map_err(|e| Error::Internal(format!("Invalid federation signature share JSON: {e}")))
+}
+
+fn sql_row_to_federation_aleph_bft_finalized_item(
+    row: Vec<Column>,
+) -> Result<FederationAlephBftFinalizedItem, Error> {
+    unpack_into!(
+        let (
+            accepted_item_index,
+            session,
+            unit_finalization_index,
+            unit_submitting_member,
+            unit_index,
+            item_index_in_unit,
+            operation_id,
+            status,
+            unit_body_hash,
+            item_json
+        ) = row
+    );
+
+    let accepted_item_index: u64 = column_as_number!(accepted_item_index);
+    let session: u64 = column_as_number!(session);
+    let unit_finalization_index: u64 = column_as_number!(unit_finalization_index);
+    let unit_submitting_member = sql_member_id(unit_submitting_member)?;
+    let unit_index: u64 = column_as_number!(unit_index);
+    let item_index_in_unit: u64 = column_as_number!(item_index_in_unit);
+    let operation_id = match column_as_nullable_string!(&operation_id) {
+        Some(value) => Some(
+            FederationOperationId::from_hex(value)
+                .map_err(|e| Error::Internal(format!("Invalid federation operation id: {e}")))?,
+        ),
+        None => None,
+    };
+    let item =
+        serde_json::from_str::<FederationAlephBftFinalizedItem>(&column_as_string!(&item_json))
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Invalid federation AlephBFT finalized item JSON: {e}"
+                ))
+            })?;
+    if item.accepted_item_index != accepted_item_index {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item index mismatch: expected={accepted_item_index}, found={}",
+            item.accepted_item_index
+        )));
+    }
+    if item.session != session {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item session mismatch: expected={session}, found={}",
+            item.session
+        )));
+    }
+    if item.unit_finalization_index != unit_finalization_index {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item finalization index mismatch: expected={unit_finalization_index}, found={}",
+            item.unit_finalization_index
+        )));
+    }
+    if item.unit_submitting_member != unit_submitting_member {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item member mismatch: expected={unit_submitting_member}, found={}",
+            item.unit_submitting_member
+        )));
+    }
+    if item.unit_index != unit_index {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item unit index mismatch: expected={unit_index}, found={}",
+            item.unit_index
+        )));
+    }
+    if item.item_index_in_unit != item_index_in_unit {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item item index mismatch: expected={item_index_in_unit}, found={}",
+            item.item_index_in_unit
+        )));
+    }
+    if item.operation_id != operation_id {
+        return Err(Error::Internal(
+            "Federation AlephBFT finalized item operation id mismatch".to_string(),
+        ));
+    }
+    let status = column_as_string!(&status);
+    if aleph_bft_finalized_item_status_to_str(item.status) != status {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item status mismatch: expected={status}, found={}",
+            aleph_bft_finalized_item_status_to_str(item.status)
+        )));
+    }
+    let unit_body_hash = column_as_string!(&unit_body_hash);
+    if item.unit_body_hash.to_hex() != unit_body_hash {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT finalized item unit body hash mismatch: expected={unit_body_hash}, found={}",
+            item.unit_body_hash
+        )));
+    }
+
+    Ok(item)
 }
 
 fn sql_member_id(column: Column) -> Result<MemberId, Error> {
@@ -438,6 +545,15 @@ fn federation_signature_share_conflict_error(share: &FederationSignatureShareRec
     Error::Internal(format!(
         "Conflicting federation signature share for operation {} output {} member {}",
         share.operation_id, share.output_index, share.member_id
+    ))
+}
+
+fn federation_aleph_bft_finalized_item_conflict_error(
+    item: &FederationAlephBftFinalizedItem,
+) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation AlephBFT finalized item at accepted index {}",
+        item.accepted_item_index
     ))
 }
 
@@ -684,6 +800,94 @@ where
         .bind("outcome_json", serde_json::to_string(outcome)?)
         .execute(&self.inner)
         .await?;
+
+        Ok(())
+    }
+
+    async fn add_federation_aleph_bft_finalized_item(
+        &mut self,
+        item: &FederationAlephBftFinalizedItem,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_aleph_bft_finalized_items
+            (
+                accepted_item_index,
+                session,
+                unit_finalization_index,
+                unit_submitting_member,
+                unit_index,
+                item_index_in_unit,
+                operation_id,
+                status,
+                unit_body_hash,
+                item_json
+            )
+            VALUES
+            (
+                :accepted_item_index,
+                :session,
+                :unit_finalization_index,
+                :unit_submitting_member,
+                :unit_index,
+                :item_index_in_unit,
+                :operation_id,
+                :status,
+                :unit_body_hash,
+                :item_json
+            )
+            ON CONFLICT (accepted_item_index)
+            DO UPDATE SET
+                session = EXCLUDED.session,
+                unit_finalization_index = EXCLUDED.unit_finalization_index,
+                unit_submitting_member = EXCLUDED.unit_submitting_member,
+                unit_index = EXCLUDED.unit_index,
+                item_index_in_unit = EXCLUDED.item_index_in_unit,
+                operation_id = EXCLUDED.operation_id,
+                status = EXCLUDED.status,
+                unit_body_hash = EXCLUDED.unit_body_hash,
+                item_json = EXCLUDED.item_json
+            WHERE federation_aleph_bft_finalized_items.session = EXCLUDED.session
+              AND federation_aleph_bft_finalized_items.unit_finalization_index = EXCLUDED.unit_finalization_index
+              AND federation_aleph_bft_finalized_items.unit_submitting_member = EXCLUDED.unit_submitting_member
+              AND federation_aleph_bft_finalized_items.unit_index = EXCLUDED.unit_index
+              AND federation_aleph_bft_finalized_items.item_index_in_unit = EXCLUDED.item_index_in_unit
+              AND (
+                    federation_aleph_bft_finalized_items.operation_id = EXCLUDED.operation_id
+                    OR (
+                        federation_aleph_bft_finalized_items.operation_id IS NULL
+                        AND EXCLUDED.operation_id IS NULL
+                    )
+                  )
+              AND federation_aleph_bft_finalized_items.status = EXCLUDED.status
+              AND federation_aleph_bft_finalized_items.unit_body_hash = EXCLUDED.unit_body_hash
+              AND federation_aleph_bft_finalized_items.item_json = EXCLUDED.item_json
+            "#,
+        )?
+        .bind("accepted_item_index", item.accepted_item_index as i64)
+        .bind("session", item.session as i64)
+        .bind(
+            "unit_finalization_index",
+            item.unit_finalization_index as i64,
+        )
+        .bind(
+            "unit_submitting_member",
+            i64::from(item.unit_submitting_member.get()),
+        )
+        .bind("unit_index", item.unit_index as i64)
+        .bind("item_index_in_unit", item.item_index_in_unit as i64)
+        .bind(
+            "operation_id",
+            item.operation_id.map(|operation_id| operation_id.to_string()),
+        )
+        .bind("status", aleph_bft_finalized_item_status_to_str(item.status))
+        .bind("unit_body_hash", item.unit_body_hash.to_hex())
+        .bind("item_json", serde_json::to_string(item)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_aleph_bft_finalized_item_conflict_error(item));
+        }
 
         Ok(())
     }
@@ -1210,6 +1414,73 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_session_outcome)
+        .collect()
+    }
+
+    async fn get_federation_aleph_bft_finalized_items(
+        &self,
+    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                accepted_item_index,
+                session,
+                unit_finalization_index,
+                unit_submitting_member,
+                unit_index,
+                item_index_in_unit,
+                operation_id,
+                status,
+                unit_body_hash,
+                item_json
+            FROM federation_aleph_bft_finalized_items
+            ORDER BY accepted_item_index ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_aleph_bft_finalized_item)
+        .collect()
+    }
+
+    async fn get_federation_aleph_bft_finalized_items_from(
+        &self,
+        accepted_item_index: u64,
+    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                accepted_item_index,
+                session,
+                unit_finalization_index,
+                unit_submitting_member,
+                unit_index,
+                item_index_in_unit,
+                operation_id,
+                status,
+                unit_body_hash,
+                item_json
+            FROM federation_aleph_bft_finalized_items
+            WHERE accepted_item_index >= :accepted_item_index
+            ORDER BY accepted_item_index ASC
+            "#,
+        )?
+        .bind("accepted_item_index", accepted_item_index as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_aleph_bft_finalized_item)
         .collect()
     }
 

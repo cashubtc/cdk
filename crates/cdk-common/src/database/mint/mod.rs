@@ -12,13 +12,13 @@ use cashu::Amount;
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
-    FederationConfigSnapshot, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
-    FederationMemberStatusSnapshot, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigestCheckpoint,
-    MemberId,
+    FederationAlephBftFinalizedItem, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalEntry, FederationMemberStatusSnapshot, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
+    FederationStateDigestCheckpoint, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -655,6 +655,24 @@ pub trait FederationJournalTransaction {
         outcome: &FederationSessionOutcome,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one finalized AlephBFT consensus item.
+    async fn add_federation_aleph_bft_finalized_item(
+        &mut self,
+        item: &FederationAlephBftFinalizedItem,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist finalized AlephBFT consensus items.
+    async fn add_federation_aleph_bft_finalized_items(
+        &mut self,
+        items: &[FederationAlephBftFinalizedItem],
+    ) -> Result<(), Self::Err> {
+        for item in items {
+            self.add_federation_aleph_bft_finalized_item(item).await?;
+        }
+
+        Ok(())
+    }
+
     /// Persist one materialized state digest checkpoint.
     async fn add_federation_state_digest_checkpoint(
         &mut self,
@@ -772,6 +790,17 @@ pub trait FederationJournalDatabase {
         &self,
         from_index: u64,
     ) -> Result<Vec<FederationSessionOutcome>, Self::Err>;
+
+    /// Get all persisted AlephBFT finalized items in accepted item order.
+    async fn get_federation_aleph_bft_finalized_items(
+        &self,
+    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
+
+    /// Get persisted AlephBFT finalized items starting at `accepted_item_index`.
+    async fn get_federation_aleph_bft_finalized_items_from(
+        &self,
+        accepted_item_index: u64,
+    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
 
     /// Get all persisted materialized state digest checkpoints in consensus order.
     async fn get_federation_state_digest_checkpoints(

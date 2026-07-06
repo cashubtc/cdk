@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. The AlephBFT adapter can now recover from retained finalized-item metadata without losing duplicate-operation or finalized-unit replay protection.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. AlephBFT finalized-item metadata now has a durable SQLite/Postgres storage primitive that reloads into adapter recovery.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: recover aleph bft finalized items</span>
+          <span class="value">feat: persist aleph bft finalized items</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationAlephBftConsensusAdapter` can rebuild journal evidence, next indexes, finalized-unit replay guards, and duplicate-operation tracking from retained finalized items, while rejecting corrupted recovery metadata.</span>
+          <span class="value">`FederationJournalTransaction` can persist AlephBFT finalized items, SQLite/Postgres migrations create the accepted-item log, SQLite reloads it into adapter recovery, and Postgres compiles the same regression.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist the AlephBFT finalized-item log in durable storage and reload it during startup before enabling production finalization or public federation routes.</span>
+          <span class="value">Load the durable AlephBFT finalized-item log during startup and bind it to the configured production finalization path before public federation routes are enabled.</span>
         </div>
       </aside>
     </header>
@@ -815,6 +815,10 @@
           <article class="item">
             <h3>AlephBFT finalized-item recovery</h3>
             <p>`cdk-common` can recover an AlephBFT adapter from retained finalized items, rebuilding journal consensus evidence, next indexes, finalized-unit replay protection, and duplicate-operation tracking while rejecting corrupted recovery metadata.</p>
+          </article>
+          <article class="item">
+            <h3>AlephBFT finalized-item storage</h3>
+            <p>`cdk-common` now exposes durable finalized-item persistence through the mint database traits, SQLite/Postgres migrations create indexed accepted-item logs, and SQLite storage reloads persisted items into adapter recovery while rejecting conflicting rewrites.</p>
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
@@ -2322,8 +2326,14 @@
             <tr>
               <td>AlephBFT finalized-item recovery</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation aleph_bft_consensus_adapter_recover -- --test-threads 1` passed. The tests cover recovering the adapter journal from retained finalized items, preserving finalized-unit replay rejection, preserving duplicate-operation idempotence after recovery, and rejecting non-contiguous item indexes, mismatched operation IDs, and impossible duplicate-operation metadata.</td>
-              <td>Persist retained finalized items in SQL storage and reload them into this recovery constructor during startup.</td>
+              <td>`cargo test -p cdk-common --features federation aleph_bft_consensus_adapter_recovers_from_finalized_items -- --test-threads 1` passed. The tests cover recovering the adapter journal and runtime boundary from retained finalized items, preserving finalized-unit replay rejection, preserving duplicate-operation idempotence after recovery, and rejecting non-contiguous item indexes, mismatched operation IDs, and impossible duplicate-operation metadata.</td>
+              <td>Load persisted finalized items into the production AlephBFT startup path before public federation routes are enabled.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT finalized-item storage</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo check -p cdk-sql-common --features federation`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_aleph_bft_finalized_item_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and `cargo test -p cdk-postgres --features federation federation_aleph_bft_finalized_item_persistence --no-run` passed. The tests cover migration presence, empty SQLite migration application, index visibility, durable finalized-item round trip, idempotent replay, conflicting rewrite rejection, ranged readback, and reload into adapter recovery.</td>
+              <td>Run the Postgres finalized-item persistence test against a live service during the next storage-backed smoke, then wire startup reload.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>

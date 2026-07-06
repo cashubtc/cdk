@@ -472,6 +472,12 @@ mod federation_migration_tests {
         let postgres_journal_consensus_evidence = include_str!(
             "migrations/postgres/20260703164000_add_federation_journal_consensus_evidence.sql"
         );
+        let sqlite_aleph_bft_finalized_items = include_str!(
+            "migrations/sqlite/20260703165000_add_federation_aleph_bft_finalized_items.sql"
+        );
+        let postgres_aleph_bft_finalized_items = include_str!(
+            "migrations/postgres/20260703165000_add_federation_aleph_bft_finalized_items.sql"
+        );
         let sqlite_outcomes =
             include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
         let postgres_outcomes =
@@ -552,6 +558,30 @@ mod federation_migration_tests {
                     "operation_outcome_hash",
                     "state_digest",
                     "consensus_evidence_json",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_aleph_bft_finalized_items,
+            postgres_aleph_bft_finalized_items,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_aleph_bft_finalized_items",
+                    "accepted_item_index",
+                    "session",
+                    "unit_finalization_index",
+                    "unit_submitting_member",
+                    "unit_index",
+                    "item_index_in_unit",
+                    "operation_id",
+                    "status",
+                    "unit_body_hash",
+                    "item_json",
+                    "idx_federation_aleph_bft_finalized_items_session_unit",
+                    "idx_federation_aleph_bft_finalized_items_operation_id",
                 ],
             );
         }

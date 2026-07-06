@@ -6,14 +6,15 @@ use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
-    FederatedKeyset, FederationConfig, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftUnitPayload,
+    FederationConfig, FederationConfigSnapshot, FederationConsensusItem,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -411,6 +412,107 @@ where
         .expect("session outcomes from");
     assert_eq!(session_outcomes_from.len(), 1);
     assert_eq!(session_outcomes_from[0].from_index, 1);
+}
+
+/// Assert AlephBFT finalized items are durable and can recover adapter state.
+pub async fn federation_aleph_bft_finalized_item_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let federation_id = federation_id();
+    let member_one = MemberId::new(1).expect("member one");
+    let member_two = MemberId::new(2).expect("member two");
+    let member_three = MemberId::new(3).expect("member three");
+    let envelope = mint_quote_envelope("aleph-bft-quote-1", 21);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let first_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_two,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope.clone())],
+    )
+    .expect("first AlephBFT unit");
+    let duplicate_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_three,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("duplicate AlephBFT unit");
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        federation_id,
+        member_one,
+        0,
+        [member_one, member_two, member_three],
+    )
+    .expect("AlephBFT adapter");
+
+    adapter.finalize_unit(first_unit).expect("finalize first");
+    adapter
+        .finalize_unit(duplicate_unit)
+        .expect("finalize duplicate");
+    let finalized_items = adapter.finalized_items().to_vec();
+    let finalized_json = finalized_items
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("finalized item JSON");
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_aleph_bft_finalized_items(&finalized_items)
+        .await
+        .expect("persist finalized items");
+    tx.add_federation_aleph_bft_finalized_item(&finalized_items[0])
+        .await
+        .expect("idempotent finalized item replay");
+    tx.commit().await.expect("commit finalized items");
+
+    let persisted = db
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("persisted AlephBFT finalized items");
+    assert_eq!(persisted.len(), finalized_items.len());
+    let persisted_json = persisted
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("persisted finalized item JSON");
+    assert_eq!(persisted_json, finalized_json);
+
+    let ranged = db
+        .get_federation_aleph_bft_finalized_items_from(1)
+        .await
+        .expect("ranged AlephBFT finalized items");
+    assert_eq!(ranged.len(), 1);
+    assert_eq!(ranged[0].accepted_item_index, 1);
+
+    let recovered = FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+        federation_id,
+        member_one,
+        0,
+        [member_one, member_two, member_three],
+        persisted,
+    )
+    .expect("recover adapter from persisted finalized items");
+    assert_eq!(recovered.journal().len(), 1);
+    assert_eq!(recovered.journal().entries()[0].operation_id, operation_id);
+    assert_eq!(recovered.next_item_index(), 2);
+    assert_eq!(recovered.status().next_unit_finalization_index, 2);
+
+    let mut conflicting = finalized_items[0].clone();
+    conflicting.unit_index = conflicting.unit_index.saturating_add(1);
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting finalized item");
+    assert!(tx
+        .add_federation_aleph_bft_finalized_item(&conflicting)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting finalized item");
 }
 
 /// Assert public federation config snapshots are durable and conflict-checked.

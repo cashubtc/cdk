@@ -85,15 +85,15 @@ Last code-confirmed audit: 2026-07-05. This checklist marks items as done only w
 
 Current confirmed shape:
 
-- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, signed REST submit-operation consensus admission, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
+- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, signed REST submit-operation consensus admission, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, durable AlephBFT finalized-item persistence, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, future deterministic binary operation encoding if a later operation version needs it, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, remote pubsub reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, live Postgres federation migration/storage coverage, feature-disabled SQLite legacy migration, standalone mint issue/swap regressions, standalone builder keyset-version regression, standalone DbSignatory regressions, session-outcome, trusted-dealer setup, trusted-dealer fakewallet regtest opt-in, deterministic accepted-time mint quote replay, operation balance audit, source- and manifest-enforced fakewallet coupling audits, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, payment-observation metadata/idempotence, backend-agnostic production payment-path audits, deterministic single-member production melt payment actor tests, mint storage hot-path index query-plan tests, always-on mint payment observer, durable state-digest checkpoint persistence and retention, backend-agnostic signature-share persistence, operation-hash/output-index restore provenance, fakewallet coupling audit, wallet member request timeout/retry policy tests, federation invite-code discovery tests, wallet quote-visibility and matching mint-quote status quorum tests, consensus test-module split coverage, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, federation protocol-version metadata, mixed-version runtime and wallet rejection, stale-upgrade consensus item and catch-up rejection, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: the AlephBFT adapter can now recover from retained
-  finalized-item metadata, rebuild the accepted-operation journal, restore
-  finalized-unit replay protection, restore duplicate-operation tracking, and
-  reject corrupted retained finalized-item state before accepting more units.
-  Durable SQL persistence of those finalized items remains the next recovery
-  step.
+- Latest checkpoint: AlephBFT finalized items are now persisted through the
+  shared mint database trait, SQLite/Postgres migrations create the durable
+  accepted-item log, SQLite round-trip storage reloads into adapter recovery,
+  and Postgres compiles the same storage regression. Startup still needs to
+  load that durable log into the production finalization path before the
+  AlephBFT backend can serve public federation routes.
 
 ## Key observations
 
@@ -575,14 +575,18 @@ Architecture checklist:
   public value-changing routes when evidence is missing, and restores healthy
   status when quorum evidence already covers the replayed height. A final audit
   remains once the production BFT backend owns durable finalized-item recovery.
-- [ ] Persist enough AlephBFT unit state and accepted item state to recover after
+- [x] Persist enough AlephBFT unit state and accepted item state to recover after
   crashes without replaying an item twice or losing a finalized item. The
   in-memory adapter now has a tested recovery constructor from retained
   finalized items that rebuilds journal evidence, finalized-unit replay guards,
   duplicate-operation tracking, next item indexes, and next unit-finalization
-  indexes while rejecting corrupted retained metadata. The remaining work is to
-  persist and reload this finalized-item log from durable storage and connect it
-  to startup recovery.
+  indexes while rejecting corrupted retained metadata. The shared mint database
+  trait now persists `FederationAlephBftFinalizedItem` rows, SQLite/Postgres
+  migrations create a durable accepted-item table with session/unit and
+  operation-ID indexes, SQLite round-trip tests reload the persisted log into
+  adapter recovery, and Postgres compiles the same persistence regression.
+  Remaining startup work is to load this finalized-item log into the configured
+  production finalization path before public federation routes are enabled.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state

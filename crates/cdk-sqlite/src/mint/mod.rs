@@ -55,6 +55,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_aleph_bft_finalized_item_persistence() {
+        cdk_common::database::mint::test::federation_aleph_bft_finalized_item_persistence(
+            provide_db("federation_aleph_bft_finalized_item_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_payment_observation_persistence() {
         cdk_common::database::mint::test::federation_payment_observation_persistence(
             provide_db("federation_payment_observation_persistence".to_string()).await,
@@ -238,6 +247,7 @@ mod test {
             "federation_journal_entries",
             "federation_member_sequences",
             "federation_session_outcomes",
+            "federation_aleph_bft_finalized_items",
             "federation_state_digest",
             "federation_payment_observations",
             "federation_member_status",
@@ -295,6 +305,7 @@ mod test {
               AND tbl_name IN (
                   'federation_journal_entries',
                   'federation_session_outcomes',
+                  'federation_aleph_bft_finalized_items',
                   'federation_state_digest',
                   'federation_payment_observations',
                   'federation_signature_shares',
@@ -321,6 +332,14 @@ mod test {
         assert!(
             index_names.contains("idx_federation_session_outcomes_from_index"),
             "missing federation session-outcome range index"
+        );
+        assert!(
+            index_names.contains("idx_federation_aleph_bft_finalized_items_session_unit"),
+            "missing federation AlephBFT finalized-item session/unit index"
+        );
+        assert!(
+            index_names.contains("idx_federation_aleph_bft_finalized_items_operation_id"),
+            "missing federation AlephBFT finalized-item operation-id index"
         );
         assert!(
             index_names.contains("idx_federation_state_digest_state"),
