@@ -349,6 +349,7 @@ where
     where
         P: Serialize,
     {
+        self.ensure_configured_peer(member)?;
         Ok(FederationSignedRequest::new_signed(
             self.federation_id,
             member.member_id,
@@ -357,6 +358,23 @@ where
             payload,
             &self.private_config,
         )?)
+    }
+
+    fn ensure_configured_peer(&self, member: &MemberConfigPublic) -> anyhow::Result<()> {
+        let Some(configured) = self.public_config.members.get(&member.member_id) else {
+            anyhow::bail!(
+                "federation peer {} is not in the configured member roster",
+                member.member_id
+            );
+        };
+        if configured != member {
+            anyhow::bail!(
+                "federation peer {} does not match the configured member roster",
+                member.member_id
+            );
+        }
+
+        Ok(())
     }
 }
 

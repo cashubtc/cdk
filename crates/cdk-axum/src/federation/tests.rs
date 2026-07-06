@@ -264,6 +264,7 @@ struct MockFederationTransportState {
     status_response: Option<FederationPeerStatus>,
     submit_response: Option<FederationSubmitOperationResponse>,
     aleph_bft_finalized_unit_response: Option<FederationAlephBftFinalizedUnitResponse>,
+    aleph_bft_finalized_unit_responses: VecDeque<FederationAlephBftFinalizedUnitResponse>,
     dkg_setup_responses: VecDeque<FederationDkgSetupResponse>,
     catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
     status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
@@ -348,6 +349,18 @@ impl MockFederationTransport {
             .lock()
             .expect("mock transport lock")
             .aleph_bft_finalized_unit_response = Some(response);
+        self
+    }
+
+    fn with_aleph_bft_finalized_unit_responses<I>(self, responses: I) -> Self
+    where
+        I: IntoIterator<Item = FederationAlephBftFinalizedUnitResponse>,
+    {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .aleph_bft_finalized_unit_responses
+            .extend(responses);
         self
     }
 
@@ -590,13 +603,13 @@ impl Transport for MockFederationTransport {
                     FederationSignedRequest<FederationAlephBftFinalizedUnitRequest>,
                 >(serde_json::to_value(payload)?)?;
                 state.aleph_bft_finalized_unit_requests.push(request);
-                let response =
-                    state
-                        .aleph_bft_finalized_unit_response
-                        .clone()
-                        .ok_or_else(|| {
-                            HttpError::Other("missing AlephBFT finalized-unit response".to_string())
-                        })?;
+                let response = state
+                    .aleph_bft_finalized_unit_responses
+                    .pop_front()
+                    .or_else(|| state.aleph_bft_finalized_unit_response.clone())
+                    .ok_or_else(|| {
+                        HttpError::Other("missing AlephBFT finalized-unit response".to_string())
+                    })?;
                 json_response(response)
             }
             path if path.ends_with("/federation/v1/journal") => {
@@ -774,6 +787,46 @@ fn transport_config_three_with_threshold(
         second_private,
         third_private,
     )
+}
+
+fn transport_config_five_with_threshold(
+    threshold_params: ThresholdParams,
+) -> (FederationConfig, Vec<MemberConfigPrivate>) {
+    let members = (1u16..=5)
+        .map(|value| {
+            TrustedDealerMember::new(
+                member_id(value),
+                MintUrl::from_str(&format!("https://mint{value}.example.com"))
+                    .expect("public mint url"),
+                MintUrl::from_str(&format!("https://fed{value}.example.com/api"))
+                    .expect("federation api url"),
+                SecretKey::from_slice(&[value as u8; 32]).expect("identity secret"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let amount_coefficients = (0..threshold_params.signature_threshold)
+        .map(|index| BlsSecretKey::from_reduced_bytes(&[21 + index as u8; 32]))
+        .collect::<Vec<_>>();
+    let keyset = TrustedDealerKeysetSpec::new(
+        CurrencyUnit::Sat,
+        true,
+        0,
+        None,
+        BTreeMap::from([(Amount::from(1), amount_coefficients)]),
+    );
+    let bundle = generate_trusted_dealer_configs(threshold_params, members, vec![keyset])
+        .expect("trusted dealer bundle");
+    let private_configs = (1u16..=5)
+        .map(|value| {
+            bundle
+                .private_configs
+                .get(&member_id(value))
+                .expect("private config")
+                .clone()
+        })
+        .collect::<Vec<_>>();
+
+    (bundle.public_config, private_configs)
 }
 
 async fn federation_route_state_with_local_private() -> (
@@ -7920,6 +7973,97 @@ async fn aleph_bft_broadcast_round_stops_remote_delivery_after_quorum() {
     assert!(outcome.remote_failed_members.is_empty());
     assert_eq!(outcome.local_responses.len(), 1);
     assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+}
+
+#[tokio::test]
+async fn aleph_bft_broadcast_round_five_members_tolerates_bad_ack_before_quorum() {
+    let (public_config, private_configs) =
+        transport_config_five_with_threshold(ThresholdParams::new(5, 3, 4).expect("params"));
+    let local_private = private_configs[0].clone();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = queue_local_aleph_bft_unit(&state, envelope).await;
+    let mut bad_response =
+        finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    bad_response.unit_body_hash = FederationAlephBftUnitBodyHash::from_bytes([7; 32]);
+    let good_response =
+        finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_responses(vec![
+            bad_response,
+            good_response.clone(),
+            good_response.clone(),
+            good_response,
+        ]);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peers = private_configs
+        .iter()
+        .skip(1)
+        .map(|private| {
+            public_config
+                .member(private.member_id)
+                .expect("remote member")
+                .clone()
+        })
+        .collect::<Vec<_>>();
+
+    let outcome = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        &state,
+        &client,
+        &peers,
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 4,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect("broadcast round")
+    .expect("unit broadcast");
+
+    assert_eq!(outcome.unit.body_hash, unit.body_hash);
+    assert_eq!(
+        outcome.remote_failed_members,
+        vec![private_configs[1].member_id]
+    );
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![
+            private_configs[2].member_id,
+            private_configs[3].member_id,
+            private_configs[4].member_id,
+        ]
+    );
+    assert!(outcome.remote_skipped_members.is_empty());
+    assert_eq!(outcome.local_responses.len(), 1);
+    assert_eq!(outcome.local_responses[0].operation_id, operation_id);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 4);
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after driver tick")
+        .expect("mint quote applied");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
 
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;

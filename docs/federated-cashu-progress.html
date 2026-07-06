@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover AlephBFT adapter rosters</span>
+          <span class="value">test: harden AlephBFT peer delivery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT adapter finalization now has explicit 4-member and 5-member roster regressions. They prove duplicate, conflicting, cross-session, and silent-member finalized-unit sequences converge to identical journal and finalized-item order across honest adapters.</span>
+          <span class="value">Outbound private REST now refuses to sign AlephBFT finalized-unit messages for unknown or mismatched roster members, and a 5-member driver regression proves one malformed remote acknowledgement does not block finalization when the local member plus three honest peers accept the exact unit.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Move from adapter/finalized-unit stand-ins toward production AlephBFT network finality, then broaden 4-member and 5-member process-level federation smoke tests.</span>
+          <span class="value">Continue moving from finalized-unit stand-ins toward production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
         </div>
       </aside>
     </header>
@@ -811,8 +811,8 @@
         </p>
         <p class="section-note">
           Current verification target: production AlephBFT network finality,
-          larger wallet-operation smoke repetitions, 4-member and 5-member
-          process-level storage-backed partition windows, and compile gates.
+          larger wallet-operation smoke repetitions, storage-backed 4-member
+          and 5-member partition windows, and compile gates.
         </p>
       </section>
 

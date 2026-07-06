@@ -436,6 +436,68 @@ async fn federation_peer_client_posts_signed_aleph_bft_finalized_unit() {
 }
 
 #[tokio::test]
+async fn federation_peer_client_rejects_aleph_bft_unknown_member_before_signing() {
+    let (state, public_config, local_private, peer_private) =
+        federation_route_state_with_local_private().await;
+    let quote_id = QuoteId::new();
+    let unit = aleph_bft_unit(&state, local_private.member_id, &quote_id);
+    let request = FederationAlephBftFinalizedUnitRequest::new(unit);
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let mut unknown_peer = public_config
+        .member(peer_private.member_id)
+        .expect("peer member")
+        .clone();
+    unknown_peer.member_id = member_id(99);
+
+    let err = client
+        .submit_aleph_bft_finalized_unit(&unknown_peer, &request)
+        .await
+        .expect_err("unknown peer should be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("is not in the configured member roster"),
+        "unexpected error: {err}"
+    );
+    assert!(transport.aleph_bft_finalized_unit_requests().is_empty());
+}
+
+#[tokio::test]
+async fn federation_peer_client_rejects_aleph_bft_mismatched_member_before_signing() {
+    let (state, public_config, local_private, peer_private) =
+        federation_route_state_with_local_private().await;
+    let quote_id = QuoteId::new();
+    let unit = aleph_bft_unit(&state, local_private.member_id, &quote_id);
+    let request = FederationAlephBftFinalizedUnitRequest::new(unit);
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let mut mismatched_peer = public_config
+        .member(peer_private.member_id)
+        .expect("peer member")
+        .clone();
+    mismatched_peer.identity_public_key = SecretKey::from_slice(&[99; 32])
+        .expect("mismatched identity secret")
+        .public_key();
+
+    let err = client
+        .submit_aleph_bft_finalized_unit(&mismatched_peer, &request)
+        .await
+        .expect_err("mismatched peer should be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("does not match the configured member roster"),
+        "unexpected error: {err}"
+    );
+    assert!(transport.aleph_bft_finalized_unit_requests().is_empty());
+}
+
+#[tokio::test]
 async fn rest_peer_client_rejects_aleph_bft_response_with_mismatched_outcome_operation_id() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
