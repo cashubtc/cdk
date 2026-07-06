@@ -55,13 +55,63 @@ pub(crate) struct FederationAlephBftDriverTickOutcome {
     pub reached_idle: bool,
 }
 
+/// Router-startup decision for the AlephBFT driver loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FederationAlephBftDriverStartupDecision {
+    /// The mint is not configured as a federation member.
+    NoFederationConfig,
+    /// Federation is configured with a different consensus backend.
+    NonAlephBftBackend {
+        /// Configured consensus backend.
+        backend: FederationConsensusBackendKind,
+    },
+    /// AlephBFT is configured, but no remote peer can receive finalized units.
+    NoRemotePeers {
+        /// Local federation member.
+        local_member: MemberId,
+    },
+    /// Spawn the driver loop for the configured remote peers.
+    Spawn {
+        /// Local federation member.
+        local_member: MemberId,
+        /// Number of remote peers the driver should broadcast to.
+        peer_count: usize,
+    },
+}
+
+/// Decide whether router startup should spawn the AlephBFT driver loop.
+pub(crate) fn federation_aleph_bft_driver_startup_decision(
+    state: &MintState,
+) -> FederationAlephBftDriverStartupDecision {
+    let Some(config) = state.mint.federation_config() else {
+        return FederationAlephBftDriverStartupDecision::NoFederationConfig;
+    };
+    let backend = config.consensus_backend();
+    if backend != FederationConsensusBackendKind::AlephBft {
+        return FederationAlephBftDriverStartupDecision::NonAlephBftBackend { backend };
+    }
+
+    let local_member = config.member_id();
+    let peer_count = config
+        .public_config()
+        .members
+        .values()
+        .filter(|member| member.member_id != local_member)
+        .count();
+    if peer_count == 0 {
+        return FederationAlephBftDriverStartupDecision::NoRemotePeers { local_member };
+    }
+
+    FederationAlephBftDriverStartupDecision::Spawn {
+        local_member,
+        peer_count,
+    }
+}
+
 /// Spawn the bounded AlephBFT finalized-unit driver loop.
 ///
-/// This is intentionally separated from router startup while `aleph_bft` remains
-/// an unavailable production backend. The loop shape is ready for that handoff:
-/// it sleeps on the configured interval, runs a bounded tick, and leaves failed
-/// proposals queued for later retries.
-#[allow(dead_code)]
+/// The loop sleeps on the configured interval, runs a bounded tick, and leaves
+/// failed proposals queued for later retries.
 pub(crate) fn spawn_federation_aleph_bft_driver_loop_with_config(
     state: MintState,
     sync_config: FederationPeerSyncConfig,
@@ -76,13 +126,16 @@ pub(crate) fn spawn_federation_aleph_bft_driver_loop_with_config(
         return;
     }
 
+    match federation_aleph_bft_driver_startup_decision(&state) {
+        FederationAlephBftDriverStartupDecision::Spawn { .. } => {}
+        FederationAlephBftDriverStartupDecision::NoFederationConfig
+        | FederationAlephBftDriverStartupDecision::NonAlephBftBackend { .. }
+        | FederationAlephBftDriverStartupDecision::NoRemotePeers { .. } => return,
+    }
+
     let Some(config) = state.mint.federation_config().cloned() else {
         return;
     };
-    if config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
-        return;
-    }
-
     let public_config = config.public_config().clone();
     let local_member = config.member_id();
     let peers = public_config

@@ -2857,6 +2857,11 @@ async fn create_mint_router_with_custom_cache_inner(
             state.clone(),
             federation_peer_sync_config,
         );
+        federation::spawn_federation_aleph_bft_driver_loop_with_config(
+            state.clone(),
+            federation_peer_sync_config,
+            federation::FederationAlephBftDriverTickConfig::default(),
+        );
         mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
     }
 

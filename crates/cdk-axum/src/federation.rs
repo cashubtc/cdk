@@ -36,8 +36,11 @@ mod sync_loop;
 
 #[cfg(test)]
 use self::aleph_bft_driver::{
-    broadcast_next_aleph_bft_finalized_unit_round, run_federation_aleph_bft_driver_tick,
-    FederationAlephBftDriverTickConfig,
+    broadcast_next_aleph_bft_finalized_unit_round, federation_aleph_bft_driver_startup_decision,
+    run_federation_aleph_bft_driver_tick, FederationAlephBftDriverStartupDecision,
+};
+pub(crate) use self::aleph_bft_driver::{
+    spawn_federation_aleph_bft_driver_loop_with_config, FederationAlephBftDriverTickConfig,
 };
 use self::aleph_bft_routes::post_aleph_bft_finalized_unit;
 use self::catch_up_routes::post_journal;

@@ -5543,6 +5543,43 @@ fn assert_pending_finalization_error(
 }
 
 #[tokio::test]
+async fn aleph_bft_driver_startup_decision_spawns_only_for_aleph_bft_backend() {
+    let (public_config, local_private, _) = transport_config();
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let seed = mnemonic.to_seed_normalized("");
+    let in_memory_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
+        &seed,
+        FederationConsensusBackendKind::InMemory,
+    )
+    .await;
+    assert_eq!(
+        federation_aleph_bft_driver_startup_decision(&in_memory_state),
+        FederationAlephBftDriverStartupDecision::NonAlephBftBackend {
+            backend: FederationConsensusBackendKind::InMemory,
+        }
+    );
+
+    let aleph_bft_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    assert_eq!(
+        federation_aleph_bft_driver_startup_decision(&aleph_bft_state),
+        FederationAlephBftDriverStartupDecision::Spawn {
+            local_member: local_private.member_id,
+            peer_count: 1,
+        }
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_broadcast_round_drains_and_applies_after_threshold_delivery() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
