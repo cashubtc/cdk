@@ -984,6 +984,7 @@ impl FederationAlephBftFinalizationHandler {
 
         let mut finalized_units = BTreeSet::new();
         let mut finalized_unit_metadata = BTreeMap::new();
+        let mut finalized_unit_items = BTreeMap::new();
         let mut finalized_operation_ids = BTreeSet::new();
         let mut next_unit_finalization_index = 0;
         let mut next_item_index = 0;
@@ -1066,12 +1067,50 @@ impl FederationAlephBftFinalizationHandler {
                     finalized_units.insert(unit_key);
                 }
             }
+            finalized_unit_items
+                .entry(unit_key)
+                .or_insert_with(Vec::new)
+                .push((
+                    finalized_item.item_index_in_unit,
+                    finalized_item.item.clone(),
+                ));
 
             if finalized_item.session == session {
                 next_unit_finalization_index = next_unit_finalization_index
                     .max(finalized_item.unit_finalization_index.saturating_add(1));
             }
             next_item_index = finalized_item.accepted_item_index.saturating_add(1);
+        }
+
+        for (unit_key, mut indexed_items) in finalized_unit_items {
+            indexed_items.sort_by_key(|(item_index, _)| *item_index);
+            for (expected_index, (item_index, _)) in indexed_items.iter().enumerate() {
+                let expected_index =
+                    u64::try_from(expected_index).expect("unit item count fits in u64");
+                if *item_index != expected_index {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: format!(
+                            "non-contiguous item index in finalized unit: expected {expected_index}, found {item_index}"
+                        ),
+                    });
+                }
+            }
+            let items = indexed_items
+                .into_iter()
+                .map(|(_, item)| item)
+                .collect::<Vec<_>>();
+            let expected_body_hash = compute_aleph_bft_unit_body_hash(&items)?;
+            let Some((_, found_body_hash)) = finalized_unit_metadata.get(&unit_key) else {
+                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                    reason: "missing finalized unit metadata for retained items".to_string(),
+                });
+            };
+            if *found_body_hash != expected_body_hash {
+                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                    reason: "finalized unit body hash does not match retained item body"
+                        .to_string(),
+                });
+            }
         }
 
         Ok(Self {

@@ -1519,6 +1519,32 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
             if reason.contains("operation id does not match")
     ));
 
+    let mut mismatched_body_hash = finalized_items.clone();
+    mismatched_body_hash[0].unit_body_hash = FederationAlephBftUnitBodyHash::from_bytes([9; 32]);
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            mismatched_body_hash,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("body hash does not match")
+    ));
+
+    let mut non_contiguous_item_index = finalized_items.clone();
+    non_contiguous_item_index[0].item_index_in_unit = 1;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            non_contiguous_item_index,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("non-contiguous item index")
+    ));
+
     let mut impossible_duplicate = finalized_items;
     impossible_duplicate[0].status = FederationAlephBftFinalizedItemStatus::DuplicateOperation;
     assert!(matches!(
