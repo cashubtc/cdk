@@ -3973,6 +3973,194 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
+        let mut state = create_aleph_bft_federated_test_state().await;
+        state.mark_federation_healthy().await;
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_millis(10),
+            response_waiter_limit: 2,
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let outputs = outputs_for_amount_with_label(&state, 2, "aleph-public-mint-timeout-retry");
+        let request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs.clone(),
+            signatures: None,
+        };
+        let config = state
+            .mint
+            .effective_federation_config()
+            .await
+            .expect("effective federation config")
+            .expect("federated mint config");
+        let operation_id = config
+            .mint_operation(cdk::mint::MintInput::Batch(request.clone()))
+            .expect("mint operation")
+            .operation_id()
+            .expect("mint operation id");
+
+        let error = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(request.clone()),
+        )
+        .await
+        .expect_err("first AlephBFT batch mint should time out before finality");
+        let body = response_error_detail(error).await;
+        assert!(
+            body.contains("pending AlephBFT finalization"),
+            "pending mint timeout should be retryable: {body}"
+        );
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            0,
+            "timed-out mint waiters must be released"
+        );
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 1);
+            assert!(
+                consensus.journal().entries().is_empty(),
+                "pending AlephBFT mint must not be journaled before finality"
+            );
+            assert_eq!(consensus.peer_status().operation_count, 0);
+        }
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(operation_id, 0)
+                .await
+                .expect("pending mint share lookup")
+                .is_empty(),
+            "pending AlephBFT mint must not issue signature shares"
+        );
+
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_secs(5),
+            response_waiter_limit: 2,
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let retry_state = state.clone();
+        let retry_request = request.clone();
+        let retry = tokio::spawn(async move {
+            cache_post_batch_mint(
+                AuthHeader::None,
+                State(retry_state),
+                Path("bolt11".to_string()),
+                Json(retry_request),
+            )
+            .await
+        });
+
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            1,
+            "retrying an already queued mint should wait on the pending operation"
+        );
+        let unit = {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            consensus
+                .preview_next_aleph_bft_unit_payload()
+                .expect("preview next AlephBFT unit")
+                .expect("queued AlephBFT unit")
+        };
+        let finalized = state
+            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
+            .await
+            .expect("local AlephBFT finality");
+        assert_eq!(finalized.len(), 1);
+        assert_eq!(finalized[0].operation_id, operation_id);
+
+        let response = retry
+            .await
+            .expect("retry task should complete")
+            .expect("retry batch mint should return accepted response");
+        assert_eq!(response.signatures.len(), 1);
+        assert_eq!(response.signatures[0].amount, Amount::from(2));
+        assert_eq!(response.signatures[0].keyset_id, outputs[0].keyset_id);
+
+        let share_records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, 0)
+            .await
+            .expect("accepted mint share lookup");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, operation_id);
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].blinded_secret, outputs[0].blinded_secret);
+        assert_eq!(
+            cdk::nuts::PublicKey::from(share_records[0].share.signature()),
+            response.signatures[0].c
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 0);
+            assert_eq!(consensus.peer_status().operation_count, 1);
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            0,
+            "accepted retry should release its waiter"
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+
+        let duplicate = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(request),
+        )
+        .await
+        .expect("accepted duplicate batch mint should return persisted response");
+        assert_eq!(duplicate.0, response.0);
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(operation_id, 0)
+                .await
+                .expect("duplicate mint share lookup"),
+            share_records
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn duplicate_federation_batch_mint_returns_persisted_signature_shares() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
