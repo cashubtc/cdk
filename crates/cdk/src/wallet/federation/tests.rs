@@ -2724,6 +2724,119 @@ async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members()
     );
 }
 
+#[tokio::test]
+async fn federated_mint_connector_uses_threshold_live_members_for_wallet_operations() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let change_outputs = blinded_change_outputs(&bundle);
+    let restore_outputs = blinded_change_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let check_ys = vec![
+        PublicKey::from(BlsG1PublicKey::hash_to_curve(b"threshold-live-check-y-1")),
+        PublicKey::from(BlsG1PublicKey::hash_to_curve(b"threshold-live-check-y-2")),
+    ];
+    let check_response = proof_state_response(&check_ys, &[State::Spent, State::Pending]);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3), member_id(5)] {
+        let connector = MockMintConnector::new();
+        connector.set_active_keyset(advertised.clone());
+        connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+        connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: share_response(&bundle, member_id, &outputs).signatures,
+        }));
+        connector.set_post_melt_response(Ok(melt_response(&bundle, member_id, &change_outputs)));
+        connector._set_restore_response(Ok(restore_response(&bundle, member_id, &restore_outputs)));
+        connector.set_check_state_response(Ok(check_response.clone()));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let offline_member = MockMintConnector::new();
+    offline_member.set_active_keyset(advertised);
+    offline_member.set_mint_keys_error("member offline");
+    offline_member.set_post_mint_response(Err(crate::Error::Custom("member offline".to_string())));
+    offline_member.set_post_swap_response(Err(crate::Error::Custom("member offline".to_string())));
+    offline_member.set_post_melt_response(Err(crate::Error::Custom("member offline".to_string())));
+    offline_member._set_restore_response(Err(crate::Error::Custom("member offline".to_string())));
+    offline_member
+        .set_check_state_response(Err(crate::Error::Custom("member offline".to_string())));
+    connectors.insert(
+        member_id(4),
+        Arc::new(offline_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+
+    let mint_response = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("mint response");
+    assert_aggregate_response_valid(&bundle, &outputs, &mint_response);
+
+    let swap_response = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs.clone()))
+        .await
+        .expect("swap response");
+    assert_aggregate_response_valid(
+        &bundle,
+        &outputs,
+        &MintResponse {
+            signatures: swap_response.signatures,
+        },
+    );
+
+    let melt_response = connector
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltRequest::new(
+                "melt-quote".to_string(),
+                Vec::new(),
+                Some(change_outputs.clone()),
+            ),
+        )
+        .await
+        .expect("melt response");
+    let change = melt_response.change().cloned().expect("change signatures");
+    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(&change_outputs),
+        &MintResponse { signatures: change },
+    );
+
+    let restore_response = connector
+        .post_restore(RestoreRequest {
+            outputs: restore_outputs.clone(),
+        })
+        .await
+        .expect("restore response");
+    assert_eq!(restore_response.outputs, restore_outputs);
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(&restore_outputs),
+        &MintResponse {
+            signatures: restore_response.signatures,
+        },
+    );
+
+    let state_response = connector
+        .post_check_state(CheckStateRequest { ys: check_ys })
+        .await
+        .expect("check-state response");
+    assert_eq!(state_response, check_response);
+}
+
 #[tokio::test(start_paused = true)]
 async fn federated_mint_connector_falls_back_when_primary_quote_member_stalls() {
     let bundle = threshold_bundle();

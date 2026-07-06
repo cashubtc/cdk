@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: select valid wallet signature shares</span>
+          <span class="value">test: cover threshold-live wallet operations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet mint, swap, and melt aggregation now ignores invalid successful share responses when a threshold-compatible valid subset is available, including a 3-of-5 slow/offline/bad-share scenario.</span>
+          <span class="value">Wallet mint, swap, melt with change, restore, and check-state now have a 3-of-5 threshold-live regression with one member offline during key discovery.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -569,7 +569,7 @@
             <div>
               <h3>Milestone 10: federated wallet connector and aggregation</h3>
               <p>Objective: make the wallet see normal Cashu responses while the connector handles member fanout.</p>
-              <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, and rejects mismatched or non-v3 aggregate keysets.</p>
+              <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, covers threshold-live mint, swap, melt, restore, and check-state, and rejects mismatched or non-v3 aggregate keysets.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -718,7 +718,7 @@
           </article>
           <article class="item">
             <h3>Wallet federation</h3>
-            <p>The wallet connector discovers federation invites, filters compatible members, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, and invalid share responses, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
+            <p>The wallet connector discovers federation invites, filters compatible members, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
           </article>
           <article class="item">
             <h3>DKG and rotation path</h3>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available.</p>
+            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
