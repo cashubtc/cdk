@@ -16,15 +16,16 @@ use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusEngine, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
-    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
+    FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusRuntime,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationStateDigestCheckpoint,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -2358,14 +2359,36 @@ async fn create_federation_runtime_state(
     tx.set_federation_config(&snapshot).await?;
     tx.commit().await?;
 
-    let entries = db.get_federation_journal_entries().await?;
+    let persisted_entries = db.get_federation_journal_entries().await?;
     let sequences = db.get_federation_member_sequences().await?;
-    let mut consensus = FederationConsensusRuntime::from_entries_with_backend(
-        config.consensus_backend(),
-        config.federation_id(),
-        config.member_id(),
-        entries.clone(),
-    )?;
+    let mut consensus = match config.consensus_backend() {
+        FederationConsensusBackendKind::InMemory => {
+            FederationConsensusRuntime::from_entries_with_backend(
+                config.consensus_backend(),
+                config.federation_id(),
+                config.member_id(),
+                persisted_entries.clone(),
+            )?
+        }
+        FederationConsensusBackendKind::AlephBft => {
+            let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
+            let member_ids = config.public_config().members.keys().copied();
+            let consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+                config.federation_id(),
+                config.member_id(),
+                0,
+                member_ids,
+                config.public_config().threshold_params.consensus_threshold,
+                finalized_items,
+            )?;
+            ensure_persisted_journal_matches_aleph_bft_recovery(
+                &persisted_entries,
+                consensus.journal().entries(),
+            )?;
+            consensus
+        }
+    };
+    let entries = consensus.journal().entries().to_vec();
     let applied = mint.apply_federation_journal_entries(&entries).await?;
     for operation_id in applied {
         consensus.update_status(operation_id, FederationOperationStatus::Applied)?;
@@ -2376,4 +2399,44 @@ async fn create_federation_runtime_state(
         Some(Arc::new(tokio::sync::Mutex::new(consensus))),
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
     ))
+}
+
+#[cfg(feature = "federation")]
+fn ensure_persisted_journal_matches_aleph_bft_recovery(
+    persisted_entries: &[FederationJournalEntry],
+    recovered_entries: &[FederationJournalEntry],
+) -> Result<()> {
+    if persisted_entries.is_empty() {
+        return Ok(());
+    }
+    if persisted_entries.len() != recovered_entries.len() {
+        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+            reason: format!(
+                "journal entry count mismatch: persisted={}, recovered={}",
+                persisted_entries.len(),
+                recovered_entries.len()
+            ),
+        }
+        .into());
+    }
+
+    for (persisted, recovered) in persisted_entries.iter().zip(recovered_entries) {
+        if persisted.index != recovered.index
+            || persisted.operation_id != recovered.operation_id
+            || persisted.envelope.canonical_bytes()? != recovered.envelope.canonical_bytes()?
+            || persisted.previous_order_digest != recovered.previous_order_digest
+            || persisted.order_digest != recovered.order_digest
+            || persisted.consensus_evidence != recovered.consensus_evidence
+        {
+            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                reason: format!(
+                    "journal entry mismatch at accepted operation index {}",
+                    persisted.index
+                ),
+            }
+            .into());
+        }
+    }
+
+    Ok(())
 }

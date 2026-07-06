@@ -7,7 +7,9 @@ use bip39::Mnemonic;
 use cdk::cdk_database::MintDatabase;
 use cdk::cdk_payment::PaymentIdentifier;
 use cdk::federation::{
-    generate_trusted_dealer_configs, FederationConfigSnapshot, FederationConsensusRuntime,
+    generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
+    FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusBackendKind,
+    FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
     FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationKeysetRotationOperation,
     FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
@@ -759,9 +761,29 @@ async fn federation_route_state_for_private_with_db(
     db: Arc<cdk_sqlite::MintSqliteDatabase>,
     seed: &[u8],
 ) -> MintState {
-    let runtime_config =
-        cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private.clone())
-            .expect("runtime config");
+    federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        seed,
+        FederationConsensusBackendKind::InMemory,
+    )
+    .await
+}
+
+async fn federation_route_state_for_private_with_db_and_backend(
+    public_config: FederationConfig,
+    local_private: MemberConfigPrivate,
+    db: Arc<cdk_sqlite::MintSqliteDatabase>,
+    seed: &[u8],
+    consensus_backend: FederationConsensusBackendKind,
+) -> MintState {
+    let runtime_config = cdk::mint::FederationRuntimeConfig::new_with_consensus_backend(
+        public_config.clone(),
+        local_private.clone(),
+        consensus_backend,
+    )
+    .expect("runtime config");
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config.clone());
@@ -789,10 +811,12 @@ async fn federation_route_state_for_private_with_db(
         mint: Arc::new(mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
         federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
-            FederationConsensusRuntime::in_memory(
+            FederationConsensusRuntime::with_backend(
+                runtime_config.consensus_backend(),
                 runtime_config.federation_id(),
                 runtime_config.member_id(),
-            ),
+            )
+            .expect("consensus runtime"),
         ))),
         federation_peer_sync_config: Some(FederationPeerSyncConfig::default()),
         federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
@@ -5048,6 +5072,163 @@ async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
         response.operation_id
     );
     assert_eq!(sequences.sequences().get(&peer_member), Some(&42));
+}
+
+#[tokio::test]
+async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_closed() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("AlephBFT adapter");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("AlephBFT finalized unit");
+    adapter.finalize_unit(unit).expect("finalize unit");
+    let entry = adapter.journal().entries()[0].clone();
+    let finalized_items = adapter.finalized_items().to_vec();
+
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin AlephBFT startup transaction");
+    tx.add_federation_aleph_bft_finalized_items(&finalized_items)
+        .await
+        .expect("persist finalized items");
+    tx.add_federation_journal_entry(&entry)
+        .await
+        .expect("persist matching journal entry");
+    tx.commit().await.expect("commit AlephBFT startup state");
+
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup before startup replay")
+        .is_none());
+
+    let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("AlephBFT runtime state");
+    let consensus = consensus.expect("consensus");
+    assert!(sequences.is_some());
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after startup replay")
+        .expect("mint quote replayed from finalized items");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+
+    let mut consensus = consensus.lock().await;
+    assert_eq!(
+        consensus.backend_kind(),
+        FederationConsensusBackendKind::AlephBft
+    );
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus.journal().entries()[0].operation_id,
+        entry.operation_id
+    );
+    assert_eq!(
+        consensus.journal().entries()[0].status,
+        FederationOperationStatus::Applied
+    );
+    let err = consensus
+        .submit_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .expect_err("AlephBFT runtime should reject synchronous submit");
+    assert!(
+        err.to_string().contains("requires external finalization"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let finalized_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let mismatched_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("AlephBFT adapter");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(finalized_envelope)],
+    )
+    .expect("AlephBFT finalized unit");
+    adapter.finalize_unit(unit).expect("finalize unit");
+    let mut mismatched_consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+    let mismatched_entry = mismatched_consensus
+        .submit_envelope(mismatched_envelope)
+        .expect("mismatched journal entry")
+        .outcome
+        .entry()
+        .clone();
+
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin AlephBFT mismatch transaction");
+    tx.add_federation_aleph_bft_finalized_items(adapter.finalized_items())
+        .await
+        .expect("persist finalized items");
+    tx.add_federation_journal_entry(&mismatched_entry)
+        .await
+        .expect("persist mismatched journal entry");
+    tx.commit().await.expect("commit AlephBFT mismatch state");
+
+    let err = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect_err("AlephBFT journal mismatch rejected");
+    assert!(
+        err.to_string().contains("journal entry mismatch"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]

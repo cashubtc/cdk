@@ -61,8 +61,8 @@ pub(crate) use self::sync_loop::{
 };
 #[cfg(test)]
 use cdk::federation::{
-    FederationConfig, FederationConsensusEngine, FederationDkgCommitmentRequest,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationConfig, FederationDkgCommitmentRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
     FederationPeerStatusRequest,
 };

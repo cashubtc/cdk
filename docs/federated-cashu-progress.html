@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. AlephBFT finalized-item metadata now has a durable SQLite/Postgres storage primitive that reloads into adapter recovery.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum startup can now reload durable AlephBFT finalized-item metadata into a fail-closed runtime boundary.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist aleph bft finalized items</span>
+          <span class="value">feat: reload aleph bft finalized items at startup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationJournalTransaction` can persist AlephBFT finalized items, SQLite/Postgres migrations create the accepted-item log, SQLite reloads it into adapter recovery, and Postgres compiles the same regression.</span>
+          <span class="value">`create_federation_runtime_state` rebuilds AlephBFT runtime state from persisted finalized items, replays recovered operations into mint state, rejects journal/finalized-item mismatches, and rejects synchronous submits until external finalization is wired.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Load the durable AlephBFT finalized-item log during startup and bind it to the configured production finalization path before public federation routes are enabled.</span>
+          <span class="value">Wire the live AlephBFT unit proposal/finalization driver so accepted units are durably stored and response notifications can unblock public federation routes.</span>
         </div>
       </aside>
     </header>
@@ -819,6 +819,10 @@
           <article class="item">
             <h3>AlephBFT finalized-item storage</h3>
             <p>`cdk-common` now exposes durable finalized-item persistence through the mint database traits, SQLite/Postgres migrations create indexed accepted-item logs, and SQLite storage reloads persisted items into adapter recovery while rejecting conflicting rewrites.</p>
+          </article>
+          <article class="item">
+            <h3>AlephBFT startup reload</h3>
+            <p>Axum startup now rebuilds AlephBFT runtime state from persisted finalized items, verifies any stored journal rows match the recovered order and evidence, replays accepted operations into mint state, and fails closed for new synchronous submissions until the external finalization loop is connected.</p>
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
@@ -2333,7 +2337,13 @@
               <td>AlephBFT finalized-item storage</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-common --features federation`, `cargo check -p cdk-sql-common --features federation`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_aleph_bft_finalized_item_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and `cargo test -p cdk-postgres --features federation federation_aleph_bft_finalized_item_persistence --no-run` passed. The tests cover migration presence, empty SQLite migration application, index visibility, durable finalized-item round trip, idempotent replay, conflicting rewrite rejection, ranged readback, and reload into adapter recovery.</td>
-              <td>Run the Postgres finalized-item persistence test against a live service during the next storage-backed smoke, then wire startup reload.</td>
+              <td>Run the Postgres finalized-item persistence test against a live service during the next storage-backed smoke.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT startup reload</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, and `cargo test -p cdk-axum --features federation federation_runtime_startup_ -- --test-threads 1` passed. The tests cover AlephBFT runtime status with synchronous-submit fail-closed behavior, startup reload from durable finalized items into mint materialized state, applied-status restoration, and rejection when stored journal rows disagree with finalized-item recovery.</td>
+              <td>Connect the live AlephBFT unit proposal/finalization task and persist newly finalized items from that driver.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>

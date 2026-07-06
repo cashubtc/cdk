@@ -300,17 +300,30 @@ fn consensus_backend_kind_parses_known_values_and_rejects_unknown() {
 }
 
 #[test]
-fn consensus_runtime_rejects_unavailable_backend_kind() {
-    let err = FederationConsensusRuntime::with_backend(
+fn consensus_runtime_aleph_bft_reports_status_and_rejects_synchronous_submit() {
+    let federation_id = federation_id(13);
+    let mut runtime = FederationConsensusRuntime::with_backend(
         FederationConsensusBackendKind::AlephBft,
-        federation_id(13),
+        federation_id,
         member_id(),
     )
-    .expect_err("aleph-bft backend is not implemented yet");
+    .expect("aleph-bft runtime boundary");
 
+    assert_eq!(
+        runtime.backend_kind(),
+        FederationConsensusBackendKind::AlephBft
+    );
+    assert_eq!(
+        runtime.peer_status().consensus_backend,
+        FederationConsensusBackendKind::AlephBft
+    );
     assert!(matches!(
-        err,
-        FederationError::UnsupportedConsensusBackend { ref backend }
+        runtime.submit_envelope(mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        )),
+        Err(FederationError::ConsensusBackendRequiresExternalFinalization { ref backend })
             if backend == "aleph_bft"
     ));
 }
