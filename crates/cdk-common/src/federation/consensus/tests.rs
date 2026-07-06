@@ -1714,6 +1714,69 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
 }
 
 #[test]
+fn aleph_bft_consensus_adapter_recovery_rejects_out_of_order_sessions() {
+    let federation_id = federation_id(13);
+    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let session_zero_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![module_fact_item("session-zero")],
+    )
+    .expect("session zero unit");
+    adapter
+        .finalize_unit(session_zero_unit)
+        .expect("session zero finalized");
+
+    adapter.begin_session(1).expect("begin session one");
+    let session_one_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(3),
+        1,
+        0,
+        vec![module_fact_item("session-one")],
+    )
+    .expect("session one unit");
+    adapter
+        .finalize_unit(session_one_unit)
+        .expect("session one finalized");
+
+    let finalized_items = adapter.finalized_items().to_vec();
+    assert_eq!(
+        finalized_items
+            .iter()
+            .map(|item| item.session)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+
+    FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        federation_id,
+        member_id_value(1),
+        1,
+        finalized_items.clone(),
+    )
+    .expect("valid retained items recover");
+
+    let mut backwards_sessions = finalized_items;
+    backwards_sessions.swap(0, 1);
+    backwards_sessions[0].accepted_item_index = 0;
+    backwards_sessions[1].accepted_item_index = 1;
+
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            1,
+            backwards_sessions,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("session moved backwards")
+    ));
+}
+
+#[test]
 fn aleph_bft_consensus_adapter_rejects_invalid_finalized_units_before_journal_append() {
     let federation = federation_id(13);
     let wrong_federation = federation_id(14);

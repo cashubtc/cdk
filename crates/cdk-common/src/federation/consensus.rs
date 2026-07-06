@@ -992,6 +992,7 @@ impl FederationAlephBftFinalizationHandler {
         let mut next_unit_finalization_index_by_session = BTreeMap::new();
         let mut next_unit_finalization_index = 0;
         let mut next_item_index = 0;
+        let mut last_seen_session = None;
 
         for (expected_index, finalized_item) in finalized_items.iter().enumerate() {
             let expected_index =
@@ -1010,6 +1011,17 @@ impl FederationAlephBftFinalizationHandler {
                     found: finalized_item.session,
                 });
             }
+            if let Some(previous_session) = last_seen_session {
+                if finalized_item.session < previous_session {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: format!(
+                            "finalized item session moved backwards: previous {previous_session}, found {}",
+                            finalized_item.session
+                        ),
+                    });
+                }
+            }
+            last_seen_session = Some(finalized_item.session);
             if let Some(allowed_members) = &allowed_members {
                 if !allowed_members.contains(&finalized_item.unit_submitting_member) {
                     return Err(FederationError::UnknownMember {
