@@ -2298,6 +2298,69 @@ async fn federated_mint_connector_retries_retryable_member_request_failure() {
     assert_aggregate_response_valid(&bundle, &outputs, &response);
 }
 
+#[tokio::test]
+async fn federated_mint_connector_retries_rate_limited_member_request() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    let rate_limited_member = MockMintConnector::new();
+    rate_limited_member.set_active_keyset(advertised.clone());
+    rate_limited_member.push_post_mint_response(Err(crate::Error::HttpError(
+        Some(429),
+        "too many requests".to_string(),
+    )));
+    rate_limited_member.push_post_mint_response(Ok(share_response(
+        &bundle,
+        member_id(1),
+        &outputs,
+    )));
+    connectors.insert(
+        member_id(1),
+        Arc::new(rate_limited_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let healthy_member = MockMintConnector::new();
+    healthy_member.set_active_keyset(advertised.clone());
+    healthy_member.set_post_mint_response(Ok(share_response(&bundle, member_id(2), &outputs)));
+    connectors.insert(
+        member_id(2),
+        Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let rejecting_member = MockMintConnector::new();
+    rejecting_member.set_active_keyset(advertised);
+    rejecting_member.set_post_mint_response(Err(crate::Error::InvalidPaymentMethod));
+    connectors.insert(
+        member_id(3),
+        Arc::new(rejecting_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_max_retries: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let response = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("mint response");
+
+    assert_aggregate_response_valid(&bundle, &outputs, &response);
+}
+
 #[tokio::test(start_paused = true)]
 async fn federated_mint_connector_falls_back_when_primary_quote_member_stalls() {
     let bundle = threshold_bundle();

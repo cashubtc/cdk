@@ -596,7 +596,7 @@ mod tests {
         assert!(Error::HttpError(Some(400), "Bad Request".to_string()).is_definitive_failure());
         assert!(Error::HttpError(Some(404), "Not Found".to_string()).is_definitive_failure());
         assert!(
-            Error::HttpError(Some(429), "Too Many Requests".to_string()).is_definitive_failure()
+            !Error::HttpError(Some(429), "Too Many Requests".to_string()).is_definitive_failure()
         );
 
         // Test ambiguous failures
@@ -760,8 +760,9 @@ impl Error {
             // HTTP Errors
             Self::HttpError(Some(status), _) => {
                 // Client errors (400-499) are definitive failures
-                // Server errors (500-599) are ambiguous
-                (400..500).contains(status)
+                // except rate limits, which are explicitly retryable.
+                // Server errors (500-599) are ambiguous.
+                (400..500).contains(status) && *status != 429
             }
 
             // Ambiguous Errors (Unsafe to revert)
