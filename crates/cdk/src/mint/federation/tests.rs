@@ -2833,6 +2833,98 @@ async fn apply_federation_swap_spends_old_proofs_and_signs_rotated_outputs() {
 }
 
 #[tokio::test]
+async fn apply_federation_swap_persists_accepted_materialization_rows() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let input = proof_for_runtime(&runtime_config, "accepted materialized swap input");
+    let input_y = input.y().expect("swap input y");
+    let output = output_for_runtime(&runtime_config, b"accepted materialized swap output");
+    let swap_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(SwapRequest::new(vec![input.clone()], vec![output.clone()]))
+            .expect("accepted materialization swap operation"),
+    );
+    persist_and_apply_entry(&mint, &swap_entry).await;
+
+    let operation_uuid = super::federation_operation_uuid(swap_entry.operation_id);
+    let completed_operation = localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed operation lookup")
+        .expect("completed operation");
+    assert_eq!(
+        completed_operation.kind(),
+        cdk_common::mint::OperationKind::Swap
+    );
+    assert_eq!(completed_operation.total_issued(), Amount::from(1));
+    assert_eq!(completed_operation.total_redeemed(), Amount::from(1));
+    assert_eq!(completed_operation.fee_collected(), Amount::ZERO);
+    assert_eq!(completed_operation.payment_method(), None);
+
+    assert_eq!(
+        localstore
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state"),
+        vec![Some(State::Spent)]
+    );
+    assert_eq!(
+        localstore
+            .get_proof_ys_by_operation_id(&operation_uuid)
+            .await
+            .expect("proof ys by operation id"),
+        vec![input_y]
+    );
+    assert_eq!(
+        localstore
+            .get_blinded_secrets_by_operation_id(&operation_uuid)
+            .await
+            .expect("blinded secrets by operation id"),
+        vec![output.blinded_secret]
+    );
+
+    let signatures = localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("stored swap blind signature");
+    let signature = signatures[0].as_ref().expect("accepted swap signature");
+    assert_eq!(signature.amount, Amount::from(1));
+    assert_eq!(signature.keyset_id, output.keyset_id);
+
+    let share_records = localstore
+        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .await
+        .expect("stored federation swap signature share");
+    assert_eq!(share_records.len(), 1);
+    assert_eq!(share_records[0].operation_id, swap_entry.operation_id);
+    assert_eq!(share_records[0].output_index, 0);
+    assert_eq!(share_records[0].member_id, runtime_config.member_id());
+    assert_eq!(share_records[0].keyset_id, output.keyset_id);
+    assert_eq!(share_records[0].amount, Amount::from(1));
+    assert_eq!(share_records[0].blinded_secret, output.blinded_secret);
+    assert_eq!(
+        share_records[0].accepted_operation_index,
+        Some(swap_entry.index)
+    );
+    assert_eq!(
+        share_records[0].consensus_evidence,
+        swap_entry.consensus_evidence
+    );
+
+    let stored_entries = localstore
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    let stored_swap_entry = stored_entries
+        .iter()
+        .find(|entry| entry.operation_id == swap_entry.operation_id)
+        .expect("stored swap entry");
+    assert_eq!(stored_swap_entry.status, FederationOperationStatus::Applied);
+}
+
+#[tokio::test]
 async fn apply_federation_swap_accepts_p2pk_locked_input() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
