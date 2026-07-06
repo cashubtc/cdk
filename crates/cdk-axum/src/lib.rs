@@ -1880,6 +1880,87 @@ impl MintState {
             .collect()
     }
 
+    fn aleph_bft_duplicate_finalized_unit_responses(
+        consensus: &FederationConsensusRuntime,
+        payload: &FederationAlephBftUnitPayload,
+    ) -> Result<Option<Vec<FederationSubmitOperationResponse>>, cdk::Error> {
+        let mut finalized_items = consensus
+            .aleph_bft_finalized_items()?
+            .iter()
+            .filter(|item| {
+                item.session == payload.session
+                    && item.unit_submitting_member == payload.submitting_member
+                    && item.unit_index == payload.unit_index
+            })
+            .collect::<Vec<_>>();
+        if finalized_items.is_empty() {
+            return Ok(None);
+        }
+        finalized_items.sort_by_key(|item| item.item_index_in_unit);
+
+        if finalized_items.len() != payload.items.len() {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT finalized unit replay changed item count for member {} session {} unit {}",
+                payload.submitting_member, payload.session, payload.unit_index
+            )));
+        }
+
+        let mut responses = Vec::new();
+        for (expected_index, finalized_item) in finalized_items.iter().enumerate() {
+            let expected_index_u64 =
+                u64::try_from(expected_index).expect("unit item index fits in u64");
+            if finalized_item.item_index_in_unit != expected_index_u64 {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed item order for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+            if finalized_item.unit_body_hash != payload.body_hash {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed body hash for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+
+            let Some(payload_item) = payload.items.get(expected_index) else {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay is missing item {} for member {} session {} unit {}",
+                    expected_index, payload.submitting_member, payload.session, payload.unit_index
+                )));
+            };
+            if finalized_item.item.canonical_bytes()? != payload_item.canonical_bytes()? {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed item body for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+            let payload_operation_id = payload_item.operation_id()?;
+            if finalized_item.operation_id != payload_operation_id {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed operation ID for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+
+            if let Some(operation_id) = finalized_item.operation_id {
+                let entry = consensus
+                    .journal()
+                    .entry_by_operation_id(operation_id)
+                    .ok_or_else(|| {
+                        cdk::Error::Custom(format!(
+                            "AlephBFT finalized unit replay operation {} is missing from the local journal",
+                            operation_id
+                        ))
+                    })?;
+                responses.push(FederationSubmitOperationResponse::from_outcome(
+                    FederationJournalAppendOutcome::Duplicate(entry.clone()),
+                ));
+            }
+        }
+
+        Ok(Some(responses))
+    }
+
     async fn remember_federation_aleph_bft_pending_sequence(
         &self,
         operation_id: FederationOperationId,
@@ -1956,6 +2037,21 @@ impl MintState {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
         let mut consensus = consensus.lock().await;
+        if let Some(responses) =
+            Self::aleph_bft_duplicate_finalized_unit_responses(&consensus, &payload)?
+        {
+            drop(consensus);
+            if let Some(sequence) = sequence {
+                self.persist_federation_journal_entries(&[], None, Some(sequence))
+                    .await?;
+                self.record_federation_sequence(sequence.0, sequence.1)
+                    .await;
+            }
+            let responses = self
+                .federation_submit_responses_with_current_status(&responses)
+                .await;
+            return Ok(responses);
+        }
         let mut next_consensus = consensus.clone();
         let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
         let responses = next_consensus.finalize_aleph_bft_unit(payload)?;

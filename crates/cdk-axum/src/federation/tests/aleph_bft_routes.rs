@@ -168,6 +168,80 @@ async fn private_aleph_bft_finalized_unit_route_persists_applies_and_records_seq
 }
 
 #[tokio::test]
+async fn private_aleph_bft_finalized_unit_route_accepts_exact_duplicate_replay_idempotently() {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let quote_id = QuoteId::new();
+    let unit = aleph_bft_unit(&state, peer_private.member_id, &quote_id);
+    let operation_ids = unit.operation_ids.clone();
+    let first_request = signed_aleph_bft_finalized_unit_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftFinalizedUnit,
+        unit.clone(),
+    );
+    let second_request = signed_aleph_bft_finalized_unit_request(
+        &public_config,
+        &peer_private,
+        2,
+        FederationRestMessageKind::AlephBftFinalizedUnit,
+        unit,
+    );
+
+    let first_response = post_aleph_bft_finalized_unit(State(state.clone()), Json(first_request))
+        .await
+        .expect("first AlephBFT finalized-unit response")
+        .0;
+    let second_response = post_aleph_bft_finalized_unit(State(state.clone()), Json(second_request))
+        .await
+        .expect("duplicate AlephBFT finalized-unit response")
+        .0;
+
+    assert_eq!(first_response.operation_ids, operation_ids);
+    assert_eq!(first_response.responses.len(), 1);
+    assert_eq!(second_response.operation_ids, operation_ids);
+    assert_eq!(second_response.responses.len(), 1);
+    assert!(matches!(
+        first_response.responses[0].outcome,
+        FederationJournalAppendOutcome::Appended(_)
+    ));
+    assert!(matches!(
+        second_response.responses[0].outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(
+        second_response.responses[0].operation_id,
+        first_response.responses[0].operation_id
+    );
+
+    let finalized_items = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("persisted finalized items");
+    assert_eq!(finalized_items.len(), 1);
+    assert_eq!(finalized_items[0].operation_id, Some(operation_ids[0]));
+
+    let journal_entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("persisted journal");
+    assert_eq!(journal_entries.len(), 1);
+    assert_eq!(journal_entries[0].operation_id, operation_ids[0]);
+
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+}
+
+#[tokio::test]
 async fn private_aleph_bft_finalized_unit_route_rejects_kind_mismatch_before_mutation() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let quote_id = QuoteId::new();

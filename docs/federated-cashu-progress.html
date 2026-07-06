@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: harden AlephBFT peer delivery</span>
+          <span class="value">fix: make AlephBFT replay idempotent</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Outbound private REST now refuses to sign AlephBFT finalized-unit messages for unknown or mismatched roster members, and a 5-member driver regression proves one malformed remote acknowledgement does not block finalization when the local member plus three honest peers accept the exact unit.</span>
+          <span class="value">Exact duplicate private REST AlephBFT finalized-unit delivery now returns the already accepted response without appending another finalized item or journal entry, while still recording the newer sender sequence. A partial-delivery driver retry test now proves the local unit remains queued until quorum returns.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue moving from finalized-unit stand-ins toward production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
+          <span class="value">Continue replacing finalized-unit stand-ins with production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
         </div>
       </aside>
     </header>

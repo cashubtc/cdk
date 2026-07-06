@@ -8072,6 +8072,113 @@ async fn aleph_bft_broadcast_round_five_members_tolerates_bad_ack_before_quorum(
 }
 
 #[tokio::test]
+async fn aleph_bft_broadcast_round_retries_after_partial_delivery_reaches_quorum() {
+    let (public_config, local_private, second_private, third_private) =
+        transport_config_three_with_threshold(
+            ThresholdParams::new(3, 2, 3).expect("threshold params"),
+        );
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = queue_local_aleph_bft_unit(&state, envelope).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport = MockFederationTransport::default()
+        .with_aleph_bft_finalized_unit_responses(vec![response.clone()]);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let second_peer = public_config
+        .member(second_private.member_id)
+        .expect("second peer")
+        .clone();
+    let third_peer = public_config
+        .member(third_private.member_id)
+        .expect("third peer")
+        .clone();
+    let peers = vec![second_peer, third_peer];
+
+    let err = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        &state,
+        &client,
+        &peers,
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 2,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect_err("partial delivery should not reach quorum");
+
+    assert!(
+        err.to_string().contains("reached 2 of 3 required"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 2);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after partial delivery")
+        .is_none());
+    {
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let consensus = consensus.lock().await;
+        assert_eq!(consensus.queued_len(), 1);
+        assert_eq!(consensus.peer_status().operation_count, 0);
+    }
+
+    transport
+        .clone()
+        .with_aleph_bft_finalized_unit_responses(vec![response.clone(), response]);
+    let outcome = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        &state,
+        &client,
+        &peers,
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 2,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect("retry broadcast")
+    .expect("unit broadcast after retry");
+
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![second_private.member_id, third_private.member_id]
+    );
+    assert!(outcome.remote_failed_members.is_empty());
+    assert_eq!(outcome.local_responses.len(), 1);
+    assert_eq!(outcome.local_responses[0].operation_id, operation_id);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 4);
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after retry")
+        .expect("mint quote applied");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+}
+
+#[tokio::test]
 async fn aleph_bft_broadcast_round_rejects_delivery_limit_below_quorum_before_peer_request() {
     let (public_config, local_private, second_private, third_private) =
         transport_config_three_with_threshold(
