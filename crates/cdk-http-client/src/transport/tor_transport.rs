@@ -3,17 +3,18 @@
 use std::fmt;
 use std::sync::Arc;
 
-use arti_client::{TorClient, TorClientConfig};
-use arti_hyper::ArtiHttpConnector;
+use arti_client::{DataStream, TorClient, TorClientConfig};
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
-use http::header::{self, HeaderName, HeaderValue};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::header::{self, HeaderName, HeaderValue};
 use hyper::http::{Method, Request, Uri};
-use hyper::{Body, Client};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OnceCell;
+use tokio_native_tls::TlsConnector;
 use url::Url;
 
 use crate::transport::Transport;
@@ -27,7 +28,7 @@ pub const DEFAULT_TOR_POOL_SIZE: usize = 5;
 pub struct TorAsync {
     salt: [u8; 4],
     size: usize,
-    pool: Arc<OnceCell<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>>,
+    pool: Arc<OnceCell<Vec<Arc<TorClient<tor_rtcompat::PreferredRuntime>>>>>,
 }
 
 impl fmt::Debug for TorAsync {
@@ -75,7 +76,7 @@ impl TorAsync {
 
     async fn ensure_pool(
         &self,
-    ) -> Result<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, HttpError> {
+    ) -> Result<Vec<Arc<TorClient<tor_rtcompat::PreferredRuntime>>>, HttpError> {
         let size = self.size;
         let pool_ref = self
             .pool
@@ -87,7 +88,7 @@ impl TorAsync {
                 for _ in 0..size {
                     clients.push(base.isolated_client());
                 }
-                Ok::<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, HttpError>(clients)
+                Ok::<Vec<Arc<TorClient<tor_rtcompat::PreferredRuntime>>>, HttpError>(clients)
             })
             .await?;
         Ok(pool_ref.clone())
@@ -96,7 +97,7 @@ impl TorAsync {
     #[inline]
     fn index_for_request(
         &self,
-        method: &http::Method,
+        method: &Method,
         url: &Url,
         body: Option<&[u8]>,
         pool_len: usize,
@@ -141,45 +142,78 @@ impl TorAsync {
         (h as usize) % pool_len.max(1)
     }
 
-    async fn request<R>(
-        &self,
-        method: http::Method,
-        url: Url,
+    fn request_uri(url: &Url) -> Result<Uri, HttpError> {
+        let path = match url.query() {
+            Some(query) => format!("{}?{}", url.path(), query),
+            None => url.path().to_string(),
+        };
+
+        path.parse::<Uri>()
+            .map_err(|e| HttpError::Other(e.to_string()))
+    }
+
+    fn host_header(url: &Url) -> Result<String, HttpError> {
+        let host = url
+            .host_str()
+            .ok_or_else(|| HttpError::Other("URL is missing a host".to_string()))?;
+
+        let Some(port) = url.port() else {
+            return Ok(host.to_string());
+        };
+
+        let default_port = match url.scheme() {
+            "http" => 80,
+            "https" => 443,
+            _ => port,
+        };
+
+        if port == default_port {
+            Ok(host.to_string())
+        } else {
+            Ok(format!("{host}:{port}"))
+        }
+    }
+
+    async fn send_request<S, R>(
+        stream: S,
+        host_header: String,
+        method: Method,
+        uri: Uri,
         auth: Option<AuthToken>,
-        mut body: Option<Vec<u8>>,
+        body: Option<Vec<u8>>,
     ) -> Result<R, HttpError>
     where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         R: DeserializeOwned,
     {
-        let tls = tls_api_native_tls::TlsConnector::builder()
-            .map_err(|e| HttpError::Other(format!("{e:?}")))?
-            .build()
-            .map_err(|e| HttpError::Other(format!("{e:?}")))?;
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+                .await
+                .map_err(|e| HttpError::Connection(e.to_string()))?;
 
-        let pool = self.ensure_pool().await?;
-        let idx = self.index_for_request(&method, &url, body.as_deref(), pool.len());
-        let client_for_request = pool[idx].clone();
+        tokio::spawn(async move {
+            if let Err(err) = connection.await {
+                tracing::debug!("Tor HTTP connection ended with error: {}", err);
+            }
+        });
 
-        let connector = ArtiHttpConnector::new(client_for_request, tls);
-        let client: Client<_> = Client::builder().build(connector);
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::ACCEPT, "application/json")
+            .header(header::HOST, host_header);
 
-        let uri: Uri = url
-            .as_str()
-            .parse::<Uri>()
+        if body.is_some() {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+
+        let body = body
+            .map(|body| Full::new(Bytes::from(body)))
+            .unwrap_or_else(|| Full::new(Bytes::new()));
+
+        let mut req = builder
+            .body(body)
             .map_err(|e| HttpError::Other(e.to_string()))?;
-
-        let mut builder = Request::builder().method(method).uri(uri);
-        builder = builder.header(header::ACCEPT, "application/json");
-
-        let mut req = match body.take() {
-            Some(b) => builder
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(b))
-                .map_err(|e| HttpError::Other(e.to_string()))?,
-            None => builder
-                .body(Body::empty())
-                .map_err(|e| HttpError::Other(e.to_string()))?,
-        };
 
         if let Some(auth) = auth {
             let key = auth.header_key();
@@ -191,15 +225,18 @@ impl TorAsync {
             );
         }
 
-        let resp = client
-            .request(req)
+        let resp = sender
+            .send_request(req)
             .await
             .map_err(|e| HttpError::Connection(e.to_string()))?;
 
         let status = resp.status().as_u16();
-        let bytes = hyper::body::to_bytes(resp.into_body())
+        let bytes = resp
+            .into_body()
+            .collect()
             .await
-            .map_err(|e| HttpError::Other(e.to_string()))?;
+            .map_err(|e| HttpError::Other(e.to_string()))?
+            .to_bytes();
 
         if !(200..300).contains(&status) {
             return Err(HttpError::Status {
@@ -209,6 +246,82 @@ impl TorAsync {
         }
 
         serde_json::from_slice::<R>(&bytes).map_err(|e| HttpError::Serialization(e.to_string()))
+    }
+
+    async fn connect_tor(
+        client: Arc<TorClient<tor_rtcompat::PreferredRuntime>>,
+        url: &Url,
+    ) -> Result<DataStream, HttpError> {
+        let host = url
+            .host_str()
+            .ok_or_else(|| HttpError::Other("URL is missing a host".to_string()))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| HttpError::Other("URL is missing a port".to_string()))?;
+
+        client
+            .connect((host.to_string(), port))
+            .await
+            .map_err(|e| HttpError::Connection(e.to_string()))
+    }
+
+    async fn request<R>(
+        &self,
+        method: Method,
+        url: Url,
+        auth: Option<AuthToken>,
+        mut body: Option<Vec<u8>>,
+    ) -> Result<R, HttpError>
+    where
+        R: DeserializeOwned,
+    {
+        let pool = self.ensure_pool().await?;
+        let idx = self.index_for_request(&method, &url, body.as_deref(), pool.len());
+        let client_for_request = pool[idx].clone();
+
+        let request_uri = Self::request_uri(&url)?;
+        let host_header = Self::host_header(&url)?;
+        let tor_stream = Self::connect_tor(client_for_request, &url).await?;
+
+        match url.scheme() {
+            "http" => {
+                Self::send_request(
+                    tor_stream,
+                    host_header,
+                    method,
+                    request_uri,
+                    auth,
+                    body.take(),
+                )
+                .await
+            }
+            "https" => {
+                let host = url
+                    .host_str()
+                    .ok_or_else(|| HttpError::Other("URL is missing a host".to_string()))?;
+                let connector = tokio_native_tls::native_tls::TlsConnector::builder()
+                    .build()
+                    .map_err(|e| HttpError::Other(e.to_string()))?;
+                let connector = TlsConnector::from(connector);
+                let tls_stream = connector
+                    .connect(host, tor_stream)
+                    .await
+                    .map_err(|e| HttpError::Connection(e.to_string()))?;
+
+                Self::send_request(
+                    tls_stream,
+                    host_header,
+                    method,
+                    request_uri,
+                    auth,
+                    body.take(),
+                )
+                .await
+            }
+            scheme => Err(HttpError::Other(format!(
+                "unsupported URL scheme for Tor transport: {scheme}"
+            ))),
+        }
     }
 }
 
