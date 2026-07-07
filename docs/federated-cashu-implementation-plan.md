@@ -136,9 +136,15 @@ Current confirmed shape:
   layer now also has AlephBFT backup migrations and federation DB methods that
   append raw backup bytes per session, keep sessions isolated, preserve
   transaction rollback, and reload bytes through the shared SQLite/Postgres
-  migration path. It is intentionally not wired into router startup yet; the
-  remaining adapters are runtime DB writer integration, terminator lifecycle,
-  and the apply loop that consumes finalized-unit channel events.
+  migration path. The runtime now also assembles the upstream `LocalIO` bundle
+  from the data provider, DB-backed backup IO, and finalized-unit receiver, and
+  has a live-session starter that installs the inbound network queue, spawns
+  upstream `run_session`, runs the bounded outbound REST pump, owns terminator
+  shutdown, forwards finalized payloads into the CDK apply loop, and marks
+  network finality available only after a valid AlephBFT live session is
+  started. It is intentionally not wired into router startup yet; the next
+  checkpoint is router-owned startup/recovery and process-level live-session
+  coverage before replacing the private-REST finalized-unit stand-in.
 - Latest catch-up state-digest checkpoint: catch-up replay now has focused
   route-state coverage proving a lagging member records a durable materialized
   state-digest checkpoint for the replayed journal boundary after applying
@@ -216,11 +222,14 @@ Current confirmed shape:
   `cargo test -p cdk-axum --features federation aleph_bft_private_rest_broadcast_stand_in_idles_after_network_finality_activation -- --test-threads 1`
   passed on 2026-07-07.
 - Focused AlephBFT run-session adapter tests:
+  `cargo test -p cdk-axum --features federation aleph_bft_live_session -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation cdk_aleph_bft_db_backup -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation cdk_aleph_bft -- --test-threads 1`,
   and `cargo check -p cdk-axum --features federation` passed on 2026-07-07.
   This covers DB-backed backup IO, named upstream `LocalIO` session assembly,
-  and batched finalized-unit forwarding into the future CDK apply-loop channel.
+  live-session startup gating, inbound queue installation, terminator/task
+  ownership, bounded network-pump construction, finality activation, and batched
+  finalized-unit forwarding into the CDK apply-loop channel.
 - Focused startup authoritative-read tests:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
   plus the verified-read reopen coverage in
@@ -1125,8 +1134,13 @@ Architecture checklist:
   and readers load stable persisted snapshots for restart recovery.
   The same runtime now assembles the concrete upstream `LocalIO` bundle from the
   consensus data provider, DB backup IO, and finalized-unit receiver so startup
-  can spawn `run_session` in a later checkpoint without changing the public
-  route semantics.
+  can spawn `run_session` without changing the public route semantics. A
+  focused live-session starter now builds that `run_session` task, installs the
+  private REST inbound network queue, starts the bounded outbound network pump,
+  owns task shutdown, forwards finalized units into the CDK apply loop, and
+  activates network-finality mode for valid AlephBFT federations with remote
+  peers. Router startup ownership and restart recovery of that live session
+  remain the next checkpoint.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1504,15 +1518,16 @@ AlephBFT and consensus unit tests:
   member cannot be counted twice toward a threshold. Catch-up replay rejects
   reordered AlephBFT finalized-item evidence before quote, journal, or
   finalized-item storage mutation. Production AlephBFT network duplicate, delay,
-  and reorder handling remains open until the live network task exists.
+  and reorder handling remains open until router-started live-session process
+  tests exercise the task across multiple members.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
   with tampered derived operation IDs, tampered body hash, a mismatched body
   federation ID, or a future session is rejected before finalized-item, journal,
   sequence, quote, or consensus-runtime mutation. Production AlephBFT
-  equivocation/malformed network-unit handling remains open until the live
-  network task exists.
+  equivocation/malformed network-unit handling remains open until router-started
+  live-session process tests exercise the task across multiple members.
 - [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
   resumes when enough members return.
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast

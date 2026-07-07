@@ -1826,6 +1826,8 @@ mod tests {
             federation_aleph_bft_pending_sequences: None,
             #[cfg(feature = "federation")]
             federation_aleph_bft_network_inbound: None,
+            #[cfg(feature = "federation")]
+            federation_aleph_bft_live_session: None,
         }
     }
 
@@ -2237,6 +2239,7 @@ mod tests {
                 HashMap::new(),
             ))),
             federation_aleph_bft_network_inbound: None,
+            federation_aleph_bft_live_session: None,
         }
     }
 
@@ -2419,6 +2422,8 @@ mod tests {
             federation_aleph_bft_pending_sequences: None,
             #[cfg(feature = "federation")]
             federation_aleph_bft_network_inbound: None,
+            #[cfg(feature = "federation")]
+            federation_aleph_bft_live_session: None,
         }
     }
 
@@ -2962,6 +2967,7 @@ mod tests {
             federation_aleph_bft_pending_sequences: is_federated
                 .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
             federation_aleph_bft_network_inbound: None,
+            federation_aleph_bft_live_session: None,
         }
     }
 

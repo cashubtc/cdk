@@ -118,7 +118,7 @@ impl Default for CdkAlephBftNetworkPumpConfig {
 }
 
 impl CdkAlephBftNetworkPumpConfig {
-    fn validate(self) -> Result<(), cdk::Error> {
+    pub(crate) fn validate(self) -> Result<(), cdk::Error> {
         if self.max_messages_per_tick == 0 {
             return Err(cdk::Error::Custom(
                 "AlephBFT network pump max messages per tick must be greater than zero".to_string(),

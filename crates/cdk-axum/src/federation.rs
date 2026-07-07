@@ -30,6 +30,7 @@ mod aleph_bft_driver;
 mod aleph_bft_network;
 mod aleph_bft_routes;
 mod aleph_bft_runtime;
+mod aleph_bft_session;
 mod catch_up_routes;
 mod dkg_routes;
 mod payment_observation;
@@ -50,6 +51,13 @@ pub(crate) use self::aleph_bft_driver::{
 };
 pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
 use self::aleph_bft_routes::{post_aleph_bft_finalized_unit, post_aleph_bft_network_message};
+pub(crate) use self::aleph_bft_session::FederationAlephBftLiveSessionHandle;
+#[cfg(test)]
+use self::aleph_bft_session::{
+    federation_aleph_bft_live_session_startup_decision,
+    start_federation_aleph_bft_live_session_with_config,
+    FederationAlephBftLiveSessionStartupDecision,
+};
 use self::catch_up_routes::post_journal;
 use self::dkg_routes::{
     post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,

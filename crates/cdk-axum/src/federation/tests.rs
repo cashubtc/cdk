@@ -1138,6 +1138,7 @@ async fn federation_route_state_for_private_with_db_and_backend(
             HashMap::new(),
         ))),
         federation_aleph_bft_network_inbound: None,
+        federation_aleph_bft_live_session: None,
     }
 }
 
@@ -7687,6 +7688,103 @@ async fn aleph_bft_driver_startup_decision_spawns_only_for_aleph_bft_backend() {
             peer_count: 1,
         }
     );
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_startup_decision_spawns_only_for_aleph_bft_backend() {
+    let (public_config, local_private, _) = transport_config();
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let seed = mnemonic.to_seed_normalized("");
+    let in_memory_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
+        &seed,
+        FederationConsensusBackendKind::InMemory,
+    )
+    .await;
+    assert_eq!(
+        federation_aleph_bft_live_session_startup_decision(&in_memory_state)
+            .await
+            .expect("in-memory decision"),
+        FederationAlephBftLiveSessionStartupDecision::NonAlephBftBackend {
+            backend: FederationConsensusBackendKind::InMemory,
+        }
+    );
+
+    let aleph_bft_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    assert_eq!(
+        federation_aleph_bft_live_session_startup_decision(&aleph_bft_state)
+            .await
+            .expect("AlephBFT decision"),
+        FederationAlephBftLiveSessionStartupDecision::Spawn {
+            local_member: local_private.member_id,
+            peer_count: 1,
+            session_id: 0,
+        }
+    );
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_finality() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+
+    let handle = start_federation_aleph_bft_live_session_with_config(
+        &mut state,
+        FederationPeerSyncConfig::default(),
+        CdkAlephBftNetworkPumpConfig::default(),
+    )
+    .await
+    .expect("start live session")
+    .expect("live session handle");
+
+    assert!(state.federation_aleph_bft_network_inbound.is_some());
+    assert!(state.federation_aleph_bft_live_session.is_some());
+    assert!(Arc::ptr_eq(
+        &handle,
+        state
+            .federation_aleph_bft_live_session
+            .as_ref()
+            .expect("stored live session handle")
+    ));
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("AlephBFT status")
+            .finality,
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable
+    );
+    assert_eq!(
+        federation_aleph_bft_live_session_startup_decision(&state)
+            .await
+            .expect("already-started decision"),
+        FederationAlephBftLiveSessionStartupDecision::AlreadyStarted
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal")
+        .is_empty());
 }
 
 #[tokio::test]
