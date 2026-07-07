@@ -3757,6 +3757,11 @@ async fn create_mint_router_with_custom_cache_inner(
             state.clone(),
             federation_peer_sync_config,
         );
+        federation::start_federation_aleph_bft_live_session(
+            &mut state,
+            federation_peer_sync_config,
+        )
+        .await?;
         federation::spawn_federation_aleph_bft_driver_loop_with_config(
             state.clone(),
             federation_peer_sync_config,

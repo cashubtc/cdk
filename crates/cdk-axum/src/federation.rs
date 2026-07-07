@@ -51,12 +51,14 @@ pub(crate) use self::aleph_bft_driver::{
 };
 pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
 use self::aleph_bft_routes::{post_aleph_bft_finalized_unit, post_aleph_bft_network_message};
-pub(crate) use self::aleph_bft_session::FederationAlephBftLiveSessionHandle;
 #[cfg(test)]
 use self::aleph_bft_session::{
     federation_aleph_bft_live_session_startup_decision,
     start_federation_aleph_bft_live_session_with_config,
     FederationAlephBftLiveSessionStartupDecision,
+};
+pub(crate) use self::aleph_bft_session::{
+    start_federation_aleph_bft_live_session, FederationAlephBftLiveSessionHandle,
 };
 use self::catch_up_routes::post_journal;
 use self::dkg_routes::{

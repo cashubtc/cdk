@@ -6146,7 +6146,7 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
         .expect("AlephBFT local status");
     assert_eq!(
         aleph_bft_status.finality,
-        FederationAlephBftFinalityMode::ExternalFinalizationRequired
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable
     );
     assert_eq!(aleph_bft_status.accepted_operation_count, 1);
     assert!(

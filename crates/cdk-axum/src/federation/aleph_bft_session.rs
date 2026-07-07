@@ -124,6 +124,19 @@ impl Drop for FederationAlephBftLiveSessionHandle {
 }
 
 /// Start the live upstream AlephBFT session and install its inbound network queue.
+pub(crate) async fn start_federation_aleph_bft_live_session(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error> {
+    start_federation_aleph_bft_live_session_with_config(
+        state,
+        sync_config,
+        CdkAlephBftNetworkPumpConfig::default(),
+    )
+    .await
+}
+
+/// Start the live upstream AlephBFT session with explicit testable work bounds.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     state: &mut MintState,

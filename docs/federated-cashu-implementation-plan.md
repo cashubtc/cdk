@@ -142,9 +142,11 @@ Current confirmed shape:
   upstream `run_session`, runs the bounded outbound REST pump, owns terminator
   shutdown, forwards finalized payloads into the CDK apply loop, and marks
   network finality available only after a valid AlephBFT live session is
-  started. It is intentionally not wired into router startup yet; the next
-  checkpoint is router-owned startup/recovery and process-level live-session
-  coverage before replacing the private-REST finalized-unit stand-in.
+  started. Router startup now owns that live-session handle for `aleph_bft`
+  mints and exposes network finality in local status while keeping the
+  federation sync-readiness halt in place. The next checkpoint is explicit
+  catch-up/recovery readiness and process-level live-session coverage before
+  replacing the private-REST finalized-unit stand-in.
 - Latest catch-up state-digest checkpoint: catch-up replay now has focused
   route-state coverage proving a lagging member records a durable materialized
   state-digest checkpoint for the replayed journal boundary after applying
@@ -228,8 +230,9 @@ Current confirmed shape:
   and `cargo check -p cdk-axum --features federation` passed on 2026-07-07.
   This covers DB-backed backup IO, named upstream `LocalIO` session assembly,
   live-session startup gating, inbound queue installation, terminator/task
-  ownership, bounded network-pump construction, finality activation, and batched
-  finalized-unit forwarding into the CDK apply-loop channel.
+  ownership, bounded network-pump construction, router-started finality
+  activation with sync readiness still halted, and batched finalized-unit
+  forwarding into the CDK apply-loop channel.
 - Focused startup authoritative-read tests:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
   plus the verified-read reopen coverage in
@@ -1139,8 +1142,11 @@ Architecture checklist:
   private REST inbound network queue, starts the bounded outbound network pump,
   owns task shutdown, forwards finalized units into the CDK apply loop, and
   activates network-finality mode for valid AlephBFT federations with remote
-  peers. Router startup ownership and restart recovery of that live session
-  remain the next checkpoint.
+  peers. Router startup now owns that live-session handle for `aleph_bft` mints,
+  starts the session before the old private-REST finalized-unit driver, and
+  keeps sync readiness halted until catch-up/recovery evidence explicitly opens
+  public routes. Restart recovery of that live session and process-level
+  multi-member coverage remain the next checkpoint.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
