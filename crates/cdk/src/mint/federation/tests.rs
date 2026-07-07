@@ -38,11 +38,11 @@ use cdk_common::payment::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::{
-    Amount, BatchMintRequest, BlindedMessage, Conditions, CurrencyUnit, Id, MeltQuoteBolt11Request,
-    MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, Proof,
-    ProofsMethods, PublicKey, RestoreRequest, SecretKey, SigFlag, SpendingConditions, State,
-    SwapRequest,
+    Amount, BatchMintRequest, BlindSignature, BlindedMessage, Conditions, CurrencyUnit, Id,
+    MeltQuoteBolt11Request, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+    PaymentMethod, Proof, ProofsMethods, PublicKey, RestoreRequest, SecretKey, SigFlag,
+    SpendingConditions, State, SwapRequest,
 };
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
 use tokio::sync::Mutex;

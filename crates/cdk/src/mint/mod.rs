@@ -1331,24 +1331,10 @@ impl Mint {
                 .map(|(idx, output)| (output.blinded_secret, idx))
                 .collect();
 
-            let blinded_message: Vec<PublicKey> =
-                request.outputs.iter().map(|b| b.blinded_secret).collect();
-
-            let compatibility_signatures = self
-                .localstore
-                .get_blind_signatures(&blinded_message)
-                .await?;
-
-            if compatibility_signatures.len() != output_len {
-                return Err(Error::Internal);
-            }
-
             #[cfg(feature = "federation")]
             let blinded_signatures = if effective_federation_config.is_some() {
                 let mut blinded_signatures = Vec::with_capacity(output_len);
-                for (output, fallback_signature) in
-                    request.outputs.iter().zip(compatibility_signatures)
-                {
+                for output in &request.outputs {
                     let restored_share = self
                         .localstore
                         .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
@@ -1356,14 +1342,34 @@ impl Mint {
                         .into_iter()
                         .find(|share| federation_restore_share_matches_output(share, output))
                         .map(federation_signature_share_to_blind_signature);
-                    blinded_signatures.push(restored_share.or(fallback_signature));
+                    blinded_signatures.push(restored_share);
                 }
                 blinded_signatures
             } else {
+                let blinded_message: Vec<PublicKey> =
+                    request.outputs.iter().map(|b| b.blinded_secret).collect();
+                let compatibility_signatures = self
+                    .localstore
+                    .get_blind_signatures(&blinded_message)
+                    .await?;
+                if compatibility_signatures.len() != output_len {
+                    return Err(Error::Internal);
+                }
                 compatibility_signatures
             };
             #[cfg(not(feature = "federation"))]
-            let blinded_signatures = compatibility_signatures;
+            let blinded_signatures = {
+                let blinded_message: Vec<PublicKey> =
+                    request.outputs.iter().map(|b| b.blinded_secret).collect();
+                let compatibility_signatures = self
+                    .localstore
+                    .get_blind_signatures(&blinded_message)
+                    .await?;
+                if compatibility_signatures.len() != output_len {
+                    return Err(Error::Internal);
+                }
+                compatibility_signatures
+            };
 
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)
@@ -1861,6 +1867,54 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn standalone_restore_returns_compatibility_blind_signature() {
+        use cdk_common::nuts::{RestoreRequest, SecretKey};
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let mint = create_mint(MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        })
+        .await;
+
+        let current_keysets: Vec<SignatoryKeySet> = mint.keysets.load().as_ref().clone();
+        let keyset_id = current_keysets[0].id;
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        );
+        let signature = BlindSignature {
+            amount: output.amount,
+            keyset_id: output.keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        tx.add_blind_signatures(
+            &[output.blinded_secret],
+            std::slice::from_ref(&signature),
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let restored = mint
+            .restore(RestoreRequest {
+                outputs: vec![output.clone()],
+            })
+            .await
+            .expect("standalone restore");
+
+        assert_eq!(restored.outputs, vec![output]);
+        assert_eq!(restored.signatures, vec![signature]);
     }
 
     #[tokio::test]

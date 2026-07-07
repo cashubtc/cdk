@@ -196,6 +196,66 @@ async fn restore_returns_persisted_accepted_mint_shares_by_original_output_index
 }
 
 #[tokio::test]
+async fn restore_ignores_orphan_blind_signature_without_federation_share() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let keyset = runtime_config.public_config().keysets[0].clone();
+    let output = output_for_keyset(&keyset, b"orphan federation restore output");
+    let orphan_signature = BlindSignature {
+        amount: output.amount,
+        keyset_id: output.keyset_id,
+        c: PublicKey::from(BlsG1PublicKey::hash_to_curve(
+            b"orphan federation restore signature",
+        )),
+        dleq: None,
+    };
+
+    let mut tx = localstore
+        .begin_transaction()
+        .await
+        .expect("orphan signature transaction");
+    tx.add_blind_signatures(
+        &[output.blinded_secret],
+        std::slice::from_ref(&orphan_signature),
+        None,
+    )
+    .await
+    .expect("store orphan compatibility signature");
+    tx.commit()
+        .await
+        .expect("commit orphan compatibility signature");
+
+    let compatibility_signatures = localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("orphan compatibility signature lookup");
+    assert_eq!(compatibility_signatures, vec![Some(orphan_signature)]);
+    assert!(
+        localstore
+            .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+            .await
+            .expect("orphan federation share lookup")
+            .is_empty(),
+        "test fixture must contain no accepted-operation federation share"
+    );
+
+    let restored = mint
+        .restore(RestoreRequest {
+            outputs: vec![output],
+        })
+        .await
+        .expect("restore orphan output");
+    assert!(
+        restored.outputs.is_empty(),
+        "federation restore must not expose outputs backed only by compatibility signatures"
+    );
+    assert!(
+        restored.signatures.is_empty(),
+        "federation restore must not return signatures without accepted share provenance"
+    );
+}
+
+#[tokio::test]
 async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

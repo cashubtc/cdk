@@ -1529,6 +1529,11 @@ Mint operation tests:
   which restores a subset of accepted mint outputs in request order and verifies
   each returned signature share by original operation ID, accepted index,
   consensus evidence, blinded secret, and output index.
+- [x] Federation restore ignores plain compatibility `blind_signature` rows
+  that do not have accepted-operation federation share provenance. Covered by
+  `restore_ignores_orphan_blind_signature_without_federation_share`, which
+  stores an orphan blind-signature row, proves no federation share row exists,
+  and verifies restore returns no output or signature for it.
 
 Swap operation tests:
 
@@ -2034,7 +2039,9 @@ Implementation checklist:
 
 - [x] `checkstate` can remain a read query over local consensus materialized state.
 - [x] `restore` should never sign new outputs. It should return signature shares only for blinded messages already signed by accepted operations.
-- [x] Restore lookup uses existing blind-signature storage by blinded message.
+- [x] Restore lookup uses accepted-operation federation share storage by blinded
+  message in federation mode, while standalone restore continues to use existing
+  blind-signature storage.
 - [x] Add `federation_signature_share` lookup by blinded message if the dedicated federation share table is added.
 - [x] If a member lacks a local share for an accepted output, it may regenerate it from the accepted operation and key share, then persist it.
 - [x] Federated connector calls restore on members, validates shares, aggregates threshold shares, and returns normal `RestoreResponse`.
@@ -2044,7 +2051,10 @@ Tests and success criteria:
 
 - [x] Wallet can restore proofs after losing local DB using threshold member responses.
 - [x] Restore of unknown blinded message returns no signature share.
-- [x] Restore cannot be used to get shares for an output that never passed consensus.
+- [x] Restore cannot be used to get shares for an output that never passed consensus,
+  including if a plain `blind_signature` row exists without federation share
+  provenance. Covered by
+  `restore_ignores_orphan_blind_signature_without_federation_share`.
 - [x] Checkstate returns identical states from all honest members.
 
 ## Milestone 14: melt reserve and payment finalization
