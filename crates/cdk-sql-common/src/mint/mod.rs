@@ -462,6 +462,30 @@ mod federation_migration_tests {
             .collect()
     }
 
+    fn assert_melt_quote_state_constraint_keeps_unknown_transient(name: &str, sql: &str) {
+        let compact = compact_sql(sql);
+        let mut remainder = compact.as_str();
+
+        while let Some(index) = remainder.find("melt_quote") {
+            remainder = &remainder[index..];
+            let statement_end = remainder.find(';').unwrap_or(remainder.len());
+            let statement = &remainder[..statement_end];
+
+            if statement.contains("stateTEXTCHECK") || statement.contains("ADDstateTEXTCHECK") {
+                assert!(
+                    !statement.contains("'UNKNOWN'"),
+                    "melt quote schema must not persist backend Unknown as a durable state in {name}:\n{sql}"
+                );
+            }
+
+            if statement_end == remainder.len() {
+                break;
+            }
+
+            remainder = &remainder[statement_end + 1..];
+        }
+    }
+
     #[test]
     fn federation_mint_migrations_cover_sqlite_and_postgres() {
         let sqlite_saga =
@@ -743,10 +767,15 @@ mod federation_migration_tests {
             );
         }
 
-        for (_, name, _) in super::migrations::MIGRATIONS {
+        for (_, name, sql) in super::migrations::MIGRATIONS {
+            assert_melt_quote_state_constraint_keeps_unknown_transient(name, sql);
             assert!(
                 !name.contains("allow_failed_melt_quote_state"),
                 "FAILED quote-state support should be folded into base schemas during federation development"
+            );
+            assert!(
+                !name.contains("unknown_melt_quote_state"),
+                "backend Unknown must remain transient and must not be introduced by a schema migration"
             );
         }
     }
