@@ -1673,6 +1673,7 @@ impl FederationAlephBftConsensusAdapter {
             &self.journal,
             FederationConsensusBackendKind::AlephBft,
         )
+        .with_aleph_bft_next_item_index(self.next_item_index())
     }
 
     /// Begin a later AlephBFT session for both data-provider and finalizer.

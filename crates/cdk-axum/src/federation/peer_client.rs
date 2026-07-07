@@ -4,8 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
-    FederationConfig, FederationDkgCommitmentRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationConfig, FederationConsensusBackendKind, FederationDkgCommitmentRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
     FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
@@ -461,6 +461,14 @@ fn validate_peer_status(
             "federation peer status federation mismatch: expected {}, found {}",
             expected_federation_id,
             status.federation_id
+        );
+    }
+    if status.consensus_backend == FederationConsensusBackendKind::AlephBft
+        && status.aleph_bft_next_item_index.is_none()
+    {
+        anyhow::bail!(
+            "federation peer {} AlephBFT status missing finalized item cursor",
+            member.member_id
         );
     }
 

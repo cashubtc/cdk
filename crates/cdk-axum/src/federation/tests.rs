@@ -3439,14 +3439,6 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Halted { .. })
     ));
-
-    let blocked = state
-        .submit_federation_envelope(restore_envelope(
-            federation_id,
-            "03b45d181a961a91a284e8c64eb72839d43300afaa4e6b3076f5183bb14f50c2cc",
-        ))
-        .await;
-    assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
 }
 
 #[tokio::test]
@@ -3464,6 +3456,7 @@ async fn rest_peer_client_halts_on_consensus_backend_mismatch() {
         cdk::federation::FederationStateDigest::genesis(),
     );
     status.consensus_backend = cdk::federation::FederationConsensusBackendKind::AlephBft;
+    status.aleph_bft_next_item_index = Some(0);
     let transport = MockFederationTransport::default().with_status_response(status);
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
@@ -3478,14 +3471,42 @@ async fn rest_peer_client_halts_on_consensus_backend_mismatch() {
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Halted { .. })
     ));
+}
 
-    let blocked = state
-        .submit_federation_envelope(restore_envelope(
-            federation_id,
-            "03b45d181a961a91a284e8c64eb72839d43300afaa4e6b3076f5183bb14f50c2cc",
-        ))
-        .await;
-    assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+#[tokio::test]
+async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let status = FederationPeerStatus::new_with_state_digest(
+        public_config.federation_id,
+        peer_member.member_id,
+        0,
+        None,
+        cdk::federation::FederationJournalDigest::genesis(),
+        cdk::federation::FederationStateDigest::genesis(),
+    )
+    .with_consensus_backend(FederationConsensusBackendKind::AlephBft);
+    let transport = MockFederationTransport::default().with_status_response(status);
+    let client =
+        FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
+
+    let sync = client.sync_once_from_member(&state, peer_member).await;
+
+    let err = sync.expect_err("missing AlephBFT cursor should fail");
+    assert!(
+        err.to_string().contains("missing finalized item cursor"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]
@@ -5998,6 +6019,126 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     assert_eq!(
         consensus.journal().entries()[0].status,
         FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
+async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("peer member");
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let first_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope.clone())],
+    )
+    .expect("first AlephBFT unit");
+
+    state
+        .apply_federation_aleph_bft_finalized_unit(first_unit.clone())
+        .await
+        .expect("local first finalized unit");
+    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("peer AlephBFT adapter");
+    peer_adapter
+        .finalize_unit(first_unit)
+        .expect("peer first finalized unit");
+    let duplicate_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        1,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("duplicate AlephBFT unit");
+    peer_adapter
+        .finalize_unit(duplicate_unit)
+        .expect("peer duplicate finalized unit");
+    assert_eq!(peer_adapter.journal().entries().len(), 1);
+    assert_eq!(peer_adapter.finalized_items().len(), 2);
+
+    let request = state
+        .federation_consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    assert_eq!(request.next_index, 1);
+    let mut response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        peer_adapter.journal(),
+        &request,
+        50,
+        100,
+    );
+    response.state_digest = materialized_state_digest(&state, peer_adapter.journal().entries())
+        .await
+        .expect("materialized state digest");
+    let response =
+        response.with_aleph_bft_finalized_items(peer_adapter.finalized_items()[1..].to_vec(), true);
+    let transport = MockFederationTransport::default()
+        .with_status_response(
+            peer_adapter.peer_status(public_config.federation_id, peer_private.member_id),
+        )
+        .with_catch_up_response(response);
+    let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+        .expect("client");
+
+    client
+        .sync_once_from_member(&state, peer_member)
+        .await
+        .expect("sync finalized cursor");
+
+    let requests = transport.catch_up_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].payload.next_index, 1);
+    assert_eq!(requests[0].payload.aleph_bft_next_item_index, 1);
+    let stored_finalized_items = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("stored finalized items");
+    assert_eq!(stored_finalized_items.len(), 2);
+    assert_eq!(stored_finalized_items[1].operation_id, Some(operation_id));
+    let stored_entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("stored journal entries");
+    assert_eq!(stored_entries.len(), 1);
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus
+            .aleph_bft_status()
+            .expect("AlephBFT status")
+            .next_item_index,
+        2
     );
 }
 

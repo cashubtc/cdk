@@ -9,14 +9,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationError, FederationJournalCatchUpResponse, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateRow,
-    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
-    FederationOperation, FederationOperationId, FederationPaymentObservationRecord,
-    FederationPeerStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
-    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
+    FederatedKeyset, FederationConsensusBackendKind, FederationError,
+    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
+    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
+    FederationPaymentObservationRecord, FederationPeerStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
+    InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -502,12 +503,23 @@ async fn local_peer_status_and_entries(
         .federation_config()
         .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
     let journal = durable_federation_journal(state).await?;
-    let status = FederationPeerStatus::from_journal_with_backend(
+    let mut status = FederationPeerStatus::from_journal_with_backend(
         runtime_config.federation_id(),
         runtime_config.member_id(),
         &journal,
         runtime_config.consensus_backend(),
     );
+    if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
+        let finalized_item_count = state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_finalized_items()
+            .await?
+            .len();
+        status = status.with_aleph_bft_next_item_index(
+            u64::try_from(finalized_item_count).expect("AlephBFT finalized item count fits in u64"),
+        );
+    }
     let entries = journal.entries().to_vec();
     Ok((status, entries))
 }

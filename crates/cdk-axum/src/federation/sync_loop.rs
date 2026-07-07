@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationConsensusEngine, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationOperationEnvelope, FederationPeerStatus,
-    FederationSessionOutcome, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPublic, MemberId,
+    FederationConsensusBackendKind, FederationConsensusEngine, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
+    FederationPeerStatus, FederationSessionOutcome, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPublic,
+    MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -727,7 +728,7 @@ where
 
         ensure_peer_consensus_backend_matches(state, member, &local_status, &peer_status).await?;
 
-        if peer_status.operation_count > local_status.operation_count {
+        if peer_requires_catch_up(&local_status, &peer_status)? {
             state
                 .mark_federation_lagging(
                     member.member_id,
@@ -737,8 +738,8 @@ where
                 .await;
             state.mark_federation_catching_up(member.member_id).await;
 
-            while local_status.operation_count < peer_status.operation_count {
-                let before = local_status.operation_count;
+            while peer_requires_catch_up(&local_status, &peer_status)? {
+                let before_status = local_status.clone();
                 match self.catch_up_state_from_member(state, member).await {
                     Ok((response, _applied)) => {
                         latest_catch_up_state_digest = Some(response.state_digest);
@@ -747,7 +748,7 @@ where
                         state
                             .mark_federation_lagging(
                                 member.member_id,
-                                before,
+                                before_status.operation_count,
                                 peer_status.operation_count,
                             )
                             .await;
@@ -757,17 +758,19 @@ where
 
                 local_status = local_peer_order_status(state).await?;
                 recovered_from_peer = true;
-                if local_status.operation_count == before {
+                if !status_made_catch_up_progress(&before_status, &local_status)? {
+                    let before_finalized_item = format_aleph_bft_next_item_index(&before_status);
                     state
                         .mark_federation_halted(format!(
-                            "peer {} returned no catch-up progress from operation {}",
-                            member.member_id, before
+                            "peer {} returned no catch-up progress from operation {} / finalized item {}",
+                            member.member_id, before_status.operation_count, before_finalized_item
                         ))
                         .await;
                     anyhow::bail!(
-                        "federation peer {} returned no catch-up progress from operation {}",
+                        "federation peer {} returned no catch-up progress from operation {} / finalized item {}",
                         member.member_id,
-                        before
+                        before_status.operation_count,
+                        before_finalized_item
                     );
                 }
             }
@@ -804,7 +807,7 @@ where
             .await?;
         }
 
-        if local_status.operation_count >= peer_status.operation_count {
+        if !peer_requires_catch_up(&local_status, &peer_status)? {
             if recovered_from_peer && local_status.operation_count > 0 {
                 state
                     .mark_federation_verifying_session_outcome(
@@ -820,6 +823,71 @@ where
         }
 
         Ok(local_status)
+    }
+}
+
+fn peer_requires_catch_up(
+    local_status: &FederationPeerStatus,
+    peer_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    Ok(peer_status.operation_count > local_status.operation_count
+        || peer_finalized_cursor_ahead(local_status, peer_status)?)
+}
+
+fn status_made_catch_up_progress(
+    before_status: &FederationPeerStatus,
+    after_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    Ok(after_status.operation_count > before_status.operation_count
+        || status_finalized_cursor_increased(before_status, after_status)?)
+}
+
+fn peer_finalized_cursor_ahead(
+    local_status: &FederationPeerStatus,
+    peer_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    match (
+        aleph_bft_next_item_index(local_status)?,
+        aleph_bft_next_item_index(peer_status)?,
+    ) {
+        (Some(local_next_item_index), Some(peer_next_item_index)) => {
+            Ok(peer_next_item_index > local_next_item_index)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn status_finalized_cursor_increased(
+    before_status: &FederationPeerStatus,
+    after_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    match (
+        aleph_bft_next_item_index(before_status)?,
+        aleph_bft_next_item_index(after_status)?,
+    ) {
+        (Some(before_next_item_index), Some(after_next_item_index)) => {
+            Ok(after_next_item_index > before_next_item_index)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn aleph_bft_next_item_index(status: &FederationPeerStatus) -> anyhow::Result<Option<u64>> {
+    if status.consensus_backend != FederationConsensusBackendKind::AlephBft {
+        return Ok(None);
+    }
+    Ok(Some(status.aleph_bft_next_item_index.ok_or_else(|| {
+        anyhow::anyhow!(
+            "federation peer {} AlephBFT status missing finalized item cursor",
+            status.member_id
+        )
+    })?))
+}
+
+fn format_aleph_bft_next_item_index(status: &FederationPeerStatus) -> String {
+    match status.aleph_bft_next_item_index {
+        Some(index) => index.to_string(),
+        None => "none".to_string(),
     }
 }
 

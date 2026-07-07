@@ -863,8 +863,10 @@ pub struct FederationPeerStatus {
     /// Member ID of this peer.
     pub member_id: MemberId,
     /// Consensus backend producing this peer's accepted operation order.
-    #[serde(default)]
     pub consensus_backend: FederationConsensusBackendKind,
+    /// Next AlephBFT finalized-item index required by this peer, when using AlephBFT.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aleph_bft_next_item_index: Option<u64>,
     /// Number of accepted operations in the local journal.
     pub operation_count: u64,
     /// Highest accepted operation index, if any.
@@ -892,6 +894,7 @@ impl FederationPeerStatus {
             federation_id,
             member_id,
             consensus_backend: FederationConsensusBackendKind::InMemory,
+            aleph_bft_next_item_index: None,
             operation_count,
             latest_index,
             latest_order_digest,
@@ -914,6 +917,7 @@ impl FederationPeerStatus {
             federation_id,
             member_id,
             consensus_backend: FederationConsensusBackendKind::InMemory,
+            aleph_bft_next_item_index: None,
             operation_count,
             latest_index,
             latest_order_digest,
@@ -928,6 +932,13 @@ impl FederationPeerStatus {
         consensus_backend: FederationConsensusBackendKind,
     ) -> Self {
         self.consensus_backend = consensus_backend;
+        self
+    }
+
+    /// Return this status with an explicit AlephBFT finalized-item cursor.
+    #[must_use]
+    pub fn with_aleph_bft_next_item_index(mut self, next_item_index: u64) -> Self {
+        self.aleph_bft_next_item_index = Some(next_item_index);
         self
     }
 
@@ -1842,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn peer_status_defaults_legacy_json_to_in_memory_backend() {
+    fn peer_status_rejects_missing_consensus_backend() {
         let status = FederationPeerStatus::new(
             federation_id(),
             member_id(),
@@ -1856,16 +1867,13 @@ mod tests {
             .expect("status object")
             .remove("consensus_backend");
 
-        let decoded: FederationPeerStatus = serde_json::from_value(value).expect("legacy status");
-
-        assert_eq!(
-            decoded.consensus_backend,
-            FederationConsensusBackendKind::InMemory
-        );
+        let err = serde_json::from_value::<FederationPeerStatus>(value)
+            .expect_err("status without consensus backend must fail");
+        assert!(err.to_string().contains("consensus_backend"));
     }
 
     #[test]
-    fn peer_status_round_trips_explicit_backend() {
+    fn peer_status_round_trips_aleph_bft_backend_and_cursor() {
         let status = FederationPeerStatus::new(
             federation_id(),
             member_id(),
@@ -1873,7 +1881,8 @@ mod tests {
             None,
             FederationJournalDigest::genesis(),
         )
-        .with_consensus_backend(FederationConsensusBackendKind::AlephBft);
+        .with_consensus_backend(FederationConsensusBackendKind::AlephBft)
+        .with_aleph_bft_next_item_index(7);
 
         let json = serde_json::to_string(&status).expect("status json");
         let decoded: FederationPeerStatus = serde_json::from_str(&json).expect("status");
@@ -1882,6 +1891,7 @@ mod tests {
             decoded.consensus_backend,
             FederationConsensusBackendKind::AlephBft
         );
+        assert_eq!(decoded.aleph_bft_next_item_index, Some(7));
     }
 
     #[test]

@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, and operator counters are in place; the remaining lift is replacing the finalized-unit stand-in with production BFT ordering and broadening multi-node integration tests.</span>
+          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, finalized-cursor peer sync, and operator counters are in place; the remaining lift is replacing the finalized-unit stand-in with production BFT ordering and broadening multi-node integration tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: replay AlephBFT catch-up evidence</span>
+          <span class="value">feat: sync AlephBFT finalized cursor lag</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT catch-up now rebuilds the local runtime from peer finalized-item evidence, atomically persists the replay suffix with signed outcomes, applies accepted entries to mint state, and rejects journal-only AlephBFT catch-up before mutation.</span>
+          <span class="value">Peer status now carries the AlephBFT finalized-item cursor, statuses missing that cursor are rejected fail-closed, and peer sync catches up when either accepted-operation height or finalized-item evidence lags.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Teach peer sync to compare finalized-item cursor lag as well as accepted-operation lag, continue replacing finalized-unit stand-ins with production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
+          <span class="value">Continue replacing finalized-unit stand-ins with production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
         </div>
       </aside>
     </header>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, strict whole-unit catch-up finalized-item evidence replay, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, strict whole-unit catch-up finalized-item evidence replay, finalized-cursor peer status and sync lag detection, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -895,7 +895,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Use finalized-item cursor lag during peer sync, replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, keep public AlephBFT wallet submissions halted until the live backend is recovered even across stale sync-status restores or same-process healthy markers, then extend the current bounded-delivery policy and status counters to production live BFT transport queues.</p>
+            <p>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, keep public AlephBFT wallet submissions halted until the live backend is recovered even across stale sync-status restores or same-process healthy markers, then extend the current bounded-delivery policy and status counters to production live BFT transport queues.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
