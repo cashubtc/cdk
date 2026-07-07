@@ -143,10 +143,11 @@ Current confirmed shape:
   shutdown, forwards finalized payloads into the CDK apply loop, and marks
   network finality available only after a valid AlephBFT live session is
   started. Router startup now owns that live-session handle for `aleph_bft`
-  mints and exposes network finality in local status while keeping the
-  federation sync-readiness halt in place. The next checkpoint is explicit
-  catch-up/recovery readiness and process-level live-session coverage before
-  replacing the private-REST finalized-unit stand-in.
+  mints, restores sync status only after live finality is available, retires
+  the special startup halt for empty verified histories, and routes replayed
+  histories through the existing session-outcome verifier before public
+  readiness can open. The next checkpoint is process-level live-session
+  coverage before replacing the private-REST finalized-unit stand-in.
 - Latest catch-up state-digest checkpoint: catch-up replay now has focused
   route-state coverage proving a lagging member records a durable materialized
   state-digest checkpoint for the replayed journal boundary after applying
@@ -225,14 +226,18 @@ Current confirmed shape:
   passed on 2026-07-07.
 - Focused AlephBFT run-session adapter tests:
   `cargo test -p cdk-axum --features federation aleph_bft_live_session -- --test-threads 1`,
+  `cargo test -p cdk-axum --features federation aleph_bft_startup_restore -- --test-threads 1`,
+  `cargo test -p cdk-axum --features federation router_startup_replays_aleph_bft_finalized_items_before_serving_local_status -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation cdk_aleph_bft_db_backup -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation cdk_aleph_bft -- --test-threads 1`,
   and `cargo check -p cdk-axum --features federation` passed on 2026-07-07.
   This covers DB-backed backup IO, named upstream `LocalIO` session assembly,
   live-session startup gating, inbound queue installation, terminator/task
   ownership, bounded network-pump construction, router-started finality
-  activation with sync readiness still halted, and batched finalized-unit
-  forwarding into the CDK apply-loop channel.
+  activation, stale persisted healthy-status rejection before live finality,
+  empty-history startup halt retirement after live finality, replayed-history
+  session-outcome verification, and batched finalized-unit forwarding into the
+  CDK apply-loop channel.
 - Focused startup authoritative-read tests:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
   plus the verified-read reopen coverage in
@@ -1143,24 +1148,26 @@ Architecture checklist:
   owns task shutdown, forwards finalized units into the CDK apply loop, and
   activates network-finality mode for valid AlephBFT federations with remote
   peers. Router startup now owns that live-session handle for `aleph_bft` mints,
-  starts the session before the old private-REST finalized-unit driver, and
-  keeps sync readiness halted until catch-up/recovery evidence explicitly opens
-  public routes. Restart recovery of that live session and process-level
-  multi-member coverage remain the next checkpoint.
+  starts the session before restoring sync status and before the old
+  private-REST finalized-unit driver, keeps stale persisted healthy status
+  ignored until live finality exists, clears the startup halt for empty verified
+  histories, and keeps replayed histories in session-outcome verification until
+  catch-up/recovery evidence explicitly opens public routes. Process-level
+  multi-member coverage remains the next checkpoint.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
   routes. The in-memory path already restores persisted journal/session evidence
   and readiness; the AlephBFT path now restores local finalized-item state and
   can durably apply externally finalized units. Router startup now starts the
-  bounded AlephBFT driver loop for `aleph_bft` but keeps public value-changing
-  submissions halted until real finality is available, and stale persisted
-  healthy sync snapshots cannot reopen those routes on restart. Public
+  live AlephBFT session before sync restore, keeps stale persisted healthy sync
+  snapshots ignored until live finality is available, clears the startup halt
+  for empty histories once live finality exists, and sends replayed histories to
+  session-outcome verification rather than opening public routes immediately.
+  Public
   authoritative wallet routes also check the adapter finality mode directly, so
   a same-process healthy sync marker cannot bypass the
-  `external_finalization_required` guard; the guarded network-finality
-  activation hook is the future live-task handoff that reopens queue admission
-  without applying mint state before a finalized unit. Peer fetch now uses both
+  network-finality guard. Peer fetch now uses both
   accepted-operation lag and finalized-item cursor lag, requests finalized-item
   suffixes by cursor, and rejects incomplete whole-unit pages before durable
   mutation; remaining production work is real AlephBFT finality before public

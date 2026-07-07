@@ -2986,7 +2986,8 @@ impl MintState {
             return;
         };
         let current_status = sync.lock().await.status();
-        if current_status.is_startup_halt_for_backend(config.consensus_backend()) {
+        let startup_halt = current_status.is_startup_halt_for_backend(config.consensus_backend());
+        if startup_halt && !self.aleph_bft_network_finality_available().await {
             self.persist_federation_sync_status(&current_status).await;
             return;
         }
@@ -3002,10 +3003,21 @@ impl MintState {
                     Ok(status) => sync.lock().await.status = status,
                     Err(err) => {
                         tracing::warn!("Could not restore persisted federation sync status: {err}");
+                        return;
                     }
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                if startup_halt {
+                    let status = {
+                        let mut sync = sync.lock().await;
+                        sync.update_status(|sync| sync.mark_healthy())
+                    };
+                    if let Some(status) = status {
+                        self.persist_federation_sync_status(&status).await;
+                    }
+                }
+            }
             Err(err) => {
                 tracing::warn!("Could not load persisted federation sync status: {err}");
             }
@@ -3472,6 +3484,14 @@ impl MintState {
         ))
     }
 
+    async fn aleph_bft_network_finality_available(&self) -> bool {
+        self.federation_aleph_bft_status()
+            .await
+            .is_some_and(|status| {
+                status.finality == FederationAlephBftFinalityMode::NetworkFinalityAvailable
+            })
+    }
+
     async fn ensure_federation_can_forward_public_submit(&self) -> Result<(), cdk::Error> {
         let Some(sync) = &self.federation_sync else {
             return Ok(());
@@ -3732,11 +3752,19 @@ async fn create_mint_router_with_custom_cache_inner(
         federation_aleph_bft_live_session: None,
     };
     #[cfg(feature = "federation")]
+    state.start_federation_finalization_loop();
+    #[cfg(feature = "federation")]
+    if state.federation_consensus.is_some() {
+        federation::start_federation_aleph_bft_live_session(
+            &mut state,
+            federation_peer_sync_config,
+        )
+        .await?;
+    }
+    #[cfg(feature = "federation")]
     state.restore_federation_sync_status().await;
     #[cfg(feature = "federation")]
     state.restore_federation_startup_readiness().await;
-    #[cfg(feature = "federation")]
-    state.start_federation_finalization_loop();
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
@@ -3757,11 +3785,6 @@ async fn create_mint_router_with_custom_cache_inner(
             state.clone(),
             federation_peer_sync_config,
         );
-        federation::start_federation_aleph_bft_live_session(
-            &mut state,
-            federation_peer_sync_config,
-        )
-        .await?;
         federation::spawn_federation_aleph_bft_driver_loop_with_config(
             state.clone(),
             federation_peer_sync_config,

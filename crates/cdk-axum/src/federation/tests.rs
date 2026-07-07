@@ -6133,11 +6133,11 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
 
     assert_eq!(local_status.peer_status.operation_count, 1);
     assert!(!local_status.sync_ready);
-    assert_eq!(local_status.sync_state, "halted");
+    assert_eq!(local_status.sync_state, "verifying_session_outcome");
     assert!(
         local_status
             .sync_message
-            .contains("public federation submissions are disabled"),
+            .contains("verifying quorum session outcome evidence"),
         "unexpected sync message: {}",
         local_status.sync_message
     );
@@ -8285,6 +8285,65 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
         .expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
+async fn aleph_bft_startup_restore_retires_startup_halt_after_live_finality_for_empty_history() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut restored_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    assert!(matches!(
+        restored_state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Halted { reason })
+            if reason.contains("public federation submissions are disabled")
+    ));
+
+    restored_state
+        .mark_aleph_bft_network_finality_available()
+        .await
+        .expect("AlephBFT runtime can enable network finality");
+    restored_state.restore_federation_sync_status().await;
+    restored_state.restore_federation_startup_readiness().await;
+    assert_eq!(
+        restored_state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    );
+
+    restored_state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        ..FederationPeerSyncConfig::default()
+    });
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&restored_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let err = restored_state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect_err("live finality without finalized unit should time out pending");
+
+    assert_pending_finalization_error(&err, operation_id, 10);
+    assert!(restored_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after pending finality")
+        .is_none());
+    let consensus = restored_state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
     assert_eq!(consensus.peer_status().operation_count, 0);
 }
 
