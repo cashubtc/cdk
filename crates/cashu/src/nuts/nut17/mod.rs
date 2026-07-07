@@ -355,87 +355,6 @@ where
     }
 }
 
-/// Classify a notification payload by its discriminating fields instead of
-/// serde `untagged` variant order. The quote responses for different payment
-/// methods share most field names, and the structs tolerate unknown fields
-/// for forward compatibility, so untagged trial-and-error would pick the
-/// wrong variant.
-fn deserialize_payload<T, E>(value: serde_json::Value) -> Result<NotificationPayload<T>, E>
-where
-    T: Clone + Serialize + DeserializeOwned,
-    E: DeError,
-{
-    fn from_value<V, E>(value: serde_json::Value) -> Result<V, E>
-    where
-        V: DeserializeOwned,
-        E: DeError,
-    {
-        serde_json::from_value(value).map_err(E::custom)
-    }
-
-    match &value {
-        serde_json::Value::Object(fields) => {
-            if fields.contains_key("Y") {
-                return from_value(value).map(NotificationPayload::ProofState);
-            }
-
-            if fields.contains_key("fee_options") {
-                return from_value(value).map(NotificationPayload::MeltQuoteOnchainResponse);
-            }
-
-            if fields.contains_key("fee_reserve") {
-                if fields.get("method").and_then(serde_json::Value::as_str) == Some("bolt12") {
-                    return from_value(value).map(NotificationPayload::MeltQuoteBolt12Response);
-                }
-
-                return from_value(value).map(NotificationPayload::MeltQuoteBolt11Response);
-            }
-
-            if fields.contains_key("state") {
-                return from_value(value).map(NotificationPayload::MintQuoteBolt11Response);
-            }
-
-            if fields.contains_key("amount") {
-                return from_value(value).map(NotificationPayload::MintQuoteBolt12Response);
-            }
-
-            from_value(value).map(NotificationPayload::MintQuoteOnchainResponse)
-        }
-        serde_json::Value::Array(items) if items.len() == 2 => {
-            let method = items
-                .first()
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| E::custom("custom notification method must be a string"))?
-                .to_owned();
-            let response = items
-                .get(1)
-                .ok_or_else(|| E::custom("custom notification payload is missing response"))?;
-            let is_melt_quote = match response.as_object() {
-                Some(fields) => fields.contains_key("state"),
-                None => return Err(E::custom("custom notification response must be an object")),
-            };
-
-            let mut value = value;
-            if let serde_json::Value::Array(items) = &mut value {
-                if let Some(response) = items.get_mut(1) {
-                    fill_response_method::<E>(response, &method)?;
-                }
-            }
-
-            if is_melt_quote {
-                from_value(value).map(|(method, response)| {
-                    NotificationPayload::CustomMeltQuoteResponse(method, response)
-                })
-            } else {
-                from_value(value).map(|(method, response)| {
-                    NotificationPayload::CustomMintQuoteResponse(method, response)
-                })
-            }
-        }
-        _ => Err(E::custom("invalid notification payload")),
-    }
-}
-
 impl<'de, T> Deserialize<'de> for NotificationPayload<T>
 where
     T: Clone + Serialize + DeserializeOwned,
@@ -444,8 +363,11 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        deserialize_payload(value)
+        let _ = serde_json::Value::deserialize(deserializer)?;
+        Err(D::Error::custom(
+            "notification payloads require subscription kind context; use \
+             nut17::deserialize_payload_for_kind",
+        ))
     }
 }
 
@@ -917,5 +839,23 @@ mod tests {
             custom_payload,
         )
         .is_err());
+    }
+    #[test]
+    fn notification_payload_without_kind_context_errors() {
+        let encoded = r#"{
+            "quote": "abc",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0
+        }"#;
+
+        let err = serde_json::from_str::<NotificationPayload<String>>(encoded).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("require subscription kind context"));
     }
 }

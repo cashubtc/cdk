@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
-    WsErrorResponse, WsMethodRequest, WsNotification, WsRequest, WsResponse, WsUnsubscribeRequest,
+    RawWsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
 };
 use cdk_common::nut17::{deserialize_payload_for_kind, Kind, NotificationId};
 use cdk_common::parking_lot::RwLock;
@@ -29,22 +29,6 @@ use uuid::Uuid;
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
 use crate::wallet::MintConnector;
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct RawNotificationInner<I> {
-    #[serde(rename = "subId")]
-    sub_id: I,
-    payload: serde_json::Value,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(bound = "I: serde::Serialize + serde::de::DeserializeOwned")]
-#[serde(untagged)]
-enum RawWsMessageOrResponse<I> {
-    Response(WsResponse<I>),
-    ErrorResponse(WsErrorResponse),
-    Notification(Box<WsNotification<RawNotificationInner<I>>>),
-}
 
 /// Notification Payload
 pub type NotificationPayload = crate::nuts::NotificationPayload<String>;

@@ -34,8 +34,14 @@ pub struct WsUnsubscribeResponse<I> {
 ///
 /// This is the notification that is sent to the client when an event matches a
 /// subscription
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "T: Serialize + DeserializeOwned, I: Serialize + DeserializeOwned")]
+///
+/// This type is serialize-only in practice: notification payloads are not
+/// self-describing. Clients should deserialize notifications as
+/// [`RawNotificationInner`] and decode the payload with
+/// [`deserialize_payload_for_kind`](super::deserialize_payload_for_kind), using
+/// the kind of the subscription the notification belongs to.
+#[derive(Debug, Clone, Serialize)]
+#[serde(bound(serialize = "T: Serialize + DeserializeOwned, I: Serialize"))]
 pub struct NotificationInner<T, I>
 where
     T: Clone,
@@ -46,6 +52,21 @@ where
 
     /// The notification payload
     pub payload: NotificationPayload<T>,
+}
+
+/// The raw notification received from the websocket server.
+///
+/// This keeps the payload as JSON so clients can decode it with the kind of the
+/// subscription that produced the notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub struct RawNotificationInner<I> {
+    /// The subscription ID
+    #[serde(rename = "subId")]
+    pub sub_id: I,
+
+    /// The raw notification payload
+    pub payload: serde_json::Value,
 }
 
 /// Responses from the web socket server
@@ -158,8 +179,12 @@ pub struct WsErrorResponse {
 }
 
 /// Message from the server to the client
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "I: Serialize + DeserializeOwned")]
+///
+/// This type is serialize-only in practice. Clients parsing incoming messages
+/// should use [`RawWsMessageOrResponse`] so notification payloads are kept as
+/// raw JSON until the subscription kind is known.
+#[derive(Debug, Clone, Serialize)]
+#[serde(bound(serialize = "I: Serialize + DeserializeOwned"))]
 #[serde(untagged)]
 pub enum WsMessageOrResponse<I> {
     /// A response to a request
@@ -168,6 +193,23 @@ pub enum WsMessageOrResponse<I> {
     ErrorResponse(WsErrorResponse),
     /// A notification
     Notification(Box<WsNotification<NotificationInner<String, I>>>),
+}
+
+/// Raw message from the server to the client.
+///
+/// Use this type when deserializing websocket messages from a mint. Notification
+/// payloads must then be decoded with
+/// [`deserialize_payload_for_kind`](super::deserialize_payload_for_kind).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+#[serde(untagged)]
+pub enum RawWsMessageOrResponse<I> {
+    /// A response to a request
+    Response(WsResponse<I>),
+    /// An error response
+    ErrorResponse(WsErrorResponse),
+    /// A notification with raw JSON payload
+    Notification(Box<WsNotification<RawNotificationInner<I>>>),
 }
 
 impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrResponse<I> {
@@ -183,6 +225,37 @@ impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrR
                 error: err,
                 id,
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_ws_message_deserializes_notification_payload_as_json() {
+        let encoded = r#"{
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "subId": "sub-id",
+                "payload": {
+                    "quote": "quote-id",
+                    "method": "bolt12"
+                }
+            }
+        }"#;
+
+        let decoded: RawWsMessageOrResponse<String> =
+            serde_json::from_str(encoded).expect("raw websocket notification");
+
+        match decoded {
+            RawWsMessageOrResponse::Notification(notification) => {
+                assert_eq!(notification.params.sub_id, "sub-id");
+                assert_eq!(notification.params.payload["quote"], "quote-id");
+            }
+            other => panic!("expected notification, got {:?}", other),
         }
     }
 }

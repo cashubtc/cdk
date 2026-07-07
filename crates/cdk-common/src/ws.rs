@@ -44,6 +44,12 @@ pub type WsErrorBody = nut17::ws::WsErrorBody;
 /// Either a websocket message or a response
 pub type WsMessageOrResponse = nut17::ws::WsMessageOrResponse<SubId>;
 
+/// Raw notification content with an undecoded JSON payload
+pub type RawNotificationInner = nut17::ws::RawNotificationInner<SubId>;
+
+/// Either a websocket message or a response with raw notification payloads
+pub type RawWsMessageOrResponse = nut17::ws::RawWsMessageOrResponse<SubId>;
+
 /// Inner content of a notification with generic payload type
 pub type NotificationInner<T> = nut17::ws::NotificationInner<T, SubId>;
 
