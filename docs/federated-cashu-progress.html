@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: keep unknown backend melts pending</span>
+          <span class="value">refactor: split mint federation admission tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Backend Unknown payment status now stays transient: accepted federated melts keep the durable quote and proofs pending, keep PaymentAttempted saga state, and do not persist UNKNOWN quote state or change shares.</span>
+          <span class="value">Pure mint federation runtime/admission tests now live in their own module, covering operation construction, v3/BLS keyset enforcement, duplicate-output rejection, proof admission, and accepted-share signing without changing behavior.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -753,6 +753,10 @@
           <article class="item">
             <h3>Recovery and convergence</h3>
             <p>Offline, lagging, restarted, and partially-applied members can replay accepted history, verify digests and quorum evidence, rebuild materialized mint state, catch up across paid melt observations without duplicate outgoing payments, and refuse public signing until healthy.</p>
+          </article>
+          <article class="item">
+            <h3>Codebase hygiene</h3>
+            <p>Large federation test surfaces are being split into focused modules without changing behavior. The mint runtime/admission tests now sit under a dedicated admission module while shared mint federation fixtures remain available to the stateful apply tests.</p>
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
