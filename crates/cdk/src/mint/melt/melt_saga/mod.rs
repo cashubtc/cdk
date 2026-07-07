@@ -173,6 +173,9 @@ impl MeltSaga<Initial> {
         mut self,
         federation_operation_id: FederationOperationId,
     ) -> Self {
+        let operation_id = federation_operation_uuid(federation_operation_id);
+        self.operation_id = operation_id;
+        self.state_data.operation_id = operation_id;
         self.federation_operation_id = Some(federation_operation_id);
         self
     }
@@ -473,6 +476,14 @@ impl MeltSaga<Initial> {
             },
         })
     }
+}
+
+#[cfg(feature = "federation")]
+fn federation_operation_uuid(operation_id: FederationOperationId) -> uuid::Uuid {
+    let bytes = operation_id.to_bytes();
+    let mut uuid = [0_u8; 16];
+    uuid.copy_from_slice(&bytes[..16]);
+    uuid::Uuid::from_bytes(uuid)
 }
 
 impl MeltSaga<SetupComplete> {

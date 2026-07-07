@@ -1084,6 +1084,11 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
         Some(melt_entry.operation_id.to_string())
     );
     assert_eq!(
+        saga.operation_id,
+        super::super::federation_operation_uuid(melt_entry.operation_id),
+        "federated melt saga IDs must be deterministic so completed-operation rows converge"
+    );
+    assert_eq!(
         localstore
             .get_proofs_states(&input_ys)
             .await

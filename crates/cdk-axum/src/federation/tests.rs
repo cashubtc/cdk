@@ -11387,6 +11387,164 @@ async fn materialized_state_digest_tracks_restore_output_share_rows() {
     assert!(signatures[0].is_some());
 }
 
+fn completed_operation_snapshot_row(
+    snapshot: &FederationMaterializedStateSnapshot,
+    operation_id: FederationOperationId,
+) -> &FederationMaterializedStateRow {
+    let operation_uuid = federation_completed_operation_uuid(operation_id);
+    snapshot
+        .rows()
+        .iter()
+        .find(|row| row.table == "completed_operations" && row.key == operation_uuid.to_string())
+        .expect("completed operation materialized row")
+}
+
+#[tokio::test]
+async fn materialized_state_digest_tracks_completed_operation_rows_for_value_operations() {
+    let (state, _, _) = federation_route_state().await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+
+    let mint_quote_id = QuoteId::new();
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &mint_quote_id))
+        .await
+        .expect("submit mint quote");
+    state
+        .submit_federation_envelope(paid_observation_envelope(&state, &mint_quote_id))
+        .await
+        .expect("submit paid observation");
+    let mint_output = mint_output(&state, &mint_quote_id);
+    let mint_input = MintInput::Single(MintRequest {
+        quote: mint_quote_id,
+        outputs: vec![mint_output],
+        signature: None,
+    });
+    let mint_envelope = config.mint_operation(mint_input).expect("mint envelope");
+    let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
+    state
+        .submit_federation_envelope(mint_envelope)
+        .await
+        .expect("submit mint operation");
+
+    let swap_input = proof_for_amount(&state, 1, "completed-operation-swap");
+    let swap_change = swap_output(&state, "completed-operation-swap");
+    let swap_envelope = config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![swap_input],
+            vec![swap_change],
+        ))
+        .expect("swap envelope");
+    let swap_operation_id = swap_envelope.operation_id().expect("swap operation id");
+    state
+        .submit_federation_envelope(swap_envelope)
+        .await
+        .expect("submit swap operation");
+
+    let paid_melt_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Paid,
+        check_payment_state: MeltQuoteState::Paid,
+        pay_err: false,
+        check_err: false,
+    };
+    let melt_quote_id = melt_quote_with_description(
+        &state,
+        1_000,
+        serde_json::to_string(&paid_melt_description).expect("paid melt description"),
+    )
+    .await;
+    let melt_inputs = vec![
+        proof_for_amount(&state, 1, "completed-operation-melt-a"),
+        proof_for_amount(&state, 1, "completed-operation-melt-b"),
+        proof_for_amount(&state, 1, "completed-operation-melt-c"),
+    ];
+    let mut melt_change = swap_output(&state, "completed-operation-melt-change");
+    melt_change.amount = Amount::ZERO;
+    let melt_envelope = config
+        .melt_operation(cdk::nuts::MeltRequest::new(
+            melt_quote_id,
+            melt_inputs,
+            Some(vec![melt_change]),
+        ))
+        .expect("melt envelope");
+    let melt_operation_id = melt_envelope.operation_id().expect("melt operation id");
+    state
+        .submit_federation_envelope(melt_envelope)
+        .await
+        .expect("submit melt operation");
+
+    let entries = state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .journal()
+        .entries()
+        .to_vec();
+    let snapshot = materialized_state_snapshot(&state, &entries)
+        .await
+        .expect("materialized snapshot");
+    let digest = snapshot.digest().expect("materialized digest");
+    assert_ne!(digest, FederationStateDigest::genesis());
+
+    let mint_row = completed_operation_snapshot_row(&snapshot, mint_operation_id);
+    assert_eq!(
+        mint_row.fields.get("kind").map(String::as_str),
+        Some("mint")
+    );
+    assert_eq!(
+        mint_row.fields.get("total_issued").map(String::as_str),
+        Some("1")
+    );
+    assert!(!mint_row.fields.contains_key("missing"));
+
+    let swap_row = completed_operation_snapshot_row(&snapshot, swap_operation_id);
+    assert_eq!(
+        swap_row.fields.get("kind").map(String::as_str),
+        Some("swap")
+    );
+    assert_eq!(
+        swap_row.fields.get("total_issued").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        swap_row.fields.get("total_redeemed").map(String::as_str),
+        Some("1")
+    );
+    assert!(!swap_row.fields.contains_key("missing"));
+
+    let melt_row = completed_operation_snapshot_row(&snapshot, melt_operation_id);
+    assert_eq!(
+        melt_row.fields.get("kind").map(String::as_str),
+        Some("melt")
+    );
+    assert_eq!(
+        melt_row.fields.get("total_redeemed").map(String::as_str),
+        Some("3")
+    );
+    assert!(!melt_row.fields.contains_key("missing"));
+
+    let fingerprints = snapshot
+        .row_fingerprints()
+        .expect("materialized row fingerprints");
+    assert!(
+        fingerprints
+            .iter()
+            .filter(|row| row.table == "completed_operations")
+            .count()
+            >= 3
+    );
+    let fingerprints_json =
+        serde_json::to_string(&fingerprints).expect("materialized fingerprint json");
+    assert!(!fingerprints_json.contains(&mint_operation_id.to_string()));
+    assert!(!fingerprints_json.contains(&swap_operation_id.to_string()));
+    assert!(!fingerprints_json.contains(&melt_operation_id.to_string()));
+}
+
 #[tokio::test]
 async fn private_local_status_route_returns_consensus_and_sync_state() {
     let (state, public_config, peer_private) = federation_route_state().await;

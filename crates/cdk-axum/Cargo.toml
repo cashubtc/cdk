@@ -23,6 +23,7 @@ axum = { workspace = true, features = ["ws"] }
 cdk = { workspace = true, features = [
     "mint",
 ]}
+cdk-common.workspace = true
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
 tracing.workspace = true

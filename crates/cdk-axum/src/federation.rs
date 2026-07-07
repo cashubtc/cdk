@@ -22,6 +22,7 @@ use cdk::federation::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::MintState;
 
@@ -554,6 +555,7 @@ async fn materialized_state_snapshot(
     let mut melt_quotes = BTreeSet::new();
     let mut payment_observation_quotes = BTreeSet::new();
     let mut payment_quarantines = BTreeSet::new();
+    let mut completed_operations = BTreeSet::new();
     let mut proof_ys = BTreeSet::new();
     let mut blinded_messages = BTreeSet::new();
     let mut keyset_rotations = Vec::new();
@@ -571,6 +573,7 @@ async fn materialized_state_snapshot(
                 ));
             }
             FederationOperation::Mint(operation) => {
+                completed_operations.insert(entry.operation_id);
                 mint_quotes.extend(
                     operation
                         .request
@@ -612,6 +615,7 @@ async fn materialized_state_snapshot(
                 }
             }
             FederationOperation::Melt(operation) => {
+                completed_operations.insert(entry.operation_id);
                 melt_quotes.insert(operation.request.quote().clone());
                 for proof in operation.request.inputs() {
                     proof_ys.insert(proof.y()?);
@@ -621,6 +625,7 @@ async fn materialized_state_snapshot(
                 }
             }
             FederationOperation::Swap(operation) => {
+                completed_operations.insert(entry.operation_id);
                 for proof in operation.request.inputs() {
                     proof_ys.insert(proof.y()?);
                 }
@@ -644,6 +649,25 @@ async fn materialized_state_snapshot(
             FederationOperation::KeysetRotation(operation) => {
                 keyset_rotations.push((entry.index, entry.operation_id, operation.keyset.clone()));
             }
+        }
+    }
+
+    for operation_id in completed_operations {
+        let operation_uuid = federation_completed_operation_uuid(operation_id);
+        match db.get_completed_operation(&operation_uuid).await? {
+            Some(operation) => snapshot.push(completed_operation_materialized_row(
+                operation_id,
+                operation_uuid,
+                &operation,
+            )),
+            None => snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "completed_operations",
+                    operation_uuid.to_string(),
+                )
+                .with_field("federation_operation_id", operation_id.to_string())
+                .with_field("missing", "true"),
+            ),
         }
     }
 
@@ -774,6 +798,49 @@ async fn materialized_state_snapshot(
     }
 
     Ok(snapshot)
+}
+
+fn federation_completed_operation_uuid(operation_id: FederationOperationId) -> Uuid {
+    let bytes = operation_id.to_bytes();
+    let mut uuid = [0_u8; 16];
+    uuid.copy_from_slice(&bytes[..16]);
+    Uuid::from_bytes(uuid)
+}
+
+fn completed_operation_materialized_row(
+    operation_id: FederationOperationId,
+    operation_uuid: Uuid,
+    operation: &cdk_common::mint::Operation,
+) -> FederationMaterializedStateRow {
+    FederationMaterializedStateRow::new("completed_operations", operation_uuid.to_string())
+        .with_field("federation_operation_id", operation_id.to_string())
+        .with_field("kind", operation.kind().to_string())
+        .with_field(
+            "total_issued",
+            operation.total_issued().to_u64().to_string(),
+        )
+        .with_field(
+            "total_redeemed",
+            operation.total_redeemed().to_u64().to_string(),
+        )
+        .with_field(
+            "fee_collected",
+            operation.fee_collected().to_u64().to_string(),
+        )
+        .with_field(
+            "completed_at",
+            operation
+                .completed_at()
+                .map(|completed_at| completed_at.to_string())
+                .unwrap_or_default(),
+        )
+        .with_field(
+            "payment_method",
+            operation
+                .payment_method()
+                .map(|method| method.to_string())
+                .unwrap_or_default(),
+        )
 }
 
 fn federation_keyset_materialized_row(
