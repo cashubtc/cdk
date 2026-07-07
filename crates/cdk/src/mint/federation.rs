@@ -545,6 +545,7 @@ impl FederationRuntimeConfig {
 
     /// Validate outputs against the active v3/BLS aggregate keysets.
     pub fn validate_output_keysets(&self, outputs: &[BlindedMessage]) -> Result<(), Error> {
+        Mint::check_outputs_unique(outputs)?;
         Ok(self.public_config.validate_blinded_outputs(outputs)?)
     }
 
@@ -566,9 +567,12 @@ impl FederationRuntimeConfig {
         request: &MeltRequest<QuoteId>,
     ) -> Result<(), Error> {
         match request.outputs() {
-            Some(outputs) => Ok(self
-                .public_config
-                .validate_blinded_change_outputs(outputs)?),
+            Some(outputs) => {
+                Mint::check_outputs_unique(outputs)?;
+                Ok(self
+                    .public_config
+                    .validate_blinded_change_outputs(outputs)?)
+            }
             None => Ok(()),
         }
     }

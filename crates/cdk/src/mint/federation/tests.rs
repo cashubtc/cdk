@@ -2422,13 +2422,13 @@ async fn apply_federation_mint_rejects_duplicate_outputs_before_signing() {
     let output = output_for_runtime(&runtime_config, b"duplicate federation mint output");
     let mint_entry = appended_entry(
         &mut journal,
-        runtime_config
-            .mint_operation(MintInput::Single(MintRequest {
-                quote: quote.clone(),
+        runtime_config.operation_envelope(FederationOperation::Mint(FederationMintOperation {
+            request: FederationMintRequest::Single(MintRequest {
+                quote: quote.to_string(),
                 outputs: vec![output.clone(), output.clone()],
                 signature: None,
-            }))
-            .expect("duplicate-output mint operation"),
+            }),
+        })),
     );
     persist_journal_entry(&localstore, &mint_entry).await;
 
@@ -6059,6 +6059,95 @@ fn runtime_config_rejects_non_v3_mint_outputs_before_consensus() {
         Err(cdk_common::Error::Federation(
             FederationError::InvalidFederatedKeysetVersion { .. }
         ))
+    ));
+}
+
+#[test]
+fn runtime_config_rejects_duplicate_outputs_before_consensus() {
+    let runtime_config = runtime_config();
+    let output = output_for_runtime(&runtime_config, b"duplicate-output admission");
+    let duplicate_outputs = vec![output.clone(), output];
+
+    let single_mint = super::MintInput::Single(MintRequest {
+        quote: QuoteId::new(),
+        outputs: duplicate_outputs.clone(),
+        signature: None,
+    });
+    assert!(matches!(
+        runtime_config.validate_federated_mint_submission(&single_mint),
+        Err(Error::DuplicateOutputs)
+    ));
+    assert!(matches!(
+        runtime_config.mint_operation(single_mint),
+        Err(Error::DuplicateOutputs)
+    ));
+
+    let batch_mint = super::MintInput::Batch(BatchMintRequest {
+        quotes: vec![QuoteId::new(), QuoteId::new()],
+        quote_amounts: Some(vec![Amount::from(1), Amount::from(1)]),
+        outputs: duplicate_outputs.clone(),
+        signatures: None,
+    });
+    assert!(matches!(
+        runtime_config.validate_federated_mint_submission(&batch_mint),
+        Err(Error::DuplicateOutputs)
+    ));
+    assert!(matches!(
+        runtime_config.mint_operation(batch_mint),
+        Err(Error::DuplicateOutputs)
+    ));
+
+    let swap = SwapRequest::new(
+        vec![proof_for_runtime(
+            &runtime_config,
+            "duplicate-output admission swap",
+        )],
+        duplicate_outputs.clone(),
+    );
+    assert!(matches!(
+        runtime_config.validate_federated_swap_submission(&swap),
+        Err(Error::DuplicateOutputs)
+    ));
+    assert!(matches!(
+        runtime_config.swap_operation(swap),
+        Err(Error::DuplicateOutputs)
+    ));
+
+    let mut change_outputs = duplicate_outputs;
+    for output in &mut change_outputs {
+        output.amount = Amount::ZERO;
+    }
+    let melt = MeltRequest::new(
+        QuoteId::new(),
+        vec![proof_for_runtime(
+            &runtime_config,
+            "duplicate-output admission melt",
+        )],
+        Some(change_outputs),
+    );
+    assert!(matches!(
+        runtime_config.validate_federated_melt_submission(&melt),
+        Err(Error::DuplicateOutputs)
+    ));
+    assert!(matches!(
+        runtime_config.melt_operation(melt),
+        Err(Error::DuplicateOutputs)
+    ));
+
+    let envelope =
+        runtime_config.operation_envelope(FederationOperation::Mint(FederationMintOperation {
+            request: FederationMintRequest::Single(MintRequest {
+                quote: QuoteId::new().to_string(),
+                outputs: vec![
+                    output_for_runtime(&runtime_config, b"duplicate direct output"),
+                    output_for_runtime(&runtime_config, b"duplicate direct output"),
+                ],
+                signature: None,
+            }),
+        }));
+    assert!(matches!(
+        runtime_config.validate_federated_operation_submission(&envelope.operation),
+        Err(Error::DuplicateOutputs)
     ));
 }
 
