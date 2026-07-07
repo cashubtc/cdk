@@ -150,6 +150,10 @@ Current confirmed shape:
   `cargo test -p cdk-axum --features federation aleph_bft_broadcast_round_reports_distinct_skipped_members -- --test-threads 1`
   and `cargo test -p cdk-axum --features federation aleph_bft_broadcast_round -- --test-threads 1`
   passed on 2026-07-07.
+- Focused startup authoritative-read tests:
+  `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
+  and `cargo test -p cdk-axum --features federation startup_ -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest wallet mint-info metadata checkpoint: federation mints now advertise
   typed Cashu `MintInfo.federation` metadata with federation ID, member ID,
   public config digest, and protocol versions. Wallet aggregate-keyset
@@ -338,6 +342,15 @@ Current confirmed shape:
   applying local state early.
 - Focused AlephBFT unfinalized-restart test:
   `cargo test -p cdk-axum --features federation aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_state_mutation -- --test-threads 1`
+  passed on 2026-07-07.
+- Latest startup authoritative-read checkpoint: storage-backed startup now has
+  focused coverage proving a member with replayed journal rows but without
+  quorum session-outcome evidence refuses public restore and check-state reads
+  while it is in `verifying_session_outcome`. This keeps read-only routes from
+  serving authoritative signature shares or proof states until startup
+  readiness has proven the accepted history.
+- Focused startup authoritative-read test:
+  `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
   passed on 2026-07-07.
 - Latest AlephBFT router-startup finalized replay checkpoint: Axum router
   startup now has focused coverage for persisted finalized-item evidence plus a
@@ -1734,7 +1747,9 @@ Success criteria:
   was already accepted earlier and retrieved from durable state. Current
   coverage includes submit-response validation that rejects tampered embedded
   journal envelopes before accepted responses can be used for share-returning
-  public paths.
+  public paths, plus startup readiness coverage proving restore/check-state
+  reads fail closed while replayed journal history is still awaiting quorum
+  session-outcome verification.
 - [ ] Every safety-critical federation mutation is reachable from ordered
   consensus apply, replay, or catch-up; no public route commits those mutations
   directly.

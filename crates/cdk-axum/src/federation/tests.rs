@@ -12349,6 +12349,71 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
 }
 
 #[tokio::test]
+async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads() {
+    let (state, public_config, _, peer_private, _) =
+        federation_route_state_three_with_local_private().await;
+    let peer_member = peer_private.member_id;
+    state
+        .submit_federation_envelope(restore_envelope_for_config(
+            &public_config,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .await
+        .expect("persist accepted operation");
+
+    let mut restarted = state.clone();
+    restarted.federation_sync = Some(Arc::new(tokio::sync::Mutex::new(
+        crate::FederationSyncState::default(),
+    )));
+    restarted.restore_federation_startup_readiness().await;
+    assert_eq!(
+        restarted.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::VerifyingSessionOutcome {
+            peer: peer_member,
+            operation_count: 1,
+        })
+    );
+
+    let y = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"startup verifying checkstate read",
+    ));
+    let check_error = crate::router_handlers::post_check(
+        AuthHeader::None,
+        State(restarted.clone()),
+        Json(CheckStateRequest { ys: vec![y] }),
+    )
+    .await
+    .expect_err("startup verification must not serve authoritative check-state");
+    let check_body = response_error_detail(check_error).await;
+    assert!(
+        check_body.contains("verifying quorum session outcome evidence"),
+        "check-state should fail closed while startup verifies session outcome: {check_body}"
+    );
+
+    let restore_request = match restore_envelope_for_config(
+        &public_config,
+        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+    )
+    .operation
+    {
+        FederationOperation::Restore(operation) => operation.request,
+        _ => unreachable!("helper returns restore operation"),
+    };
+    let restore_error = crate::router_handlers::post_restore(
+        AuthHeader::None,
+        State(restarted),
+        Json(restore_request),
+    )
+    .await
+    .expect_err("startup verification must not serve authoritative restore");
+    let restore_body = response_error_detail(restore_error).await;
+    assert!(
+        restore_body.contains("verifying quorum session outcome evidence"),
+        "restore should fail closed while startup verifies session outcome: {restore_body}"
+    );
+}
+
+#[tokio::test]
 async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quorum() {
     let (state, public_config, _, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
