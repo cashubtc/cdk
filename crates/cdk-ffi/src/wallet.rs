@@ -300,6 +300,16 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Check all unissued mint quote states from the mint.
+    ///
+    /// This updates local quote state from the mint and attempts recovery for
+    /// any quote with an in-progress mint saga. It does not mint tokens
+    /// directly; use `mint` or `mint_unissued_quotes` for that.
+    pub async fn check_all_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.check_all_mint_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
     /// Fetch a mint quote from the mint and store it locally.
     ///
     /// This performs network I/O and writes the fetched quote to the local store.
@@ -924,4 +934,35 @@ pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
     let m = Mnemonic::parse(&mnemonic)
         .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
     Ok(m.to_entropy())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::custom_wallet_store;
+    use crate::sqlite::WalletSqliteDatabase;
+
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_all_mint_quotes_returns_empty_list_without_quotes() {
+        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
+        let wallet = Wallet::new(
+            "https://mint.example.com".to_string(),
+            CurrencyUnit::Sat,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+            custom_wallet_store(db),
+            WalletConfig {
+                target_proof_count: None,
+            },
+        )
+        .expect("wallet should be created");
+
+        let quotes = wallet
+            .check_all_mint_quotes()
+            .await
+            .expect("checking an empty quote store should succeed");
+
+        assert!(quotes.is_empty());
+    }
 }
