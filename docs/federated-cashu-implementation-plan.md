@@ -123,6 +123,17 @@ Current confirmed shape:
   and
   `cargo test -p cdk-axum --features federation process_melt_pending_aleph_bft_retry_returns_persisted_response_after_finality -- --test-threads 1`
   passed on 2026-07-07.
+- Latest AlephBFT single-mint public route checkpoint: the single-quote
+  `post_mint`/NUT-04 route now has the same pending-finalization retry coverage
+  as batch mint. The focused Axum test proves a timed-out request queues exactly
+  one operation without journal entries, quote issuance, blind signatures,
+  federation signature-share rows, or retained response waiters; a later exact
+  retry waits on the same pending operation and returns the persisted accepted
+  signature share after the exact queued unit is finalized through the current
+  AlephBFT adapter boundary.
+- Focused AlephBFT single-mint route test:
+  `cargo test -p cdk-axum --features federation post_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest checkpoint: wallet federation local-member tests now route mint,
   batch-mint, swap, and melt member calls through a shared accepted federation
   journal before returning signature shares or change shares. The local
@@ -1049,8 +1060,10 @@ Federated public API checklist:
   Batch-mint pending-finalization coverage now proves a timed-out public request
   leaves the operation queued without issuing shares, and a later exact retry
   waits for the same operation and returns the persisted accepted response after
-  adapter-level finality. Single-quote `post_mint` AlephBFT-finality coverage
-  remains open.
+  adapter-level finality. Single-quote `post_mint` pending-finalization coverage
+  now proves the same retry behavior while the quote remains paid, unissued, and
+  unsigned until the exact queued unit is finalized through the current adapter
+  boundary.
 - [ ] `post_swap` computes the canonical swap operation hash, checks for a
   cached response, validates the request without pending/spent mutations,
   submits to AlephBFT, awaits accepted apply, and returns persisted output
