@@ -372,22 +372,16 @@ where
 
     let accepted_with_local = remote_accepted_members.len().saturating_add(1);
     if accepted_with_local < required {
+        let remote_skipped_members =
+            remote_members_not_attempted(peers, local_member, &attempted_members);
         return Err(cdk::Error::Custom(format!(
             "AlephBFT finalized-unit broadcast reached {accepted_with_local} of {required} required members; remote failures {}; remote skipped {}",
             remote_failed_members.len(),
-            peers
-                .iter()
-                .filter(|peer| peer.member_id != local_member)
-                .filter(|peer| !attempted_members.contains(&peer.member_id))
-                .count()
+            remote_skipped_members.len()
         )));
     }
-    let remote_skipped_members = peers
-        .iter()
-        .filter(|peer| peer.member_id != local_member)
-        .filter(|peer| !attempted_members.contains(&peer.member_id))
-        .map(|peer| peer.member_id)
-        .collect::<Vec<_>>();
+    let remote_skipped_members =
+        remote_members_not_attempted(peers, local_member, &attempted_members);
 
     let local_responses = state
         .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
@@ -401,4 +395,19 @@ where
         remote_skipped_members,
         local_responses,
     }))
+}
+
+fn remote_members_not_attempted(
+    peers: &[MemberConfigPublic],
+    local_member: MemberId,
+    attempted_members: &BTreeSet<MemberId>,
+) -> Vec<MemberId> {
+    peers
+        .iter()
+        .filter(|peer| peer.member_id != local_member)
+        .filter(|peer| !attempted_members.contains(&peer.member_id))
+        .map(|peer| peer.member_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }

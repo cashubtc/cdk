@@ -9307,6 +9307,64 @@ async fn aleph_bft_broadcast_round_stops_remote_delivery_after_quorum() {
 }
 
 #[tokio::test]
+async fn aleph_bft_broadcast_round_reports_distinct_skipped_members() {
+    let (public_config, local_private, second_private, third_private) = transport_config_three();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let second_peer = public_config
+        .members
+        .get(&second_private.member_id)
+        .expect("second peer")
+        .clone();
+    let third_peer = public_config
+        .members
+        .get(&third_private.member_id)
+        .expect("third peer")
+        .clone();
+    let peers = vec![second_peer, third_peer.clone(), third_peer];
+
+    let outcome = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        &state,
+        &client,
+        &peers,
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 3,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect("broadcast round")
+    .expect("unit broadcast");
+
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![second_private.member_id]
+    );
+    assert_eq!(
+        outcome.remote_skipped_members,
+        vec![third_private.member_id]
+    );
+    assert!(outcome.remote_failed_members.is_empty());
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+}
+
+#[tokio::test]
 async fn aleph_bft_broadcast_round_counts_distinct_remote_members_for_quorum() {
     let (public_config, local_private, second_private, third_private) =
         transport_config_three_with_threshold(
