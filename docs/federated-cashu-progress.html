@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: keep backend unknown transient</span>
+          <span class="value">refactor: split mint federation issuance tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Unknown backend payment observation/status remains transient: federated melts keep durable quotes pending, reject durable Unknown transitions, and do not require UNKNOWN in melt_quote SQL constraints.</span>
+          <span class="value">Stateful federated mint issuance tests now live in their own module, covering rotated keyset signing, accepted-share restore provenance, pre-signing rejection, materialization rows, and NUT-20 validation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -756,7 +756,7 @@
           </article>
           <article class="item">
             <h3>Codebase hygiene</h3>
-            <p>Large federation test surfaces are being split into focused modules without changing behavior. Mint runtime/admission tests plus stateful swap and melt tests now sit under dedicated modules while shared mint federation fixtures remain available to the remaining apply tests.</p>
+            <p>Large federation test surfaces are being split into focused modules without changing behavior. Mint runtime/admission tests plus stateful mint issuance, swap, and melt tests now sit under dedicated modules while shared mint federation fixtures remain available to the remaining keyset, restore, and payment-observation apply tests.</p>
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
