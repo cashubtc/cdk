@@ -1753,13 +1753,13 @@ fn restore_envelope_for_config(
     )
 }
 
-fn indexed_restore_envelope(
-    federation_id: FederationId,
+fn indexed_restore_envelope_for_config(
+    config: &FederationConfig,
     index: u64,
 ) -> FederationOperationEnvelope {
     restore_envelope_with_output(
-        federation_id,
-        cdk::nuts::Id::from_str("00bfa73302d12ffd").expect("keyset id"),
+        config.federation_id,
+        config.keysets[0].id,
         PublicKey::from(BlsG1PublicKey::hash_to_curve(
             format!("federation evidence restore {index}").as_bytes(),
         )),
@@ -2442,15 +2442,14 @@ async fn non_primary_submit_forwards_to_primary_and_catches_up() {
 #[tokio::test(start_paused = true)]
 async fn non_primary_submit_uses_configured_operation_submission_timeout() {
     let (public_config, _, local_private) = transport_config();
-    let federation_id = public_config.federation_id;
     let mut state = federation_route_state_for_private(public_config.clone(), local_private).await;
     let timeout = Duration::from_secs(2);
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
         operation_submission_timeout: timeout,
         ..FederationPeerSyncConfig::default()
     });
-    let envelope = restore_envelope(
-        federation_id,
+    let envelope = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     let task = tokio::spawn(async move {
@@ -3095,10 +3094,9 @@ async fn peer_sync_round_backs_off_failed_peer_until_retry_delay() {
 async fn peer_sync_round_skips_evidence_for_failed_or_backing_off_peer() {
     let (state, public_config, local_private, _) =
         federation_route_state_with_local_private().await;
-    let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let entry = restore_envelope(
-        federation_id,
+    let entry = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     state
@@ -3163,7 +3161,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
     let operation_count = 3;
     for index in 0..operation_count {
-        let entry = indexed_restore_envelope(federation_id, index);
+        let entry = indexed_restore_envelope_for_config(&public_config, index);
         state
             .submit_federation_envelope(entry.clone())
             .await
@@ -3233,8 +3231,8 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let entry = restore_envelope(
-        federation_id,
+    let entry = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     state
@@ -3290,7 +3288,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
     let chunk_size = 2;
     let operation_count = chunk_size + 1;
     for index in 0..operation_count as u64 {
-        let entry = indexed_restore_envelope(federation_id, index);
+        let entry = indexed_restore_envelope_for_config(&public_config, index);
         state
             .submit_federation_envelope(entry.clone())
             .await
@@ -3371,7 +3369,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
     let chunk_size = 2;
     let operation_count = chunk_size + 1;
     for index in 0..operation_count as u64 {
-        let entry = indexed_restore_envelope(federation_id, index);
+        let entry = indexed_restore_envelope_for_config(&public_config, index);
         state
             .submit_federation_envelope(entry.clone())
             .await
@@ -5758,12 +5756,12 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
 async fn diverged_member_rejects_peer_catch_up_digest_mismatch() {
     let (state, public_config, _) = federation_route_state().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope(
-        public_config.federation_id,
+    let peer_entry = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let local_entry = restore_envelope(
-        public_config.federation_id,
+    let local_entry = restore_envelope_for_config(
+        &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let mut peer_consensus =
@@ -5868,8 +5866,8 @@ async fn federation_runtime_startup_rejects_conflicting_public_config_snapshot()
 async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let peer_member = peer_private.member_id;
-    let envelope = restore_envelope(
-        public_config.federation_id,
+    let envelope = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     let response = state
@@ -10584,8 +10582,8 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
         .federation_config()
         .expect("federation config")
         .member_id();
-    let envelope = restore_envelope(
-        public_config.federation_id,
+    let envelope = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     let operation_id = envelope.operation_id().expect("operation id");
@@ -10781,8 +10779,8 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
     state
-        .submit_federation_envelope(restore_envelope(
-            public_config.federation_id,
+        .submit_federation_envelope(restore_envelope_for_config(
+            &public_config,
             "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
         ))
         .await
@@ -10803,8 +10801,8 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
     );
 
     let blocked = restarted
-        .submit_federation_envelope(restore_envelope(
-            public_config.federation_id,
+        .submit_federation_envelope(restore_envelope_for_config(
+            &public_config,
             "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
         ))
         .await;
@@ -10817,8 +10815,8 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
     state
-        .submit_federation_envelope(restore_envelope(
-            public_config.federation_id,
+        .submit_federation_envelope(restore_envelope_for_config(
+            &public_config,
             "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
         ))
         .await

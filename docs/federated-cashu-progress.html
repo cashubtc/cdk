@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: keep peer-client federation fixtures v3-only</span>
+          <span class="value">test: keep Axum restore fixtures v3-only</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private REST peer-client catch-up tests now use active v3/BLS federation keysets for normal restore operations, and the DKG route smoke posts through an in-process router transport instead of relying on local socket binding.</span>
+          <span class="value">Axum federation restore fixtures that mutate member state now use the active v3/BLS aggregate keyset across peer-sync, startup-readiness, runtime replay, private-status, forwarding, and divergent catch-up tests. Old federation keysets remain only as explicit rejection or mismatch fixtures; there is no compatibility path for old experimental federation formats.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -748,7 +748,7 @@
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
-            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected.</p>
+            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests.</p>
           </article>
           <article class="item">
             <h3>Recovery and convergence</h3>
