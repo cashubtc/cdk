@@ -6224,6 +6224,8 @@ fn runtime_config_operation_submission_admission_accepts_valid_wallet_operations
 
 #[test]
 fn runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensus() {
+    use cdk_common::nuts::{P2PKWitness, Witness};
+
     let runtime_config = runtime_config();
     let mut invalid_swap_proof = proof_for_runtime(&runtime_config, "invalid swap admission");
     invalid_swap_proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
@@ -6242,6 +6244,33 @@ fn runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensu
         .is_err());
     assert!(runtime_config.swap_operation(swap).is_err());
 
+    let oversized_swap_secret =
+        Secret::new("s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1));
+    let oversized_swap_proof = proof_for_secret(
+        &runtime_config.public_config().keysets[0],
+        2,
+        oversized_swap_secret,
+    );
+    let oversized_swap = SwapRequest::new(
+        vec![oversized_swap_proof],
+        vec![output_for_runtime(
+            &runtime_config,
+            b"oversized swap admission output",
+        )],
+    );
+
+    assert!(matches!(
+        runtime_config.validate_federated_swap_submission(&oversized_swap),
+        Err(Error::ProofContentTooLarge {
+            actual,
+            max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+        }) if actual == crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1
+    ));
+    assert!(matches!(
+        runtime_config.swap_operation(oversized_swap),
+        Err(Error::ProofContentTooLarge { .. })
+    ));
+
     let mut invalid_melt_proof = proof_for_runtime(&runtime_config, "invalid melt admission");
     invalid_melt_proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
         b"invalid melt admission signature",
@@ -6258,6 +6287,32 @@ fn runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensu
         .validate_federated_melt_submission(&melt)
         .is_err());
     assert!(runtime_config.melt_operation(melt).is_err());
+
+    let mut oversized_witness_melt_proof =
+        proof_for_runtime(&runtime_config, "oversized melt admission witness");
+    oversized_witness_melt_proof.witness = Some(Witness::P2PKWitness(P2PKWitness {
+        signatures: vec!["s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1)],
+    }));
+    let mut oversized_melt_change =
+        output_for_runtime(&runtime_config, b"oversized melt admission change");
+    oversized_melt_change.amount = Amount::ZERO;
+    let oversized_melt = MeltRequest::new(
+        QuoteId::new(),
+        vec![oversized_witness_melt_proof],
+        Some(vec![oversized_melt_change]),
+    );
+
+    assert!(matches!(
+        runtime_config.validate_federated_melt_submission(&oversized_melt),
+        Err(Error::ProofContentTooLarge {
+            max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+            ..
+        })
+    ));
+    assert!(matches!(
+        runtime_config.melt_operation(oversized_melt),
+        Err(Error::ProofContentTooLarge { .. })
+    ));
 }
 
 #[test]

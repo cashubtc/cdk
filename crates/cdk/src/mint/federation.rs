@@ -573,6 +573,42 @@ impl FederationRuntimeConfig {
         }
     }
 
+    /// Validate proof secret and witness content before consensus admission.
+    pub fn validate_proof_content_bounds(proofs: &Proofs) -> Result<(), Error> {
+        for proof in proofs {
+            let secret_len = proof.secret.len();
+            if secret_len > MAX_PROOF_CONTENT_LEN {
+                tracing::warn!(
+                    "Proof secret exceeds max content length: {} > {}",
+                    secret_len,
+                    MAX_PROOF_CONTENT_LEN
+                );
+                return Err(Error::ProofContentTooLarge {
+                    actual: secret_len,
+                    max: MAX_PROOF_CONTENT_LEN,
+                });
+            }
+
+            if let Some(witness) = &proof.witness {
+                let witness_str = serde_json::to_string(witness)?;
+                let witness_len = witness_str.len();
+                if witness_len > MAX_PROOF_CONTENT_LEN {
+                    tracing::warn!(
+                        "Proof witness exceeds max content length: {} > {}",
+                        witness_len,
+                        MAX_PROOF_CONTENT_LEN
+                    );
+                    return Err(Error::ProofContentTooLarge {
+                        actual: witness_len,
+                        max: MAX_PROOF_CONTENT_LEN,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Verify spent proofs against the federation aggregate BLS keysets.
     pub fn verify_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
         for proof in proofs {
@@ -715,6 +751,7 @@ impl FederationRuntimeConfig {
         request: &MeltRequest<QuoteId>,
     ) -> Result<(), Error> {
         self.validate_melt_change_outputs(request)?;
+        Self::validate_proof_content_bounds(request.inputs())?;
         self.verify_proofs(request.inputs())?;
         request.verify_spending_conditions()?;
         Ok(())
@@ -748,6 +785,7 @@ impl FederationRuntimeConfig {
     /// state; accepted consensus apply is still the authoritative spend gate.
     pub fn validate_federated_swap_submission(&self, request: &SwapRequest) -> Result<(), Error> {
         self.validate_swap_outputs(request)?;
+        Self::validate_proof_content_bounds(request.inputs())?;
         self.verify_proofs(request.inputs())?;
         request.verify_spending_conditions()?;
         Ok(())
@@ -1937,36 +1975,7 @@ impl Mint {
             });
         }
 
-        for proof in inputs {
-            let secret_len = proof.secret.len();
-            if secret_len > MAX_PROOF_CONTENT_LEN {
-                tracing::warn!(
-                    "Proof secret exceeds max content length: {} > {}",
-                    secret_len,
-                    MAX_PROOF_CONTENT_LEN
-                );
-                return Err(Error::ProofContentTooLarge {
-                    actual: secret_len,
-                    max: MAX_PROOF_CONTENT_LEN,
-                });
-            }
-
-            if let Some(witness) = &proof.witness {
-                let witness_str = serde_json::to_string(witness)?;
-                let witness_len = witness_str.len();
-                if witness_len > MAX_PROOF_CONTENT_LEN {
-                    tracing::warn!(
-                        "Proof witness exceeds max content length: {} > {}",
-                        witness_len,
-                        MAX_PROOF_CONTENT_LEN
-                    );
-                    return Err(Error::ProofContentTooLarge {
-                        actual: witness_len,
-                        max: MAX_PROOF_CONTENT_LEN,
-                    });
-                }
-            }
-        }
+        FederationRuntimeConfig::validate_proof_content_bounds(inputs)?;
 
         Self::check_inputs_unique(inputs)?;
         config.verify_proofs(inputs)?;
