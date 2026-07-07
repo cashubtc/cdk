@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence, and operator counters are in place; the remaining lift is replaying returned finalized evidence, replacing the finalized-unit stand-in with production BFT ordering, and broadening multi-node integration tests.</span>
+          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, and operator counters are in place; the remaining lift is replacing the finalized-unit stand-in with production BFT ordering and broadening multi-node integration tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: carry AlephBFT catch-up evidence</span>
+          <span class="value">feat: replay AlephBFT catch-up evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation catch-up now carries mandatory AlephBFT finalized-item replay evidence with a strict cursor, whole-unit response slicing, and no legacy federated wire-shape fallback.</span>
+          <span class="value">AlephBFT catch-up now rebuilds the local runtime from peer finalized-item evidence, atomically persists the replay suffix with signed outcomes, applies accepted entries to mint state, and rejects journal-only AlephBFT catch-up before mutation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire returned finalized-item evidence into AlephBFT recovery, continue replacing finalized-unit stand-ins with production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
+          <span class="value">Teach peer sync to compare finalized-item cursor lag as well as accepted-operation lag, continue replacing finalized-unit stand-ins with production AlephBFT network finality, then broaden storage-backed 4-member and 5-member process-level mint, swap, and melt smoke tests.</span>
         </div>
       </aside>
     </header>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, strict whole-unit catch-up finalized-item evidence, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, strict whole-unit catch-up finalized-item evidence replay, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -849,7 +849,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, public mint retry after pending-finalization timeout, live duplicate public mint joining while pending, semantic conflict-key rejection for queued and drained quote operations, deterministic rejected outcomes for finalized semantic conflicts, drained-unit pending-finalization accounting with peer-decided duplicate/conflict cleanup, strict whole-unit AlephBFT catch-up evidence, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, explicit external-finalization-required status, network-finality readiness gating, and signed local-status counters for queued, pending-finalization, finalized, and accepted work so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, public mint retry after pending-finalization timeout, live duplicate public mint joining while pending, semantic conflict-key rejection for queued and drained quote operations, deterministic rejected outcomes for finalized semantic conflicts, drained-unit pending-finalization accounting with peer-decided duplicate/conflict cleanup, strict whole-unit AlephBFT catch-up evidence replay, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, explicit external-finalization-required status, network-finality readiness gating, and signed local-status counters for queued, pending-finalization, finalized, and accepted work so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>
@@ -895,7 +895,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Apply returned finalized-item catch-up evidence into AlephBFT recovery, replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, keep public AlephBFT wallet submissions halted until the live backend is recovered even across stale sync-status restores or same-process healthy markers, then extend the current bounded-delivery policy and status counters to production live BFT transport queues.</p>
+            <p>Use finalized-item cursor lag during peer sync, replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, keep public AlephBFT wallet submissions halted until the live backend is recovered even across stale sync-status restores or same-process healthy markers, then extend the current bounded-delivery policy and status counters to production live BFT transport queues.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

@@ -29,7 +29,7 @@ use cdk::federation::{
     FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationRestSequenceTracker, FederationSessionOutcome, FederationStateDigestCheckpoint,
-    FederationSubmitOperationResponse, MemberId,
+    FederationSubmitOperationResponse, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -714,6 +714,114 @@ fn ensure_catch_up_overlap_matches(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn aleph_bft_finalized_item_suffix_for_local(
+    local_items: &[FederationAlephBftFinalizedItem],
+    response: &FederationJournalCatchUpResponse,
+) -> Result<Vec<FederationAlephBftFinalizedItem>, cdk::Error> {
+    let local_next_item_index =
+        u64::try_from(local_items.len()).expect("finalized item count fits in u64");
+    let mut suffix = Vec::new();
+    for peer_item in &response.aleph_bft_finalized_items {
+        if peer_item.accepted_item_index < local_next_item_index {
+            let local_index = usize::try_from(peer_item.accepted_item_index).map_err(|_| {
+                aleph_bft_catch_up_recovery_mismatch(format!(
+                    "finalized item index {} does not fit this platform",
+                    peer_item.accepted_item_index
+                ))
+            })?;
+            let local_item = local_items.get(local_index).ok_or_else(|| {
+                aleph_bft_catch_up_recovery_mismatch(format!(
+                    "missing local finalized item {} for catch-up overlap",
+                    peer_item.accepted_item_index
+                ))
+            })?;
+            ensure_aleph_bft_finalized_item_overlap_matches(local_item, peer_item)?;
+        } else {
+            suffix.push(peer_item.clone());
+        }
+    }
+
+    if suffix.is_empty() && !response.aleph_bft_finalized_items_complete {
+        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
+            "AlephBFT catch-up made no finalized-item progress at item index {local_next_item_index}"
+        )));
+    }
+
+    Ok(suffix)
+}
+
+#[cfg(feature = "federation")]
+fn ensure_aleph_bft_finalized_item_overlap_matches(
+    local_item: &FederationAlephBftFinalizedItem,
+    peer_item: &FederationAlephBftFinalizedItem,
+) -> Result<(), cdk::Error> {
+    if local_item.accepted_item_index != peer_item.accepted_item_index
+        || local_item.session != peer_item.session
+        || local_item.unit_finalization_index != peer_item.unit_finalization_index
+        || local_item.unit_submitting_member != peer_item.unit_submitting_member
+        || local_item.unit_index != peer_item.unit_index
+        || local_item.item_index_in_unit != peer_item.item_index_in_unit
+        || local_item.operation_id != peer_item.operation_id
+        || local_item.status != peer_item.status
+        || local_item.unit_body_hash != peer_item.unit_body_hash
+    {
+        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
+            "finalized item overlap mismatch at accepted item index {}",
+            peer_item.accepted_item_index
+        )));
+    }
+
+    let local_body = local_item.item.canonical_bytes()?;
+    let peer_body = peer_item.item.canonical_bytes()?;
+    if local_body != peer_body {
+        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
+            "finalized item body mismatch at accepted item index {}",
+            peer_item.accepted_item_index
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn ensure_catch_up_entries_match_recovered_journal(
+    recovered_entries: &[FederationJournalEntry],
+    response_to_apply: Option<&FederationJournalCatchUpResponse>,
+) -> Result<(), cdk::Error> {
+    match response_to_apply {
+        Some(response) => {
+            if response.entries.len() != recovered_entries.len() {
+                return Err(aleph_bft_catch_up_recovery_mismatch(format!(
+                    "finalized-item catch-up recovered {} journal entries but response carried {}",
+                    recovered_entries.len(),
+                    response.entries.len()
+                )));
+            }
+            for (recovered_entry, response_entry) in
+                recovered_entries.iter().zip(response.entries.iter())
+            {
+                ensure_catch_up_overlap_matches(recovered_entry, response_entry)?;
+            }
+        }
+        None => {
+            if !recovered_entries.is_empty() {
+                return Err(aleph_bft_catch_up_recovery_mismatch(format!(
+                    "finalized-item catch-up recovered {} new journal entries without response entries",
+                    recovered_entries.len()
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn aleph_bft_catch_up_recovery_mismatch(reason: String) -> cdk::Error {
+    cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
 }
 
 #[cfg(feature = "federation")]
@@ -2192,6 +2300,15 @@ impl MintState {
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
+        if consensus.lock().await.backend_kind() == FederationConsensusBackendKind::AlephBft {
+            return self
+                .apply_federation_aleph_bft_catch_up_response_with_session_outcome_quorum(
+                    response,
+                    additional_outcomes,
+                )
+                .await;
+        }
+
         let public_config = self.federation_public_config()?;
         let mut consensus = consensus.lock().await;
         let mut next_consensus = consensus.clone();
@@ -2252,6 +2369,154 @@ impl MintState {
         *consensus = next_consensus;
         drop(consensus);
         self.apply_federation_journal_entries(&applied).await?;
+
+        Ok(applied)
+    }
+
+    async fn apply_federation_aleph_bft_catch_up_response_with_session_outcome_quorum(
+        &self,
+        response: &FederationJournalCatchUpResponse,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let runtime_config = self.mint.federation_config().cloned().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+        })?;
+        let public_config = runtime_config.public_config().clone();
+        if response.version != FEDERATION_REST_API_VERSION {
+            return Err(cdk::Error::Federation(
+                FederationError::RestVersionMismatch {
+                    expected: FEDERATION_REST_API_VERSION,
+                    found: response.version,
+                },
+            ));
+        }
+        if response.federation_id != public_config.federation_id {
+            return Err(cdk::Error::Federation(
+                FederationError::CatchUpFederationMismatch {
+                    expected: public_config.federation_id,
+                    found: response.federation_id,
+                },
+            ));
+        }
+        response.verify_session_outcome_quorum(&public_config, additional_outcomes)?;
+
+        let mut session_outcomes = Vec::new();
+        if let Some(session_outcome) = response.session_outcome.as_ref() {
+            session_outcomes.push(session_outcome);
+        }
+        session_outcomes.extend(additional_outcomes.iter());
+        for session_outcome in &session_outcomes {
+            let member =
+                public_config
+                    .member(session_outcome.signer)
+                    .ok_or(cdk::Error::Federation(FederationError::UnknownMember {
+                        member_id: session_outcome.signer,
+                    }))?;
+            session_outcome.verify(
+                member,
+                response.federation_id,
+                response.from_index,
+                &response.entries,
+                response.latest_order_digest,
+                response.state_digest,
+            )?;
+        }
+
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        if consensus.backend_kind() != FederationConsensusBackendKind::AlephBft {
+            return Err(cdk::Error::Federation(
+                FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                },
+            ));
+        }
+
+        let local_entries = consensus.journal().entries().to_vec();
+        let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
+        let response_to_apply =
+            catch_up_response_suffix_for_local_journal(&local_entries, response)?;
+        if let Some(response_to_apply) = response_to_apply.as_ref() {
+            if response_to_apply.from_index != response.from_index
+                || response_to_apply.entries.len() != response.entries.len()
+            {
+                return Err(cdk::Error::Federation(
+                    FederationError::SessionOutcomeMismatch {
+                        reason: "signed catch-up evidence does not cover the local suffix"
+                            .to_string(),
+                    },
+                ));
+            }
+        }
+        let new_finalized_items =
+            aleph_bft_finalized_item_suffix_for_local(&local_finalized_items, response)?;
+        if new_finalized_items.is_empty()
+            && response_to_apply
+                .as_ref()
+                .is_some_and(|response_to_apply| !response_to_apply.entries.is_empty())
+        {
+            return Err(aleph_bft_catch_up_recovery_mismatch(
+                "non-empty AlephBFT catch-up entries missing finalized-item evidence".to_string(),
+            ));
+        }
+
+        let status = consensus.aleph_bft_status()?;
+        let finality = status.finality;
+        let mut retained_items = local_finalized_items;
+        retained_items.extend(new_finalized_items.iter().cloned());
+        let member_ids = public_config.members.keys().copied();
+        let mut next_consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+            public_config.federation_id,
+            runtime_config.member_id(),
+            status.session,
+            member_ids,
+            public_config.threshold_params.consensus_threshold,
+            retained_items,
+        )?;
+        next_consensus.set_aleph_bft_finality_mode(finality)?;
+        for local_entry in &local_entries {
+            next_consensus.update_status(local_entry.operation_id, local_entry.status)?;
+        }
+        let recovered_entries = next_consensus.journal().entries();
+        if recovered_entries.len() < local_entries.len() {
+            return Err(aleph_bft_catch_up_recovery_mismatch(format!(
+                "finalized-item catch-up recovered {} journal entries but local journal has {}",
+                recovered_entries.len(),
+                local_entries.len()
+            )));
+        }
+        for (local_entry, recovered_entry) in local_entries.iter().zip(recovered_entries.iter()) {
+            ensure_catch_up_overlap_matches(local_entry, recovered_entry)?;
+        }
+        let applied = recovered_entries[local_entries.len()..].to_vec();
+        ensure_catch_up_entries_match_recovered_journal(&applied, response_to_apply.as_ref())?;
+        if response.complete
+            && response.latest_order_digest != next_consensus.journal().latest_order_digest()
+        {
+            return Err(cdk::Error::Federation(
+                FederationError::CatchUpDigestMismatch {
+                    index: next_consensus.journal().next_index(),
+                    expected: next_consensus.journal().latest_order_digest(),
+                    found: response.latest_order_digest,
+                },
+            ));
+        }
+
+        let entries_to_apply = accepted_federation_journal_entries(&applied);
+        self.persist_federation_aleph_bft_catch_up(
+            &new_finalized_items,
+            &applied,
+            &session_outcomes,
+        )
+        .await?;
+        *consensus = next_consensus;
+        drop(consensus);
+        self.apply_federation_journal_entries(&entries_to_apply)
+            .await?;
 
         Ok(applied)
     }
@@ -2657,6 +2922,26 @@ impl MintState {
         for (sender, sequence) in sequences {
             tx.set_federation_member_sequence(*sender, *sequence)
                 .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn persist_federation_aleph_bft_catch_up(
+        &self,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+        entries: &[FederationJournalEntry],
+        session_outcomes: &[&FederationSessionOutcome],
+    ) -> Result<(), cdk::Error> {
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_aleph_bft_finalized_items(finalized_items)
+            .await?;
+        for entry in entries {
+            tx.add_federation_journal_entry(entry).await?;
+        }
+        for session_outcome in session_outcomes {
+            tx.add_federation_session_outcome(session_outcome).await?;
         }
         tx.commit().await?;
         Ok(())
