@@ -4556,6 +4556,121 @@ async fn apply_federation_melt_retries_failed_quote_state_with_payment_attempt()
 }
 
 #[tokio::test]
+async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknown() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let description = cdk_fake_wallet::FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Pending,
+        check_payment_state: MeltQuoteState::Unknown,
+        pay_err: false,
+        check_err: false,
+    };
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(
+            quote.clone(),
+            MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: cdk_fake_wallet::create_fake_invoice(
+                    1_000,
+                    serde_json::to_string(&description).expect("fake invoice description"),
+                ),
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let inputs = vec![
+        proof_for_runtime(&runtime_config, "unknown backend input one"),
+        proof_for_runtime(&runtime_config, "unknown backend input two"),
+    ];
+    let input_ys = inputs.ys().expect("unknown backend input ys");
+    let mut change_output = output_for_runtime(&runtime_config, b"unknown backend change");
+    change_output.amount = Amount::ZERO;
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(
+                quote.clone(),
+                inputs,
+                Some(vec![change_output.clone()]),
+            ))
+            .expect("unknown backend melt operation"),
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("unknown backend proof states"),
+        vec![Some(State::Pending), Some(State::Pending)],
+        "unknown backend payment status must leave proofs pending"
+    );
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("unknown backend quote lookup")
+        .expect("unknown backend quote");
+    assert_eq!(
+        stored_quote.state,
+        MeltQuoteState::Pending,
+        "unknown backend payment status must keep the durable quote pending"
+    );
+    let saga = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("unknown backend saga lookup")
+        .expect("unknown backend saga");
+    assert_eq!(
+        saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    );
+    let operation_id = melt_entry.operation_id.to_string();
+    assert_eq!(
+        saga.federation_operation_id.as_deref(),
+        Some(operation_id.as_str())
+    );
+    assert!(
+        localstore
+            .get_completed_operation(&super::federation_operation_uuid(melt_entry.operation_id))
+            .await
+            .expect("unknown backend completed operation lookup")
+            .is_none(),
+        "unknown backend payment status must not store a terminal completed operation"
+    );
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("unknown backend change signature lookup"),
+        vec![None],
+        "unknown backend payment status must not sign change"
+    );
+    assert!(
+        localstore
+            .get_federation_signature_shares_for_blinded_message(change_output.blinded_secret)
+            .await
+            .expect("unknown backend change share lookup")
+            .is_empty(),
+        "unknown backend payment status must not persist change shares"
+    );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+            .await
+            .expect("unknown backend journal lookup")
+            .expect("unknown backend journal entry")
+            .status,
+        FederationOperationStatus::Applied,
+        "accepted unknown-backend melt should apply as a pending operation"
+    );
+}
+
+#[tokio::test]
 async fn restore_returns_old_keyset_signature_after_rotation() {
     let runtime_config = runtime_config_with_inactive_rotation_keyset();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
