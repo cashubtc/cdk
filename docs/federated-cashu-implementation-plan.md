@@ -235,6 +235,15 @@ Current confirmed shape:
   `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`,
   `cargo check -p cdk-sql-common --features federation`, and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
+- Latest AlephBFT catch-up evidence checkpoint: peer sync now treats both
+  accepted-operation height and AlephBFT finalized-item cursor lag as catch-up
+  triggers. Catch-up requests carry the local finalized-item cursor, peers serve
+  complete finalized-item unit slices, and incomplete pages that would advance
+  journal state without whole-unit finalized evidence are rejected before quote,
+  journal, or finalized-item storage mutation.
+- Focused AlephBFT catch-up evidence test:
+  `cargo test -p cdk-axum --features federation aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutation -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest mint test-module split checkpoint: pure mint federation runtime,
   operation-building, signing-share, v3/BLS keyset, duplicate-output, and
   pre-consensus admission tests now live in
@@ -895,9 +904,11 @@ Architecture checklist:
   healthy sync snapshots cannot reopen those routes on restart. Public
   authoritative wallet routes also check the adapter finality mode directly, so
   a same-process healthy sync marker cannot bypass the
-  `external_finalization_required` guard; remaining production work is peer
-  fetch using both accepted-operation lag and finalized-item cursor lag, plus
-  real AlephBFT finality before public routes can be enabled for production use.
+  `external_finalization_required` guard. Peer fetch now uses both
+  accepted-operation lag and finalized-item cursor lag, requests finalized-item
+  suffixes by cursor, and rejects incomplete whole-unit pages before durable
+  mutation; remaining production work is real AlephBFT finality before public
+  routes can be enabled for production use.
 - [x] If the AlephBFT backend is configured but unavailable, fail startup or keep
   federation routes in a not-ready state; never silently fall back to local
   signing or single-member processing. `cdk-mintd` rejects unavailable
