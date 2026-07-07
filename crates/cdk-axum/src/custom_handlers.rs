@@ -6116,6 +6116,200 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item() {
+        let mut state = create_aleph_bft_federated_test_state().await;
+        state.mark_federation_healthy().await;
+        state
+            .mark_aleph_bft_network_finality_available_for_tests()
+            .await;
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_secs(5),
+            response_waiter_limit: 4,
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let input = proof_for_amount(&state, 2, "aleph-public-swap-pending-join-input");
+        let input_y = input.y().expect("swap input y");
+        let outputs =
+            outputs_for_amount_with_label(&state, 2, "aleph-public-swap-pending-join-output");
+        let request = cdk::nuts::SwapRequest::new(vec![input], outputs.clone());
+        let config = state
+            .mint
+            .effective_federation_config()
+            .await
+            .expect("effective federation config")
+            .expect("federated mint config");
+        let operation_id = config
+            .swap_operation(request.clone())
+            .expect("swap operation")
+            .operation_id()
+            .expect("swap operation id");
+
+        let first_state = state.clone();
+        let first_request = request.clone();
+        let first = tokio::spawn(async move {
+            crate::router_handlers::post_swap(
+                AuthHeader::None,
+                State(first_state),
+                Json(first_request),
+            )
+            .await
+        });
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            1,
+            "first swap request should wait for AlephBFT finality"
+        );
+
+        let second_state = state.clone();
+        let second_request = request.clone();
+        let second = tokio::spawn(async move {
+            crate::router_handlers::post_swap(
+                AuthHeader::None,
+                State(second_state),
+                Json(second_request),
+            )
+            .await
+        });
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            2,
+            "duplicate pending swap request should join the existing waiter"
+        );
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 1);
+            assert!(
+                consensus.journal().entries().is_empty(),
+                "pending duplicate swap must not append before finality"
+            );
+            assert_eq!(consensus.peer_status().operation_count, 0);
+        }
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("pending duplicate swap proof lookup");
+        assert!(
+            proof_states.iter().all(|state| !matches!(
+                state,
+                Some(cdk::nuts::State::Pending) | Some(cdk::nuts::State::Spent)
+            )),
+            "duplicate pending swap requests must not reserve or spend inputs before finality"
+        );
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(operation_id, 0)
+                .await
+                .expect("pending duplicate swap share lookup")
+                .is_empty(),
+            "duplicate pending swap requests must not issue shares before finality"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_blind_signatures(&[outputs[0].blinded_secret])
+                .await
+                .expect("pending duplicate swap signature lookup"),
+            vec![None],
+            "duplicate pending swap requests must not persist signatures before finality"
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+        assert_eq!(stats.duplicate_pending_waiter_joins, 1);
+
+        let unit = {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            consensus
+                .preview_next_aleph_bft_unit_payload()
+                .expect("preview next AlephBFT unit")
+                .expect("queued AlephBFT unit")
+        };
+        let finalized = state
+            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
+            .await
+            .expect("local AlephBFT finality");
+        assert_eq!(finalized.len(), 1);
+        assert_eq!(finalized[0].operation_id, operation_id);
+
+        let first_response = first
+            .await
+            .expect("first swap task should complete")
+            .expect("first pending swap should return accepted response")
+            .0;
+        let second_response = second
+            .await
+            .expect("second swap task should complete")
+            .expect("second pending swap should return accepted response")
+            .0;
+        assert_eq!(second_response, first_response);
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("accepted duplicate swap proof lookup"),
+            vec![Some(cdk::nuts::State::Spent)]
+        );
+        let share_records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, 0)
+            .await
+            .expect("accepted duplicate swap share lookup");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, operation_id);
+        assert_eq!(share_records[0].blinded_secret, outputs[0].blinded_secret);
+        assert_eq!(
+            cdk::nuts::PublicKey::from(share_records[0].share.signature()),
+            first_response.signatures[0].c
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(state.federation_pending_response_waiter_count(), 0);
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 0);
+            assert_eq!(consensus.peer_status().operation_count, 1);
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn duplicate_post_swap_returns_persisted_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
@@ -6790,6 +6984,259 @@ mod tests {
             vec![cdk::federation::FederationOperationKind::Melt]
         );
         assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item() {
+        let (backend, make_payment_calls) = CountingFakeWallet::new();
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        let mut state = create_federated_test_state_with_backend_db_seed_and_consensus(
+            backend,
+            db,
+            &mnemonic.to_seed_normalized(""),
+            FederationConsensusBackendKind::AlephBft,
+        )
+        .await;
+        state.mark_federation_healthy().await;
+        state
+            .mark_aleph_bft_network_finality_available_for_tests()
+            .await;
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_secs(5),
+            response_waiter_limit: 4,
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let input = proof_for_amount(&state, 4, "aleph-public-melt-pending-join-input");
+        let input_y = input.y().expect("melt input y");
+        let mut change_output =
+            outputs_for_amount_with_label(&state, 2, "aleph-public-melt-pending-join-change")
+                .into_iter()
+                .next()
+                .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            vec![input],
+            Some(vec![change_output.clone()]),
+        );
+        let config = state
+            .mint
+            .effective_federation_config()
+            .await
+            .expect("effective federation config")
+            .expect("federated mint config");
+        let operation_id = config
+            .melt_operation(request.clone())
+            .expect("melt operation")
+            .operation_id()
+            .expect("melt operation id");
+
+        let first_state = state.clone();
+        let first_request = request.clone();
+        let first = tokio::spawn(async move {
+            process_melt_request(
+                PreferHeader {
+                    respond_async: false,
+                },
+                &first_state,
+                "bolt11",
+                &first_request,
+            )
+            .await
+        });
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            1,
+            "first melt request should wait for AlephBFT finality"
+        );
+
+        let second_state = state.clone();
+        let second_request = request.clone();
+        let second = tokio::spawn(async move {
+            process_melt_request(
+                PreferHeader {
+                    respond_async: false,
+                },
+                &second_state,
+                "bolt11",
+                &second_request,
+            )
+            .await
+        });
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            2,
+            "duplicate pending melt request should join the existing waiter"
+        );
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 1);
+            assert!(
+                consensus.journal().entries().is_empty(),
+                "pending duplicate melt must not append before finality"
+            );
+            assert_eq!(consensus.peer_status().operation_count, 0);
+        }
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("pending duplicate melt proof lookup");
+        assert!(
+            proof_states.iter().all(|state| !matches!(
+                state,
+                Some(cdk::nuts::State::Pending) | Some(cdk::nuts::State::Spent)
+            )),
+            "duplicate pending melt requests must not reserve or spend inputs before finality"
+        );
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("pending duplicate melt quote lookup")
+            .expect("pending duplicate melt quote");
+        assert_eq!(
+            quote.state,
+            MeltQuoteState::Unpaid,
+            "duplicate pending melt requests must not mutate quote state before finality"
+        );
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(operation_id, 0)
+                .await
+                .expect("pending duplicate melt share lookup")
+                .is_empty(),
+            "duplicate pending melt requests must not sign change before finality"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_blind_signatures(&[change_output.blinded_secret])
+                .await
+                .expect("pending duplicate melt change signature lookup"),
+            vec![None],
+            "duplicate pending melt requests must not persist change signatures before finality"
+        );
+        assert_eq!(
+            make_payment_calls.load(Ordering::SeqCst),
+            0,
+            "duplicate pending melt requests must not attempt payment before finality"
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+        assert_eq!(stats.duplicate_pending_waiter_joins, 1);
+
+        let unit = {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            consensus
+                .preview_next_aleph_bft_unit_payload()
+                .expect("preview next AlephBFT unit")
+                .expect("queued AlephBFT unit")
+        };
+        let finalized = state
+            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
+            .await
+            .expect("local AlephBFT finality");
+        assert_eq!(finalized.len(), 1);
+        assert_eq!(finalized[0].operation_id, operation_id);
+
+        let first_response = first
+            .await
+            .expect("first melt task should complete")
+            .expect("first pending melt should return accepted response");
+        let second_response = second
+            .await
+            .expect("second melt task should complete")
+            .expect("second pending melt should return accepted response");
+        assert_eq!(second_response, first_response);
+        assert_eq!(first_response.state(), MeltQuoteState::Paid);
+        let change = first_response.change().expect("paid melt change");
+        assert_eq!(change.len(), 1);
+        assert_eq!(change[0].amount, Amount::from(2));
+        assert_eq!(
+            make_payment_calls.load(Ordering::SeqCst),
+            1,
+            "joined duplicate melt waiters must result in one outgoing payment attempt"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("accepted duplicate melt proof lookup"),
+            vec![Some(cdk::nuts::State::Spent)]
+        );
+        let stored_quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("accepted duplicate melt quote lookup")
+            .expect("accepted duplicate melt quote");
+        assert_eq!(stored_quote.state, MeltQuoteState::Paid);
+        let share_records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, 0)
+            .await
+            .expect("accepted duplicate melt share lookup");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, operation_id);
+        assert_eq!(
+            share_records[0].blinded_secret,
+            change_output.blinded_secret
+        );
+        assert_eq!(
+            cdk::nuts::PublicKey::from(share_records[0].share.signature()),
+            change[0].c
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(state.federation_pending_response_waiter_count(), 0);
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 0);
+            assert_eq!(consensus.peer_status().operation_count, 1);
+        }
     }
 
     #[cfg(feature = "federation")]

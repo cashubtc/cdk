@@ -145,6 +145,21 @@ Current confirmed shape:
 - Focused AlephBFT duplicate single-mint route test:
   `cargo test -p cdk-axum --features federation duplicate_post_mint_aleph_bft_pending_requests_join_one_queue_item -- --test-threads 1`
   passed on 2026-07-07.
+- Latest AlephBFT duplicate swap/melt route checkpoint: simultaneous duplicate
+  public swap and melt requests now have pending-operation waiter-join coverage
+  matching public mint. Focused Axum tests prove duplicate swap requests wait on
+  one queued operation without journal entries, proof-state mutation, output
+  signatures, or signature-share rows before finality, and duplicate melt
+  requests wait on one queued operation without journal entries, proof-state
+  mutation, quote-state mutation, change signatures, signature-share rows, or
+  outgoing payment attempts before finality. After exact adapter-level finality,
+  both waiters receive the same persisted response; melt performs one outgoing
+  payment attempt.
+- Focused AlephBFT duplicate swap/melt route tests:
+  `cargo test -p cdk-axum --features federation duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item -- --test-threads 1`
+  and
+  `cargo test -p cdk-axum --features federation duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest checkpoint: wallet federation local-member tests now route mint,
   batch-mint, swap, and melt member calls through a shared accepted federation
   journal before returning signature shares or change shares. The local
@@ -1096,7 +1111,9 @@ Federated public API checklist:
   operation queued without journal entries, proof-state mutation, signature
   shares, or retained waiters, and that a retry joins the pending operation and
   returns persisted shares after the exact queued unit is finalized through the
-  current AlephBFT adapter boundary.
+  current AlephBFT adapter boundary. Live duplicate public swap requests now
+  join the same pending operation and both waiters receive the same persisted
+  accepted response after adapter-level finality.
 - [ ] `post_melt` computes the canonical melt operation hash, checks for cached
   reserve/final response, validates proofs and change outputs without payment
   side effects, submits to AlephBFT, awaits accepted reserve/finalization
@@ -1123,7 +1140,10 @@ Federated public API checklist:
   quote-state mutation, change signatures, or retained waiters, and that a
   retry joins the pending operation and returns the persisted paid response plus
   change shares after the exact queued unit is finalized through the current
-  AlephBFT adapter boundary.
+  AlephBFT adapter boundary. Live duplicate public melt requests now join the
+  same pending operation without an outgoing payment attempt before finality, and
+  both waiters receive the same persisted paid response after one accepted
+  outgoing payment attempt.
 - [ ] Mint quote creation and melt quote creation remain idempotent around quote
   IDs and quote request payloads; duplicate quote operations return the
   accepted quote response, while conflicting quote payloads are rejected.
