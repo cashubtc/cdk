@@ -752,6 +752,7 @@ impl FederationRuntimeConfig {
     ) -> Result<(), Error> {
         self.validate_melt_change_outputs(request)?;
         Self::validate_proof_content_bounds(request.inputs())?;
+        Mint::check_inputs_unique(request.inputs())?;
         self.verify_proofs(request.inputs())?;
         request.verify_spending_conditions()?;
         Ok(())
@@ -786,6 +787,7 @@ impl FederationRuntimeConfig {
     pub fn validate_federated_swap_submission(&self, request: &SwapRequest) -> Result<(), Error> {
         self.validate_swap_outputs(request)?;
         Self::validate_proof_content_bounds(request.inputs())?;
+        Mint::check_inputs_unique(request.inputs())?;
         self.verify_proofs(request.inputs())?;
         request.verify_spending_conditions()?;
         Ok(())

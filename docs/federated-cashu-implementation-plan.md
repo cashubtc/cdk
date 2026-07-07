@@ -167,11 +167,19 @@ Current confirmed shape:
   admission now share the same proof secret/witness size guard used by accepted
   apply. Oversized proof content fails with `ProofContentTooLarge` before
   consensus operation construction, queue admission, or journal persistence.
+- Latest duplicate-input admission checkpoint: federated swap and melt
+  submission admission now rejects duplicate input proofs with
+  `DuplicateInputs` before aggregate signature verification, consensus
+  operation construction, queue admission, or journal persistence.
 - Focused proof-content admission tests:
   `cargo test -p cdk --features federation runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensus -- --test-threads 1`,
   `cargo test -p cdk --features federation oversized_proof_content -- --test-threads 1`,
   `cargo test -p cdk --features federation apply_federation_swap_rejects_oversized_proof -- --test-threads 1`,
   `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`,
+  and `cargo check -p cdk --features federation` passed on 2026-07-07.
+- Focused duplicate-input admission tests:
+  `cargo test -p cdk --features federation runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensus -- --test-threads 1`,
+  `cargo test -p cdk --features federation duplicate_inputs -- --test-threads 1`,
   and `cargo check -p cdk --features federation` passed on 2026-07-07.
 
 ## Key observations
@@ -1161,9 +1169,9 @@ Swap operation tests:
   witnesses, unbalanced outputs, and SIG_ALL output mutation fail before proof
   state storage, blind-signature storage, completed-operation storage, or
   federation share persistence; non-v3 output rejection is covered before
-  consensus submission; oversized proof secret content is rejected before
-  consensus operation construction; conflicting spent-input reuse is covered by
-  the input-reuse attack regression.
+  consensus submission; oversized proof secret content and duplicate input
+  proofs are rejected before consensus operation construction; conflicting
+  spent-input reuse is covered by the input-reuse attack regression.
 - [ ] Accepted swap apply marks inputs spent and stores output signature shares
   in one deterministic DB transaction.
   Current direct coverage proves accepted swap apply persists the spent input
@@ -1224,9 +1232,10 @@ Melt operation tests:
   pending quote state, operation-tied saga state, and no terminal completed
   operation row. Oversized proof secret and witness content now fail with
   `ProofContentTooLarge` before proof state, saga, quote-state, share, or
-  payment side effects, and oversized proof content is also rejected before
-  consensus operation construction. Broader malformed-content coverage and a
-  focused `Unknown` quote-state regression remain open.
+  payment side effects, and oversized proof content plus duplicate input proofs
+  are also rejected before consensus operation construction. Broader
+  malformed-content coverage and a focused `Unknown` quote-state regression
+  remain open.
 - [x] Accepted melt reserve records pending inputs and payment-attempt intent
   before any external outgoing payment can be attempted. Covered by
   `accepted_federation_melt_persists_reserve_before_payment_attempt`, whose

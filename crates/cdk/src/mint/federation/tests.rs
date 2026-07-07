@@ -6271,6 +6271,24 @@ fn runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensu
         Err(Error::ProofContentTooLarge { .. })
     ));
 
+    let duplicate_swap_proof = proof_for_runtime(&runtime_config, "duplicate swap admission");
+    let duplicate_swap = SwapRequest::new(
+        vec![duplicate_swap_proof.clone(), duplicate_swap_proof],
+        vec![output_for_runtime(
+            &runtime_config,
+            b"duplicate swap admission output",
+        )],
+    );
+
+    assert!(matches!(
+        runtime_config.validate_federated_swap_submission(&duplicate_swap),
+        Err(Error::DuplicateInputs)
+    ));
+    assert!(matches!(
+        runtime_config.swap_operation(duplicate_swap),
+        Err(Error::DuplicateInputs)
+    ));
+
     let mut invalid_melt_proof = proof_for_runtime(&runtime_config, "invalid melt admission");
     invalid_melt_proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
         b"invalid melt admission signature",
@@ -6312,6 +6330,22 @@ fn runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensu
     assert!(matches!(
         runtime_config.melt_operation(oversized_melt),
         Err(Error::ProofContentTooLarge { .. })
+    ));
+
+    let duplicate_melt_proof = proof_for_runtime(&runtime_config, "duplicate melt admission");
+    let duplicate_melt = MeltRequest::new(
+        QuoteId::new(),
+        vec![duplicate_melt_proof.clone(), duplicate_melt_proof],
+        None,
+    );
+
+    assert!(matches!(
+        runtime_config.validate_federated_melt_submission(&duplicate_melt),
+        Err(Error::DuplicateInputs)
+    ));
+    assert!(matches!(
+        runtime_config.melt_operation(duplicate_melt),
+        Err(Error::DuplicateInputs)
     ));
 }
 
