@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: diagnose completed operation variants</span>
+          <span class="value">test: diagnose missing payment observations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Operator digest comparison now proves divergent completed-operation rows are reported as redacted row variants with stable member ordering, without leaking row keys, operation IDs, or response material.</span>
+          <span class="value">Operator digest comparison now proves missing payment-observation rows are reported as redacted row diffs with the missing member, without leaking quote IDs, operation IDs, or payment proof material.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare missing-row and variant diagnostics, payment-observation digest-compare row-drift diagnostics, unresolved payment-observation, payment-observation quarantine, and rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare missing-row and variant diagnostics, payment-observation digest-compare missing-row and variant diagnostics, unresolved payment-observation, payment-observation quarantine, and rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
