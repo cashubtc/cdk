@@ -878,6 +878,11 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
         MeltQuoteState::Pending,
         "unknown backend payment status must keep the durable quote pending"
     );
+    assert_ne!(
+        stored_quote.state,
+        MeltQuoteState::Unknown,
+        "backend uncertainty must not be persisted as an UNKNOWN quote state"
+    );
     let saga = localstore
         .get_melt_saga_by_quote_id(&quote)
         .await

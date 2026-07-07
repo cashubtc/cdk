@@ -153,13 +153,14 @@ Current confirmed shape:
   `cargo check -p cdk-sqlite --features federation`,
   `cargo check -p cdk-postgres --features federation`, and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
-- Latest unknown-backend melt checkpoint: backend `Unknown` payment status is
-  treated as transient, not as a durable `melt_quote.state`. When an elected
-  federated melt payment attempt returns `Pending` and the immediate backend
-  verification returns `Unknown`, the accepted melt remains pending with pending
-  proofs, `PaymentAttempted` saga state, no completed operation, no change
-  signatures, and no persisted `UNKNOWN` quote state.
-- Focused unknown-backend tests:
+- Latest unknown backend payment observation/status regression checkpoint:
+  backend `Unknown` payment status is treated as transient, not as a durable
+  `melt_quote.state`. When an elected federated melt payment attempt returns
+  `Pending` and the immediate backend verification returns `Unknown`, the
+  accepted melt remains pending with pending proofs, `PaymentAttempted` saga
+  state, no completed operation, no change signatures, and no persisted
+  `UNKNOWN` quote state.
+- Focused unknown backend payment observation/status tests:
   `cargo test -p cdk --features federation backend_status_is_unknown -- --test-threads 1`,
   `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`,
   `cargo check -p cdk-sql-common --features federation`, and
@@ -1281,9 +1282,10 @@ Melt operation tests:
   payment attempt. Failed quote state now retries through the accepted melt
   setup path and reaches the payment-attempt boundary with pending proofs,
   pending quote state, operation-tied saga state, and no terminal completed
-  operation row. Unknown backend payment status now remains transient and keeps
-  the accepted melt pending without mutating durable quote state to `UNKNOWN`,
-  storing completed-operation rows, or signing change outputs. Oversized proof
+  operation row. Unknown backend payment observation/status now remains
+  transient and keeps the accepted melt pending without mutating durable quote
+  state to `UNKNOWN`, storing completed-operation rows, or signing change
+  outputs. Oversized proof
   secret and witness content now fail with `ProofContentTooLarge` before proof
   state, saga, quote-state, share, or payment side effects, and oversized proof
   content plus duplicate input proofs and duplicate change outputs are also

@@ -52,6 +52,7 @@ pub fn check_state_transition(current_state: State, new_state: State) -> Result<
 /// - Pending -> Unpaid, Paid, Failed
 /// - Paid -> (no transitions allowed)
 /// - Failed -> Pending
+/// - Unknown -> (no durable transitions allowed)
 pub fn check_melt_quote_state_transition(
     current_state: MeltQuoteState,
     new_state: MeltQuoteState,
@@ -68,7 +69,7 @@ pub fn check_melt_quote_state_transition(
             matches!(new_state, MeltQuoteState::Pending | MeltQuoteState::Unpaid)
         }
         MeltQuoteState::Paid => false,
-        MeltQuoteState::Unknown => true,
+        MeltQuoteState::Unknown => false,
     };
 
     if !is_valid_transition {
@@ -211,27 +212,35 @@ mod tests {
         }
 
         #[test]
-        fn unknown_to_any_is_valid() {
-            assert!(check_melt_quote_state_transition(
-                MeltQuoteState::Unknown,
-                MeltQuoteState::Unpaid
-            )
-            .is_ok());
-            assert!(check_melt_quote_state_transition(
-                MeltQuoteState::Unknown,
-                MeltQuoteState::Pending
-            )
-            .is_ok());
-            assert!(check_melt_quote_state_transition(
-                MeltQuoteState::Unknown,
-                MeltQuoteState::Paid
-            )
-            .is_ok());
-            assert!(check_melt_quote_state_transition(
-                MeltQuoteState::Unknown,
-                MeltQuoteState::Failed
-            )
-            .is_ok());
+        fn unknown_as_durable_quote_state_is_invalid() {
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Unknown, MeltQuoteState::Unpaid),
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Unknown, MeltQuoteState::Pending),
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Unknown, MeltQuoteState::Paid),
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Unknown, MeltQuoteState::Failed),
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Unpaid, MeltQuoteState::Unknown),
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Pending, MeltQuoteState::Unknown),
+                Err(Error::Pending)
+            ));
+            assert!(matches!(
+                check_melt_quote_state_transition(MeltQuoteState::Failed, MeltQuoteState::Unknown),
+                Err(Error::InvalidMeltQuoteTransition(_, _))
+            ));
         }
 
         #[test]

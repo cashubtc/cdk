@@ -114,19 +114,15 @@ impl std::future::IntoFuture for PendingMelt {
 }
 
 impl Mint {
-    /// Loads a settled (non-pending, non-unknown) melt response from the database.
+    /// Loads a settled melt response from the database.
     ///
-    /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
-    /// state (backend could not determine status); the caller should keep
-    /// polling. Returns `Ok(Some(response))` once the quote has reached a
-    /// final state (`Paid`, `Failed`, or post-attempt `Unpaid`), with any
-    /// change blind signatures attached.
-    ///
-    /// `Unknown` is treated as "keep polling" by design: a backend may recover
-    /// and report a definitive status on a later check. A permanently `Unknown`
-    /// quote in the pending-wait path will eventually hit
-    /// `pending_melt_wait_timeout` and return `Error::PendingMeltTimeout`;
-    /// startup recovery / explicit status checks handle the long-tail case.
+    /// Returns `Ok(None)` while the quote is still `Pending`; callers should
+    /// keep polling. A legacy or manually injected `Unknown` row is also
+    /// treated defensively as unsettled, but payment uncertainty should remain
+    /// a transient backend observation rather than a durable quote state.
+    /// Returns `Ok(Some(response))` once the quote has reached a final state
+    /// (`Paid`, `Failed`, or post-attempt `Unpaid`), with any change blind
+    /// signatures attached.
     async fn load_settled_melt_response(
         localstore: &DynMintDatabase,
         quote_id: &QuoteId,
@@ -1278,8 +1274,9 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if quote.state != MeltQuoteState::Unpaid && quote.state != MeltQuoteState::Failed {
-            if quote.state == MeltQuoteState::Pending {
+        match quote.state {
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}
+            MeltQuoteState::Pending => {
                 let saga = self.localstore.get_melt_saga_by_quote_id(&quote_id).await?;
                 let operation_id = federation_operation_id.to_string();
                 if saga
@@ -1289,17 +1286,25 @@ impl Mint {
                 {
                     return Err(Error::PendingQuote);
                 }
-            } else if quote.state == MeltQuoteState::Paid {
+            }
+            MeltQuoteState::Paid => {
                 Self::ensure_terminal_federation_melt_matches_request(
                     &self.localstore,
                     &quote_id,
                     melt_request,
                 )
                 .await?;
-            } else if quote.state == MeltQuoteState::Unknown {
+            }
+            MeltQuoteState::Unknown => {
+                tracing::warn!(
+                    "Federated melt quote {} has unexpected durable Unknown state",
+                    quote_id
+                );
                 return Err(Error::UnknownPaymentState);
             }
+        }
 
+        if quote.state != MeltQuoteState::Unpaid && quote.state != MeltQuoteState::Failed {
             let change = self
                 .localstore
                 .get_blind_signatures_for_quote(&quote_id)
