@@ -936,6 +936,97 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
 }
 
 #[tokio::test]
+async fn apply_federation_melt_payment_observation_keeps_unknown_transient() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) =
+        federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (quote, input_ys) =
+        setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+
+    let unknown_observation = appended_entry(
+        &mut journal,
+        melt_payment_observation_envelope(
+            &runtime_config,
+            &quote,
+            MeltPaymentObservationFixture {
+                observer: 1,
+                state: MeltQuoteState::Unknown,
+                amount: Amount::from(1),
+                fee_reserve: Amount::from(1),
+                payment_id: None,
+                payment_proof: None,
+                failure_reason: None,
+            },
+        ),
+    );
+    persist_and_apply_entry(&mint, &unknown_observation).await;
+
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("unknown observation quote lookup")
+        .expect("unknown observation quote");
+    assert_eq!(
+        stored_quote.state,
+        MeltQuoteState::Pending,
+        "unknown observations are backend status only and must not become durable quote state"
+    );
+    assert!(
+        localstore
+            .get_melt_saga_by_quote_id(&quote)
+            .await
+            .expect("unknown observation saga lookup")
+            .is_some(),
+        "unknown observations must keep the melt parked for later polling"
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("unknown observation proof states"),
+        vec![Some(State::Pending), Some(State::Pending)]
+    );
+    assert!(
+        localstore
+            .get_completed_operation(&super::super::federation_operation_uuid(
+                unknown_observation.operation_id
+            ))
+            .await
+            .expect("unknown observation completed operation lookup")
+            .is_none(),
+        "unknown observations must not store terminal melt responses"
+    );
+
+    let observations = localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MeltQuote,
+            &quote.to_string(),
+        )
+        .await
+        .expect("unknown observation rows");
+    assert_eq!(observations.len(), 1);
+    let observation = observations
+        .first()
+        .expect("stored unknown payment observation");
+    match &observation.observation {
+        FederationPaymentObservation::MeltQuote(stored) => {
+            assert_eq!(stored.state, MeltQuoteState::Unknown);
+        }
+        FederationPaymentObservation::MintQuote(_) => panic!("expected melt observation"),
+    }
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(unknown_observation.operation_id)
+            .await
+            .expect("unknown observation journal lookup")
+            .expect("unknown observation journal entry")
+            .status,
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
 async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
     let runtime_config = runtime_config();
     let (mint, localstore, expected_reserve, make_payment_calls) =

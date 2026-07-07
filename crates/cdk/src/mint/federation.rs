@@ -1833,9 +1833,16 @@ impl Mint {
                             .await?;
                         }
                     }
-                    _ => {
+                    cdk_common::MeltQuoteState::Pending => {
                         self.update_melt_quote_payment_observation_state(&quote_id, observation)
                             .await?;
+                    }
+                    cdk_common::MeltQuoteState::Unknown => {
+                        tracing::warn!(
+                            "Federated melt quote {} observed unknown backend payment status; keeping durable quote state {}",
+                            quote.id,
+                            quote.state
+                        );
                     }
                 }
             }

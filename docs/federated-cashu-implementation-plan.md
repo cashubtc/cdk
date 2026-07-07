@@ -229,8 +229,11 @@ Current confirmed shape:
   `Pending` and the immediate backend verification returns `Unknown`, the
   accepted melt remains pending with pending proofs, `PaymentAttempted` saga
   state, no completed operation, no change signatures, and no persisted
-  `UNKNOWN` quote state.
+  `UNKNOWN` quote state. Accepted federated `MeltQuotePayment` observations
+  carrying backend `Unknown` are also persisted only as observation evidence;
+  they do not mutate durable quote state to `UNKNOWN`.
 - Focused unknown backend payment observation/status tests:
+  `cargo test -p cdk --features federation apply_federation_melt_payment_observation_keeps_unknown_transient -- --test-threads 1`,
   `cargo test -p cdk --features federation backend_status_is_unknown -- --test-threads 1`,
   `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`,
   `cargo check -p cdk-sql-common --features federation`, and
@@ -1443,7 +1446,8 @@ Melt operation tests:
   operation row. Unknown backend payment observation/status now remains
   transient and keeps the accepted melt pending without mutating durable quote
   state to `UNKNOWN`, storing completed-operation rows, or signing change
-  outputs. Oversized proof
+  outputs; accepted `Unknown` melt payment observations are persisted as
+  evidence without asking the quote table to support `UNKNOWN`. Oversized proof
   secret and witness content now fail with `ProofContentTooLarge` before proof
   state, saga, quote-state, share, or payment side effects, and oversized proof
   content plus duplicate input proofs and duplicate change outputs are also
