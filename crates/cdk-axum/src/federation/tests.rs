@@ -10517,6 +10517,73 @@ async fn submit_federation_envelope_records_state_digest_checkpoint() {
 }
 
 #[tokio::test]
+async fn catch_up_replay_records_state_digest_checkpoint() {
+    let (state, public_config, _) = federation_route_state().await;
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let mut peer_consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+    peer_consensus
+        .submit_envelope(envelope)
+        .expect("peer accepted mint quote");
+    let catch_up_request = state
+        .federation_consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    let catch_up_response = peer_consensus
+        .catch_up_checked(&catch_up_request)
+        .expect("catch-up response");
+
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoint lookup before catch-up")
+        .is_empty());
+
+    let applied = state
+        .apply_federation_catch_up_response(&catch_up_response)
+        .await
+        .expect("apply catch-up response");
+    assert_eq!(applied.len(), 1);
+
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    let expected_state_digest = materialized_state_digest(&state, &entries)
+        .await
+        .expect("materialized state digest");
+    let checkpoints = state
+        .mint
+        .localstore()
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoints");
+    let entry = applied.first().expect("applied entry");
+
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints[0].operation_index, entry.index);
+    assert_eq!(checkpoints[0].operation_id, entry.operation_id);
+    assert_eq!(checkpoints[0].order_digest, entry.order_digest);
+    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("mint quote lookup")
+        .is_some());
+}
+
+#[tokio::test]
 async fn submit_federation_envelope_prunes_state_digest_checkpoints_to_retention() {
     let (mut state, _, _) = federation_route_state().await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
