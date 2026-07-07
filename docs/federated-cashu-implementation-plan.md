@@ -250,13 +250,16 @@ Current confirmed shape:
 - Latest AlephBFT malformed-unit route checkpoint: signed private REST
   finalized-unit delivery now has focused route coverage for correctly signed,
   correctly-kind, correctly-submitted units whose derived operation-ID metadata
-  or body hash was tampered after construction. The route rejects those units
-  before finalized-item persistence, journal append, sender sequence
+  or body hash was tampered after construction, plus units whose body claims a
+  different federation ID than the signed REST envelope. The route rejects those
+  units before finalized-item persistence, journal append, sender sequence
   persistence, quote materialization, or in-memory accepted-operation progress.
 - Focused AlephBFT malformed-unit route test:
   `cargo test -p cdk-axum --features federation private_aleph_bft_finalized_unit_route_rejects_tampered_operation_ids_before_mutation -- --test-threads 1`
   and
   `cargo test -p cdk-axum --features federation private_aleph_bft_finalized_unit_route_rejects_tampered_body_hash_before_mutation -- --test-threads 1`
+  and
+  `cargo test -p cdk-axum --features federation private_aleph_bft_finalized_unit_route_rejects_unit_federation_id_mismatch_before_mutation -- --test-threads 1`
   passed on 2026-07-07.
 - Latest AlephBFT batched-driver checkpoint: the bounded driver tick now has
   focused coverage for one finalized unit carrying multiple operation items.
@@ -1291,10 +1294,10 @@ AlephBFT and consensus unit tests:
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
-  with tampered derived operation IDs or tampered body hash is rejected before
-  finalized-item, journal, sequence, quote, or consensus-runtime mutation.
-  Production AlephBFT equivocation/malformed network-unit handling remains open
-  until the live network task exists.
+  with tampered derived operation IDs, tampered body hash, or a mismatched body
+  federation ID is rejected before finalized-item, journal, sequence, quote, or
+  consensus-runtime mutation. Production AlephBFT equivocation/malformed
+  network-unit handling remains open until the live network task exists.
 - [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
   resumes when enough members return.
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast

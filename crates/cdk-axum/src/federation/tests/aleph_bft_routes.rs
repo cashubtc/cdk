@@ -510,6 +510,64 @@ async fn private_aleph_bft_finalized_unit_route_rejects_tampered_body_hash_befor
 }
 
 #[tokio::test]
+async fn private_aleph_bft_finalized_unit_route_rejects_unit_federation_id_mismatch_before_mutation(
+) {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let quote_id = QuoteId::new();
+    let mut unit = aleph_bft_unit(&state, peer_private.member_id, &quote_id);
+    unit.federation_id = cdk::federation::FederationId::from_bytes([42; 32]);
+    let request = signed_aleph_bft_finalized_unit_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftFinalizedUnit,
+        unit,
+    );
+
+    let response = post_aleph_bft_finalized_unit(State(state.clone()), Json(request))
+        .await
+        .expect_err("wrong unit federation id must fail");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items after wrong unit federation id")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after wrong unit federation id")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after wrong unit federation id")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after wrong unit federation id")
+        .is_none());
+    let status = state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .peer_status();
+    assert_eq!(status.operation_count, 0);
+}
+
+#[tokio::test]
 async fn private_aleph_bft_finalized_unit_route_rejects_storage_conflict_before_mutation() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let quote_id = QuoteId::new();
