@@ -8585,6 +8585,120 @@ async fn aleph_bft_driver_tick_applies_bounded_unit_then_stops_at_idle() {
 }
 
 #[tokio::test]
+async fn aleph_bft_driver_tick_applies_batched_unit_with_multiple_responses() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let first_quote_id = QuoteId::new();
+    let second_quote_id = QuoteId::new();
+    let first_envelope = mint_quote_envelope(&state, &first_quote_id);
+    let second_envelope = mint_quote_envelope(&state, &second_quote_id);
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    let second_operation_id = second_envelope.operation_id().expect("second operation id");
+    let unit = {
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let mut consensus = consensus.lock().await;
+        consensus
+            .submit_aleph_bft_envelope(first_envelope)
+            .expect("queue first AlephBFT operation");
+        consensus
+            .submit_aleph_bft_envelope(second_envelope)
+            .expect("queue second AlephBFT operation");
+        consensus
+            .preview_next_aleph_bft_unit_payload()
+            .expect("preview batched AlephBFT unit")
+            .expect("batched unit")
+    };
+    assert_eq!(
+        unit.operation_ids,
+        vec![first_operation_id, second_operation_id]
+    );
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    assert_eq!(response.responses.len(), 2);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let outcome = run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig {
+            max_finalized_units_per_tick: 2,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect("driver tick");
+
+    assert_eq!(outcome.finalized_units, 1);
+    assert_eq!(outcome.local_responses, 2);
+    assert_eq!(outcome.remote_accepted_members, 1);
+    assert_eq!(outcome.remote_failed_members, 0);
+    assert_eq!(outcome.remote_skipped_members, 0);
+    assert!(outcome.reached_idle);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let first_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&first_quote_id)
+        .await
+        .expect("first quote lookup after driver tick")
+        .expect("first mint quote applied");
+    assert_eq!(first_quote.request, format!("invoice-{first_quote_id}"));
+    let second_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&second_quote_id)
+        .await
+        .expect("second quote lookup after driver tick")
+        .expect("second mint quote applied");
+    assert_eq!(second_quote.request, format!("invoice-{second_quote_id}"));
+
+    let finalized_items = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("stored finalized items");
+    assert_eq!(finalized_items.len(), 2);
+    assert_eq!(finalized_items[0].operation_id, Some(first_operation_id));
+    assert_eq!(finalized_items[1].operation_id, Some(second_operation_id));
+    assert!(finalized_items
+        .iter()
+        .all(|item| item.unit_index == unit.unit_index));
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 2);
+    assert_eq!(
+        consensus
+            .journal()
+            .entries()
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>(),
+        vec![first_operation_id, second_operation_id]
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_broadcast_round_stops_remote_delivery_after_quorum() {
     let (public_config, local_private, second_private, third_private) = transport_config_three();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

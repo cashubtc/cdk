@@ -244,6 +244,14 @@ Current confirmed shape:
 - Focused AlephBFT catch-up evidence test:
   `cargo test -p cdk-axum --features federation aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutation -- --test-threads 1`
   passed on 2026-07-07.
+- Latest AlephBFT batched-driver checkpoint: the bounded driver tick now has
+  focused coverage for one finalized unit carrying multiple operation items.
+  The regression proves the tick reports both local responses, persists both
+  finalized-item rows, applies both mint quotes, drains the queue, and advances
+  the accepted-operation journal by both operation IDs in order.
+- Focused AlephBFT batched-driver test:
+  `cargo test -p cdk-axum --features federation aleph_bft_driver_tick_applies_batched_unit_with_multiple_responses -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest mint test-module split checkpoint: pure mint federation runtime,
   operation-building, signing-share, v3/BLS keyset, duplicate-output, and
   pre-consensus admission tests now live in
@@ -825,8 +833,11 @@ Architecture checklist:
   AlephBFT adapter, validate roster, threshold, and local-member membership
   before queueing, and expose explicit preview/drain/finalize methods for the
   future AlephBFT task. Axum now has a focused broadcast round that exercises
-  that handoff over signed private REST and retains the queued proposal when
-  remote acknowledgements do not reach the configured consensus threshold.
+  that handoff over signed private REST, retains the queued proposal when remote
+  acknowledgements do not reach the configured consensus threshold, and covers a
+  batched finalized unit carrying multiple operation responses through driver
+  accounting, finalized-item persistence, accepted-journal order, and
+  materialized quote apply.
 - [ ] Add a Fedimint-like finalization handler that converts finalized AlephBFT
   units into an ordered stream consumed by exactly one deterministic CDK apply
   loop. The `FederationAlephBftFinalizationHandler` primitive now verifies
