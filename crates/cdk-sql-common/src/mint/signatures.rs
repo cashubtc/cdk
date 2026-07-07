@@ -371,6 +371,40 @@ where
         .collect::<Result<Vec<BlindSignature>, _>>()?)
     }
 
+    async fn get_blinded_secrets_for_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                blinded_message
+            FROM
+                blind_signature
+            WHERE
+                quote_id=:quote_id AND c IS NOT NULL
+            ORDER BY order_index ASC
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
+
     /// Get total proofs redeemed by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
         let conn = self

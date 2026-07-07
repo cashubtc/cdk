@@ -1,3 +1,5 @@
+#[cfg(feature = "federation")]
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -18,6 +20,8 @@ use cdk_common::payment::{
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::subscription::Params;
+#[cfg(feature = "federation")]
+use cdk_common::ProofsMethods;
 use cdk_common::{
     MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
     MeltQuoteCustomResponse, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltQuoteResponse,
@@ -1203,6 +1207,37 @@ impl Mint {
             .await
     }
 
+    #[cfg(feature = "federation")]
+    async fn ensure_terminal_federation_melt_matches_request(
+        localstore: &DynMintDatabase,
+        quote_id: &QuoteId,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<(), Error> {
+        let stored_input_ys = localstore.get_proof_ys_by_quote_id(quote_id).await?;
+        let request_input_ys = melt_request.inputs().ys()?;
+        let stored_input_set = stored_input_ys.iter().copied().collect::<HashSet<_>>();
+        let request_input_set = request_input_ys.iter().copied().collect::<HashSet<_>>();
+        if stored_input_ys.len() != request_input_ys.len() || stored_input_set != request_input_set
+        {
+            return Err(Error::RequestAlreadyPaid);
+        }
+
+        let stored_change_blinded_secrets =
+            localstore.get_blinded_secrets_for_quote(quote_id).await?;
+        let request_change_blinded_secrets = melt_request
+            .outputs()
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|output| output.blinded_secret)
+            .collect::<Vec<_>>();
+        if stored_change_blinded_secrets != request_change_blinded_secrets {
+            return Err(Error::RequestAlreadyPaid);
+        }
+
+        Ok(())
+    }
+
     /// Process a federation melt after the exact request has been accepted by consensus.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
@@ -1254,6 +1289,13 @@ impl Mint {
                 {
                     return Err(Error::PendingQuote);
                 }
+            } else if quote.state == MeltQuoteState::Paid {
+                Self::ensure_terminal_federation_melt_matches_request(
+                    &self.localstore,
+                    &quote_id,
+                    melt_request,
+                )
+                .await?;
             }
 
             let change = self

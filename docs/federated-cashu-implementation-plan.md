@@ -129,6 +129,19 @@ Current confirmed shape:
   `cargo test -p cdk --features federation apply_federation_melt_rejects_ -- --test-threads 1`,
   and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
+- Latest paid-terminal melt checkpoint: federated melt apply now validates a
+  `Paid` quote replay against the materialized proof set and signed change
+  blinded secrets for that quote. Different accepted operations over a paid
+  quote with different inputs or different change outputs fail with
+  `RequestAlreadyPaid` before proof-state storage, completed-operation storage,
+  journal applied status, unsigned change-share storage, or another payment
+  attempt.
+- Focused paid-terminal tests:
+  `cargo test -p cdk --features federation paid_quote_reuse -- --test-threads 1`,
+  `cargo test -p cdk --features federation apply_federation_melt_rejects_ -- --test-threads 1`,
+  `cargo check -p cdk-common --features federation`,
+  `cargo check -p cdk-sql-common --features federation`, and
+  `cargo check -p cdk --features federation` passed on 2026-07-07.
 
 ## Key observations
 
@@ -1171,7 +1184,10 @@ Melt operation tests:
   fails before proof state storage, completed-operation storage, saga takeover,
   change-share persistence, or another payment attempt, while replay of the
   original pending operation still returns the pending response without another
-  payment attempt. Paid/failed terminal quote-state permutations and broader
+  payment attempt. Paid quote reuse with different input sets or different
+  change outputs now fails before proof state storage, completed-operation
+  storage, journal applied status, unsigned change-share storage, or another
+  payment attempt. Failed terminal quote-state permutations and broader
   malformed-content coverage remain open.
 - [x] Accepted melt reserve records pending inputs and payment-attempt intent
   before any external outgoing payment can be attempted. Covered by

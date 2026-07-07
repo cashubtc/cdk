@@ -695,6 +695,28 @@ fn appended_entry(
     journal.append(envelope).expect("append").entry().clone()
 }
 
+fn accepted_entry_without_journal(
+    index: u64,
+    envelope: FederationOperationEnvelope,
+) -> FederationJournalEntry {
+    let operation_id = envelope.operation_id().expect("operation id");
+    let conflict_key = envelope.operation.conflict_key();
+    let conflict_keys = envelope.operation.conflict_keys();
+    FederationJournalEntry {
+        index,
+        operation_id,
+        conflict_key,
+        conflict_keys,
+        envelope,
+        previous_order_digest: FederationJournalDigest::from_bytes([index as u8; 32]),
+        order_digest: FederationJournalDigest::from_bytes([(index + 1) as u8; 32]),
+        operation_outcome_hash: None,
+        state_digest: None,
+        consensus_evidence: None,
+        status: FederationOperationStatus::Accepted,
+    }
+}
+
 async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
     let localstore = mint.localstore();
     let mut tx = localstore.begin_transaction().await.expect("begin");
@@ -855,6 +877,34 @@ async fn setup_pending_federated_melt(
     );
 
     (quote, input_ys)
+}
+
+async fn apply_paid_melt_observation_quorum(
+    mint: &Mint,
+    runtime_config: &FederationRuntimeConfig,
+    journal: &mut InMemoryFederationJournal,
+    quote: &QuoteId,
+    payment_proof: &str,
+) {
+    for observer in [1, 2] {
+        let observation = appended_entry(
+            journal,
+            melt_payment_observation_envelope(
+                runtime_config,
+                quote,
+                MeltPaymentObservationFixture {
+                    observer,
+                    state: MeltQuoteState::Paid,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_id: None,
+                    payment_proof: Some(payment_proof),
+                    failure_reason: None,
+                },
+            ),
+        );
+        persist_and_apply_entry(mint, &observation).await;
+    }
 }
 
 fn output_for_runtime(runtime_config: &FederationRuntimeConfig, label: &[u8]) -> BlindedMessage {
@@ -4138,6 +4188,195 @@ async fn melt_federation_pending_quote_allows_same_operation_replay_without_paym
             .await
             .expect("same operation replay proof states"),
         vec![Some(State::Pending), Some(State::Pending)]
+    );
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_inputs() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (quote, original_input_ys) =
+        setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+
+    apply_paid_melt_observation_quorum(
+        &mint,
+        &runtime_config,
+        &mut journal,
+        &quote,
+        "terminal-paid-input-preimage",
+    )
+    .await;
+    let payment_calls_after_paid = make_payment_calls.load(Ordering::Relaxed);
+
+    let conflicting_input = proof_for_runtime(&runtime_config, "paid quote reuse different input");
+    let conflicting_input_y = conflicting_input
+        .y()
+        .expect("paid quote reuse different input y");
+    let conflicting_envelope = runtime_config
+        .melt_operation(MeltRequest::new(
+            quote.clone(),
+            vec![conflicting_input],
+            None,
+        ))
+        .expect("paid quote reuse different input operation");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("paid quote reuse different input operation id");
+    let conflicting_entry = accepted_entry_without_journal(43, conflicting_envelope);
+    persist_journal_entry(&localstore, &conflicting_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&conflicting_entry))
+            .await,
+        Err(Error::RequestAlreadyPaid)
+    ));
+
+    assert_eq!(
+        localstore
+            .get_proofs_states(&[conflicting_input_y])
+            .await
+            .expect("conflicting terminal-paid input state"),
+        vec![None],
+        "conflicting terminal-paid melt must fail before proof state storage"
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&original_input_ys)
+            .await
+            .expect("original terminal-paid input states"),
+        vec![Some(State::Spent), Some(State::Spent)]
+    );
+    assert!(
+        localstore
+            .get_completed_operation(&super::federation_operation_uuid(conflicting_operation_id))
+            .await
+            .expect("conflicting terminal-paid completed operation lookup")
+            .is_none(),
+        "conflicting terminal-paid melt must fail before completed-operation storage"
+    );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(conflicting_operation_id)
+            .await
+            .expect("conflicting terminal-paid journal lookup")
+            .expect("conflicting terminal-paid journal entry")
+            .status,
+        FederationOperationStatus::Accepted,
+        "conflicting terminal-paid melt must not be marked applied"
+    );
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        payment_calls_after_paid,
+        "conflicting terminal-paid melt must not attempt another payment"
+    );
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_outputs() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let original_proofs = vec![
+        proof_for_runtime(&runtime_config, "terminal-paid-change-input-one"),
+        proof_for_runtime(&runtime_config, "terminal-paid-change-input-two"),
+        proof_for_runtime(&runtime_config, "terminal-paid-change-input-three"),
+    ];
+    let original_input_ys = original_proofs.ys().expect("terminal-paid change input ys");
+    let mut original_change = output_for_runtime(&runtime_config, b"terminal-paid original change");
+    original_change.amount = Amount::ZERO;
+    let original_request = MeltRequest::new(
+        quote.clone(),
+        original_proofs.clone(),
+        Some(vec![original_change.clone()]),
+    );
+    let original_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(original_request.clone())
+            .expect("terminal-paid change melt operation"),
+    );
+    persist_and_apply_entry(&mint, &original_entry).await;
+
+    apply_paid_melt_observation_quorum(
+        &mint,
+        &runtime_config,
+        &mut journal,
+        &quote,
+        "terminal-paid-change-preimage",
+    )
+    .await;
+    let payment_calls_after_paid = make_payment_calls.load(Ordering::Relaxed);
+
+    let mut conflicting_change =
+        output_for_runtime(&runtime_config, b"terminal-paid conflicting change");
+    conflicting_change.amount = Amount::ZERO;
+    let conflicting_request = MeltRequest::new(
+        quote.clone(),
+        original_proofs,
+        Some(vec![conflicting_change.clone()]),
+    );
+    let conflicting_envelope = runtime_config
+        .melt_operation(conflicting_request)
+        .expect("terminal-paid conflicting change operation");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("terminal-paid conflicting change operation id");
+    let conflicting_entry = accepted_entry_without_journal(44, conflicting_envelope);
+    persist_journal_entry(&localstore, &conflicting_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&conflicting_entry))
+            .await,
+        Err(Error::RequestAlreadyPaid)
+    ));
+
+    assert_eq!(
+        localstore
+            .get_proofs_states(&original_input_ys)
+            .await
+            .expect("original terminal-paid change input states"),
+        vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
+    );
+    assert!(
+        localstore
+            .get_blind_signatures(&[conflicting_change.blinded_secret])
+            .await
+            .expect("conflicting terminal-paid change signature lookup")[0]
+            .is_none(),
+        "conflicting terminal-paid change output must remain unsigned"
+    );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(conflicting_operation_id)
+            .await
+            .expect("conflicting terminal-paid change journal lookup")
+            .expect("conflicting terminal-paid change journal entry")
+            .status,
+        FederationOperationStatus::Accepted,
+        "conflicting terminal-paid change operation must not be marked applied"
+    );
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        payment_calls_after_paid,
+        "conflicting terminal-paid change operation must not attempt another payment"
     );
 }
 
