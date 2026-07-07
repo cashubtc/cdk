@@ -10786,6 +10786,119 @@ async fn catch_up_replay_records_state_digest_checkpoint() {
 }
 
 #[tokio::test]
+async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
+    let (mut public_config, local_private, peer_private) = transport_config();
+    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let state =
+        federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+    let local_member = local_private.member_id;
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let quote_id = QuoteId::new();
+    let observation =
+        mint_payment_observation_envelope_for_member(&state, &quote_id, 1, 1, "settled");
+    let observation_id = observation
+        .operation_id()
+        .expect("observation operation id");
+    let mut peer_consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+    peer_consensus
+        .submit_envelope(mint_quote_envelope(&state, &quote_id))
+        .expect("peer accepted mint quote");
+    peer_consensus
+        .submit_envelope(observation)
+        .expect("peer accepted unresolved payment observation");
+    let catch_up_request = state
+        .federation_consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    let catch_up_response = peer_consensus
+        .catch_up_checked(&catch_up_request)
+        .expect("catch-up response");
+
+    let applied = state
+        .apply_federation_catch_up_response(&catch_up_response)
+        .await
+        .expect("apply catch-up response");
+    assert_eq!(applied.len(), 2);
+
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    let expected_state_digest = materialized_state_digest(&state, &entries)
+        .await
+        .expect("materialized state digest");
+    let checkpoints = state
+        .mint
+        .localstore()
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoints");
+    let observation_entry = entries.last().expect("observation journal entry");
+
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(observation_entry.operation_id, observation_id);
+    assert_eq!(checkpoints[0].operation_index, observation_entry.index);
+    assert_eq!(checkpoints[0].operation_id, observation_entry.operation_id);
+    assert_eq!(checkpoints[0].order_digest, observation_entry.order_digest);
+    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
+
+    let quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup")
+        .expect("quote persisted");
+    assert_eq!(quote.state(), MintQuoteState::Unpaid);
+    assert_eq!(quote.amount_paid(), Amount::new(0, CurrencyUnit::Sat));
+    let observations = state
+        .mint
+        .localstore()
+        .get_federation_payment_observations(
+            cdk::federation::FederationPaymentObservationContext::MintQuote,
+            &quote_id.to_string(),
+        )
+        .await
+        .expect("payment observations");
+    assert_eq!(observations.len(), 1);
+
+    let status_request = signed_status_request(&public_config, &peer_private, local_member, 1);
+    let status = post_local_status(State(state), Json(status_request))
+        .await
+        .expect("local status response")
+        .0;
+    assert_eq!(status.payment_observation_reports.len(), 1);
+    let report = status
+        .payment_observation_reports
+        .first()
+        .expect("payment observation report");
+    assert_eq!(
+        report.status,
+        cdk::federation::FederationPaymentObservationReportStatus::AwaitingQuorum
+    );
+    assert_eq!(report.required, 2);
+    assert_eq!(report.total_observations, 1);
+    assert!(!report.quarantined);
+    assert!(!report.groups[0].quorum_reached);
+    assert!(report.stale);
+    assert_eq!(
+        report.recommended_action,
+        FederationPaymentObservationReportAction::Inspect
+    );
+    let status_json = serde_json::to_string(&status).expect("status json");
+    assert!(!status_json.contains("settled"));
+}
+
+#[tokio::test]
 async fn catch_up_replay_checkpoints_payment_observation_quarantine_rows() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let config = state
