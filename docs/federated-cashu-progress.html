@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split mint payment observation tests</span>
+          <span class="value">refactor: split mint keyset tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint payment-observation and quarantine tests now live in their own module, covering stored quorum finalization, metadata, signing quarantine, and replay ordering.</span>
+          <span class="value">Mint keyset rotation and old-keyset restore tests now live in their own module, covering local share validation, accepted rotations, effective keyset responses, and restore provenance.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -756,7 +756,7 @@
           </article>
           <article class="item">
             <h3>Codebase hygiene</h3>
-            <p>Large federation test surfaces are being split into focused modules without changing behavior. Mint runtime/admission, mint issuance, mint payment-observation, swap, and melt tests now sit under dedicated modules while shared mint federation fixtures remain available to the remaining keyset and restore apply tests.</p>
+            <p>Large federation test surfaces are being split into focused modules without changing behavior. Mint runtime/admission, mint issuance, mint payment-observation, keyset/restore, swap, and melt tests now sit under dedicated modules while shared mint federation fixtures remain available to the remaining parent smoke and helper tests.</p>
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
