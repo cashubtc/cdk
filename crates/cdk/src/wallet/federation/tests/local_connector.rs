@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::federation::FederationJournalAppendOutcome;
 use cdk_http_client::HttpError;
 
 use super::*;
@@ -30,14 +31,6 @@ impl fmt::Debug for LocalFederatedMemberConnector {
 }
 
 impl LocalFederatedMemberConnector {
-    pub(super) fn new(mint: Arc<Mint>) -> Self {
-        Self {
-            mint,
-            federation_mints: None,
-            federation_journal: None,
-        }
-    }
-
     pub(super) fn new_with_federation_mints(
         mint: Arc<Mint>,
         federation_mints: Arc<Vec<Arc<Mint>>>,
@@ -50,18 +43,28 @@ impl LocalFederatedMemberConnector {
         }
     }
 
-    async fn append_and_apply_to_federation(&self, envelope: FederationOperationEnvelope) {
+    async fn append_and_apply_to_federation(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<Option<FederationJournalEntry>, crate::Error> {
         if let (Some(federation_mints), Some(federation_journal)) =
             (&self.federation_mints, &self.federation_journal)
         {
-            let entry = {
-                let mut journal = federation_journal.lock().await;
-                appended_entry(&mut journal, envelope)
+            let mut journal = federation_journal.lock().await;
+            let entry = match journal.append(envelope)? {
+                FederationJournalAppendOutcome::Appended(entry) => {
+                    for mint in federation_mints.iter() {
+                        try_persist_and_apply_entry(mint, &entry).await?;
+                    }
+                    entry
+                }
+                FederationJournalAppendOutcome::Duplicate(entry) => entry,
             };
-            for mint in federation_mints.iter() {
-                persist_and_apply_entry(mint, &entry).await;
-            }
+
+            return Ok(Some(entry));
         }
+
+        Ok(None)
     }
 
     async fn effective_federation_config(&self) -> Result<FederationRuntimeConfig, crate::Error> {
@@ -118,7 +121,7 @@ impl LocalFederatedMemberConnector {
             None,
             Some(unix_time()),
         );
-        self.append_and_apply_to_federation(envelope).await;
+        self.append_and_apply_to_federation(envelope).await?;
 
         Ok(())
     }
@@ -178,6 +181,20 @@ impl LocalFederatedMemberConnector {
             "local federated member connector does not implement {operation}"
         ))
     }
+}
+
+async fn try_persist_and_apply_entry(
+    mint: &Mint,
+    entry: &FederationJournalEntry,
+) -> Result<(), crate::Error> {
+    let localstore = mint.localstore();
+    let mut tx = localstore.begin_transaction().await?;
+    tx.add_federation_journal_entry(entry).await?;
+    tx.commit().await?;
+    mint.apply_federation_journal_entries(std::slice::from_ref(entry))
+        .await?;
+
+    Ok(())
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -246,7 +263,7 @@ impl MintConnector for LocalFederatedMemberConnector {
         let config = self.effective_federation_config().await?;
         let quote = Self::quote_id(response.quote())?;
         let envelope = config.mint_quote_operation(quote.clone(), request, response.clone());
-        self.append_and_apply_to_federation(envelope).await;
+        self.append_and_apply_to_federation(envelope).await?;
         if self.federation_mints.is_some() {
             if let Some(amount_paid) = amount.filter(|amount| *amount > Amount::ZERO) {
                 let payment_proof = self.mint_quote_payment_proof(&quote).await?;
@@ -271,7 +288,19 @@ impl MintConnector for LocalFederatedMemberConnector {
             signature: request.signature,
         });
         let config = self.effective_federation_config().await?;
-        let operation_id = config.mint_operation(input.clone())?.operation_id()?;
+        let envelope = config.mint_operation(input.clone())?;
+        let operation_id = envelope.operation_id()?;
+        if self
+            .append_and_apply_to_federation(envelope)
+            .await?
+            .is_some()
+        {
+            return self
+                .mint
+                .persisted_mint_share_response(operation_id, &input)
+                .await;
+        }
+
         config.mint_share_response(operation_id, &input)
     }
 
@@ -319,7 +348,19 @@ impl MintConnector for LocalFederatedMemberConnector {
             signatures: request.signatures,
         });
         let config = self.effective_federation_config().await?;
-        let operation_id = config.mint_operation(input.clone())?.operation_id()?;
+        let envelope = config.mint_operation(input.clone())?;
+        let operation_id = envelope.operation_id()?;
+        if self
+            .append_and_apply_to_federation(envelope)
+            .await?
+            .is_some()
+        {
+            return self
+                .mint
+                .persisted_mint_share_response(operation_id, &input)
+                .await;
+        }
+
         config.mint_share_response(operation_id, &input)
     }
 
@@ -376,7 +417,9 @@ impl MintConnector for LocalFederatedMemberConnector {
         self.validate_melt_quote_method(request.quote_id(), method)
             .await?;
         let config = self.effective_federation_config().await?;
-        let operation_id = config.melt_operation(request.clone())?.operation_id()?;
+        let envelope = config.melt_operation(request.clone())?;
+        let operation_id = envelope.operation_id()?;
+        self.append_and_apply_to_federation(envelope).await?;
 
         Ok(self
             .mint
@@ -387,7 +430,19 @@ impl MintConnector for LocalFederatedMemberConnector {
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, crate::Error> {
         let config = self.effective_federation_config().await?;
-        let operation_id = config.swap_operation(request.clone())?.operation_id()?;
+        let envelope = config.swap_operation(request.clone())?;
+        let operation_id = envelope.operation_id()?;
+        if self
+            .append_and_apply_to_federation(envelope)
+            .await?
+            .is_some()
+        {
+            return self
+                .mint
+                .persisted_swap_share_response(operation_id, &request)
+                .await;
+        }
+
         config.swap_share_response(operation_id, &request)
     }
 

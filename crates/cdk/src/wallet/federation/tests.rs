@@ -14,7 +14,7 @@ use cdk_common::federation::{
     InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerConfigBundle,
     TrustedDealerKeysetSpec, TrustedDealerMember,
 };
-use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintQuote};
+use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
 use cdk_common::nuts::nut02::KeySet;
@@ -197,6 +197,38 @@ fn threshold_five_bundle() -> TrustedDealerConfigBundle {
                 )],
             )
             .expect("trusted dealer bundle")
+        })
+        .clone()
+}
+
+fn threshold_four_bundle() -> TrustedDealerConfigBundle {
+    static THRESHOLD_FOUR_BUNDLE: OnceLock<TrustedDealerConfigBundle> = OnceLock::new();
+    THRESHOLD_FOUR_BUNDLE
+        .get_or_init(|| {
+            generate_trusted_dealer_configs(
+                ThresholdParams::with_bft_consensus(4, 3).expect("params"),
+                vec![
+                    member(member_id(1)),
+                    member(member_id(2)),
+                    member(member_id(3)),
+                    member(member_id(4)),
+                ],
+                vec![TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    BTreeMap::from([(
+                        Amount::from(1),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                        ],
+                    )]),
+                )],
+            )
+            .expect("trusted dealer 3-of-4 bundle")
         })
         .clone()
 }
@@ -867,33 +899,6 @@ async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
         .expect("apply journal entry");
 }
 
-async fn add_paid_bolt11_quote(mint: &Mint, quote_id: &QuoteId, amount: u64) {
-    let amount = Amount::new(amount, CurrencyUnit::Sat);
-    let mut quote = MintQuote::new(
-        Some(quote_id.clone()),
-        format!("invoice-{quote_id}"),
-        CurrencyUnit::Sat,
-        Some(amount.clone()),
-        unix_time() + 10_000,
-        PaymentIdentifier::QuoteId(quote_id.clone()),
-        None,
-        Amount::new(0, CurrencyUnit::Sat),
-        Amount::new(0, CurrencyUnit::Sat),
-        PaymentMethod::Known(KnownMethod::Bolt11),
-        unix_time(),
-        Vec::new(),
-        Vec::new(),
-        None,
-    );
-    quote
-        .add_payment(amount, format!("payment-{quote_id}"), None)
-        .expect("add quote payment");
-    let localstore = mint.localstore();
-    let mut tx = localstore.begin_transaction().await.expect("begin tx");
-    tx.add_mint_quote(quote).await.expect("add quote");
-    tx.commit().await.expect("commit quote");
-}
-
 fn bolt11_quote_request(amount: u64) -> MintQuoteRequest {
     MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
         amount: Amount::from(amount),
@@ -935,35 +940,42 @@ fn set_mint_quote_status_from_response(
     }
 }
 
-async fn persist_paid_mint_quote(
-    mint: &Mint,
+async fn persist_paid_mint_quote_to_federation(
+    mints: &[Arc<Mint>],
     config: &FederationRuntimeConfig,
-    journal: &mut InMemoryFederationJournal,
+    journal: &Arc<tokio::sync::Mutex<InMemoryFederationJournal>>,
     quote_id: &QuoteId,
     amount: u64,
 ) {
-    let quote_entry = appended_entry(
-        journal,
-        config.mint_quote_operation(
-            quote_id.clone(),
-            bolt11_quote_request(amount),
-            bolt11_quote_response(quote_id, amount),
-        ),
-    );
-    persist_and_apply_entry(mint, &quote_entry).await;
+    let entries = {
+        let mut journal = journal.lock().await;
+        let quote_entry = appended_entry(
+            &mut journal,
+            config.mint_quote_operation(
+                quote_id.clone(),
+                bolt11_quote_request(amount),
+                bolt11_quote_response(quote_id, amount),
+            ),
+        );
+        let paid_entry = appended_entry(
+            &mut journal,
+            config.mint_quote_payment_observation(
+                quote_id.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(amount),
+                Amount::ZERO,
+                Some(format!("payment-{quote_id}")),
+            ),
+        );
+        vec![quote_entry, paid_entry]
+    };
 
-    let paid_entry = appended_entry(
-        journal,
-        config.mint_quote_payment_observation(
-            quote_id.clone(),
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            MintQuoteState::Paid,
-            Amount::from(amount),
-            Amount::ZERO,
-            Some(format!("payment-{quote_id}")),
-        ),
-    );
-    persist_and_apply_entry(mint, &paid_entry).await;
+    for mint in mints {
+        for entry in &entries {
+            persist_and_apply_entry(mint, entry).await;
+        }
+    }
 }
 
 async fn add_unpaid_bolt11_melt_quote(
@@ -1008,9 +1020,8 @@ async fn fake_wallet_member_connectors_with_melt_quote(
     let mut connectors = BTreeMap::new();
     let mut member_mints = BTreeMap::new();
     let melt_expiry = unix_time() + 10_000;
-    for member_id in [member_id(1), member_id(2), member_id(3)] {
+    for member_id in bundle.public_config.members.keys().copied() {
         let mint = Arc::new(create_fake_wallet_member_mint(bundle, member_id).await);
-        add_paid_bolt11_quote(mint.as_ref(), mint_quote_id, mint_quote_amount).await;
         add_unpaid_bolt11_melt_quote(
             mint.as_ref(),
             melt_quote_id,
@@ -1024,6 +1035,20 @@ async fn fake_wallet_member_connectors_with_melt_quote(
 
     let federation_mints = Arc::new(member_mints.values().cloned().collect::<Vec<_>>());
     let federation_journal = Arc::new(tokio::sync::Mutex::new(InMemoryFederationJournal::new()));
+    let federation_config = federation_mints
+        .first()
+        .expect("federation mint")
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    persist_paid_mint_quote_to_federation(
+        &federation_mints,
+        &federation_config,
+        &federation_journal,
+        mint_quote_id,
+        mint_quote_amount,
+    )
+    .await;
     for (member_id, mint) in member_mints {
         connectors.insert(
             member_id,
@@ -1048,37 +1073,55 @@ async fn rotated_fake_wallet_member_connectors_with_state(
     melt_amount: u64,
 ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
     let mut connectors = BTreeMap::new();
+    let mut member_mints = BTreeMap::new();
     let melt_expiry = unix_time() + 10_000;
     let rotation_keyset = activated_rotation_keyset(bundle);
 
     for member_id in [member_id(1), member_id(2), member_id(3)] {
-        let mint = create_fake_wallet_member_mint(bundle, member_id).await;
-        let config = mint.federation_config().expect("federation config").clone();
-        let mut journal = InMemoryFederationJournal::new();
-        persist_paid_mint_quote(
-            &mint,
-            &config,
-            &mut journal,
-            old_mint_quote_id,
-            old_restore_output.amount.into(),
-        )
-        .await;
-        persist_paid_mint_quote(&mint, &config, &mut journal, new_mint_quote_id, 3).await;
+        let mint = Arc::new(create_fake_wallet_member_mint(bundle, member_id).await);
         add_unpaid_bolt11_melt_quote(&mint, melt_quote_id, melt_invoice, melt_amount, melt_expiry)
             .await;
+        member_mints.insert(member_id, mint);
+    }
 
-        let old_mint_input = MintInput::Single(MintRequest {
-            quote: old_mint_quote_id.clone(),
-            outputs: vec![old_restore_output.clone()],
-            signature: None,
-        });
+    let federation_mints = Arc::new(member_mints.values().cloned().collect::<Vec<_>>());
+    let federation_journal = Arc::new(tokio::sync::Mutex::new(InMemoryFederationJournal::new()));
+    let config = federation_mints
+        .first()
+        .expect("federation mint")
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    persist_paid_mint_quote_to_federation(
+        &federation_mints,
+        &config,
+        &federation_journal,
+        old_mint_quote_id,
+        old_restore_output.amount.into(),
+    )
+    .await;
+    persist_paid_mint_quote_to_federation(
+        &federation_mints,
+        &config,
+        &federation_journal,
+        new_mint_quote_id,
+        3,
+    )
+    .await;
+
+    let old_mint_input = MintInput::Single(MintRequest {
+        quote: old_mint_quote_id.clone(),
+        outputs: vec![old_restore_output.clone()],
+        signature: None,
+    });
+    let setup_entries = {
+        let mut journal = federation_journal.lock().await;
         let old_mint_entry = appended_entry(
             &mut journal,
             config
                 .mint_operation(old_mint_input)
                 .expect("old mint operation"),
         );
-        persist_and_apply_entry(&mint, &old_mint_entry).await;
 
         let rotation_entry = appended_entry(
             &mut journal,
@@ -1088,12 +1131,22 @@ async fn rotated_fake_wallet_member_connectors_with_state(
                 },
             )),
         );
-        persist_and_apply_entry(&mint, &rotation_entry).await;
+        vec![old_mint_entry, rotation_entry]
+    };
+    for mint in federation_mints.iter() {
+        for entry in &setup_entries {
+            persist_and_apply_entry(mint, entry).await;
+        }
+    }
 
+    for (member_id, mint) in member_mints {
         connectors.insert(
             member_id,
-            Arc::new(LocalFederatedMemberConnector::new(Arc::new(mint)))
-                as Arc<dyn MintConnector + Send + Sync>,
+            Arc::new(LocalFederatedMemberConnector::new_with_federation_mints(
+                mint,
+                federation_mints.clone(),
+                federation_journal.clone(),
+            )) as Arc<dyn MintConnector + Send + Sync>,
         );
     }
 
@@ -1726,7 +1779,7 @@ async fn federated_mint_connector_aggregates_fake_wallet_member_shares() {
 
     let fake_quote = connector
         .post_mint_quote(MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
-            amount: Amount::from(1),
+            amount: Amount::from(3),
             unit: CurrencyUnit::Sat,
             description: None,
             pubkey: None,
@@ -1765,7 +1818,7 @@ async fn federated_mint_connector_aggregates_fake_wallet_member_shares() {
         .post_batch_mint(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             BatchMintRequest {
-                quotes: vec![quote_id.to_string()],
+                quotes: vec![fake_quote_id],
                 quote_amounts: None,
                 outputs: outputs.clone(),
                 signatures: None,
@@ -1775,13 +1828,20 @@ async fn federated_mint_connector_aggregates_fake_wallet_member_shares() {
         .expect("batch mint response");
     assert_aggregate_response_valid(&bundle, &outputs, &batch_response);
 
+    let swap_outputs = blinded_outputs_for_keyset(&active_keyset(&bundle), b"fake-wallet-swap");
     let swap_response = connector
-        .post_swap(SwapRequest::new(Vec::new(), outputs.clone()))
+        .post_swap(SwapRequest::new(
+            vec![
+                proof_for_amount(&bundle, 1, "fake-wallet-swap-one"),
+                proof_for_amount(&bundle, 2, "fake-wallet-swap-two"),
+            ],
+            swap_outputs.clone(),
+        ))
         .await
         .expect("swap response");
     assert_aggregate_response_valid(
         &bundle,
-        &outputs,
+        &swap_outputs,
         &MintResponse {
             signatures: swap_response.signatures,
         },
@@ -1825,6 +1885,10 @@ async fn federated_mint_connector_aggregates_rotated_fake_wallet_member_shares()
     let old_restore_output =
         blinded_output_for_keyset_amount(&old_keyset, 4, b"rotated wallet old restore");
     let next_outputs = blinded_outputs_for_keyset(&next_keyset, b"rotated wallet output");
+    let next_swap_outputs = vec![
+        blinded_output_for_keyset_amount(&next_keyset, 2, b"rotated wallet swap output a"),
+        blinded_output_for_keyset_amount(&next_keyset, 2, b"rotated wallet swap output b"),
+    ];
     let next_change_outputs =
         vec![
             blinded_change_outputs_for_keyset(&next_keyset, b"rotated wallet melt change")
@@ -1867,13 +1931,13 @@ async fn federated_mint_connector_aggregates_rotated_fake_wallet_member_shares()
     let swap_response = connector
         .post_swap(SwapRequest::new(
             vec![proof_for_amount(&bundle, 4, "rotated-wallet-swap")],
-            next_outputs.clone(),
+            next_swap_outputs.clone(),
         ))
         .await
         .expect("rotated swap response");
     assert_aggregate_response_valid(
         &bundle,
-        &next_outputs,
+        &next_swap_outputs,
         &MintResponse {
             signatures: swap_response.signatures,
         },
@@ -1928,6 +1992,10 @@ async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
     let old_restore_output =
         blinded_output_for_keyset_amount(&old_keyset, 4, b"rotated http old restore");
     let next_outputs = blinded_outputs_for_keyset(&next_keyset, b"rotated http output");
+    let next_swap_outputs = vec![
+        blinded_output_for_keyset_amount(&next_keyset, 2, b"rotated http swap output a"),
+        blinded_output_for_keyset_amount(&next_keyset, 2, b"rotated http swap output b"),
+    ];
     let next_change_outputs =
         vec![
             blinded_change_outputs_for_keyset(&next_keyset, b"rotated http melt change")
@@ -1973,13 +2041,13 @@ async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
     let swap_response = connector
         .post_swap(SwapRequest::new(
             vec![proof_for_amount(&bundle, 4, "rotated-http-swap")],
-            next_outputs.clone(),
+            next_swap_outputs.clone(),
         ))
         .await
         .expect("rotated HTTP swap response");
     assert_aggregate_response_valid(
         &bundle,
-        &next_outputs,
+        &next_swap_outputs,
         &MintResponse {
             signatures: swap_response.signatures,
         },
@@ -2057,6 +2125,103 @@ async fn federated_mint_connector_aggregates_swap_signature_shares() {
         &outputs,
         &MintResponse {
             signatures: response.signatures,
+        },
+    );
+}
+
+#[tokio::test]
+async fn local_federated_members_reject_sliding_window_swap_output_attack() {
+    let bundle = threshold_four_bundle();
+    let keyset = active_keyset(&bundle);
+    let outputs = [
+        blinded_output_for_keyset_amount(&keyset, 1, b"sliding-window-swap-output-a"),
+        blinded_output_for_keyset_amount(&keyset, 1, b"sliding-window-swap-output-b"),
+        blinded_output_for_keyset_amount(&keyset, 1, b"sliding-window-swap-output-c"),
+        blinded_output_for_keyset_amount(&keyset, 1, b"sliding-window-swap-output-d"),
+    ];
+    let inputs = vec![
+        proof_for_amount(&bundle, 1, "sliding-window-swap-input-a"),
+        proof_for_amount(&bundle, 1, "sliding-window-swap-input-b"),
+        proof_for_amount(&bundle, 1, "sliding-window-swap-input-c"),
+    ];
+    let mint_quote_id = QuoteId::new();
+    let melt_quote_id = QuoteId::new();
+    let melt_invoice = create_fake_invoice(1000, "".to_string());
+    let connectors = fake_wallet_member_connectors_with_melt_quote(
+        &bundle,
+        &mint_quote_id,
+        3,
+        &melt_quote_id,
+        &melt_invoice,
+        1000,
+    )
+    .await;
+    let views = [
+        (
+            member_id(1),
+            vec![outputs[0].clone(), outputs[1].clone(), outputs[2].clone()],
+        ),
+        (
+            member_id(2),
+            vec![outputs[1].clone(), outputs[2].clone(), outputs[3].clone()],
+        ),
+        (
+            member_id(3),
+            vec![outputs[2].clone(), outputs[3].clone(), outputs[0].clone()],
+        ),
+        (
+            member_id(4),
+            vec![outputs[3].clone(), outputs[0].clone(), outputs[1].clone()],
+        ),
+    ];
+    let mut successes = Vec::new();
+    let mut failures = Vec::new();
+
+    for (member_id, member_outputs) in views {
+        let connector = connectors
+            .get(&member_id)
+            .expect("member connector")
+            .clone();
+        match connector
+            .post_swap(SwapRequest::new(inputs.clone(), member_outputs.clone()))
+            .await
+        {
+            Ok(response) => successes.push((member_id, member_outputs, response)),
+            Err(err) => failures.push((member_id, err.to_string())),
+        }
+    }
+
+    assert_eq!(
+        successes.len(),
+        1,
+        "only the first consensus-accepted swap view may receive shares"
+    );
+    assert_eq!(
+        failures.len(),
+        3,
+        "overlapping swap views must not receive enough shares to aggregate"
+    );
+    for (_, error) in &failures {
+        assert!(
+            error.contains("Token Already Spent")
+                || error.contains("missing persisted federation signature share"),
+            "losing sliding-window swap view should fail before returning shares: {error}"
+        );
+    }
+
+    let (_, winning_outputs, _) = successes.first().expect("winning view");
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let aggregate = connector
+        .post_swap(SwapRequest::new(inputs, winning_outputs.clone()))
+        .await
+        .expect("accepted swap view should aggregate across members");
+
+    assert_aggregate_response_valid(
+        &bundle,
+        winning_outputs,
+        &MintResponse {
+            signatures: aggregate.signatures,
         },
     );
 }
