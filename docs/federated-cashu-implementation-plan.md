@@ -264,6 +264,16 @@ Current confirmed shape:
   and
   `cargo test -p cdk-axum --features federation private_aleph_bft_finalized_unit_route_rejects_future_session_before_mutation -- --test-threads 1`
   passed on 2026-07-07.
+- Latest AlephBFT unfinalized-restart checkpoint: storage-backed startup now
+  has focused coverage for a crash after a local AlephBFT unit is queued and
+  previewed but before any finalized-unit delivery. The test proves no mint
+  quote, journal entry, or finalized-item row is materialized durably, startup
+  rebuilds with an empty accepted operation set, and retrying the same wallet
+  operation recreates the same canonical unit bytes for finality instead of
+  applying local state early.
+- Focused AlephBFT unfinalized-restart test:
+  `cargo test -p cdk-axum --features federation aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_state_mutation -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest AlephBFT batched-driver checkpoint: the bounded driver tick now has
   focused coverage for one finalized unit carrying multiple operation items.
   The regression proves the tick reports both local responses, persists both
@@ -1311,6 +1321,13 @@ AlephBFT and consensus unit tests:
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.
+  Storage-backed AlephBFT coverage now proves restart after local unit creation
+  but before finalization leaves no durable mint quote, journal entry, or
+  finalized-item row, rebuilds with zero accepted operations, and lets a wallet
+  retry recreate the same canonical unit bytes. Existing replay coverage also
+  exercises accepted-but-unapplied journal replay and lost waiter/cache duplicate
+  handling; full production AlephBFT crash-window coverage remains open until
+  the live finality task owns durable delivery.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by

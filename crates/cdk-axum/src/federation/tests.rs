@@ -7356,6 +7356,108 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
 }
 
 #[tokio::test]
+async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_state_mutation() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let seed = mnemonic.to_seed_normalized("");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db.clone(),
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = queue_local_aleph_bft_unit(&state, envelope.clone()).await;
+    assert_eq!(unit.operation_ids, vec![operation_id]);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup before restart")
+        .is_none());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal before restart")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items before restart")
+        .is_empty());
+    {
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let consensus = consensus.lock().await;
+        assert_eq!(consensus.queued_len(), 1);
+        assert_eq!(consensus.peer_status().operation_count, 0);
+    }
+    drop(state);
+
+    let restarted_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    assert!(restarted_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after restart")
+        .is_none());
+    assert!(restarted_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after restart")
+        .is_empty());
+    assert!(restarted_state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items after restart")
+        .is_empty());
+    {
+        let consensus = restarted_state
+            .federation_consensus
+            .as_ref()
+            .expect("restarted consensus");
+        let consensus = consensus.lock().await;
+        assert_eq!(consensus.queued_len(), 0);
+        assert_eq!(consensus.peer_status().operation_count, 0);
+    }
+
+    let retried_unit = queue_local_aleph_bft_unit(&restarted_state, envelope).await;
+    assert_eq!(retried_unit.operation_ids, vec![operation_id]);
+    assert_eq!(
+        retried_unit.canonical_bytes().expect("retried unit bytes"),
+        unit.canonical_bytes().expect("original unit bytes")
+    );
+    assert!(restarted_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after retry queue")
+        .is_none());
+}
+
+#[tokio::test]
 async fn aleph_bft_broadcast_round_drains_and_applies_after_threshold_delivery() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
