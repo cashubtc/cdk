@@ -260,3 +260,40 @@ fn digest_comparison_prints_materialized_row_diffs() {
     assert!(line.contains("missing_members=none"));
     assert!(!line.contains("secret-proof-y"));
 }
+
+#[test]
+fn digest_comparison_diagnoses_missing_completed_operation_row() {
+    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+    let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
+    let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let completed_operation_row =
+        FederationMaterializedStateRow::new("completed_operations", "completed-operation-row-uuid")
+            .with_field("federation_operation_id", "accepted-operation-id")
+            .with_field("kind", "mint")
+            .fingerprint()
+            .expect("completed operation row fingerprint");
+    let mut first = local_status(1, 4, order_digest, first_state_digest);
+    first.materialized_state_rows = vec![completed_operation_row];
+    let second = local_status(2, 4, order_digest, second_state_digest);
+    let statuses = vec![first, second];
+
+    let report = DigestComparisonReport::from_statuses(&statuses);
+
+    assert_eq!(report.row_diffs.len(), 1);
+    let diff = &report.row_diffs[0];
+    assert_eq!(diff.table, "completed_operations");
+    assert_eq!(
+        diff.missing_members,
+        vec![MemberId::new(2).expect("member two")]
+    );
+    assert_eq!(diff.variants.len(), 1);
+    assert_eq!(
+        diff.variants[0].members,
+        vec![MemberId::new(1).expect("member one")]
+    );
+    let line = materialized_row_diff_line(diff);
+    assert!(line.contains("table=completed_operations"));
+    assert!(line.contains("missing_members=2"));
+    assert!(!line.contains("completed-operation-row-uuid"));
+    assert!(!line.contains("accepted-operation-id"));
+}
