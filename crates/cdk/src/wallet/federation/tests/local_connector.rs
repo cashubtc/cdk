@@ -573,6 +573,12 @@ impl Transport for LocalMemberHttpTransport {
             );
         }
 
+        if path == "/v1/info" {
+            return Self::encode_response(
+                connector.get_mint_info().await.map_err(Self::map_error)?,
+            );
+        }
+
         if let Some(quote_id) = path.strip_prefix("/v1/mint/quote/bolt11/") {
             let response = connector
                 .get_mint_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), quote_id)

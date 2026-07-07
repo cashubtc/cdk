@@ -679,6 +679,7 @@ impl TryFrom<MintInfo> for cdk::nuts::MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+            federation: None,
         })
     }
 }

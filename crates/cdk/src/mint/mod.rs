@@ -625,6 +625,21 @@ impl Mint {
             mint_info
         };
 
+        #[cfg(feature = "federation")]
+        let mint_info = if self.federation_config().is_some() {
+            let mut mint_info = mint_info;
+            if let Some(config) = self.effective_federation_config().await? {
+                mint_info.federation = Some(
+                    config
+                        .public_config()
+                        .mint_info_for_member(config.member_id())?,
+                );
+            }
+            mint_info
+        } else {
+            mint_info
+        };
+
         Ok(mint_info)
     }
 

@@ -89,6 +89,7 @@ use crate::nuts::nut01::{
     BlsG1PublicKey, BlsPublicKeyShare, BlsSecretKeyShare, BlsSignerId,
 };
 use crate::nuts::nut02::{KeySet, KeySetVersion};
+use crate::nuts::nut06::{FederationInfo, FederationProtocolInfo};
 use crate::{
     mint_url::MintUrl, Amount, BlindedMessage, CurrencyUnit, Id, Keys, PublicKey, SecretKey,
 };
@@ -676,6 +677,24 @@ pub enum FederationError {
         member_id: MemberId,
         /// Mismatched keyset ID.
         keyset_id: Id,
+    },
+    /// A federation member did not advertise federation metadata in mint info.
+    #[error("Federation member {member_id} did not advertise federation mint info")]
+    MissingFederationMintInfo {
+        /// Member whose mint-info response was checked.
+        member_id: MemberId,
+    },
+    /// A federation member advertised a public config digest that does not match the wallet config.
+    #[error(
+        "Federation member {member_id} advertised config digest mismatch: expected={expected}, found={found}"
+    )]
+    FederationConfigDigestMismatch {
+        /// Member whose mint-info response was checked.
+        member_id: MemberId,
+        /// Expected public config digest.
+        expected: FederationConfigDigest,
+        /// Advertised public config digest.
+        found: FederationConfigDigest,
     },
     /// The configured federation ID does not match the derived roster ID.
     #[error("Federation id mismatch: expected={expected}, found={found}")]
@@ -1462,6 +1481,24 @@ impl FederationProtocolVersions {
             self.session_outcome,
         )?;
         Ok(())
+    }
+
+    fn to_mint_info(self) -> FederationProtocolInfo {
+        FederationProtocolInfo::new(
+            self.operation,
+            self.consensus_item,
+            self.rest_api,
+            self.session_outcome,
+        )
+    }
+
+    fn from_mint_info(info: FederationProtocolInfo) -> Self {
+        Self {
+            operation: info.operation,
+            consensus_item: info.consensus_item,
+            rest_api: info.rest_api,
+            session_outcome: info.session_outcome,
+        }
     }
 }
 
@@ -3481,6 +3518,84 @@ impl FederationConfig {
         ))
     }
 
+    /// Build the mint-info federation advertisement expected from a member.
+    pub fn mint_info_for_member(&self, member_id: MemberId) -> Result<FederationInfo> {
+        if !self.members.contains_key(&member_id) {
+            return Err(FederationError::UnknownMember { member_id });
+        }
+
+        Ok(FederationInfo::new(
+            self.federation_id.to_string(),
+            member_id.get(),
+            self.config_digest()?.to_string(),
+            self.protocol_versions.to_mint_info(),
+        ))
+    }
+
+    /// Validate a member's mint-info federation advertisement.
+    pub fn validate_member_mint_info(
+        &self,
+        expected_member_id: MemberId,
+        info: &FederationInfo,
+    ) -> Result<()> {
+        if !self.members.contains_key(&expected_member_id) {
+            return Err(FederationError::UnknownMember {
+                member_id: expected_member_id,
+            });
+        }
+
+        let found_member_id = MemberId::new(info.member_id)?;
+        if found_member_id != expected_member_id {
+            return Err(FederationError::MemberIdMismatch {
+                expected: expected_member_id,
+                found: found_member_id,
+            });
+        }
+
+        let found_federation_id = FederationId::from_str(&info.federation_id)?;
+        if found_federation_id != self.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: self.federation_id,
+                found: found_federation_id,
+            });
+        }
+
+        let found_digest = FederationConfigDigest::from_str(&info.config_digest)?;
+        let expected_digest = self.config_digest()?;
+        if found_digest != expected_digest {
+            return Err(FederationError::FederationConfigDigestMismatch {
+                member_id: expected_member_id,
+                expected: expected_digest,
+                found: found_digest,
+            });
+        }
+
+        let advertised_versions =
+            FederationProtocolVersions::from_mint_info(info.protocol_versions);
+        validate_protocol_component(
+            "operation",
+            self.protocol_versions.operation,
+            advertised_versions.operation,
+        )?;
+        validate_protocol_component(
+            "consensus_item",
+            self.protocol_versions.consensus_item,
+            advertised_versions.consensus_item,
+        )?;
+        validate_protocol_component(
+            "rest_api",
+            self.protocol_versions.rest_api,
+            advertised_versions.rest_api,
+        )?;
+        validate_protocol_component(
+            "session_outcome",
+            self.protocol_versions.session_outcome,
+            advertised_versions.session_outcome,
+        )?;
+
+        Ok(())
+    }
+
     /// Return a validated config view after applying an accepted keyset rotation.
     pub fn apply_keyset_rotation(
         &self,
@@ -4138,6 +4253,94 @@ mod tests {
         let parsed = FederationInvite::from_str(&invite_code).expect("parse invite");
         assert_eq!(parsed.version, FEDERATION_INVITE_VERSION);
         assert_eq!(parsed.public_config(), &config);
+    }
+
+    #[test]
+    fn federation_mint_info_advertisement_validates_config_identity() {
+        let config = test_public_federation_config();
+        let member_id = member_id(2);
+        let info = config
+            .mint_info_for_member(member_id)
+            .expect("mint-info federation advertisement");
+
+        assert_eq!(info.federation_id, config.federation_id.to_string());
+        assert_eq!(info.member_id, member_id.get());
+        assert_eq!(
+            info.config_digest,
+            config.config_digest().expect("config digest").to_string()
+        );
+
+        config
+            .validate_member_mint_info(member_id, &info)
+            .expect("member mint-info advertisement");
+    }
+
+    #[test]
+    fn federation_mint_info_validation_rejects_wrong_member_id() {
+        let config = test_public_federation_config();
+        let mut info = config
+            .mint_info_for_member(member_id(2))
+            .expect("mint-info federation advertisement");
+        info.member_id = member_id(3).get();
+
+        assert!(matches!(
+            config.validate_member_mint_info(member_id(2), &info),
+            Err(FederationError::MemberIdMismatch {
+                expected,
+                found,
+            }) if expected == member_id(2) && found == member_id(3)
+        ));
+    }
+
+    #[test]
+    fn federation_mint_info_validation_rejects_wrong_federation_id() {
+        let config = test_public_federation_config();
+        let mut info = config
+            .mint_info_for_member(member_id(2))
+            .expect("mint-info federation advertisement");
+        info.federation_id = FederationId::from_bytes([42u8; 32]).to_string();
+
+        assert!(matches!(
+            config.validate_member_mint_info(member_id(2), &info),
+            Err(FederationError::FederationIdMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn federation_mint_info_validation_rejects_wrong_config_digest() {
+        let config = test_public_federation_config();
+        let mut info = config
+            .mint_info_for_member(member_id(2))
+            .expect("mint-info federation advertisement");
+        info.config_digest = FederationConfigDigest::from_bytes([42u8; 32]).to_string();
+
+        assert!(matches!(
+            config.validate_member_mint_info(member_id(2), &info),
+            Err(FederationError::FederationConfigDigestMismatch {
+                member_id: actual_member_id,
+                ..
+            }) if actual_member_id == member_id(2)
+        ));
+    }
+
+    #[test]
+    fn federation_mint_info_validation_rejects_unsupported_protocol_version() {
+        let config = test_public_federation_config();
+        let mut info = config
+            .mint_info_for_member(member_id(2))
+            .expect("mint-info federation advertisement");
+        info.protocol_versions.operation = info.protocol_versions.operation.saturating_add(1);
+
+        assert!(matches!(
+            config.validate_member_mint_info(member_id(2), &info),
+            Err(FederationError::ProtocolVersionMismatch {
+                component,
+                expected,
+                found,
+            }) if component == "operation"
+                && expected == FederationProtocolVersions::current().operation
+                && found == FederationProtocolVersions::current().operation.saturating_add(1)
+        ));
     }
 
     #[test]

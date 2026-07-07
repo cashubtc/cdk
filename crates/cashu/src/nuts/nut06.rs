@@ -107,6 +107,9 @@ pub struct MintInfo {
     /// terms of url service of the mint
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tos_url: Option<String>,
+    /// Optional CDK federation metadata for federation-aware wallets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub federation: Option<FederationInfo>,
 }
 
 impl MintInfo {
@@ -130,6 +133,14 @@ impl MintInfo {
     pub fn pubkey(self, pubkey: PublicKey) -> Self {
         Self {
             pubkey: Some(pubkey),
+            ..self
+        }
+    }
+
+    /// Set federation metadata.
+    pub fn federation(self, federation: FederationInfo) -> Self {
+        Self {
+            federation: Some(federation),
             ..self
         }
     }
@@ -265,6 +276,65 @@ impl MintInfo {
         units.extend(self.nuts.supported_melt_units());
 
         units.into_iter().collect()
+    }
+}
+
+/// CDK federation metadata advertised in mint info.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FederationInfo {
+    /// Stable federation roster ID.
+    pub federation_id: String,
+    /// Member ID of the mint serving this info response.
+    pub member_id: u16,
+    /// Digest of the complete public federation config.
+    pub config_digest: String,
+    /// Federation protocol component versions used by this member.
+    pub protocol_versions: FederationProtocolInfo,
+}
+
+impl FederationInfo {
+    /// Create new federation metadata.
+    pub fn new<S, D>(
+        federation_id: S,
+        member_id: u16,
+        config_digest: D,
+        protocol_versions: FederationProtocolInfo,
+    ) -> Self
+    where
+        S: Into<String>,
+        D: Into<String>,
+    {
+        Self {
+            federation_id: federation_id.into(),
+            member_id,
+            config_digest: config_digest.into(),
+            protocol_versions,
+        }
+    }
+}
+
+/// CDK federation protocol component versions advertised in mint info.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FederationProtocolInfo {
+    /// Canonical operation envelope version.
+    pub operation: u16,
+    /// Consensus item envelope version.
+    pub consensus_item: u16,
+    /// Private federation REST API version.
+    pub rest_api: u16,
+    /// Signed session-outcome payload version.
+    pub session_outcome: u16,
+}
+
+impl FederationProtocolInfo {
+    /// Create new federation protocol metadata.
+    pub fn new(operation: u16, consensus_item: u16, rest_api: u16, session_outcome: u16) -> Self {
+        Self {
+            operation,
+            consensus_item,
+            rest_api,
+            session_outcome,
+        }
     }
 }
 
@@ -772,6 +842,26 @@ mod tests {
         assert_eq!(info.motd.as_deref(), Some("hello"));
         assert_eq!(info.time, Some(123));
         assert_eq!(info.tos_url.as_deref(), Some("https://example.com/tos"));
+    }
+
+    #[test]
+    fn mint_info_federation_metadata_roundtrips_when_present() {
+        let federation = FederationInfo::new(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            2,
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            FederationProtocolInfo::new(1, 2, 3, 4),
+        );
+        let info = MintInfo::new().federation(federation.clone());
+
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("federation").is_some());
+
+        let parsed: MintInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.federation, Some(federation));
+
+        let standalone = serde_json::to_value(MintInfo::new()).unwrap();
+        assert!(standalone.get("federation").is_none());
     }
 
     #[test]

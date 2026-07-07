@@ -2454,6 +2454,7 @@ impl TryInto<MintInfo> for MintTable {
             motd: self.motd,
             time: self.mint_time.map(|t| t as u64),
             tos_url: self.tos_url,
+            federation: None,
         })
     }
 }

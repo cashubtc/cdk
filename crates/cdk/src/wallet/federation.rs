@@ -36,6 +36,19 @@ use crate::{Amount, Error};
 pub struct FederationWalletConnector;
 
 impl FederationWalletConnector {
+    /// Validate the federation metadata advertised by one federation member.
+    pub fn validate_member_mint_info(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        mint_info: &MintInfo,
+    ) -> Result<(), Error> {
+        let federation_info = mint_info
+            .federation
+            .as_ref()
+            .ok_or(FederationError::MissingFederationMintInfo { member_id })?;
+        Ok(public_config.validate_member_mint_info(member_id, federation_info)?)
+    }
+
     /// Validate the aggregate keysets advertised by one federation member.
     pub fn validate_member_keysets(
         public_config: &FederationConfig,
@@ -491,7 +504,13 @@ impl FederatedMintConnector {
         let mut pending = FuturesUnordered::new();
         let concurrency = self.effective_fanout_concurrency();
         let start_call = |member_id: MemberId, connector: Arc<dyn MintConnector + Send + Sync>| async move {
-            (member_id, connector.get_mint_keys().await)
+            let result = async {
+                let mint_info = connector.get_mint_info().await?;
+                let keysets = connector.get_mint_keys().await?;
+                Ok::<_, Error>((mint_info, keysets))
+            }
+            .await;
+            (member_id, result)
         };
 
         while pending.len() < concurrency {
@@ -503,12 +522,15 @@ impl FederatedMintConnector {
 
         while let Some((member_id, result)) = pending.next().await {
             match result {
-                Ok(advertised) => {
-                    match validate_member_active_keysets(
+                Ok((mint_info, advertised)) => {
+                    match FederationWalletConnector::validate_member_mint_info(
                         &self.public_config,
                         member_id,
-                        &advertised,
-                    ) {
+                        &mint_info,
+                    )
+                    .and_then(|_| {
+                        validate_member_active_keysets(&self.public_config, member_id, &advertised)
+                    }) {
                         Ok(()) => {
                             if let Some(connector) = self.member_connectors.get(&member_id) {
                                 valid_member_connectors.insert(member_id, connector.clone());
@@ -524,12 +546,19 @@ impl FederatedMintConnector {
             if valid_members >= threshold {
                 while let Some((member_id, result)) = pending.next().now_or_never().flatten() {
                     match result {
-                        Ok(advertised) => {
-                            match validate_member_active_keysets(
+                        Ok((mint_info, advertised)) => {
+                            match FederationWalletConnector::validate_member_mint_info(
                                 &self.public_config,
                                 member_id,
-                                &advertised,
-                            ) {
+                                &mint_info,
+                            )
+                            .and_then(|_| {
+                                validate_member_active_keysets(
+                                    &self.public_config,
+                                    member_id,
+                                    &advertised,
+                                )
+                            }) {
                                 Ok(()) => {
                                     if let Some(connector) = self.member_connectors.get(&member_id)
                                     {
@@ -1453,12 +1482,25 @@ impl MintConnector for FederatedMintConnector {
         for (member_id, connector) in &self.member_connectors {
             let member_id = *member_id;
             let connector = connector.clone();
-            pending.push(async move { (member_id, connector.get_mint_keyset(keyset_id).await) });
+            pending.push(async move {
+                let result = async {
+                    let mint_info = connector.get_mint_info().await?;
+                    let keyset = connector.get_mint_keyset(keyset_id).await?;
+                    Ok::<_, Error>((mint_info, keyset))
+                }
+                .await;
+                (member_id, result)
+            });
         }
 
         while let Some((member_id, result)) = pending.next().await {
             match result {
-                Ok(advertised) => {
+                Ok((mint_info, advertised)) => {
+                    FederationWalletConnector::validate_member_mint_info(
+                        &self.public_config,
+                        member_id,
+                        &mint_info,
+                    )?;
                     validate_member_advertised_keyset(&self.public_config, member_id, &advertised)?;
                     valid_members = valid_members.saturating_add(1);
                     if valid_members >= threshold {
@@ -1482,6 +1524,7 @@ impl MintConnector for FederatedMintConnector {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        self.validate_member_active_keysets().await?;
         Ok(KeysetResponse {
             keysets: self.aggregate_keyset_infos(),
         })

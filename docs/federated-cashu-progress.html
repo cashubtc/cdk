@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split mint runtime tests</span>
+          <span class="value">feat: validate federation mint info metadata</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint runtime/member/apply-boundary tests now live in their own module, covering payment-path audits, proof-size guards, member-mode guards, and accepted-operation apply behavior.</span>
+          <span class="value">Federation mints advertise typed Cashu mint-info metadata, and wallets reject missing or mismatched member metadata before aggregate key discovery or value-changing fanout.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -569,7 +569,7 @@
             <div>
               <h3>Milestone 10: federated wallet connector and aggregation</h3>
               <p>Objective: make the wallet see normal Cashu responses while the connector handles member fanout.</p>
-              <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, covers threshold-live mint, swap, melt, restore, and check-state, and rejects mismatched or non-v3 aggregate keysets.</p>
+              <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, covers threshold-live mint, swap, melt, restore, and check-state, and rejects missing or mismatched federation mint-info metadata plus mismatched or non-v3 aggregate keysets.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -718,7 +718,7 @@
           </article>
           <article class="item">
             <h3>Wallet federation</h3>
-            <p>The wallet connector discovers federation invites, filters compatible members, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
+            <p>The wallet connector discovers federation invites, requires typed member mint-info metadata, filters compatible members, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
           </article>
           <article class="item">
             <h3>DKG and rotation path</h3>
@@ -748,7 +748,7 @@
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
-            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests; federation config and invite JSON now also rejects missing protocol versions, missing payment-observation policy, partial payment contexts, implicit operator limits, missing invite versions, and the old fake-wallet alias instead of defaulting them.</p>
+            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mint-info now carries typed federation ID, member ID, config digest, and protocol-version metadata, and wallets reject missing or mismatched member metadata before signing fanout. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests; federation config and invite JSON now also rejects missing protocol versions, missing payment-observation policy, partial payment contexts, implicit operator limits, missing invite versions, and the old fake-wallet alias instead of defaulting them.</p>
           </article>
           <article class="item">
             <h3>Recovery and convergence</h3>

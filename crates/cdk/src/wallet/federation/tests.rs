@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationConfig, FederationError,
-    FederationInvite, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationId, FederationInvite, FederationJournalEntry, FederationKeysetRotationOperation,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerConfigBundle,
     TrustedDealerKeysetSpec, TrustedDealerMember,
@@ -334,6 +334,37 @@ fn advertised_keyset(bundle: &cdk_common::federation::TrustedDealerConfigBundle)
     }
 }
 
+fn federation_mint_info(bundle: &TrustedDealerConfigBundle, member_id: MemberId) -> MintInfo {
+    MintInfo::new().federation(
+        bundle
+            .public_config
+            .mint_info_for_member(member_id)
+            .expect("federation mint-info advertisement"),
+    )
+}
+
+fn mismatched_federation_mint_info(
+    bundle: &TrustedDealerConfigBundle,
+    member_id: MemberId,
+) -> MintInfo {
+    let mut info = federation_mint_info(bundle, member_id);
+    info.federation
+        .as_mut()
+        .expect("federation mint-info")
+        .federation_id = FederationId::from_bytes([42u8; 32]).to_string();
+    info
+}
+
+fn set_member_advertisement_with_keyset(
+    connector: &MockMintConnector,
+    bundle: &TrustedDealerConfigBundle,
+    member_id: MemberId,
+    advertised: KeySet,
+) {
+    connector.set_active_keyset(advertised);
+    connector.set_mint_info_response(Ok(federation_mint_info(bundle, member_id)));
+}
+
 fn blinded_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
     let keyset = &bundle.public_config.keysets[0];
     blinded_outputs_for_keyset(keyset, b"federated wallet connector output")
@@ -481,7 +512,7 @@ fn member_connectors(
         .into_iter()
         .map(|member_id| {
             let connector = MockMintConnector::new();
-            connector.set_active_keyset(advertised.clone());
+            set_member_advertisement_with_keyset(&connector, bundle, member_id, advertised.clone());
             connector.set_post_mint_response(Ok(share_response(bundle, member_id, outputs)));
             connector.set_post_batch_mint_response(Ok(share_response(bundle, member_id, outputs)));
             connector.set_post_swap_response(Ok(SwapResponse {
@@ -503,7 +534,7 @@ fn member_connectors_with_only_keysets(
         .into_iter()
         .map(|member_id| {
             let connector = MockMintConnector::new();
-            connector.set_active_keyset(advertised.clone());
+            set_member_advertisement_with_keyset(&connector, bundle, member_id, advertised.clone());
             (
                 member_id,
                 Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
@@ -515,6 +546,7 @@ fn member_connectors_with_only_keysets(
 #[derive(Clone)]
 struct PostMintConcurrencyProbeConnector {
     advertised: KeySet,
+    mint_info: MintInfo,
     response: MintResponse,
     delay: Duration,
     active_calls: Arc<AtomicUsize>,
@@ -532,6 +564,7 @@ impl fmt::Debug for PostMintConcurrencyProbeConnector {
 impl PostMintConcurrencyProbeConnector {
     fn new(
         advertised: KeySet,
+        mint_info: MintInfo,
         response: MintResponse,
         delay: Duration,
         active_calls: Arc<AtomicUsize>,
@@ -540,6 +573,7 @@ impl PostMintConcurrencyProbeConnector {
     ) -> Self {
         Self {
             advertised,
+            mint_info,
             response,
             delay,
             active_calls,
@@ -676,7 +710,7 @@ impl MintConnector for PostMintConcurrencyProbeConnector {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, crate::Error> {
-        Err(Self::unsupported("get_mint_info"))
+        Ok(self.mint_info.clone())
     }
 
     async fn post_check_state(
@@ -816,7 +850,7 @@ fn member_connectors_with_melt_change(
         .into_iter()
         .map(|member_id| {
             let connector = MockMintConnector::new();
-            connector.set_active_keyset(advertised.clone());
+            set_member_advertisement_with_keyset(&connector, bundle, member_id, advertised.clone());
             connector.set_post_melt_response(Ok(melt_response(bundle, member_id, change_outputs)));
             (
                 member_id,
@@ -1349,7 +1383,12 @@ async fn federated_mint_connector_tolerates_offline_member_key_discovery() {
     let mut connectors = BTreeMap::new();
 
     let offline_member = MockMintConnector::new();
-    offline_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &offline_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
     offline_member.set_mint_keys_error("member unavailable");
     offline_member
         .set_post_mint_response(Err(crate::Error::Custom("member unavailable".to_string())));
@@ -1360,7 +1399,7 @@ async fn federated_mint_connector_tolerates_offline_member_key_discovery() {
 
     for member_id in [member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connectors.insert(
             member_id,
@@ -1389,11 +1428,16 @@ async fn federated_mint_connector_tolerates_offline_member_key_discovery() {
 async fn federated_mint_connector_gets_mint_info_from_first_healthy_member() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
-    let expected = MintInfo::new().name("healthy federation member");
+    let expected = federation_mint_info(&bundle, member_id(2)).name("healthy federation member");
     let mut connectors = BTreeMap::new();
 
     let unavailable_member = MockMintConnector::new();
-    unavailable_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &unavailable_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
     unavailable_member.set_mint_info_error("primary unavailable");
     connectors.insert(
         member_id(1),
@@ -1401,7 +1445,12 @@ async fn federated_mint_connector_gets_mint_info_from_first_healthy_member() {
     );
 
     let healthy_member = MockMintConnector::new();
-    healthy_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &healthy_member,
+        &bundle,
+        member_id(2),
+        advertised.clone(),
+    );
     healthy_member.set_mint_info_response(Ok(expected.clone()));
     connectors.insert(
         member_id(2),
@@ -1409,7 +1458,7 @@ async fn federated_mint_connector_gets_mint_info_from_first_healthy_member() {
     );
 
     let unused_member = MockMintConnector::new();
-    unused_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&unused_member, &bundle, member_id(3), advertised);
     connectors.insert(
         member_id(3),
         Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -1532,7 +1581,7 @@ async fn federated_mint_connector_polls_member_keysets_concurrently() {
 
     for member_id in [member_id(1), member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_mint_keys_barrier(barrier.clone());
         connectors.insert(
             member_id,
@@ -1561,7 +1610,7 @@ async fn federated_mint_connector_mints_after_threshold_keyset_advertisements() 
 
     for member_id in [member_id(1), member_id(2)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connectors.insert(
             member_id,
@@ -1570,7 +1619,7 @@ async fn federated_mint_connector_mints_after_threshold_keyset_advertisements() 
     }
 
     let slow_member = MockMintConnector::new();
-    slow_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(&slow_member, &bundle, member_id(3), advertised.clone());
     slow_member.set_mint_keys_barrier(Arc::new(tokio::sync::Barrier::new(2)));
     slow_member.set_post_mint_response(Ok(share_response(&bundle, member_id(3), &outputs)));
     connectors.insert(
@@ -1609,7 +1658,7 @@ async fn federated_mint_connector_excludes_bad_keyset_member_from_mint_fanout() 
 
     for member_id in [member_id(1), member_id(2)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connectors.insert(
             member_id,
@@ -1618,7 +1667,7 @@ async fn federated_mint_connector_excludes_bad_keyset_member_from_mint_fanout() 
     }
 
     let bad_member = MockMintConnector::new();
-    bad_member.set_active_keyset(bad_advertised);
+    set_member_advertisement_with_keyset(&bad_member, &bundle, member_id(3), bad_advertised);
     bad_member.set_post_mint_barrier(Arc::new(tokio::sync::Barrier::new(2)));
     bad_member.set_post_mint_response(Ok(share_response(&bundle, member_id(3), &outputs)));
     connectors.insert(
@@ -1655,7 +1704,7 @@ async fn federated_mint_connector_gets_keyset_after_threshold_member_advertiseme
 
     for member_id in [member_id(1), member_id(2)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connectors.insert(
             member_id,
             Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
@@ -1663,7 +1712,7 @@ async fn federated_mint_connector_gets_keyset_after_threshold_member_advertiseme
     }
 
     let slow_member = MockMintConnector::new();
-    slow_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(&slow_member, &bundle, member_id(3), advertised.clone());
     slow_member.set_mint_keys_barrier(Arc::new(tokio::sync::Barrier::new(2)));
     connectors.insert(
         member_id(3),
@@ -1693,7 +1742,7 @@ async fn federated_mint_connector_fans_out_mint_members_concurrently() {
 
     for member_id in [member_id(1), member_id(2)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_barrier(barrier.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connectors.insert(
@@ -1703,7 +1752,7 @@ async fn federated_mint_connector_fans_out_mint_members_concurrently() {
     }
 
     let failing_member = MockMintConnector::new();
-    failing_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&failing_member, &bundle, member_id(3), advertised);
     failing_member
         .set_post_mint_response(Err(crate::Error::Custom("member unavailable".to_string())));
     connectors.insert(
@@ -2262,7 +2311,12 @@ async fn federated_mint_connector_fans_out_melt_without_change() {
     let mut connectors = BTreeMap::new();
 
     let failing_member = MockMintConnector::new();
-    failing_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &failing_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
     failing_member
         .set_post_melt_response(Err(crate::Error::Custom("member unavailable".to_string())));
     connectors.insert(
@@ -2272,7 +2326,7 @@ async fn federated_mint_connector_fans_out_melt_without_change() {
 
     for member_id in [member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_melt_response(Ok(melt_response_without_change()));
         connectors.insert(
             member_id,
@@ -2499,7 +2553,7 @@ async fn federated_mint_connector_applies_configured_member_request_timeout() {
     let mut connectors = BTreeMap::new();
 
     let slow_member = MockMintConnector::new();
-    slow_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(&slow_member, &bundle, member_id(1), advertised.clone());
     slow_member.set_post_mint_delay(request_timeout + Duration::from_secs(60));
     slow_member.set_post_mint_response(Ok(share_response(&bundle, member_id(1), &outputs)));
     connectors.insert(
@@ -2509,7 +2563,7 @@ async fn federated_mint_connector_applies_configured_member_request_timeout() {
 
     for member_id in [member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connectors.insert(
             member_id,
@@ -2553,7 +2607,7 @@ async fn federated_mint_connector_retries_retryable_member_request_failure() {
     let mut connectors = BTreeMap::new();
 
     let flaky_member = MockMintConnector::new();
-    flaky_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(&flaky_member, &bundle, member_id(1), advertised.clone());
     flaky_member.push_post_mint_response(Err(crate::Error::Custom(
         "temporary member transport failure".to_string(),
     )));
@@ -2564,7 +2618,12 @@ async fn federated_mint_connector_retries_retryable_member_request_failure() {
     );
 
     let healthy_member = MockMintConnector::new();
-    healthy_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &healthy_member,
+        &bundle,
+        member_id(2),
+        advertised.clone(),
+    );
     healthy_member.set_post_mint_response(Ok(share_response(&bundle, member_id(2), &outputs)));
     connectors.insert(
         member_id(2),
@@ -2572,7 +2631,7 @@ async fn federated_mint_connector_retries_retryable_member_request_failure() {
     );
 
     let rejecting_member = MockMintConnector::new();
-    rejecting_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&rejecting_member, &bundle, member_id(3), advertised);
     rejecting_member.set_post_mint_response(Err(crate::Error::InvalidPaymentMethod));
     connectors.insert(
         member_id(3),
@@ -2611,7 +2670,12 @@ async fn federated_mint_connector_retries_rate_limited_member_request() {
     let mut connectors = BTreeMap::new();
 
     let rate_limited_member = MockMintConnector::new();
-    rate_limited_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &rate_limited_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
     rate_limited_member.push_post_mint_response(Err(crate::Error::HttpError(
         Some(429),
         "too many requests".to_string(),
@@ -2627,7 +2691,12 @@ async fn federated_mint_connector_retries_rate_limited_member_request() {
     );
 
     let healthy_member = MockMintConnector::new();
-    healthy_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &healthy_member,
+        &bundle,
+        member_id(2),
+        advertised.clone(),
+    );
     healthy_member.set_post_mint_response(Ok(share_response(&bundle, member_id(2), &outputs)));
     connectors.insert(
         member_id(2),
@@ -2635,7 +2704,7 @@ async fn federated_mint_connector_retries_rate_limited_member_request() {
     );
 
     let rejecting_member = MockMintConnector::new();
-    rejecting_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&rejecting_member, &bundle, member_id(3), advertised);
     rejecting_member.set_post_mint_response(Err(crate::Error::InvalidPaymentMethod));
     connectors.insert(
         member_id(3),
@@ -2675,7 +2744,7 @@ async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_val
     let mut connectors = BTreeMap::new();
 
     let final_member = MockMintConnector::new();
-    final_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(&final_member, &bundle, member_id(1), advertised.clone());
     final_member.set_post_mint_response(Ok(share_response(&bundle, member_id(1), &outputs)));
     final_member.set_post_swap_response(Ok(SwapResponse {
         signatures: share_response(&bundle, member_id(1), &outputs).signatures,
@@ -2687,7 +2756,12 @@ async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_val
     );
 
     let pending_member = MockMintConnector::new();
-    pending_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &pending_member,
+        &bundle,
+        member_id(2),
+        advertised.clone(),
+    );
     pending_member.push_post_mint_response(Err(pending_finalization_error(1)));
     pending_member.push_post_mint_response(Ok(share_response(&bundle, member_id(2), &outputs)));
     pending_member.push_post_swap_response(Err(pending_finalization_error(2)));
@@ -2706,7 +2780,7 @@ async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_val
     );
 
     let rejecting_member = MockMintConnector::new();
-    rejecting_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&rejecting_member, &bundle, member_id(3), advertised);
     rejecting_member.set_post_mint_response(Err(crate::Error::InvalidPaymentMethod));
     rejecting_member.set_post_swap_response(Err(crate::Error::InvalidPaymentMethod));
     rejecting_member.set_post_melt_response(Err(crate::Error::InvalidPaymentMethod));
@@ -2781,7 +2855,7 @@ async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members()
 
     for member_id in [member_id(1), member_id(2)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connector.set_post_swap_response(Ok(SwapResponse {
             signatures: share_response(&bundle, member_id, &outputs).signatures,
@@ -2794,7 +2868,12 @@ async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members()
     }
 
     let offline_member = MockMintConnector::new();
-    offline_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &offline_member,
+        &bundle,
+        member_id(3),
+        advertised.clone(),
+    );
     offline_member.set_post_mint_response(Err(crate::Error::Custom("member offline".to_string())));
     offline_member.set_post_swap_response(Err(crate::Error::Custom("member offline".to_string())));
     offline_member.set_post_melt_response(Err(crate::Error::Custom("member offline".to_string())));
@@ -2804,7 +2883,12 @@ async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members()
     );
 
     let bad_share_member = MockMintConnector::new();
-    bad_share_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &bad_share_member,
+        &bundle,
+        member_id(4),
+        advertised.clone(),
+    );
     bad_share_member.set_post_mint_response(Ok(share_response(&bundle, member_id(5), &outputs)));
     bad_share_member.set_post_swap_response(Ok(SwapResponse {
         signatures: share_response(&bundle, member_id(5), &outputs).signatures,
@@ -2820,7 +2904,7 @@ async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members()
     );
 
     let slow_member = MockMintConnector::new();
-    slow_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&slow_member, &bundle, member_id(5), advertised);
     slow_member.set_post_mint_delay(slow_delay);
     slow_member.set_post_swap_delay(slow_delay);
     slow_member.set_post_melt_delay(slow_delay);
@@ -2905,7 +2989,7 @@ async fn federated_mint_connector_uses_threshold_live_members_for_wallet_operati
 
     for member_id in [member_id(1), member_id(2), member_id(3), member_id(5)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
         connector.set_post_swap_response(Ok(SwapResponse {
             signatures: share_response(&bundle, member_id, &outputs).signatures,
@@ -2920,7 +3004,7 @@ async fn federated_mint_connector_uses_threshold_live_members_for_wallet_operati
     }
 
     let offline_member = MockMintConnector::new();
-    offline_member.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&offline_member, &bundle, member_id(4), advertised);
     offline_member.set_mint_keys_error("member offline");
     offline_member.set_post_mint_response(Err(crate::Error::Custom("member offline".to_string())));
     offline_member.set_post_swap_response(Err(crate::Error::Custom("member offline".to_string())));
@@ -3132,6 +3216,7 @@ async fn federated_mint_connector_honors_configured_fanout_concurrency() {
             id,
             Arc::new(PostMintConcurrencyProbeConnector::new(
                 advertised.clone(),
+                federation_mint_info(&bundle, id),
                 share_response(&bundle, id, &outputs),
                 Duration::from_millis(20),
                 active_calls.clone(),
@@ -3559,7 +3644,12 @@ async fn federated_mint_connector_aggregates_restore_signature_shares() {
         .into_iter()
         .map(|member_id| {
             let connector = MockMintConnector::new();
-            connector.set_active_keyset(advertised.clone());
+            set_member_advertisement_with_keyset(
+                &connector,
+                &bundle,
+                member_id,
+                advertised.clone(),
+            );
             connector._set_restore_response(Ok(restore_response(
                 &bundle,
                 member_id,
@@ -3599,7 +3689,7 @@ async fn federated_mint_connector_accepts_threshold_matching_restore_views() {
 
     for member_id in [member_id(1), member_id(2)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         let member_outputs = if member_id.get() == 2 {
             restore_outputs[0..1].to_vec()
         } else {
@@ -3613,7 +3703,7 @@ async fn federated_mint_connector_accepts_threshold_matching_restore_views() {
     }
 
     let connector = MockMintConnector::new();
-    connector.set_active_keyset(advertised);
+    set_member_advertisement_with_keyset(&connector, &bundle, member_id(3), advertised);
     connector._set_restore_response(Ok(restore_response(
         &bundle,
         member_id(3),
@@ -3656,7 +3746,7 @@ async fn federated_mint_connector_rejects_restore_without_matching_threshold() {
         (member_id(3), Vec::new()),
     ] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector._set_restore_response(Ok(restore_response(&bundle, member_id, &member_outputs)));
         connectors.insert(
             member_id,
@@ -3687,7 +3777,12 @@ async fn federated_mint_connector_collects_threshold_check_state_views() {
     let mut connectors = BTreeMap::new();
 
     let failing_member = MockMintConnector::new();
-    failing_member.set_active_keyset(advertised.clone());
+    set_member_advertisement_with_keyset(
+        &failing_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
     failing_member
         .set_check_state_response(Err(crate::Error::Custom("member unavailable".to_string())));
     connectors.insert(
@@ -3697,7 +3792,7 @@ async fn federated_mint_connector_collects_threshold_check_state_views() {
 
     for member_id in [member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_check_state_response(Ok(expected.clone()));
         connectors.insert(
             member_id,
@@ -3733,7 +3828,7 @@ async fn federated_mint_connector_accepts_threshold_matching_check_state_views()
         (member_id(3), expected.clone()),
     ] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_check_state_response(Ok(response));
         connectors.insert(
             member_id,
@@ -3765,7 +3860,7 @@ async fn federated_mint_connector_polls_check_state_members_concurrently() {
 
     for member_id in [member_id(1), member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
-        connector.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_check_state_barrier(barrier.clone());
         connector.set_check_state_response(Ok(expected.clone()));
         connectors.insert(
@@ -4000,6 +4095,87 @@ async fn federated_mint_connector_rejects_non_v3_mint_swap_and_restore_outputs_b
 }
 
 #[tokio::test]
+async fn federated_mint_connector_rejects_missing_federation_mint_info_before_fanout() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let mut connectors = member_connectors(&bundle, &outputs);
+    let advertised = advertised_keyset(&bundle);
+
+    for member_id in [member_id(1), member_id(2)] {
+        let bad_member = MockMintConnector::new();
+        bad_member.set_active_keyset(advertised.clone());
+        connectors.insert(
+            member_id,
+            Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        connector.post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs,
+                signature: None,
+            },
+        ),
+    )
+    .await
+    .expect("mint should fail before signing fanout");
+
+    assert!(matches!(
+        result,
+        Err(crate::Error::InvalidMintResponse(message))
+            if message.contains("insufficient federation keyset advertisements")
+                && message.contains("did not advertise federation mint info")
+    ));
+}
+
+#[tokio::test]
+async fn federated_mint_connector_rejects_mismatched_federation_mint_info_before_fanout() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let mut connectors = member_connectors(&bundle, &outputs);
+    let advertised = advertised_keyset(&bundle);
+
+    for member_id in [member_id(1), member_id(2)] {
+        let bad_member = MockMintConnector::new();
+        bad_member.set_active_keyset(advertised.clone());
+        bad_member.set_mint_info_response(Ok(mismatched_federation_mint_info(&bundle, member_id)));
+        connectors.insert(
+            member_id,
+            Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        connector.post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs,
+                signature: None,
+            },
+        ),
+    )
+    .await
+    .expect("mint should fail before signing fanout");
+
+    assert!(matches!(
+        result,
+        Err(crate::Error::InvalidMintResponse(message))
+            if message.contains("insufficient federation keyset advertisements")
+                && message.contains("Federation id mismatch")
+    ));
+}
+
+#[tokio::test]
 async fn federated_mint_connector_fails_without_threshold_v3_member_advertisements() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);
@@ -4014,7 +4190,7 @@ async fn federated_mint_connector_fails_without_threshold_v3_member_advertisemen
     );
     for member_id in [member_id(1), member_id(2)] {
         let bad_member = MockMintConnector::new();
-        bad_member.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&bad_member, &bundle, member_id, advertised.clone());
         connectors.insert(
             member_id,
             Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -4053,7 +4229,7 @@ async fn federated_mint_connector_fails_without_threshold_matching_member_advert
     advertised.keys = cdk_common::Keys::new(BTreeMap::new());
     for member_id in [member_id(1), member_id(2)] {
         let bad_member = MockMintConnector::new();
-        bad_member.set_active_keyset(advertised.clone());
+        set_member_advertisement_with_keyset(&bad_member, &bundle, member_id, advertised.clone());
         connectors.insert(
             member_id,
             Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,

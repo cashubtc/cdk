@@ -1044,6 +1044,7 @@ where
                     motd,
                     time,
                     tos_url,
+                    federation: _,
                 } = mint_info;
 
                 (
@@ -1965,6 +1966,7 @@ fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
         motd: column_as_nullable_string!(motd),
         time: column_as_nullable_number!(mint_time).map(|t| t),
         tos_url: column_as_nullable_string!(tos_url),
+        federation: None,
     })
 }
 
