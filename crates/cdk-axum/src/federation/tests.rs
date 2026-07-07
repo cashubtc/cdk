@@ -7850,6 +7850,63 @@ async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_fo
 }
 
 #[tokio::test]
+async fn aleph_bft_private_rest_broadcast_stand_in_idles_after_network_finality_activation() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    state
+        .mark_aleph_bft_network_finality_available()
+        .await
+        .expect("AlephBFT runtime can enable network finality");
+    let outcome =
+        broadcast_next_aleph_bft_finalized_unit_round(&state, &client, std::slice::from_ref(peer))
+            .await
+            .expect("stand-in broadcast should idle under network finality ownership");
+
+    assert!(outcome.is_none());
+    assert!(transport.aleph_bft_finalized_unit_requests().is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after idle stand-in")
+        .is_none());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup after idle stand-in")
+        .is_empty());
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
 async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy_status() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

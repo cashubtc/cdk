@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
-    FederationAlephBftUnitPayload, FederationConsensusBackendKind,
-    FederationSubmitOperationResponse, MemberConfigPublic, MemberId,
+    FederationAlephBftFinalityMode, FederationAlephBftFinalizedUnitRequest,
+    FederationAlephBftFinalizedUnitResponse, FederationAlephBftUnitPayload,
+    FederationConsensusBackendKind, FederationSubmitOperationResponse, MemberConfigPublic,
+    MemberId,
 };
 use cdk_http_client::{Async, Transport};
 
@@ -317,6 +318,11 @@ where
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
         let consensus = consensus.lock().await;
+        if consensus.aleph_bft_status()?.finality
+            == FederationAlephBftFinalityMode::NetworkFinalityAvailable
+        {
+            return Ok(None);
+        }
         consensus.preview_next_aleph_bft_unit_payload()?
     };
     let Some(unit) = unit else {
