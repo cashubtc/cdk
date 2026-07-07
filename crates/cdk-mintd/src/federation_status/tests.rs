@@ -176,6 +176,8 @@ fn local_status(
         session_outcome_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
+        aleph_bft_live_session_active: false,
+        aleph_bft_network_inbound_active: false,
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
     }
@@ -447,6 +449,8 @@ fn status_line_includes_response_cache_and_duplicate_counters() {
 fn status_line_includes_aleph_bft_adapter_counters_when_present() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 2);
+    status.aleph_bft_live_session_active = true;
+    status.aleph_bft_network_inbound_active = true;
     status.aleph_bft_status = Some(FederationAlephBftAdapterStatus {
         consensus_backend: cdk_common::federation::FederationConsensusBackendKind::AlephBft,
         finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
@@ -466,6 +470,8 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
 
     let line = member_status_line(&status);
 
+    assert!(line.contains("aleph_bft_live_session=true"));
+    assert!(line.contains("aleph_bft_network_inbound=true"));
     assert!(line.contains(
         "aleph_bft=backend:aleph_bft finality:external_finalization_required local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
     ));

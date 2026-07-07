@@ -1555,6 +1555,14 @@ impl MintState {
         consensus.lock().await.aleph_bft_status().ok()
     }
 
+    pub(crate) fn federation_aleph_bft_live_session_active(&self) -> bool {
+        self.federation_aleph_bft_live_session.is_some()
+    }
+
+    pub(crate) fn federation_aleph_bft_network_inbound_active(&self) -> bool {
+        self.federation_aleph_bft_network_inbound.is_some()
+    }
+
     pub(crate) async fn federation_invalid_operation_alert_summaries(
         &self,
     ) -> Vec<FederationInvalidOperationAlertSummary> {

@@ -67,6 +67,10 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
+    #[serde(default)]
+    pub(crate) aleph_bft_live_session_active: bool,
+    #[serde(default)]
+    pub(crate) aleph_bft_network_inbound_active: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -325,7 +329,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
@@ -357,6 +361,8 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_stale,
         payment_quarantine,
         invalid_operation_alerts,
+        status.aleph_bft_live_session_active,
+        status.aleph_bft_network_inbound_active,
         aleph_bft,
         redact_federation_operator_message(&status.sync_message)
     )

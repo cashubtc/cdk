@@ -43,6 +43,8 @@ fn local_status(
         session_outcome_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
+        aleph_bft_live_session_active: false,
+        aleph_bft_network_inbound_active: false,
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
     }

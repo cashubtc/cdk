@@ -70,6 +70,8 @@ pub(super) async fn post_local_status(
     let pending_mempool_items = state.federation_pending_mempool_len().await;
     let notification_stats = state.federation_operation_notification_stats();
     let aleph_bft_status = state.federation_aleph_bft_status().await;
+    let aleph_bft_live_session_active = state.federation_aleph_bft_live_session_active();
+    let aleph_bft_network_inbound_active = state.federation_aleph_bft_network_inbound_active();
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
         peer_status,
@@ -85,6 +87,8 @@ pub(super) async fn post_local_status(
         notification_stats.duplicate_submissions,
         notification_stats.duplicate_pending_waiter_joins,
         aleph_bft_status,
+        aleph_bft_live_session_active,
+        aleph_bft_network_inbound_active,
         invalid_operation_alerts,
     );
     #[cfg(feature = "prometheus")]
@@ -135,6 +139,10 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
+    #[serde(default)]
+    pub(crate) aleph_bft_live_session_active: bool,
+    #[serde(default)]
+    pub(crate) aleph_bft_network_inbound_active: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -156,6 +164,8 @@ impl FederationLocalStatusResponse {
         duplicate_submissions: u64,
         duplicate_pending_waiter_joins: u64,
         aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
+        aleph_bft_live_session_active: bool,
+        aleph_bft_network_inbound_active: bool,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
         let (
@@ -199,6 +209,8 @@ impl FederationLocalStatusResponse {
             session_outcome_quorum_signers,
             payment_observation_reports,
             aleph_bft_status,
+            aleph_bft_live_session_active,
+            aleph_bft_network_inbound_active,
             materialized_state_rows,
             invalid_operation_alerts,
         }

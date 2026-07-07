@@ -104,6 +104,8 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
     let aleph_bft_status = status.aleph_bft_status.expect("AlephBFT status");
 
     assert_eq!(status.pending_mempool_items, 1);
+    assert!(!status.aleph_bft_live_session_active);
+    assert!(!status.aleph_bft_network_inbound_active);
     assert_eq!(
         aleph_bft_status.consensus_backend,
         FederationConsensusBackendKind::AlephBft

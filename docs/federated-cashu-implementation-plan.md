@@ -1215,8 +1215,14 @@ Architecture checklist:
   count, latest accepted operation index, and roster-bound member count.
   `cdk-mintd federation status` now prints all of those adapter-visible fields
   instead of only the older session/queue/finalized/accepted subset. Signed
-  local status and `cdk-mintd federation status` now also expose
-  response-cache lookup/hit counters,
+  local status and `cdk-mintd federation status` now also expose whether the
+  router has installed the live AlephBFT session task and inbound network queue,
+  so process-level checks can distinguish real live-session ownership from an
+  adapter finality flag alone. Cargo registry checks confirm upstream
+  `aleph-bft = 0.45.4` and `fedimint-aleph-bft = 0.36.0` are available, and the
+  federation-enabled mintd status test compiles through upstream
+  `aleph-bft v0.45.4`. Signed local status and `cdk-mintd federation status`
+  now also expose response-cache lookup/hit counters,
   response-cache hit rate in basis points, duplicate-submission plus duplicate
   pending-waiter join counters, structured sync peer/operation-count fields for
   lagging, catch-up, session-outcome verification, and materialized-state

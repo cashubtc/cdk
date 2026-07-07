@@ -6141,6 +6141,8 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
         "unexpected sync message: {}",
         local_status.sync_message
     );
+    assert!(local_status.aleph_bft_live_session_active);
+    assert!(local_status.aleph_bft_network_inbound_active);
     let aleph_bft_status = local_status
         .aleph_bft_status
         .expect("AlephBFT local status");
@@ -7757,6 +7759,8 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
 
     assert!(state.federation_aleph_bft_network_inbound.is_some());
     assert!(state.federation_aleph_bft_live_session.is_some());
+    assert!(state.federation_aleph_bft_network_inbound_active());
+    assert!(state.federation_aleph_bft_live_session_active());
     assert!(Arc::ptr_eq(
         &handle,
         state
