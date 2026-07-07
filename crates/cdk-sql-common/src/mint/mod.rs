@@ -508,6 +508,10 @@ mod federation_migration_tests {
         let postgres_aleph_bft_finalized_items = include_str!(
             "migrations/postgres/20260703165000_add_federation_aleph_bft_finalized_items.sql"
         );
+        let sqlite_aleph_bft_backups =
+            include_str!("migrations/sqlite/20260703170000_add_federation_aleph_bft_backups.sql");
+        let postgres_aleph_bft_backups =
+            include_str!("migrations/postgres/20260703170000_add_federation_aleph_bft_backups.sql");
         let sqlite_outcomes =
             include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
         let postgres_outcomes =
@@ -613,6 +617,13 @@ mod federation_migration_tests {
                     "idx_federation_aleph_bft_finalized_items_session_unit",
                     "idx_federation_aleph_bft_finalized_items_operation_id",
                 ],
+            );
+        }
+
+        for migration in [sqlite_aleph_bft_backups, postgres_aleph_bft_backups] {
+            assert_contains_all(
+                migration,
+                &["federation_aleph_bft_backups", "session", "backup_bytes"],
             );
         }
 

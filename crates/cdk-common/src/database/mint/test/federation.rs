@@ -550,6 +550,69 @@ where
         .expect("rollback conflicting finalized item");
 }
 
+/// Assert AlephBFT backup bytes append durably per session.
+pub async fn federation_aleph_bft_backup_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(7)
+            .await
+            .expect("missing backup session"),
+        None
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin empty");
+    tx.append_federation_aleph_bft_backup_bytes(7, &[])
+        .await
+        .expect("empty backup append");
+    tx.commit().await.expect("commit empty append");
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(7)
+            .await
+            .expect("empty append should not create row"),
+        None
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin first");
+    tx.append_federation_aleph_bft_backup_bytes(7, b"first")
+        .await
+        .expect("append first bytes");
+    tx.append_federation_aleph_bft_backup_bytes(8, b"other-session")
+        .await
+        .expect("append other session");
+    tx.commit().await.expect("commit first bytes");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin rollback");
+    tx.append_federation_aleph_bft_backup_bytes(7, b"-rolled-back")
+        .await
+        .expect("append rolled back bytes");
+    tx.rollback().await.expect("rollback backup append");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin second");
+    tx.append_federation_aleph_bft_backup_bytes(7, b"-second")
+        .await
+        .expect("append second bytes");
+    tx.commit().await.expect("commit second bytes");
+
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(7)
+            .await
+            .expect("session 7 backup bytes"),
+        Some(b"first-second".to_vec())
+    );
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(8)
+            .await
+            .expect("session 8 backup bytes"),
+        Some(b"other-session".to_vec())
+    );
+}
+
 /// Assert public federation config snapshots are durable and conflict-checked.
 pub async fn federation_config_persistence<DB>(db: DB)
 where

@@ -21,8 +21,8 @@ use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{
-    column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
-    unpack_into,
+    column_as_binary, column_as_nullable_number, column_as_nullable_string, column_as_number,
+    column_as_string, unpack_into,
 };
 
 const FEDERATION_DKG_COMMITMENT_PHASE: &str = "commitment";
@@ -892,6 +892,33 @@ where
         Ok(())
     }
 
+    async fn append_federation_aleph_bft_backup_bytes(
+        &mut self,
+        session: u64,
+        bytes: &[u8],
+    ) -> Result<(), Self::Err> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+
+        query(
+            r#"
+            INSERT INTO federation_aleph_bft_backups
+            (session, backup_bytes)
+            VALUES
+            (:session, :backup_bytes)
+            ON CONFLICT (session)
+            DO UPDATE SET backup_bytes = federation_aleph_bft_backups.backup_bytes || EXCLUDED.backup_bytes
+            "#,
+        )?
+        .bind("session", session as i64)
+        .bind("backup_bytes", bytes)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
     async fn add_federation_state_digest_checkpoint(
         &mut self,
         checkpoint: &FederationStateDigestCheckpoint,
@@ -1515,6 +1542,32 @@ where
         .into_iter()
         .map(sql_row_to_federation_aleph_bft_finalized_item)
         .collect()
+    }
+
+    async fn get_federation_aleph_bft_backup_bytes(
+        &self,
+        session: u64,
+    ) -> Result<Option<Vec<u8>>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT backup_bytes
+            FROM federation_aleph_bft_backups
+            WHERE session = :session
+            "#,
+        )?
+        .bind("session", session as i64)
+        .fetch_one(&*conn)
+        .await?
+        .map(|mut row| {
+            let bytes = row.remove(0);
+            Ok(column_as_binary!(&bytes))
+        })
+        .transpose()
     }
 
     async fn get_federation_payment_observations(

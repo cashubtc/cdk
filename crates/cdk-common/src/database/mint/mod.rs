@@ -679,6 +679,13 @@ pub trait FederationJournalTransaction {
         Ok(())
     }
 
+    /// Append raw AlephBFT backup bytes for one local session.
+    async fn append_federation_aleph_bft_backup_bytes(
+        &mut self,
+        session: u64,
+        bytes: &[u8],
+    ) -> Result<(), Self::Err>;
+
     /// Persist one materialized state digest checkpoint.
     async fn add_federation_state_digest_checkpoint(
         &mut self,
@@ -813,6 +820,12 @@ pub trait FederationJournalDatabase {
         &self,
         accepted_item_index: u64,
     ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
+
+    /// Get raw AlephBFT backup bytes for one local session.
+    async fn get_federation_aleph_bft_backup_bytes(
+        &self,
+        session: u64,
+    ) -> Result<Option<Vec<u8>>, Self::Err>;
 
     /// Get all persisted materialized state digest checkpoints in consensus order.
     async fn get_federation_state_digest_checkpoints(
