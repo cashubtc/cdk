@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: checkpoint completed operation catch-up</span>
+          <span class="value">fix: keep unknown observations transient</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Catch-up replay now proves a lagging member sees missing completed-operation materialized rows before replay, applies accepted mint issuance history, materializes the completed-operation row, and stores the state-digest checkpoint at the accepted mint boundary.</span>
+          <span class="value">Backend Unknown melt payment status is now guarded at the federation quote-state writer: Unknown remains consensus evidence and never asks the melt_quote table to persist an UNKNOWN quote state.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -760,7 +760,7 @@
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
-            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, transient unknown, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, pending public fake-wallet melts stay observation-free until terminal settlement, same-operation pending melts do not trigger another outgoing payment, different-operation pending quote reuse is rejected before another payment attempt, paid quote reuse with different inputs or change outputs is rejected before another payment attempt, failed quote state is part of the base SQL schema and retries through accepted melt setup instead of returning an inert applied response, unknown backend payment observation/status is not persisted as quote state and leaves the quote pending for later polling, accepted Unknown melt payment observations remain audit evidence without requiring UNKNOWN in the quote-state constraint, failed public fake-wallet melts record guarded terminal unpaid observations after an accepted attempt, exact duplicate failed public melts no longer attempt another outgoing payment including after restart and catch-up, and duplicate public AlephBFT melts joined while pending make no outgoing payment before finality and one outgoing payment after acceptance.</p>
+            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, transient unknown, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, pending public fake-wallet melts stay observation-free until terminal settlement, same-operation pending melts do not trigger another outgoing payment, different-operation pending quote reuse is rejected before another payment attempt, paid quote reuse with different inputs or change outputs is rejected before another payment attempt, failed quote state is part of the base SQL schema and retries through accepted melt setup instead of returning an inert applied response, unknown backend payment observation/status is not persisted as quote state and leaves the quote pending for later polling, accepted Unknown melt payment observations remain audit evidence without requiring UNKNOWN in the quote-state constraint, the federation quote-state writer short-circuits Unknown observations before any melt_quote.state update, failed public fake-wallet melts record guarded terminal unpaid observations after an accepted attempt, exact duplicate failed public melts no longer attempt another outgoing payment including after restart and catch-up, and duplicate public AlephBFT melts joined while pending make no outgoing payment before finality and one outgoing payment after acceptance.</p>
           </article>
           <article class="item">
             <h3>Networking and authentication</h3>

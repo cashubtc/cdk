@@ -1833,16 +1833,9 @@ impl Mint {
                             .await?;
                         }
                     }
-                    cdk_common::MeltQuoteState::Pending => {
+                    cdk_common::MeltQuoteState::Pending | cdk_common::MeltQuoteState::Unknown => {
                         self.update_melt_quote_payment_observation_state(&quote_id, observation)
                             .await?;
-                    }
-                    cdk_common::MeltQuoteState::Unknown => {
-                        tracing::warn!(
-                            "Federated melt quote {} observed unknown backend payment status; keeping durable quote state {}",
-                            quote.id,
-                            quote.state
-                        );
                     }
                 }
             }
@@ -1889,6 +1882,14 @@ impl Mint {
         quote_id: &QuoteId,
         observation: &FederationMeltQuotePaymentObservation,
     ) -> Result<(), Error> {
+        if observation.state == cdk_common::MeltQuoteState::Unknown {
+            tracing::warn!(
+                "Federated melt quote {} observed unknown backend payment status; leaving durable quote state unchanged",
+                quote_id
+            );
+            return Ok(());
+        }
+
         let mut tx = self.localstore.begin_transaction().await?;
         let mut quote = tx
             .get_melt_quote(quote_id)

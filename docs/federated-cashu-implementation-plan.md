@@ -267,7 +267,10 @@ Current confirmed shape:
   state, no completed operation, no change signatures, and no persisted
   `UNKNOWN` quote state. Accepted federated `MeltQuotePayment` observations
   carrying backend `Unknown` are also persisted only as observation evidence;
-  they do not mutate durable quote state to `UNKNOWN`.
+  they do not mutate durable quote state to `UNKNOWN`. The federation
+  quote-state writer short-circuits `Unknown` observations before attempting a
+  `melt_quote.state` update, keeping the restrictive DB constraint as the
+  durable-state contract.
 - Focused unknown backend payment observation/status tests:
   `cargo test -p cdk --features federation apply_federation_melt_payment_observation_keeps_unknown_transient -- --test-threads 1`,
   `cargo test -p cdk --features federation backend_status_is_unknown -- --test-threads 1`,
