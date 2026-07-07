@@ -14,15 +14,16 @@ use cdk_common::database::{
 use cdk_common::error::Error;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationError,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
-    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationContext,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentTrustModel, FederationRestoreOperation, FederationSwapOperation,
-    InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationJournalConsensusEvidence, FederationJournalDigest, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationContext, FederationPaymentObservationPolicy,
+    FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
+    FederationRestoreOperation, FederationSwapOperation, InMemoryFederationConsensus,
+    InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;
@@ -3997,6 +3998,147 @@ async fn apply_federation_melt_rejects_unbalanced_inputs_before_payment_attempt(
         "unbalanced inputs",
     )
     .await;
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_pending_quote_reuse_before_payment_attempt() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (quote, original_input_ys) =
+        setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+    let payment_calls_after_original = make_payment_calls.load(Ordering::Relaxed);
+
+    let input = proof_for_runtime(&runtime_config, "pending quote reuse melt input");
+    let input_y = input.y().expect("pending quote reuse melt input y");
+    let conflicting_envelope = runtime_config
+        .melt_operation(MeltRequest::new(quote.clone(), vec![input], None))
+        .expect("pending quote reuse melt operation");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("pending quote reuse operation id");
+    let conflicting_operation_id_string = conflicting_operation_id.to_string();
+    let conflicting_entry = FederationJournalEntry {
+        index: 42,
+        operation_id: conflicting_operation_id,
+        conflict_key: conflicting_envelope.operation.conflict_key(),
+        conflict_keys: conflicting_envelope.operation.conflict_keys(),
+        envelope: conflicting_envelope,
+        previous_order_digest: FederationJournalDigest::from_bytes([1; 32]),
+        order_digest: FederationJournalDigest::from_bytes([2; 32]),
+        operation_outcome_hash: None,
+        state_digest: None,
+        consensus_evidence: None,
+        status: FederationOperationStatus::Accepted,
+    };
+    persist_journal_entry(&localstore, &conflicting_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&conflicting_entry))
+            .await,
+        Err(Error::PendingQuote)
+    ));
+
+    assert_eq!(
+        localstore
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("conflicting pending-quote proof state"),
+        vec![None],
+        "conflicting pending-quote melt must fail before proof state storage"
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&original_input_ys)
+            .await
+            .expect("original pending-quote proof states"),
+        vec![Some(State::Pending), Some(State::Pending)],
+        "the original pending melt must remain reserved"
+    );
+
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("pending quote lookup")
+        .expect("pending quote");
+    assert_eq!(
+        stored_quote.state,
+        MeltQuoteState::Pending,
+        "conflicting pending-quote melt must leave the first operation pending"
+    );
+    let saga = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("pending quote saga lookup")
+        .expect("pending quote saga");
+    assert_ne!(
+        saga.federation_operation_id.as_deref(),
+        Some(conflicting_operation_id_string.as_str()),
+        "conflicting operation must not take over the pending quote saga"
+    );
+    assert!(
+        localstore
+            .get_completed_operation(&super::federation_operation_uuid(
+                conflicting_entry.operation_id
+            ))
+            .await
+            .expect("conflicting pending-quote completed operation lookup")
+            .is_none(),
+        "conflicting pending-quote melt must fail before completed-operation storage"
+    );
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        payment_calls_after_original,
+        "conflicting pending-quote melt must not attempt another payment"
+    );
+}
+
+#[tokio::test]
+async fn melt_federation_pending_quote_allows_same_operation_replay_without_payment_attempt() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "same operation replay first input"),
+        proof_for_runtime(&runtime_config, "same operation replay second input"),
+    ];
+    let input_ys = proofs.ys().expect("same operation replay input ys");
+    let request = MeltRequest::new(quote.clone(), proofs, None);
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(request.clone())
+            .expect("same operation replay melt operation"),
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+    let payment_calls_after_original = make_payment_calls.load(Ordering::Relaxed);
+
+    let replay = mint
+        .melt_federation(&request, melt_entry.operation_id)
+        .await
+        .expect("same operation pending replay");
+    assert_eq!(replay.state(), MeltQuoteState::Pending);
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        payment_calls_after_original,
+        "same-operation pending replay must not attempt another payment"
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("same operation replay proof states"),
+        vec![Some(State::Pending), Some(State::Pending)]
+    );
 }
 
 #[tokio::test]

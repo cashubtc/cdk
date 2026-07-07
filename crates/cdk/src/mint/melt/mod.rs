@@ -1244,6 +1244,18 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         if quote.state != MeltQuoteState::Unpaid {
+            if quote.state == MeltQuoteState::Pending {
+                let saga = self.localstore.get_melt_saga_by_quote_id(&quote_id).await?;
+                let operation_id = federation_operation_id.to_string();
+                if saga
+                    .as_ref()
+                    .and_then(|saga| saga.federation_operation_id.as_deref())
+                    != Some(operation_id.as_str())
+                {
+                    return Err(Error::PendingQuote);
+                }
+            }
+
             let change = self
                 .localstore
                 .get_blind_signatures_for_quote(&quote_id)

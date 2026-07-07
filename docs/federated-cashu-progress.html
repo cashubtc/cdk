@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: reject old federation config shims</span>
+          <span class="value">test: reject federated melt pending quote reuse</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation config and invite JSON is now strict because no federation deployment exists yet: missing protocol versions, missing payment-observation policy, partial payment contexts, implicit operator limits, missing invite versions, and the old fake-wallet alias are rejected instead of silently upgraded.</span>
+          <span class="value">Federated melt apply now binds pending quote replay to the accepted operation that reserved the quote. Replays of the same operation return the pending response without another outgoing payment, while different accepted operations over that pending quote fail before proof, saga, share, completed-operation, or payment side effects.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -744,7 +744,7 @@
         <div class="stack">
           <article class="item">
             <h3>Consensus-before-signing</h3>
-            <p>Naive threshold mix-and-match signing is covered by attack regressions, including same-quote/different-output mint attempts and 3-of-4 sliding-window swap member views; local wallet-member fixtures now append and apply shared accepted federation history before serving shares. Same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, malformed-proof, bad-signature, duplicate-input/output, P2PK-missing-witness, and unbalanced federated swaps fail before proof state or share persistence, bad-signature, duplicate-input, P2PK-missing-witness, non-v3-change, and unbalanced federated melts fail before proof state, saga, change-share, quote-state, or payment side effects, accepted external melts persist pending proofs, pending quote state, PaymentAttempted saga intent, and operation provenance before backend payment calls, duplicate-output, expired-quote, and amount-mismatched federated mint requests fail before quote issuance or share persistence, timed-out and overlapping public AlephBFT batch-mint requests retry or join the pending operation and return the persisted accepted response without a second share, restore of accepted mint outputs returns persisted shares tied to the original operation and output index, catch-up replay continues past deterministic rejected swap losers, signed catch-up evidence rejects bad signatures and truncated post-signing ranges, AlephBFT finalized-unit responses are refreshed from post-apply journal status, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
+            <p>Naive threshold mix-and-match signing is covered by attack regressions, including same-quote/different-output mint attempts and 3-of-4 sliding-window swap member views; local wallet-member fixtures now append and apply shared accepted federation history before serving shares. Same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, malformed-proof, bad-signature, duplicate-input/output, P2PK-missing-witness, and unbalanced federated swaps fail before proof state or share persistence, bad-signature, duplicate-input, P2PK-missing-witness, non-v3-change, unbalanced federated melts, and different-operation pending quote reuse fail before proof state, saga takeover, change-share, completed-operation, quote-state, or payment side effects, accepted external melts persist pending proofs, pending quote state, PaymentAttempted saga intent, and operation provenance before backend payment calls, duplicate-output, expired-quote, and amount-mismatched federated mint requests fail before quote issuance or share persistence, timed-out and overlapping public AlephBFT batch-mint requests retry or join the pending operation and return the persisted accepted response without a second share, restore of accepted mint outputs returns persisted shares tied to the original operation and output index, catch-up replay continues past deterministic rejected swap losers, signed catch-up evidence rejects bad signatures and truncated post-signing ranges, AlephBFT finalized-unit responses are refreshed from post-apply journal status, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
@@ -756,7 +756,7 @@
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
-            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, pending public fake-wallet melts stay observation-free until terminal settlement, duplicate pending melts do not trigger another outgoing payment even after restart, failed public fake-wallet melts record guarded terminal unpaid observations after an accepted attempt, and exact duplicate failed public melts no longer attempt another outgoing payment, including after restart and catch-up.</p>
+            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, pending public fake-wallet melts stay observation-free until terminal settlement, same-operation pending melts do not trigger another outgoing payment, different-operation pending quote reuse is rejected before another payment attempt, failed public fake-wallet melts record guarded terminal unpaid observations after an accepted attempt, and exact duplicate failed public melts no longer attempt another outgoing payment, including after restart and catch-up.</p>
           </article>
           <article class="item">
             <h3>Networking and authentication</h3>
@@ -865,7 +865,7 @@
           </article>
           <article class="item">
             <h3>No old federation compatibility</h3>
-            <p>Federation is still undeployed, so federation configs and invites are strict current-shape artifacts. Operators should regenerate development configs rather than relying on silent defaults, implicit limits, old aliases, or missing-version upgrades.</p>
+            <p>Federation is still undeployed, so federation configs and invites are strict current-shape artifacts. Operators should regenerate development configs rather than relying on silent defaults, implicit limits, old aliases, missing-version upgrades, or migration shims for experimental formats.</p>
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>

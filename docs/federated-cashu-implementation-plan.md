@@ -12,7 +12,7 @@ The grand vision of this project is to evolve Cashu from a single-operator Chaum
 - Let a federation-aware CDK wallet talk to multiple mint members and aggregate BLS blind signature shares into normal Cashu proofs.
 - Serialize all safety-critical mint state transitions through consensus before any member returns a usable signature share.
 - Keep existing standalone mint and wallet behavior unchanged unless federation mode is explicitly enabled.
-- Do not preserve backward compatibility for old experimental federated Cashu formats or non-v3 federation keysets; federation is still undeployed, so cut through with the simplest safe v3/BLS-only design.
+- Do not preserve backward compatibility for old experimental federated Cashu formats or non-v3 federation keysets; federation is still undeployed, so cut through with the simplest safe v3/BLS-only design. Regenerate development configs and test fixtures instead of carrying migration shims for formats that have never been deployed.
 - Start with fakewallet as a normal configured CDK payment backend for local development and trusted-dealer key shares, then add payment observation quorum and real DKG.
 
 ## Hard keyset constraint
@@ -116,6 +116,18 @@ Current confirmed shape:
   `cargo test -p cdk-common --features federation federation_invite_rejects_missing_payload_version -- --test-threads 1`,
   `cargo test -p cdk-mintd --features federation,fakewallet configure_federation_rejects_implicit_payment_observation_policy -- --test-threads 1`,
   `cargo check -p cdk-common --features federation`, and
+  `cargo check -p cdk --features federation` passed on 2026-07-07.
+- Latest melt admission checkpoint: federated melt apply now treats `Pending`
+  melt quotes as owned by the accepted operation that reserved them. A replay of
+  the same accepted operation can still return the persisted pending response
+  without another outgoing payment attempt, but a different accepted operation
+  over the same pending quote fails with `PendingQuote` before proof state,
+  completed-operation rows, saga takeover, change-share persistence, or another
+  payment attempt.
+- Focused pending-quote tests:
+  `cargo test -p cdk --features federation pending_quote -- --test-threads 1`,
+  `cargo test -p cdk --features federation apply_federation_melt_rejects_ -- --test-threads 1`,
+  and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
 
 ## Key observations
@@ -1155,8 +1167,12 @@ Melt operation tests:
   duplicate inputs, P2PK missing witnesses, non-v3 change outputs, and
   unbalanced inputs fail before proof state storage, saga storage, quote-state
   mutation, change signature storage, federation share persistence, or outgoing
-  payment attempts. Broader invalid quote-state and malformed-content coverage
-  remains open.
+  payment attempts. Pending quote reuse by a different accepted operation now
+  fails before proof state storage, completed-operation storage, saga takeover,
+  change-share persistence, or another payment attempt, while replay of the
+  original pending operation still returns the pending response without another
+  payment attempt. Paid/failed terminal quote-state permutations and broader
+  malformed-content coverage remain open.
 - [x] Accepted melt reserve records pending inputs and payment-attempt intent
   before any external outgoing payment can be attempted. Covered by
   `accepted_federation_melt_persists_reserve_before_payment_attempt`, whose
@@ -1918,7 +1934,8 @@ Operation encoding migration plan:
   payment-observation policy, partial payment-observation contexts, implicit
   payment-observation operator limits, missing invite versions, or old
   development aliases. Generate fresh configs instead of accepting old
-  experimental shapes.
+  experimental shapes. Until a real federation deployment exists, remove old
+  experimental federated Cashu compatibility code rather than maintaining it.
 - For a future operation encoding change, introduce the new decoder and encoder behind a new `FEDERATION_OPERATION_VERSION` plus golden vectors before any federation advertises it. The operation hash transcript must remain domain-separated by the versioned envelope bytes so old and new encodings cannot collide.
 - For a future consensus item encoding change, bump `FEDERATION_CONSENSUS_ITEM_VERSION`, add item-level admission tests for `Operation`, `ModuleFact`, `Default`, and any production BFT items, and require stale members to reject queue admission before dispatch.
 - Rollout must be all-or-nothing for a federation roster until dynamic upgrade governance exists: generate a new public config advertising the new versions, require all members to load the same config, refuse mixed-version rosters at startup, and keep old members halted rather than participating in consensus.
