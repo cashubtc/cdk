@@ -2198,6 +2198,11 @@ impl MintState {
 
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
+        self.record_federation_state_digest_checkpoint_for_latest_entry(
+            &entries,
+            &entries_to_apply,
+        )
+        .await?;
         let responses = self
             .federation_submit_responses_with_current_status(&responses)
             .await;
@@ -2253,6 +2258,11 @@ impl MintState {
 
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
+        self.record_federation_state_digest_checkpoint_for_latest_entry(
+            &entries,
+            &entries_to_apply,
+        )
+        .await?;
         let responses = self
             .federation_submit_responses_with_current_status(&responses)
             .await;
@@ -2517,6 +2527,11 @@ impl MintState {
         drop(consensus);
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
+        self.record_federation_state_digest_checkpoint_for_latest_entry(
+            &applied,
+            &entries_to_apply,
+        )
+        .await?;
 
         Ok(applied)
     }
@@ -3165,6 +3180,24 @@ impl MintState {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn record_federation_state_digest_checkpoint_for_latest_entry(
+        &self,
+        entries: &[FederationJournalEntry],
+        checkpointed_entries: &[FederationJournalEntry],
+    ) -> Result<(), cdk::Error> {
+        let Some(latest_entry) = entries.last() else {
+            return Ok(());
+        };
+        if checkpointed_entries.last().is_some_and(|entry| {
+            entry.index == latest_entry.index && entry.operation_id == latest_entry.operation_id
+        }) {
+            return Ok(());
+        }
+
+        self.record_federation_state_digest_checkpoint(latest_entry)
+            .await
     }
 
     async fn mark_federation_operations_applied(

@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: checkpoint catch-up state digests</span>
+          <span class="value">fix: checkpoint rejected aleph bft boundaries</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Catch-up replay now has focused coverage proving a lagging member records a durable materialized state-digest checkpoint after applying replayed consensus-visible mint state.</span>
+          <span class="value">AlephBFT finalized-unit apply and AlephBFT catch-up now record durable materialized state-digest checkpoints even when the latest finalized consensus item is rejected.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission and catch-up materialized digest checkpoints, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, and rejected-boundary materialized digest checkpoints, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>

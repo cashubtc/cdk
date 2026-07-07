@@ -6245,6 +6245,119 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
 }
 
 #[tokio::test]
+async fn aleph_bft_catch_up_checkpoints_rejected_trailing_entry() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let input = proof_for_amount(&state, 1, "aleph-catch-up-trailing-rejected");
+    let first_output = swap_output(&state, "aleph-catch-up-trailing-rejected-winner");
+    let first_request = cdk::nuts::SwapRequest::new(vec![input.clone()], vec![first_output]);
+    let first_envelope = config
+        .swap_operation(first_request)
+        .expect("first swap envelope");
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    let conflicting_output = swap_output(&state, "aleph-catch-up-trailing-rejected-loser");
+    let conflicting_request = cdk::nuts::SwapRequest::new(vec![input], vec![conflicting_output]);
+    let conflicting_envelope = config
+        .swap_operation(conflicting_request)
+        .expect("conflicting swap envelope");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("conflicting operation id");
+
+    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("peer AlephBFT adapter");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(first_envelope),
+            FederationConsensusItem::operation(conflicting_envelope),
+        ],
+    )
+    .expect("AlephBFT finalized unit");
+    peer_adapter
+        .finalize_unit(unit)
+        .expect("finalize peer unit");
+
+    let request = state
+        .federation_consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    let base_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        peer_adapter.journal(),
+        &request,
+        50,
+        100,
+    )
+    .with_aleph_bft_finalized_items(peer_adapter.finalized_items().to_vec(), true);
+    let response = signed_catch_up_response(base_response.clone(), &peer_private);
+    let witness_outcome = signed_catch_up_response(base_response, &local_private)
+        .session_outcome
+        .expect("witness session outcome");
+
+    let applied = state
+        .apply_federation_catch_up_response_with_session_outcome_quorum(
+            &response,
+            &[witness_outcome],
+        )
+        .await
+        .expect("apply AlephBFT catch-up");
+    assert_eq!(applied.len(), 2);
+    assert_eq!(applied[0].operation_id, first_operation_id);
+    assert_eq!(applied[1].operation_id, conflicting_operation_id);
+
+    let persisted = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
+    let expected_state_digest = materialized_state_digest(&state, &persisted)
+        .await
+        .expect("materialized state digest");
+
+    let checkpoints = state
+        .mint
+        .localstore()
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoints");
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints[0].operation_index, persisted[1].index);
+    assert_eq!(checkpoints[0].operation_id, conflicting_operation_id);
+    assert_eq!(checkpoints[0].order_digest, persisted[1].order_digest);
+    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
+}
+
+#[tokio::test]
 async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -6931,6 +7044,95 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
     assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
     assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
     assert_eq!(persisted[2].status, FederationOperationStatus::Applied);
+}
+
+#[tokio::test]
+async fn federation_aleph_bft_finalized_unit_checkpoints_rejected_trailing_entry() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let input = proof_for_amount(&state, 1, "aleph-trailing-rejected");
+    let first_output = swap_output(&state, "aleph-trailing-rejected-winner");
+    let first_request = cdk::nuts::SwapRequest::new(vec![input.clone()], vec![first_output]);
+    let first_envelope = config
+        .swap_operation(first_request)
+        .expect("first swap envelope");
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+
+    let conflicting_output = swap_output(&state, "aleph-trailing-rejected-loser");
+    let conflicting_request = cdk::nuts::SwapRequest::new(vec![input], vec![conflicting_output]);
+    let conflicting_envelope = config
+        .swap_operation(conflicting_request)
+        .expect("conflicting swap envelope");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("conflicting operation id");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(first_envelope),
+            FederationConsensusItem::operation(conflicting_envelope),
+        ],
+    )
+    .expect("AlephBFT finalized unit");
+
+    let responses = state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect("apply finalized unit");
+    assert_eq!(
+        responses
+            .iter()
+            .map(|response| response.outcome.entry().status)
+            .collect::<Vec<_>>(),
+        vec![
+            FederationOperationStatus::Applied,
+            FederationOperationStatus::Rejected
+        ]
+    );
+    assert_eq!(responses[0].operation_id, first_operation_id);
+    assert_eq!(responses[1].operation_id, conflicting_operation_id);
+
+    let persisted = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
+    let expected_state_digest = materialized_state_digest(&state, &persisted)
+        .await
+        .expect("materialized state digest");
+
+    let checkpoints = state
+        .mint
+        .localstore()
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoints");
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints[0].operation_index, persisted[1].index);
+    assert_eq!(checkpoints[0].operation_id, conflicting_operation_id);
+    assert_eq!(checkpoints[0].order_digest, persisted[1].order_digest);
+    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
 }
 
 #[tokio::test]
