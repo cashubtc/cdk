@@ -11738,6 +11738,63 @@ async fn private_local_status_route_includes_unresolved_payment_observation_fing
 }
 
 #[tokio::test]
+async fn private_local_status_route_includes_completed_operation_fingerprints() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let local_member = config.member_id();
+    let quote_id = QuoteId::new();
+    let output = mint_output(&state, &quote_id);
+    let mint_envelope = config
+        .mint_operation(MintInput::Single(MintRequest {
+            quote: quote_id.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        }))
+        .expect("mint envelope");
+    let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+        .await
+        .expect("submit mint quote");
+    state
+        .submit_federation_envelope(paid_observation_envelope(&state, &quote_id))
+        .await
+        .expect("submit paid observation");
+    state
+        .submit_federation_envelope(mint_envelope)
+        .await
+        .expect("submit mint issuance");
+
+    let request = signed_status_request_with_payload(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        FederationPeerStatusRequest::with_materialized_rows(),
+    );
+    let response = post_local_status(State(state), Json(request))
+        .await
+        .expect("local status response")
+        .0;
+
+    assert!(response
+        .materialized_state_rows
+        .iter()
+        .any(|row| row.table == "completed_operations"));
+    let status_json = serde_json::to_string(&response).expect("status json");
+    assert!(!status_json.contains(&mint_operation_id.to_string()));
+    assert!(
+        !status_json.contains(&federation_completed_operation_uuid(mint_operation_id).to_string())
+    );
+    assert!(!status_json.contains(&output.blinded_secret.to_hex()));
+}
+
+#[tokio::test]
 async fn private_local_status_route_reports_invalid_operation_alerts() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
