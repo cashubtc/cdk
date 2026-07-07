@@ -67,6 +67,9 @@ type FederationInvalidOperationAlertHandle =
 #[cfg(feature = "federation")]
 type FederationAlephBftPendingSequenceHandle =
     Arc<tokio::sync::Mutex<HashMap<FederationOperationId, BTreeMap<MemberId, u64>>>>;
+#[cfg(feature = "federation")]
+type FederationAlephBftNetworkInboundHandle =
+    Arc<dyn self::federation::CdkAlephBftNetworkInboundQueue>;
 
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
@@ -1473,6 +1476,8 @@ pub struct MintState {
     federation_invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     #[cfg(feature = "federation")]
     federation_aleph_bft_pending_sequences: Option<FederationAlephBftPendingSequenceHandle>,
+    #[cfg(feature = "federation")]
+    federation_aleph_bft_network_inbound: Option<FederationAlephBftNetworkInboundHandle>,
 }
 
 #[cfg(feature = "federation")]
@@ -3716,6 +3721,8 @@ async fn create_mint_router_with_custom_cache_inner(
         federation_aleph_bft_pending_sequences: federation_consensus
             .as_ref()
             .map(|_| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
+        #[cfg(feature = "federation")]
+        federation_aleph_bft_network_inbound: None,
     };
     #[cfg(feature = "federation")]
     state.restore_federation_sync_status().await;

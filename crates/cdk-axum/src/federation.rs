@@ -48,6 +48,7 @@ use self::aleph_bft_driver::{
 pub(crate) use self::aleph_bft_driver::{
     spawn_federation_aleph_bft_driver_loop_with_config, FederationAlephBftDriverTickConfig,
 };
+pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
 use self::aleph_bft_routes::{post_aleph_bft_finalized_unit, post_aleph_bft_network_message};
 use self::catch_up_routes::post_journal;
 use self::dkg_routes::{

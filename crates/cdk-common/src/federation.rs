@@ -516,6 +516,12 @@ pub enum FederationError {
         /// Found payload session.
         found: u64,
     },
+    /// An opaque AlephBFT network message could not be decoded.
+    #[error("Invalid federation AlephBFT network message: {reason}")]
+    InvalidAlephBftNetworkMessage {
+        /// Decode rejection reason.
+        reason: String,
+    },
     /// The local AlephBFT proposal queue could not provide the expected unit.
     #[error("Federation AlephBFT unit proposal is unavailable")]
     AlephBftUnitProposalUnavailable,

@@ -262,6 +262,8 @@ mod tests {
             federation_invalid_operation_alerts: None,
             #[cfg(feature = "federation")]
             federation_aleph_bft_pending_sequences: None,
+            #[cfg(feature = "federation")]
+            federation_aleph_bft_network_inbound: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

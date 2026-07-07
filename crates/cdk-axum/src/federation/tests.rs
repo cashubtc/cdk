@@ -38,13 +38,14 @@ use cdk::types::FeeReserve;
 use cdk::Amount;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use cdk_http_client::HttpError;
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tower::ServiceExt;
 
 use crate::auth::AuthHeader;
 
+use super::aleph_bft_network::CdkAlephBftNetworkInboundHandle;
 use super::aleph_bft_network::{run_cdk_aleph_bft_network_pump_tick, CdkAlephBftNetworkPumpConfig};
 use super::aleph_bft_runtime::{CdkAlephBftKeychain, CdkAlephBftNetwork};
 use super::*;
@@ -1136,6 +1137,7 @@ async fn federation_route_state_for_private_with_db_and_backend(
         federation_aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(
             HashMap::new(),
         ))),
+        federation_aleph_bft_network_inbound: None,
     }
 }
 

@@ -103,6 +103,11 @@ impl<D> CdkAlephBftNetworkHandle<D> {
         self.incoming.send(data)
     }
 
+    /// Return a cloneable sender for wiring authenticated inbound transport messages.
+    pub(crate) fn incoming_sender(&self) -> mpsc::UnboundedSender<D> {
+        self.incoming.clone()
+    }
+
     /// Receive the next outbound message produced by AlephBFT.
     pub(crate) async fn next_outgoing(&mut self) -> Option<CdkAlephBftOutboundMessage<D>> {
         self.outgoing.recv().await

@@ -719,14 +719,17 @@ async fn private_aleph_bft_finalized_unit_route_rejects_storage_conflict_before_
 
 #[tokio::test]
 async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
-    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    state.federation_aleph_bft_network_inbound =
+        Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
     let request = signed_aleph_bft_network_message_request(
         &public_config,
         &peer_private,
         1,
         FederationRestMessageKind::AlephBftNetworkMessage,
         0,
-        vec![1, 2, 3, 4],
+        42u64.encode(),
     );
 
     let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
@@ -736,6 +739,7 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
 
     assert_eq!(response.federation_id, public_config.federation_id);
     assert_eq!(response.session_id, 0);
+    assert_eq!(network.next_event().await, Some(42));
     let sequences = state
         .mint
         .localstore()
@@ -764,6 +768,106 @@ async fn private_aleph_bft_network_message_route_rejects_kind_mismatch_before_se
 
     assert!(
         detail.contains("message kind mismatch"),
+        "unexpected detail: {detail}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after rejection")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_aleph_bft_network_message_route_rejects_missing_inbound_before_sequence() {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        42u64.encode(),
+    );
+
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
+        .await
+        .expect_err("missing inbound receiver must fail");
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    let detail = response_error_detail(response).await;
+
+    assert!(
+        detail.contains("AlephBFT network message receiver is not available"),
+        "unexpected detail: {detail}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after rejection")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_aleph_bft_network_message_route_rejects_bad_scale_before_sequence() {
+    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (_network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    state.federation_aleph_bft_network_inbound =
+        Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
+    let request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        vec![1, 2, 3],
+    );
+
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
+        .await
+        .expect_err("bad SCALE message must fail");
+    let detail = response_error_detail(response).await;
+
+    assert!(
+        detail.contains("Invalid federation AlephBFT network message"),
+        "unexpected detail: {detail}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after rejection")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_aleph_bft_network_message_route_rejects_session_mismatch_before_sequence() {
+    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (_network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    state.federation_aleph_bft_network_inbound =
+        Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(2, &handle)));
+    let request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        42u64.encode(),
+    );
+
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
+        .await
+        .expect_err("session mismatch must fail");
+    let detail = response_error_detail(response).await;
+
+    assert!(
+        detail.contains("Federation AlephBFT unit session mismatch"),
         "unexpected detail: {detail}"
     );
     assert!(state
