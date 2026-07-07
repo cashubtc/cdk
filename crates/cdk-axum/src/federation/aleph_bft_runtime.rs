@@ -2,8 +2,10 @@ use core::fmt;
 
 use std::future::Future;
 use std::hash::{Hash, Hasher as StdHasher};
+use std::io;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use aleph_bft::{
     DataProvider, FinalizationHandler, Hasher as AlephHasher, Index, Keychain, MultiKeychain,
@@ -14,6 +16,7 @@ use cdk::federation::{
     MemberConfigPrivate, MemberConfigPublic, MemberId,
 };
 use cdk::nuts::SecretKey;
+use futures::io::{AsyncRead, AsyncWrite};
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -458,6 +461,117 @@ impl FinalizationHandler<CdkAlephBftData> for CdkAlephBftFinalizationHandler {
     }
 }
 
+/// Shared append-only AlephBFT backup bytes for one session.
+///
+/// Upstream AlephBFT owns the encoded unit format. CDK keeps this adapter
+/// byte-preserving so the backing store can later move from memory to mint DB
+/// persistence without changing the `run_session` IO boundary.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftBackup {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftBackup {
+    /// Create an empty backup byte store.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a backup byte store initialized from persisted bytes.
+    pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: Arc::new(Mutex::new(bytes)),
+        }
+    }
+
+    /// Create an append-only backup writer.
+    pub(crate) fn writer(&self) -> CdkAlephBftBackupWriter {
+        CdkAlephBftBackupWriter {
+            bytes: Arc::clone(&self.bytes),
+        }
+    }
+
+    /// Create a snapshot reader over the currently persisted backup bytes.
+    pub(crate) fn try_reader(&self) -> Result<CdkAlephBftBackupReader, cdk::Error> {
+        Ok(CdkAlephBftBackupReader {
+            bytes: self.snapshot()?,
+            position: 0,
+        })
+    }
+
+    /// Return a snapshot of all currently persisted backup bytes.
+    pub(crate) fn snapshot(&self) -> Result<Vec<u8>, cdk::Error> {
+        self.bytes
+            .lock()
+            .map(|bytes| bytes.clone())
+            .map_err(|_| cdk::Error::Custom("AlephBFT backup byte store is poisoned".to_string()))
+    }
+}
+
+/// Snapshot reader for AlephBFT backup bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftBackupReader {
+    bytes: Vec<u8>,
+    position: usize,
+}
+
+impl AsyncRead for CdkAlephBftBackupReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        let remaining = self.bytes.len().saturating_sub(self.position);
+        let count = remaining.min(buf.len());
+        if count == 0 {
+            return Poll::Ready(Ok(0));
+        }
+
+        let start = self.position;
+        let end = start.saturating_add(count);
+        buf[..count].copy_from_slice(&self.bytes[start..end]);
+        self.position = end;
+
+        Poll::Ready(Ok(count))
+    }
+}
+
+/// Append-only writer for AlephBFT backup bytes.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftBackupWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl AsyncWrite for CdkAlephBftBackupWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.bytes.lock() {
+            Ok(mut bytes) => {
+                bytes.extend_from_slice(buf);
+                Poll::Ready(Ok(buf.len()))
+            }
+            Err(_) => Poll::Ready(Err(io::Error::other(
+                "AlephBFT backup byte store is poisoned",
+            ))),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
 /// Tokio-backed task spawner for upstream AlephBFT.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -511,6 +625,7 @@ mod tests {
     use cdk::mint_url::MintUrl;
     use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, SecretKey};
     use cdk::{Amount, MintQuoteRequest, MintQuoteResponse};
+    use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use parity_scale_codec::{Decode, Encode};
     use serde_json::json;
 
@@ -810,6 +925,82 @@ mod tests {
 
         assert_eq!(finalized.body_hash, payload.body_hash);
         assert_eq!(finalized.unit_index, payload.unit_index);
+    }
+
+    #[test]
+    fn cdk_aleph_bft_backup_reader_writer_satisfy_run_session_io_bounds() {
+        fn assert_io<R, W>(_: R, _: W)
+        where
+            R: AsyncRead + Send + Sync + 'static,
+            W: AsyncWrite + Send + Sync + 'static,
+        {
+        }
+
+        let backup = CdkAlephBftBackup::new();
+
+        assert_io(backup.try_reader().expect("backup reader"), backup.writer());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_backup_writer_appends_and_snapshots_bytes() {
+        let backup = CdkAlephBftBackup::new();
+        let mut writer = backup.writer();
+
+        writer.write_all(b"first").await.expect("write first bytes");
+        writer
+            .write_all(b"-second")
+            .await
+            .expect("write second bytes");
+        writer.flush().await.expect("flush backup writer");
+
+        assert_eq!(
+            backup.snapshot().expect("backup snapshot"),
+            b"first-second".to_vec()
+        );
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_backup_reader_reads_partial_snapshot_to_end() {
+        let backup = CdkAlephBftBackup::from_bytes(b"abcdef".to_vec());
+        let mut reader = backup.try_reader().expect("backup reader");
+        let mut first = [0u8; 2];
+        let mut rest = Vec::new();
+
+        reader
+            .read_exact(&mut first)
+            .await
+            .expect("read first bytes");
+        reader.read_to_end(&mut rest).await.expect("read rest");
+
+        assert_eq!(&first, b"ab");
+        assert_eq!(rest, b"cdef".to_vec());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_backup_reader_isolated_from_later_appends() {
+        let backup = CdkAlephBftBackup::from_bytes(b"before".to_vec());
+        let mut old_reader = backup.try_reader().expect("old reader");
+        backup
+            .writer()
+            .write_all(b"-after")
+            .await
+            .expect("append bytes");
+        let mut old_snapshot = Vec::new();
+        let mut new_snapshot = Vec::new();
+
+        old_reader
+            .read_to_end(&mut old_snapshot)
+            .await
+            .expect("read old snapshot");
+        backup
+            .try_reader()
+            .expect("new reader")
+            .read_to_end(&mut new_snapshot)
+            .await
+            .expect("read new snapshot");
+
+        assert_eq!(old_snapshot, b"before".to_vec());
+        assert_eq!(new_snapshot, b"before-after".to_vec());
     }
 
     #[tokio::test]
