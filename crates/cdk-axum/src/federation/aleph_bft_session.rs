@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use aleph_bft::{default_config, run_session, Index, NodeCount, Terminator};
 use cdk::federation::{FederationAlephBftFinalityMode, FederationConsensusBackendKind, MemberId};
-use cdk_http_client::Async;
+use cdk_http_client::{Async, Transport};
 use futures::channel::oneshot;
 use tokio::task::JoinHandle;
 
@@ -143,6 +143,26 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
 ) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error> {
+    start_federation_aleph_bft_live_session_with_transport(
+        state,
+        sync_config,
+        pump_config,
+        Async::default(),
+    )
+    .await
+}
+
+/// Start the live upstream AlephBFT session with an injected private REST transport.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn start_federation_aleph_bft_live_session_with_transport<T>(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+    pump_config: CdkAlephBftNetworkPumpConfig,
+    transport: T,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
     sync_config.validate().map_err(|err| {
         cdk::Error::Custom(format!("Invalid AlephBFT live session sync config: {err}"))
     })?;
@@ -200,7 +220,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     });
 
     let client = FederationRestPeerClient::new_with_config(
-        Async::default(),
+        transport,
         &public_config,
         private_config,
         sync_config,

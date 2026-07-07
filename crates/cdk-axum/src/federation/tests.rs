@@ -305,10 +305,28 @@ struct RouterFederationTransport {
     router: Option<Router>,
 }
 
+#[derive(Clone, Default)]
+struct RouterFederationTransportRegistry {
+    routers: Arc<Mutex<BTreeMap<String, Router>>>,
+}
+
 impl std::fmt::Debug for RouterFederationTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RouterFederationTransport")
             .field("configured", &self.router.is_some())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for RouterFederationTransportRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let router_count = self
+            .routers
+            .lock()
+            .map(|routers| routers.len())
+            .unwrap_or_default();
+        f.debug_struct("RouterFederationTransportRegistry")
+            .field("router_count", &router_count)
             .finish()
     }
 }
@@ -318,6 +336,19 @@ impl RouterFederationTransport {
         Self {
             router: Some(router),
         }
+    }
+}
+
+impl RouterFederationTransportRegistry {
+    fn insert(&self, url: MintUrl, router: Router) {
+        let endpoint = url::Url::parse(&url.to_string())
+            .expect("federation api url")
+            .origin()
+            .ascii_serialization();
+        self.routers
+            .lock()
+            .expect("router registry lock")
+            .insert(endpoint, router);
     }
 }
 
@@ -770,6 +801,75 @@ impl Transport for RouterFederationTransport {
             .router
             .clone()
             .ok_or_else(|| HttpError::Other("router transport not configured".to_string()))?;
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(url.path())
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(serde_json::to_vec(payload)?))
+            .map_err(|err| HttpError::Other(err.to_string()))?;
+        let response = router
+            .oneshot(request)
+            .await
+            .map_err(|err| HttpError::Other(err.to_string()))?;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map_err(|err| HttpError::Other(err.to_string()))?;
+        if !status.is_success() {
+            return Err(HttpError::Status {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).to_string(),
+            });
+        }
+        Ok(serde_json::from_slice(&body)?)
+    }
+}
+
+#[async_trait]
+impl Transport for RouterFederationTransportRegistry {
+    fn with_proxy(
+        &mut self,
+        _proxy: url::Url,
+        _host_matcher: Option<&str>,
+        _accept_invalid_certs: bool,
+    ) -> Result<(), HttpError> {
+        Ok(())
+    }
+
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+        Ok(Vec::new())
+    }
+
+    async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
+    where
+        R: DeserializeOwned,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_post<P, R>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, HttpError>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        let endpoint = url.origin().ascii_serialization();
+        let router = self
+            .routers
+            .lock()
+            .expect("router registry lock")
+            .get(&endpoint)
+            .cloned()
+            .ok_or_else(|| {
+                HttpError::Other(format!("router endpoint {endpoint} not configured"))
+            })?;
         let request = axum::http::Request::builder()
             .method(axum::http::Method::POST)
             .uri(url.path())
@@ -7789,6 +7889,145 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
         .await
         .expect("journal")
         .is_empty());
+}
+
+#[tokio::test]
+async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_messages() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private,
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        second_private,
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+
+    let _first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let _second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("live AlephBFT operation response");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    wait_for_applied_operation(&first_state, operation_id).await;
+    wait_for_applied_operation(&second_state, operation_id).await;
+    assert_eq!(
+        first_state
+            .federation_aleph_bft_status()
+            .await
+            .expect("first AlephBFT status")
+            .finalized_item_count,
+        1
+    );
+    assert_eq!(
+        second_state
+            .federation_aleph_bft_status()
+            .await
+            .expect("second AlephBFT status")
+            .finalized_item_count,
+        1
+    );
+    assert!(first_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("first quote lookup")
+        .is_some());
+    assert!(second_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("second quote lookup")
+        .is_some());
+}
+
+async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            let entries = state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal lookup");
+            if entries.iter().any(|entry| {
+                entry.operation_id == operation_id
+                    && entry.status == FederationOperationStatus::Applied
+            }) {
+                return;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("operation applied before timeout");
 }
 
 #[tokio::test]

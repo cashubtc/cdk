@@ -1152,8 +1152,14 @@ Architecture checklist:
   private-REST finalized-unit driver, keeps stale persisted healthy status
   ignored until live finality exists, clears the startup halt for empty verified
   histories, and keeps replayed histories in session-outcome verification until
-  catch-up/recovery evidence explicitly opens public routes. Process-level
-  multi-member coverage remains the next checkpoint.
+  catch-up/recovery evidence explicitly opens public routes. A focused
+  two-member in-process live-session test now injects the private REST transport
+  into both router-owned upstream AlephBFT tasks, queues a real mint-quote
+  operation on one member, exchanges SCALE AlephBFT network messages through the
+  signed `/aleph-bft/messages` route, and proves both members finalize and apply
+  the same operation with matching finalized-item counters. Broader
+  process-level coverage for larger rosters, network faults, restart windows,
+  and operator `cdk-mintd` startup remains open.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1536,9 +1542,11 @@ AlephBFT and consensus unit tests:
   peer entries before delivery attempts or quorum accounting, so one remote
   member cannot be counted twice toward a threshold. Catch-up replay rejects
   reordered AlephBFT finalized-item evidence before quote, journal, or
-  finalized-item storage mutation. Production AlephBFT network duplicate, delay,
-  and reorder handling remains open until router-started live-session process
-  tests exercise the task across multiple members.
+  finalized-item storage mutation. Router-started upstream AlephBFT sessions now
+  have a focused two-member in-process private REST transport test proving a
+  real network-message exchange can finalize and apply the same operation on
+  both members. Production AlephBFT network duplicate, delay, and reorder
+  handling remains open for the larger fault matrix.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload

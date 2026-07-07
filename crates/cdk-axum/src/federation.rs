@@ -55,6 +55,7 @@ use self::aleph_bft_routes::{post_aleph_bft_finalized_unit, post_aleph_bft_netwo
 use self::aleph_bft_session::{
     federation_aleph_bft_live_session_startup_decision,
     start_federation_aleph_bft_live_session_with_config,
+    start_federation_aleph_bft_live_session_with_transport,
     FederationAlephBftLiveSessionStartupDecision,
 };
 pub(crate) use self::aleph_bft_session::{
