@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: harden wallet federation swap mix-and-match</span>
+          <span class="value">refactor: reject old federation config shims</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation local-member tests now serve mint, batch-mint, swap, and melt shares only after a shared accepted federation journal is appended and applied. A new 3-of-4 ABC/BCD/CDA/DAB swap regression proves overlapping member views cannot be mixed into an inflated fourth output.</span>
+          <span class="value">Federation config and invite JSON is now strict because no federation deployment exists yet: missing protocol versions, missing payment-observation policy, partial payment contexts, implicit operator limits, missing invite versions, and the old fake-wallet alias are rejected instead of silently upgraded.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -748,7 +748,7 @@
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
-            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests.</p>
+            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests; federation config and invite JSON now also rejects missing protocol versions, missing payment-observation policy, partial payment contexts, implicit operator limits, missing invite versions, and the old fake-wallet alias instead of defaulting them.</p>
           </article>
           <article class="item">
             <h3>Recovery and convergence</h3>
@@ -862,6 +862,10 @@
           <article class="item">
             <h3>Federation keysets are v3/BLS-only</h3>
             <p>Aggregate federation keysets use Cashu keyset v3 IDs and BLS public keys exclusively; v1/v2 keysets remain standalone-only unless a future protocol explicitly adds support.</p>
+          </article>
+          <article class="item">
+            <h3>No old federation compatibility</h3>
+            <p>Federation is still undeployed, so federation configs and invites are strict current-shape artifacts. Operators should regenerate development configs rather than relying on silent defaults, implicit limits, old aliases, or missing-version upgrades.</p>
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>

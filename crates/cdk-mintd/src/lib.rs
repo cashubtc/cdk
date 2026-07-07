@@ -593,11 +593,9 @@ fn configure_federation(
         anyhow!("federation.private_config_path must be set when federation is enabled")
     })?;
 
-    let (public_config, has_explicit_payment_observation_policy) =
-        read_public_federation_config(public_config_path)?;
+    let public_config = read_public_federation_config(public_config_path)?;
     validate_federation_payment_observation_startup_policy(
         &public_config,
-        has_explicit_payment_observation_policy,
         federation.allow_development_payment_observation_policy,
     )?;
     let private_config: MemberConfigPrivate =
@@ -620,7 +618,7 @@ fn configure_federation(
 }
 
 #[cfg(feature = "federation")]
-fn read_public_federation_config(path: &Path) -> Result<(FederationConfig, bool)> {
+fn read_public_federation_config(path: &Path) -> Result<FederationConfig> {
     let contents = std::fs::read_to_string(path).with_context(|| {
         format!(
             "failed to read public federation config from {}",
@@ -637,6 +635,11 @@ fn read_public_federation_config(path: &Path) -> Result<(FederationConfig, bool)
         .as_object()
         .and_then(|object| object.get("payment_observation_policy"))
         .is_some();
+    if !has_payment_observation_policy {
+        bail!(
+            "federation public config must explicitly set payment_observation_policy; implicit development single-observation defaults are not accepted by mintd startup"
+        );
+    }
     let config = serde_json::from_value(raw).with_context(|| {
         format!(
             "failed to parse public federation config JSON from {}",
@@ -644,21 +647,14 @@ fn read_public_federation_config(path: &Path) -> Result<(FederationConfig, bool)
         )
     })?;
 
-    Ok((config, has_payment_observation_policy))
+    Ok(config)
 }
 
 #[cfg(feature = "federation")]
 fn validate_federation_payment_observation_startup_policy(
     public_config: &FederationConfig,
-    has_explicit_payment_observation_policy: bool,
     allow_development_payment_observation_policy: bool,
 ) -> Result<()> {
-    if !has_explicit_payment_observation_policy {
-        bail!(
-            "federation public config must explicitly set payment_observation_policy; implicit development single-observation defaults are not accepted by mintd startup"
-        );
-    }
-
     let development_contexts = [
         FederationPaymentObservationContext::MintQuote,
         FederationPaymentObservationContext::MeltQuote,

@@ -1425,16 +1425,12 @@ impl ThresholdParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationProtocolVersions {
     /// Canonical operation envelope version.
-    #[serde(default = "current_federation_operation_version")]
     pub operation: u16,
     /// Consensus item envelope version.
-    #[serde(default = "current_federation_consensus_item_version")]
     pub consensus_item: u16,
     /// Private federation REST API version.
-    #[serde(default = "current_federation_rest_api_version")]
     pub rest_api: u16,
     /// Signed session-outcome payload version.
-    #[serde(default = "current_federation_session_outcome_version")]
     pub session_outcome: u16,
 }
 
@@ -1487,37 +1483,9 @@ fn validate_protocol_component(component: &'static str, expected: u16, found: u1
     })
 }
 
-const fn current_federation_operation_version() -> u16 {
-    FEDERATION_OPERATION_VERSION
-}
-
-const fn current_federation_consensus_item_version() -> u16 {
-    FEDERATION_CONSENSUS_ITEM_VERSION
-}
-
-const fn current_federation_rest_api_version() -> u16 {
-    FEDERATION_REST_API_VERSION
-}
-
-const fn current_federation_session_outcome_version() -> u16 {
-    FEDERATION_SESSION_OUTCOME_VERSION
-}
-
 const DEFAULT_MAX_PENDING_PAYMENT_QUOTES: u32 = 10_000;
 const DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS: u64 = 60 * 60;
 const DEFAULT_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
-
-fn default_max_pending_payment_quotes() -> u32 {
-    DEFAULT_MAX_PENDING_PAYMENT_QUOTES
-}
-
-fn default_payment_quote_pending_ttl_secs() -> u64 {
-    DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS
-}
-
-fn default_stale_payment_observation_secs() -> u64 {
-    DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
-}
 
 /// Payment-observation context with separate mint and melt policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1542,23 +1510,14 @@ impl fmt::Display for FederationPaymentObservationContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPaymentObservationPolicy {
     /// Incoming mint quote payment verification policy.
-    #[serde(
-        default = "FederationPaymentVerificationPolicy::development_single_observation_for_testing"
-    )]
     pub mint_quotes: FederationPaymentVerificationPolicy,
     /// Outgoing melt quote payment verification policy.
-    #[serde(
-        default = "FederationPaymentVerificationPolicy::development_single_observation_for_testing"
-    )]
     pub melt_quotes: FederationPaymentVerificationPolicy,
     /// Maximum pending quotes operators expect before back-pressure or alerting.
-    #[serde(default = "default_max_pending_payment_quotes")]
     pub max_pending_quotes: u32,
     /// Seconds a quote may remain pending before operator inspection is expected.
-    #[serde(default = "default_payment_quote_pending_ttl_secs")]
     pub pending_quote_ttl_secs: u64,
     /// Seconds after which an unresolved observation is considered stale.
-    #[serde(default = "default_stale_payment_observation_secs")]
     pub stale_observation_secs: u64,
 }
 
@@ -1661,7 +1620,7 @@ pub enum FederationPaymentTrustModel {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FederationPaymentVerificationPolicy {
     /// Test/development policy where one accepted observation finalizes.
-    #[serde(rename = "development_single_observation", alias = "fake_wallet")]
+    #[serde(rename = "development_single_observation")]
     DevelopmentSingleObservation,
     /// Real-backend policy requiring matching observations from a member quorum.
     MemberQuorum {
@@ -3417,7 +3376,6 @@ pub struct FederationConfig {
     /// Stable federation roster ID.
     pub federation_id: FederationId,
     /// Protocol component versions required by this public config.
-    #[serde(default)]
     pub protocol_versions: FederationProtocolVersions,
     /// Federation threshold settings.
     pub threshold_params: ThresholdParams,
@@ -3429,7 +3387,6 @@ pub struct FederationConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_transcript: Option<FederationDkgTranscript>,
     /// Policy for mint and melt payment observations.
-    #[serde(default)]
     pub payment_observation_policy: FederationPaymentObservationPolicy,
 }
 
@@ -3890,7 +3847,6 @@ impl MemberConfigPrivate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationInvite {
     /// Invite payload version.
-    #[serde(default = "current_federation_invite_version")]
     pub version: u16,
     /// Public federation config shared by every member.
     pub config: FederationConfig,
@@ -3968,10 +3924,6 @@ impl FromStr for FederationInvite {
         invite.validate()?;
         Ok(invite)
     }
-}
-
-const fn current_federation_invite_version() -> u16 {
-    FEDERATION_INVITE_VERSION
 }
 
 /// Durable public federation config snapshot.
@@ -4215,6 +4167,24 @@ mod tests {
     }
 
     #[test]
+    fn federation_invite_rejects_missing_payload_version() {
+        let config = test_public_federation_config();
+        let invite = FederationInvite::new(config).expect("invite");
+        let mut json = serde_json::to_value(invite).expect("invite json");
+        json.as_object_mut()
+            .expect("invite object")
+            .remove("version");
+        let encoded = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&json).expect("invite json bytes"));
+        let invite_code = format!("{FEDERATION_INVITE_PREFIX}{encoded}");
+
+        assert!(matches!(
+            FederationInvite::from_str(&invite_code),
+            Err(FederationError::InvalidFederationInvite { .. })
+        ));
+    }
+
+    #[test]
     fn federation_invite_rejects_tampered_public_config() {
         let config = test_public_federation_config();
         let mut invite = FederationInvite::new(config).expect("invite");
@@ -4448,35 +4418,29 @@ mod tests {
     }
 
     #[test]
-    fn federation_config_defaults_missing_protocol_versions_for_legacy_configs() {
+    fn federation_config_rejects_missing_protocol_versions() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
-        let mut legacy_json = serde_json::to_value(&config).expect("config json");
-        legacy_json
-            .as_object_mut()
+        let mut json = serde_json::to_value(&config).expect("config json");
+        json.as_object_mut()
             .expect("config object")
             .remove("protocol_versions");
 
-        let decoded =
-            serde_json::from_value::<FederationConfig>(legacy_json).expect("legacy config");
-        assert_eq!(
-            decoded.protocol_versions,
-            FederationProtocolVersions::current()
+        assert!(
+            serde_json::from_value::<FederationConfig>(json).is_err(),
+            "federation configs must explicitly advertise protocol versions"
         );
-        decoded.validate().expect("legacy config validates");
     }
 
     #[test]
-    fn federation_protocol_versions_default_missing_components() {
-        let versions = serde_json::from_value::<FederationProtocolVersions>(serde_json::json!({
-            "operation": FEDERATION_OPERATION_VERSION
-        }))
-        .expect("partial protocol versions");
-
-        assert_eq!(versions, FederationProtocolVersions::current());
-        versions
-            .validate()
-            .expect("partial versions default current");
+    fn federation_protocol_versions_reject_missing_components() {
+        assert!(
+            serde_json::from_value::<FederationProtocolVersions>(serde_json::json!({
+                "operation": FEDERATION_OPERATION_VERSION
+            }))
+            .is_err(),
+            "partial federation protocol version metadata must not be accepted"
+        );
     }
 
     #[test]
@@ -4546,7 +4510,7 @@ mod tests {
     }
 
     #[test]
-    fn federation_payment_policy_defaults_to_development_single_observation_for_legacy_configs() {
+    fn federation_config_rejects_missing_payment_observation_policy() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
@@ -4566,49 +4530,58 @@ mod tests {
             )
             .expect("development melt observations can finalize singly");
 
-        let mut legacy_json = serde_json::to_value(&config).expect("config json");
-        legacy_json
-            .as_object_mut()
+        let mut json = serde_json::to_value(&config).expect("config json");
+        json.as_object_mut()
             .expect("config object")
             .remove("payment_observation_policy");
 
-        let decoded =
-            serde_json::from_value::<FederationConfig>(legacy_json).expect("legacy config");
-        assert_eq!(
-            decoded.payment_observation_policy,
-            FederationPaymentObservationPolicy::development_single_observation_for_testing()
+        assert!(
+            serde_json::from_value::<FederationConfig>(json).is_err(),
+            "federation configs must explicitly declare payment-observation policy"
         );
-        decoded.validate().expect("legacy config validates");
     }
 
     #[test]
-    fn federation_payment_policy_accepts_legacy_fake_wallet_alias() {
-        let legacy_json = serde_json::json!({
+    fn federation_payment_policy_rejects_missing_contexts() {
+        assert!(
+            serde_json::from_value::<FederationPaymentObservationPolicy>(serde_json::json!({
+                "mint_quotes": { "type": "development_single_observation" },
+                "max_pending_quotes": DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
+                "pending_quote_ttl_secs": DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
+                "stale_observation_secs": DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
+            }))
+            .is_err(),
+            "payment-observation policy must explicitly cover mint and melt"
+        );
+    }
+
+    #[test]
+    fn federation_payment_policy_rejects_missing_operator_limits() {
+        assert!(
+            serde_json::from_value::<FederationPaymentObservationPolicy>(serde_json::json!({
+                "mint_quotes": { "type": "development_single_observation" },
+                "melt_quotes": { "type": "development_single_observation" },
+                "max_pending_quotes": DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
+                "stale_observation_secs": DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
+            }))
+            .is_err(),
+            "payment-observation policy must explicitly include operator limits"
+        );
+    }
+
+    #[test]
+    fn federation_payment_policy_rejects_fake_wallet_alias() {
+        let json = serde_json::json!({
             "mint_quotes": { "type": "fake_wallet" },
-            "melt_quotes": { "type": "fake_wallet" }
+            "melt_quotes": { "type": "fake_wallet" },
+            "max_pending_quotes": DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
+            "pending_quote_ttl_secs": DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
+            "stale_observation_secs": DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
         });
 
-        let decoded = serde_json::from_value::<FederationPaymentObservationPolicy>(legacy_json)
-            .expect("legacy fake_wallet alias decodes");
-        assert_eq!(
-            decoded,
-            FederationPaymentObservationPolicy::development_single_observation_for_testing()
-        );
-
-        let encoded = serde_json::to_value(&decoded).expect("policy json");
-        assert_eq!(
-            encoded
-                .get("mint_quotes")
-                .and_then(|policy| policy.get("type"))
-                .and_then(serde_json::Value::as_str),
-            Some("development_single_observation")
-        );
-        assert_eq!(
-            encoded
-                .get("melt_quotes")
-                .and_then(|policy| policy.get("type"))
-                .and_then(serde_json::Value::as_str),
-            Some("development_single_observation")
+        assert!(
+            serde_json::from_value::<FederationPaymentObservationPolicy>(json).is_err(),
+            "federation configs must use the explicit development_single_observation policy"
         );
     }
 
