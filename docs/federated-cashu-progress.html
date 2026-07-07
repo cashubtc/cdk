@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: checkpoint unresolved observation digests</span>
+          <span class="value">test: expose unresolved observation fingerprints</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Catch-up replay now proves a non-quorum mint payment observation remains unresolved and unpaid, appears in signed local status as awaiting quorum, and still records a durable materialized state-digest checkpoint.</span>
+          <span class="value">Signed local status now exposes redacted materialized row fingerprints for unresolved payment observations so operator diff tooling can see the row without leaking raw payment proofs.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, unresolved payment-observation, payment-observation quarantine, and rejected-boundary materialized digest checkpoints, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, unresolved payment-observation, payment-observation quarantine, and rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
@@ -776,7 +776,7 @@
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
-            <p>Signed status, convergence guards, digest comparison, payment-observation reports, redacted sync messages, DKG status, and smoke helpers make federation health inspectable without exposing secret material.</p>
+            <p>Signed status, convergence guards, digest comparison, payment-observation reports, redacted materialized row fingerprints, redacted sync messages, DKG status, and smoke helpers make federation health inspectable without exposing secret material.</p>
           </article>
         </div>
       </section>
@@ -794,7 +794,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, those reports are visible through redacted signed local status plus mintd status output and a filtered admin view with stale-age, evidence operation IDs, and quarantine recommendations, unresolved observations now stay unpaid and awaiting quorum after catch-up while recording a durable materialized digest checkpoint, accepted quarantine operations now halt quote spending/finalization while changing materialized state digests, mintd can propose those quarantines through signed private REST, catch-up now proves quarantined reports remain visible through signed local status with a durable materialized digest checkpoint at the quarantine boundary, the generated smoke script injects conflicting mint evidence plus quarantine while one member is offline, live smoke now verifies several wallet-operation batches during one offline partition before restart catch-up, session-outcome quorum evidence, and final convergence, and free-form operator sync messages now redact likely secrets and paths before status output; remaining work is to strengthen BFT ordering and broaden storage-backed process coverage.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, those reports are visible through redacted signed local status plus mintd status output and a filtered admin view with stale-age, evidence operation IDs, quarantine recommendations, and redacted row fingerprints for unresolved observation diffing, unresolved observations now stay unpaid and awaiting quorum after catch-up while recording a durable materialized digest checkpoint, accepted quarantine operations now halt quote spending/finalization while changing materialized state digests, mintd can propose those quarantines through signed private REST, catch-up now proves quarantined reports remain visible through signed local status with a durable materialized digest checkpoint at the quarantine boundary, the generated smoke script injects conflicting mint evidence plus quarantine while one member is offline, live smoke now verifies several wallet-operation batches during one offline partition before restart catch-up, session-outcome quorum evidence, and final convergence, and free-form operator sync messages now redact likely secrets and paths before status output; remaining work is to strengthen BFT ordering and broaden storage-backed process coverage.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>

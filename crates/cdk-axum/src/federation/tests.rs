@@ -11439,6 +11439,58 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
 }
 
 #[tokio::test]
+async fn private_local_status_route_includes_unresolved_payment_observation_fingerprints() {
+    let (mut public_config, local_private, peer_private) = transport_config();
+    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let state =
+        federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+    let local_member = local_private.member_id;
+    let quote_id = QuoteId::new();
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+        .await
+        .expect("submit mint quote");
+    state
+        .submit_federation_envelope(mint_payment_observation_envelope_for_member(
+            &state,
+            &quote_id,
+            1,
+            1,
+            "row-fingerprint-payment-proof",
+        ))
+        .await
+        .expect("submit unresolved payment observation");
+
+    let request = signed_status_request_with_payload(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        FederationPeerStatusRequest::with_materialized_rows(),
+    );
+    let response = post_local_status(State(state), Json(request))
+        .await
+        .expect("local status response")
+        .0;
+
+    assert!(response
+        .materialized_state_rows
+        .iter()
+        .any(|row| row.table == "payment_observations"));
+    assert!(response
+        .payment_observation_reports
+        .iter()
+        .any(|report| report.quote == quote_id.to_string()
+            && report.status
+                == cdk::federation::FederationPaymentObservationReportStatus::AwaitingQuorum));
+    let status_json = serde_json::to_string(&response).expect("status json");
+    assert!(!status_json.contains("row-fingerprint-payment-proof"));
+}
+
+#[tokio::test]
 async fn private_local_status_route_reports_invalid_operation_alerts() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
