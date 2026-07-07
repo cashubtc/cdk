@@ -42,7 +42,7 @@ mod blind_signature;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-pub use mint_connector::TorHttpClient;
+pub use mint_connector::{TorAuthHttpClient, TorHttpClient};
 mod balance;
 mod builder;
 mod issue;
@@ -130,6 +130,7 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
+    auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
     npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
@@ -414,43 +415,58 @@ impl Wallet {
 
         // Create or update auth wallet
         {
+            let protected_endpoints = mint_info.protected_endpoints();
+            let oidc_client = mint_info
+                .openid_discovery()
+                .map(|url| crate::OidcClient::new(url, None));
+            let auth_enabled = !protected_endpoints.is_empty()
+                || oidc_client.is_some()
+                || mint_info.bat_max_mint().is_some();
+
             let mut auth_wallet = self.auth_wallet.write().await;
-            match &*auth_wallet {
-                Some(auth_wallet) => {
-                    let mut protected_endpoints = auth_wallet.protected_endpoints.write().await;
-                    *protected_endpoints = mint_info.protected_endpoints();
+            if auth_enabled {
+                match &*auth_wallet {
+                    Some(auth_wallet) => {
+                        let mut current_protected_endpoints =
+                            auth_wallet.protected_endpoints.write().await;
+                        *current_protected_endpoints = protected_endpoints;
+                        auth_wallet.set_oidc_client(oidc_client).await;
+                    }
+                    None => {
+                        tracing::info!("Mint has auth enabled; creating auth wallet");
 
-                    if let Some(oidc_client) = mint_info
-                        .openid_discovery()
-                        .map(|url| crate::OidcClient::new(url, None))
-                    {
-                        auth_wallet.set_oidc_client(Some(oidc_client)).await;
+                        let new_auth_wallet = match self.auth_connector.as_ref() {
+                            Some(auth_connector) => AuthWallet::new_with_client(
+                                self.mint_url.clone(),
+                                self.localstore.clone(),
+                                self.metadata_cache.clone(),
+                                protected_endpoints,
+                                oidc_client,
+                                auth_connector.clone(),
+                            ),
+                            None => AuthWallet::new(
+                                self.mint_url.clone(),
+                                None,
+                                self.localstore.clone(),
+                                self.metadata_cache.clone(),
+                                protected_endpoints,
+                                oidc_client,
+                            ),
+                        };
+                        *auth_wallet = Some(new_auth_wallet.clone());
+
+                        self.client
+                            .set_auth_wallet(Some(new_auth_wallet.clone()))
+                            .await;
+
+                        if let Err(e) = new_auth_wallet.refresh_keysets().await {
+                            tracing::error!("Could not fetch auth keysets: {}", e);
+                        }
                     }
                 }
-                None => {
-                    tracing::info!("Mint has auth enabled creating auth wallet");
-
-                    let oidc_client = mint_info
-                        .openid_discovery()
-                        .map(|url| crate::OidcClient::new(url, None));
-                    let new_auth_wallet = AuthWallet::new(
-                        self.mint_url.clone(),
-                        None,
-                        self.localstore.clone(),
-                        self.metadata_cache.clone(),
-                        mint_info.protected_endpoints(),
-                        oidc_client,
-                    );
-                    *auth_wallet = Some(new_auth_wallet.clone());
-
-                    self.client
-                        .set_auth_wallet(Some(new_auth_wallet.clone()))
-                        .await;
-
-                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
-                        tracing::error!("Could not fetch auth keysets: {}", e);
-                    }
-                }
+            } else if auth_wallet.take().is_some() {
+                tracing::info!("Mint does not advertise auth; removing auth wallet");
+                self.client.set_auth_wallet(None).await;
             }
         }
 
@@ -988,9 +1004,105 @@ impl Drop for Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use bitcoin::bip32::DerivationPath;
+    use bitcoin::secp256k1::Secp256k1;
+    use cdk_common::nut02::KeySetVersion;
+    use cdk_common::nuts::{KeySet, KeySetInfo, KeysetResponse, MintKeySet};
+
     use super::*;
-    use crate::nuts::{BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
+    use crate::nuts::{AuthToken, BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
     use crate::secret::Secret;
+
+    fn build_test_auth_keyset(seed_byte: u8) -> KeySet {
+        let secp = Secp256k1::new();
+        let seed = [seed_byte; 32];
+        let path = DerivationPath::from_str("m/0'").expect("valid derivation path");
+        let mint_keyset = MintKeySet::generate_from_seed(
+            &secp,
+            &seed,
+            &[1, 2],
+            CurrencyUnit::Auth,
+            path,
+            0,
+            None,
+            KeySetVersion::Version00,
+        );
+
+        KeySet {
+            id: mint_keyset.id,
+            unit: mint_keyset.unit.clone(),
+            active: None,
+            keys: mint_keyset.keys.into(),
+            input_fee_ppk: mint_keyset.input_fee_ppk,
+            final_expiry: mint_keyset.final_expiry,
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingAuthConnector {
+        keyset: KeySet,
+        keysets_calls: Arc<Mutex<usize>>,
+        keyset_calls: Arc<Mutex<usize>>,
+    }
+
+    impl CountingAuthConnector {
+        fn new(keyset: KeySet) -> Self {
+            Self {
+                keyset,
+                keysets_calls: Arc::new(Mutex::new(0)),
+                keyset_calls: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AuthMintConnector for CountingAuthConnector {
+        async fn get_auth_token(&self) -> Result<AuthToken, Error> {
+            Ok(AuthToken::ClearAuth("dummy".to_string()))
+        }
+
+        async fn set_auth_token(&self, _: AuthToken) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+            Ok(MintInfo::default())
+        }
+
+        async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+            *self.keyset_calls.lock().expect("lock") += 1;
+            if keyset_id == self.keyset.id {
+                Ok(self.keyset.clone())
+            } else {
+                Err(Error::UnknownKeySet)
+            }
+        }
+
+        async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
+            *self.keysets_calls.lock().expect("lock") += 1;
+            Ok(KeysetResponse {
+                keysets: vec![KeySetInfo {
+                    id: self.keyset.id,
+                    unit: CurrencyUnit::Auth,
+                    active: true,
+                    input_fee_ppk: self.keyset.input_fee_ppk,
+                    final_expiry: self.keyset.final_expiry,
+                }],
+            })
+        }
+
+        async fn post_mint_blind_auth(
+            &self,
+            _: crate::nuts::nut22::MintAuthRequest,
+        ) -> Result<crate::nuts::MintResponse, Error> {
+            Err(Error::Custom(
+                "post_mint_blind_auth is not used in this test".to_string(),
+            ))
+        }
+    }
 
     /// Test that restore signature matching works correctly when response is in order
     #[test]
@@ -1298,5 +1410,70 @@ mod tests {
             "expected Error::IncorrectWallet for token with a different mint URL; got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_mint_info_does_not_create_auth_wallet_without_auth_settings() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_info, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        wallet
+            .fetch_mint_info()
+            .await
+            .expect("mint info should load from mock connector");
+
+        assert!(wallet.auth_wallet.read().await.is_none());
+
+        let result = wallet.get_unspent_auth_proofs().await;
+        assert!(
+            matches!(result, Err(Error::AuthSettingsUndefined)),
+            "expected auth settings to remain undefined; got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_mint_info_uses_configured_auth_connector_for_auth_settings() {
+        use crate::wallet::test_utils::{
+            create_test_db, test_mint_info, test_mint_url, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mint_info.nuts.nut22 = Some(crate::nuts::BlindAuthSettings::new(10, Vec::new()));
+        mock_client.set_mint_info_response(Ok(mint_info));
+
+        let auth_connector = Arc::new(CountingAuthConnector::new(build_test_auth_keyset(1)));
+        let keysets_calls = auth_connector.keysets_calls.clone();
+        let keyset_calls = auth_connector.keyset_calls.clone();
+
+        let wallet = WalletBuilder::new()
+            .mint_url(test_mint_url())
+            .unit(CurrencyUnit::Sat)
+            .localstore(db)
+            .seed([0u8; 64])
+            .shared_client(mock_client)
+            .auth_connector(auth_connector)
+            .build()
+            .expect("wallet should build");
+
+        wallet
+            .fetch_mint_info()
+            .await
+            .expect("mint info should load and auth keysets should refresh from mock connector");
+
+        assert!(wallet.auth_wallet.read().await.is_some());
+        assert_eq!(*keysets_calls.lock().expect("lock"), 1);
+        assert_eq!(*keyset_calls.lock().expect("lock"), 1);
     }
 }

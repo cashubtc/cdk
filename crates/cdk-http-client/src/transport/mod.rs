@@ -191,6 +191,9 @@ pub type BitreqTransport = Async;
 pub type ReqwestTransport = Async;
 
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+mod arti_connector;
+
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 mod tor_transport;
 
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]

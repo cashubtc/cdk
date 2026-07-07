@@ -43,8 +43,10 @@ log = "0.4"
 
 
 [features]
-default = ["npubcash", "bip353"]
+default = ["npubcash", "bip353", "tor"]
 bip353 = ["cdk/bip353"]
+# Enable Tor transport for mint connections (arti-based)
+tor = ["cdk/tor"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
 # Enable Supabase-backed wallet database support in FFI
