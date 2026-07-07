@@ -242,10 +242,13 @@ Current confirmed shape:
   accepted-operation height and AlephBFT finalized-item cursor lag as catch-up
   triggers. Catch-up requests carry the local finalized-item cursor, peers serve
   complete finalized-item unit slices, and incomplete pages that would advance
-  journal state without whole-unit finalized evidence are rejected before quote,
-  journal, or finalized-item storage mutation.
+  journal state without whole-unit finalized evidence plus reordered finalized
+  item evidence are rejected before quote, journal, or finalized-item storage
+  mutation.
 - Focused AlephBFT catch-up evidence test:
   `cargo test -p cdk-axum --features federation aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutation -- --test-threads 1`
+  and
+  `cargo test -p cdk-axum --features federation aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation -- --test-threads 1`
   passed on 2026-07-07.
 - Latest AlephBFT malformed-unit route checkpoint: signed private REST
   finalized-unit delivery now has focused route coverage for correctly signed,
@@ -1325,9 +1328,10 @@ AlephBFT and consensus unit tests:
   delivery is idempotent at the route/apply boundary and does not append another
   finalized item or journal entry. The broadcast driver also now skips duplicate
   peer entries before delivery attempts or quorum accounting, so one remote
-  member cannot be counted twice toward a threshold. Production AlephBFT network
-  duplicate, delay, and reorder handling remains open until the live network
-  task exists.
+  member cannot be counted twice toward a threshold. Catch-up replay rejects
+  reordered AlephBFT finalized-item evidence before quote, journal, or
+  finalized-item storage mutation. Production AlephBFT network duplicate, delay,
+  and reorder handling remains open until the live network task exists.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload

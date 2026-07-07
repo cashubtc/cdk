@@ -6555,6 +6555,110 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
 }
 
 #[tokio::test]
+async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let first_quote_id = QuoteId::new();
+    let second_quote_id = QuoteId::new();
+    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("peer AlephBFT adapter");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(mint_quote_envelope(&state, &first_quote_id)),
+            FederationConsensusItem::operation(mint_quote_envelope(&state, &second_quote_id)),
+        ],
+    )
+    .expect("two-item AlephBFT unit");
+    peer_adapter
+        .finalize_unit(unit)
+        .expect("finalize peer unit");
+    let mut reordered_finalized_items = peer_adapter.finalized_items().to_vec();
+    reordered_finalized_items.swap(0, 1);
+
+    let request = state
+        .federation_consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    let mut response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        peer_adapter.journal(),
+        &request,
+        50,
+        100,
+    );
+    response.state_digest = materialized_state_digest(&state, peer_adapter.journal().entries())
+        .await
+        .expect("materialized state digest");
+    response = response.with_aleph_bft_finalized_items(reordered_finalized_items, true);
+    let response = signed_catch_up_response(response.clone(), &peer_private);
+    let witness_outcome = signed_catch_up_response(response.clone(), &local_private)
+        .session_outcome
+        .expect("witness session outcome");
+
+    let err = state
+        .apply_federation_catch_up_response_with_session_outcome_quorum(
+            &response,
+            &[witness_outcome],
+        )
+        .await
+        .expect_err("reordered finalized items should fail");
+    assert!(
+        err.to_string()
+            .contains("non-contiguous accepted item index"),
+        "unexpected error: {err}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&first_quote_id)
+        .await
+        .expect("first quote lookup after reordered catch-up")
+        .is_none());
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&second_quote_id)
+        .await
+        .expect("second quote lookup after reordered catch-up")
+        .is_none());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries after reordered catch-up")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items after reordered catch-up")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

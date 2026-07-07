@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: count distinct aleph bft peers for quorum</span>
+          <span class="value">test: reject reordered aleph bft catch-up evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The private REST AlephBFT driver now skips duplicate peer entries before delivery attempts or quorum accounting, so a repeated remote member cannot satisfy threshold finality twice.</span>
+          <span class="value">AlephBFT catch-up now has route-level coverage proving reordered finalized-item evidence is rejected before quote, journal, or finalized-item storage can mutate.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, distinct-peer quorum accounting, unfinalized restart retry coverage, router-startup finalized-evidence replay, batched finalized-unit response accounting, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, wrong-federation unit rejection, future-session unit rejection, tampered finalized-unit operation-ID and body-hash rejection before durable mutation, strict whole-unit catch-up finalized-item evidence replay, incomplete finalized-unit page rejection before durable mutation, finalized-cursor peer status and sync lag detection, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for single and batch public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, distinct-peer quorum accounting, unfinalized restart retry coverage, router-startup finalized-evidence replay, batched finalized-unit response accounting, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, wrong-federation unit rejection, future-session unit rejection, tampered finalized-unit operation-ID and body-hash rejection before durable mutation, strict whole-unit catch-up finalized-item evidence replay, incomplete and reordered finalized-unit catch-up page rejection before durable mutation, finalized-cursor peer status and sync lag detection, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for single and batch public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
