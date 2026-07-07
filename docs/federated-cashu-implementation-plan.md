@@ -1545,8 +1545,10 @@ AlephBFT and consensus unit tests:
   finalized-item storage mutation. Router-started upstream AlephBFT sessions now
   have a focused two-member in-process private REST transport test proving a
   real network-message exchange can finalize and apply the same operation on
-  both members. Production AlephBFT network duplicate, delay, and reorder
-  handling remains open for the larger fault matrix.
+  both members. Cargo registry checks confirm upstream `aleph-bft` 0.45.4 is
+  available and is the workspace dependency used by the federation feature.
+  Production AlephBFT network duplicate, delay, retry, and reorder handling
+  remains open for the larger fault matrix.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
@@ -1560,7 +1562,12 @@ AlephBFT and consensus unit tests:
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast
   that reaches only one remote acknowledgement fails closed with the local unit
   retained, then retries the same unit and applies when both remotes accept.
-  Production AlephBFT quorum stall/resume behavior remains open.
+  Router-started upstream AlephBFT coverage now also proves a 5-member live
+  session with four started members and one unavailable member leaves the public
+  operation retryably pending and writes no mint quote, journal entry, or
+  finalized item before finality. Production AlephBFT offline-member liveness
+  and catch-up remain open until the private REST network bridge owns durable
+  redelivery/retry semantics for upstream AlephBFT messages.
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.

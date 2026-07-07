@@ -308,6 +308,7 @@ struct RouterFederationTransport {
 #[derive(Clone, Default)]
 struct RouterFederationTransportRegistry {
     routers: Arc<Mutex<BTreeMap<String, Router>>>,
+    missing_router_wait: Duration,
 }
 
 impl std::fmt::Debug for RouterFederationTransport {
@@ -327,6 +328,7 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
             .unwrap_or_default();
         f.debug_struct("RouterFederationTransportRegistry")
             .field("router_count", &router_count)
+            .field("missing_router_wait", &self.missing_router_wait)
             .finish()
     }
 }
@@ -340,6 +342,13 @@ impl RouterFederationTransport {
 }
 
 impl RouterFederationTransportRegistry {
+    fn with_missing_router_wait(self, timeout: Duration) -> Self {
+        Self {
+            missing_router_wait: timeout,
+            ..self
+        }
+    }
+
     fn insert(&self, url: MintUrl, router: Router) {
         let endpoint = url::Url::parse(&url.to_string())
             .expect("federation api url")
@@ -861,15 +870,24 @@ impl Transport for RouterFederationTransportRegistry {
         R: DeserializeOwned,
     {
         let endpoint = url.origin().ascii_serialization();
-        let router = self
-            .routers
-            .lock()
-            .expect("router registry lock")
-            .get(&endpoint)
-            .cloned()
-            .ok_or_else(|| {
-                HttpError::Other(format!("router endpoint {endpoint} not configured"))
-            })?;
+        let deadline = tokio::time::Instant::now() + self.missing_router_wait;
+        let router = loop {
+            if let Some(router) = self
+                .routers
+                .lock()
+                .expect("router registry lock")
+                .get(&endpoint)
+                .cloned()
+            {
+                break router;
+            }
+            if self.missing_router_wait.is_zero() || tokio::time::Instant::now() >= deadline {
+                return Err(HttpError::Other(format!(
+                    "router endpoint {endpoint} not configured"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
         let request = axum::http::Request::builder()
             .method(axum::http::Method::POST)
             .uri(url.path())
@@ -1053,6 +1071,51 @@ fn transport_config_three_with_threshold(
         second_private,
         third_private,
     )
+}
+
+fn transport_config_with_member_federation_api_urls(
+    threshold_params: ThresholdParams,
+    federation_api_urls: Vec<MintUrl>,
+) -> (FederationConfig, Vec<MemberConfigPrivate>) {
+    let member_count = threshold_params.member_count;
+    assert_eq!(usize::from(member_count), federation_api_urls.len());
+    let members = federation_api_urls
+        .into_iter()
+        .enumerate()
+        .map(|(index, federation_api_url)| {
+            let value = u16::try_from(index + 1).expect("member index");
+            TrustedDealerMember::new(
+                member_id(value),
+                MintUrl::from_str(&format!("https://mint{value}.example.com"))
+                    .expect("public mint url"),
+                federation_api_url,
+                SecretKey::from_slice(&[value as u8; 32]).expect("identity secret"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let amount_coefficients = (0..threshold_params.signature_threshold)
+        .map(|index| BlsSecretKey::from_reduced_bytes(&[31 + index as u8; 32]))
+        .collect::<Vec<_>>();
+    let keyset = TrustedDealerKeysetSpec::new(
+        CurrencyUnit::Sat,
+        true,
+        0,
+        None,
+        BTreeMap::from([(Amount::from(1), amount_coefficients)]),
+    );
+    let bundle = generate_trusted_dealer_configs(threshold_params, members, vec![keyset])
+        .expect("trusted dealer bundle");
+    let private_configs = (1u16..=member_count)
+        .map(|value| {
+            bundle
+                .private_configs
+                .get(&member_id(value))
+                .expect("private config")
+                .clone()
+        })
+        .collect::<Vec<_>>();
+
+    (bundle.public_config, private_configs)
 }
 
 fn transport_config_five_with_threshold(
@@ -8006,6 +8069,114 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
         .await
         .expect("second quote lookup")
         .is_some());
+}
+
+#[tokio::test]
+async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_durable_mutation() {
+    let federation_api_urls = vec![
+        MintUrl::from_str("http://fed1.test").expect("first federation api url"),
+        MintUrl::from_str("http://fed2.test").expect("second federation api url"),
+        MintUrl::from_str("http://fed3.test").expect("third federation api url"),
+        MintUrl::from_str("http://fed4.test").expect("fourth federation api url"),
+        MintUrl::from_str("http://fed5.test").expect("fifth federation api url"),
+    ];
+    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+        federation_api_urls.clone(),
+    );
+    let mut states = Vec::new();
+    for private_config in private_configs.into_iter().take(4) {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        states.push(
+            federation_route_state_for_private_with_db_and_backend(
+                public_config.clone(),
+                private_config,
+                db,
+                &mnemonic.to_seed_normalized(""),
+                FederationConsensusBackendKind::AlephBft,
+            )
+            .await,
+        );
+    }
+    let transport = RouterFederationTransportRegistry::default()
+        .with_missing_router_wait(Duration::from_secs(1));
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_millis(250),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let mut live_session_handles = Vec::new();
+    transport.insert(
+        federation_api_urls[4].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(states[0].clone()),
+    );
+
+    for index in 0..states.len() {
+        let handle = start_federation_aleph_bft_live_session_with_transport(
+            &mut states[index],
+            sync_config,
+            pump_config,
+            transport.clone(),
+        )
+        .await
+        .expect("start live session")
+        .expect("live session handle");
+        live_session_handles.push(handle);
+        transport.insert(
+            federation_api_urls[index].clone(),
+            Router::new()
+                .nest("/federation/v1", create_federation_router())
+                .with_state(states[index].clone()),
+        );
+    }
+    assert_eq!(live_session_handles.len(), 4);
+
+    states[0].federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(250),
+        ..FederationPeerSyncConfig::default()
+    });
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&states[0], &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let err = states[0]
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect_err("unavailable live member should leave operation pending");
+
+    assert_pending_finalization_error(&err, operation_id, 250);
+    for state in &states {
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status")
+                .finalized_item_count,
+            0
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_none());
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup")
+            .is_empty());
+    }
 }
 
 async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
