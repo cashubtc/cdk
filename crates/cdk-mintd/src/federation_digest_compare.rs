@@ -389,10 +389,10 @@ fn materialized_row_diffs(
                     .into_iter()
                     .map(|(row_digest, members)| DigestComparisonRowVariant {
                         row_digest,
-                        members,
+                        members: sorted_member_list(members),
                     })
                     .collect(),
-                missing_members,
+                missing_members: sorted_member_list(missing_members),
             });
         }
     }

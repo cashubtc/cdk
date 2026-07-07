@@ -60,6 +60,23 @@ fn materialized_row(
         .expect("row fingerprint")
 }
 
+fn payment_observation_row(
+    key: &str,
+    state: &str,
+    evidence_hash: &str,
+) -> FederationMaterializedStateRowFingerprint {
+    FederationMaterializedStateRow::new("payment_observations", key)
+        .with_field("context", "mint_quote")
+        .with_field("quote", "secret-quote-id")
+        .with_field("operation_index", "7")
+        .with_field("operation_id", "secret-operation-id")
+        .with_field("observer", "1")
+        .with_field("state", state)
+        .with_field("evidence_hash", evidence_hash)
+        .fingerprint()
+        .expect("payment observation row fingerprint")
+}
+
 trait StatusFixtureExt {
     fn with_state_digest(self, state_digest: FederationStateDigest) -> Self;
 }
@@ -296,4 +313,60 @@ fn digest_comparison_diagnoses_missing_completed_operation_row() {
     assert!(line.contains("missing_members=2"));
     assert!(!line.contains("completed-operation-row-uuid"));
     assert!(!line.contains("accepted-operation-id"));
+}
+
+#[test]
+fn digest_comparison_diagnoses_payment_observation_row_variant_without_leaking_payment_material() {
+    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+    let matching_state_digest = FederationStateDigest::from_bytes([2; 32]);
+    let divergent_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let payment_observation_key = "mint_quote:secret-quote-id:7:secret-operation-id";
+
+    let mut third = local_status(3, 7, order_digest, matching_state_digest);
+    third.materialized_state_rows = vec![payment_observation_row(
+        payment_observation_key,
+        "paid",
+        "payment-proof-secret-a",
+    )];
+    let mut second = local_status(2, 7, order_digest, divergent_state_digest);
+    second.materialized_state_rows = vec![payment_observation_row(
+        payment_observation_key,
+        "paid",
+        "payment-proof-secret-b",
+    )];
+    let mut first = local_status(1, 7, order_digest, matching_state_digest);
+    first.materialized_state_rows = vec![payment_observation_row(
+        payment_observation_key,
+        "paid",
+        "payment-proof-secret-a",
+    )];
+    let statuses = vec![third, second, first];
+
+    let report = DigestComparisonReport::from_statuses(&statuses);
+
+    assert_eq!(report.row_diffs.len(), 1);
+    let diff = &report.row_diffs[0];
+    assert_eq!(diff.table, "payment_observations");
+    assert!(diff.missing_members.is_empty());
+    assert_eq!(diff.variants.len(), 2);
+    let matching_variant = diff
+        .variants
+        .iter()
+        .find(|variant| variant.members.len() == 2)
+        .expect("matching payment observation variant");
+    assert_eq!(
+        matching_variant.members,
+        vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(3).expect("member three"),
+        ]
+    );
+    let line = materialized_row_diff_line(diff);
+    assert!(line.contains("table=payment_observations"));
+    assert!(line.contains("missing_members=none"));
+    assert!(!line.contains(payment_observation_key));
+    assert!(!line.contains("secret-quote-id"));
+    assert!(!line.contains("secret-operation-id"));
+    assert!(!line.contains("payment-proof-secret-a"));
+    assert!(!line.contains("payment-proof-secret-b"));
 }

@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: diagnose completed operation drift</span>
+          <span class="value">test: diagnose payment observation drift</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Operator digest comparison now has a focused regression for missing completed-operation rows at equal accepted height, reporting the missing member while keeping row keys and operation IDs redacted.</span>
+          <span class="value">Operator digest comparison now has a focused regression for divergent payment-observation rows at equal accepted height, reporting stable member variants while keeping quote IDs, operation IDs, and payment proof material redacted.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare row-drift diagnostics, unresolved payment-observation, payment-observation quarantine, and rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare row-drift diagnostics, payment-observation digest-compare row-drift diagnostics, unresolved payment-observation, payment-observation quarantine, and rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
@@ -776,7 +776,7 @@
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
-            <p>Signed status, convergence guards, digest comparison with redacted row-drift diagnostics, payment-observation reports, redacted materialized row fingerprints for payment evidence and completed operations, redacted sync messages, DKG status, and smoke helpers make federation health inspectable without exposing secret material.</p>
+            <p>Signed status, convergence guards, digest comparison with redacted row-drift diagnostics and stable member variant ordering, payment-observation reports, redacted materialized row fingerprints for payment evidence and completed operations, redacted sync messages, DKG status, and smoke helpers make federation health inspectable without exposing secret material.</p>
           </article>
         </div>
       </section>
