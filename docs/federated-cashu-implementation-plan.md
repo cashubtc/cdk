@@ -111,6 +111,18 @@ Current confirmed shape:
   `crates/cdk/src/wallet/federation.rs` keeps the connector orchestration,
   fanout, and aggregation flow. The public `FederationWalletConnector` export
   is preserved.
+- Latest AlephBFT public value-route checkpoint: swap and melt routes now have
+  pending-finalization retry coverage matching the batch-mint route. Focused
+  Axum tests prove timed-out public AlephBFT swap and melt submissions leave the
+  operation queued without journal entries, proof-state changes, quote-state
+  mutation, signature shares, or response waiters; a retry joins the pending
+  operation and returns persisted accepted state after the exact queued unit is
+  finalized through the current adapter boundary.
+- Focused AlephBFT public value-route tests:
+  `cargo test -p cdk-axum --features federation post_swap_pending_aleph_bft_retry_returns_persisted_response_after_finality -- --test-threads 1`
+  and
+  `cargo test -p cdk-axum --features federation process_melt_pending_aleph_bft_retry_returns_persisted_response_after_finality -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest checkpoint: wallet federation local-member tests now route mint,
   batch-mint, swap, and melt member calls through a shared accepted federation
   journal before returning signature shares or change shares. The local
@@ -1034,7 +1046,11 @@ Federated public API checklist:
   without appending another operation. AlephBFT not-ready coverage now proves
   the public batch mint route fails closed before queueing work, appending a
   journal entry, or registering a waiter while real finality is unavailable.
-  Pending and AlephBFT-finality variants remain open.
+  Batch-mint pending-finalization coverage now proves a timed-out public request
+  leaves the operation queued without issuing shares, and a later exact retry
+  waits for the same operation and returns the persisted accepted response after
+  adapter-level finality. Single-quote `post_mint` AlephBFT-finality coverage
+  remains open.
 - [ ] `post_swap` computes the canonical swap operation hash, checks for a
   cached response, validates the request without pending/spent mutations,
   submits to AlephBFT, awaits accepted apply, and returns persisted output
@@ -1049,8 +1065,12 @@ Federated public API checklist:
   swap before the public request arrives and returns the persisted shares
   without appending another operation. AlephBFT not-ready coverage now proves
   the public swap route fails closed before queueing work, appending a journal
-  entry, or registering a waiter while real finality is unavailable. Pending and
-  AlephBFT-finality variants remain open.
+  entry, or registering a waiter while real finality is unavailable.
+  Pending-finalization coverage now proves a timed-out public swap leaves the
+  operation queued without journal entries, proof-state mutation, signature
+  shares, or retained waiters, and that a retry joins the pending operation and
+  returns persisted shares after the exact queued unit is finalized through the
+  current AlephBFT adapter boundary.
 - [ ] `post_melt` computes the canonical melt operation hash, checks for cached
   reserve/final response, validates proofs and change outputs without payment
   side effects, submits to AlephBFT, awaits accepted reserve/finalization
@@ -1072,7 +1092,12 @@ Federated public API checklist:
   no second operation, and does not attempt a second outgoing payment. SQLite
   restart and in-memory catch-up coverage now prove that exact duplicate failed
   melts remain terminal and do not attempt another outgoing payment after
-  recovery. AlephBFT-finality variants remain open.
+  recovery. Pending-finalization coverage now proves a timed-out public melt
+  leaves the operation queued without journal entries, proof-state mutation,
+  quote-state mutation, change signatures, or retained waiters, and that a
+  retry joins the pending operation and returns the persisted paid response plus
+  change shares after the exact queued unit is finalized through the current
+  AlephBFT adapter boundary.
 - [ ] Mint quote creation and melt quote creation remain idempotent around quote
   IDs and quote request payloads; duplicate quote operations return the
   accepted quote response, while conflicting quote payloads are rejected.
