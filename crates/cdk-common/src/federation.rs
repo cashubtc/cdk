@@ -68,6 +68,7 @@ pub use self::signing::{
 };
 pub use self::transport::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
+    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,

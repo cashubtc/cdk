@@ -55,6 +55,25 @@ fn signed_aleph_bft_finalized_unit_request(
     .expect("signed AlephBFT finalized-unit request")
 }
 
+fn signed_aleph_bft_network_message_request(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    sequence: u64,
+    kind: FederationRestMessageKind,
+    session_id: u64,
+    message: Vec<u8>,
+) -> FederationSignedRequest<FederationAlephBftNetworkMessageRequest> {
+    FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        member_id(1),
+        sequence,
+        kind,
+        FederationAlephBftNetworkMessageRequest::new(session_id, message),
+        private_config,
+    )
+    .expect("signed AlephBFT network-message request")
+}
+
 #[tokio::test]
 async fn local_status_includes_aleph_bft_adapter_counters() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
@@ -699,6 +718,64 @@ async fn private_aleph_bft_finalized_unit_route_rejects_storage_conflict_before_
 }
 
 #[tokio::test]
+async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        vec![1, 2, 3, 4],
+    );
+
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
+        .await
+        .expect("AlephBFT network-message response")
+        .0;
+
+    assert_eq!(response.federation_id, public_config.federation_id);
+    assert_eq!(response.session_id, 0);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+}
+
+#[tokio::test]
+async fn private_aleph_bft_network_message_route_rejects_kind_mismatch_before_sequence() {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::Status,
+        0,
+        vec![1, 2, 3, 4],
+    );
+
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
+        .await
+        .expect_err("kind mismatch must fail");
+    let detail = response_error_detail(response).await;
+
+    assert!(
+        detail.contains("message kind mismatch"),
+        "unexpected detail: {detail}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after rejection")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn federation_peer_client_posts_signed_aleph_bft_finalized_unit() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
@@ -740,6 +817,95 @@ async fn federation_peer_client_posts_signed_aleph_bft_finalized_unit() {
     requests[0]
         .verify(&public_config, peer_private.member_id)
         .expect("signed request verifies");
+}
+
+#[tokio::test]
+async fn federation_peer_client_posts_signed_aleph_bft_network_message() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("peer member");
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 3);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let request = FederationAlephBftNetworkMessageRequest::new(3, vec![9, 8, 7, 6]);
+
+    let received = client
+        .submit_aleph_bft_network_message(peer_member, &request)
+        .await
+        .expect("submit AlephBFT network message");
+
+    assert_eq!(received.session_id, 3);
+    let requests = transport.aleph_bft_network_message_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].kind,
+        FederationRestMessageKind::AlephBftNetworkMessage
+    );
+    assert_eq!(
+        requests[0].payload.message_bytes().expect("bytes"),
+        vec![9, 8, 7, 6]
+    );
+    requests[0]
+        .verify(&public_config, peer_private.member_id)
+        .expect("signed request verifies");
+}
+
+#[tokio::test]
+async fn federation_peer_client_rejects_aleph_bft_network_unknown_member_before_signing() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let request = FederationAlephBftNetworkMessageRequest::new(3, vec![9, 8, 7, 6]);
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let mut unknown_peer = public_config
+        .member(peer_private.member_id)
+        .expect("peer member")
+        .clone();
+    unknown_peer.member_id = member_id(99);
+
+    let err = client
+        .submit_aleph_bft_network_message(&unknown_peer, &request)
+        .await
+        .expect_err("unknown peer should be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("is not in the configured member roster"),
+        "unexpected error: {err}"
+    );
+    assert!(transport.aleph_bft_network_message_requests().is_empty());
+}
+
+#[tokio::test]
+async fn federation_peer_client_rejects_aleph_bft_network_response_session_mismatch() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("peer member");
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 4);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let request = FederationAlephBftNetworkMessageRequest::new(3, vec![9, 8, 7, 6]);
+
+    let err = client
+        .submit_aleph_bft_network_message(peer_member, &request)
+        .await
+        .expect_err("mismatched session should be rejected");
+
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::AlephBftUnitSessionMismatch { expected, found })
+            if *expected == 3 && *found == 4
+    ));
+    assert_eq!(transport.aleph_bft_network_message_requests().len(), 1);
 }
 
 #[tokio::test]

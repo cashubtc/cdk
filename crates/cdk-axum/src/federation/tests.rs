@@ -9,7 +9,8 @@ use cdk::cdk_payment::PaymentIdentifier;
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
     FederationAlephBftFinalityMode, FederationAlephBftFinalizedUnitRequest,
-    FederationAlephBftFinalizedUnitResponse, FederationAlephBftUnitBodyHash,
+    FederationAlephBftFinalizedUnitResponse, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftNetworkMessageResponse, FederationAlephBftUnitBodyHash,
     FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusBackendKind,
     FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
     FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
@@ -267,6 +268,7 @@ struct MockFederationTransportState {
     aleph_bft_finalized_unit_response: Option<FederationAlephBftFinalizedUnitResponse>,
     aleph_bft_finalized_unit_responses: VecDeque<FederationAlephBftFinalizedUnitResponse>,
     aleph_bft_finalized_unit_delays: VecDeque<Duration>,
+    aleph_bft_network_message_response: Option<FederationAlephBftNetworkMessageResponse>,
     dkg_setup_responses: VecDeque<FederationDkgSetupResponse>,
     catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
     status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
@@ -278,6 +280,8 @@ struct MockFederationTransportState {
     submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
     aleph_bft_finalized_unit_requests:
         Vec<FederationSignedRequest<FederationAlephBftFinalizedUnitRequest>>,
+    aleph_bft_network_message_requests:
+        Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>,
     catch_up_requests: Vec<FederationSignedRequest<FederationJournalCatchUpRequest>>,
 }
 
@@ -405,6 +409,17 @@ impl MockFederationTransport {
         self
     }
 
+    fn with_aleph_bft_network_message_response(
+        self,
+        response: FederationAlephBftNetworkMessageResponse,
+    ) -> Self {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .aleph_bft_network_message_response = Some(response);
+        self
+    }
+
     fn with_dkg_setup_response(self, response: FederationDkgSetupResponse) -> Self {
         self.state
             .lock()
@@ -486,6 +501,16 @@ impl MockFederationTransport {
             .lock()
             .expect("mock transport lock")
             .aleph_bft_finalized_unit_requests
+            .clone()
+    }
+
+    fn aleph_bft_network_message_requests(
+        &self,
+    ) -> Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>> {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .aleph_bft_network_message_requests
             .clone()
     }
 
@@ -597,6 +622,23 @@ impl Transport for MockFederationTransport {
             if !delay.is_zero() {
                 time::sleep(delay).await;
             }
+            return json_response(response);
+        }
+
+        if url.path().ends_with("/federation/v1/aleph-bft/messages") {
+            let request = serde_json::from_value::<
+                FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
+            >(serde_json::to_value(payload)?)?;
+            let response = {
+                let mut state = self.state.lock().expect("mock transport lock");
+                state.aleph_bft_network_message_requests.push(request);
+                state
+                    .aleph_bft_network_message_response
+                    .clone()
+                    .ok_or_else(|| {
+                        HttpError::Other("missing AlephBFT network-message response".to_string())
+                    })?
+            };
             return json_response(response);
         }
 

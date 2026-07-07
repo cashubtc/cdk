@@ -52,6 +52,8 @@ pub enum FederationRestMessageKind {
     DkgTranscriptSignature,
     /// Submit one operation envelope to a peer.
     SubmitOperation,
+    /// Deliver one opaque AlephBFT network message to a peer.
+    AlephBftNetworkMessage,
     /// Deliver one AlephBFT unit that has already been finalized.
     AlephBftFinalizedUnit,
     /// Request missing journal entries from a peer.
@@ -67,6 +69,7 @@ impl FederationRestMessageKind {
             Self::DkgSecretShare => b"dkg_secret_share",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::SubmitOperation => b"submit_operation",
+            Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
             Self::AlephBftFinalizedUnit => b"aleph_bft_finalized_unit",
             Self::CatchUp => b"catch_up",
         }
@@ -1095,6 +1098,96 @@ impl FederationAlephBftFinalizedUnitRequest {
     pub fn ensure_admissible_size(&self) -> super::Result<usize> {
         self.unit
             .ensure_within_size_limit(FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES)
+    }
+}
+
+/// Request to deliver one opaque AlephBFT network message to a federation peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftNetworkMessageRequest {
+    /// AlephBFT session this message belongs to.
+    pub session_id: u64,
+    /// SCALE-encoded upstream AlephBFT network message as hex.
+    pub encoded_message: String,
+}
+
+impl FederationAlephBftNetworkMessageRequest {
+    /// Create an AlephBFT network-message request.
+    #[must_use]
+    pub fn new(session_id: u64, encoded_message: Vec<u8>) -> Self {
+        Self {
+            session_id,
+            encoded_message: crate::util::hex::encode(encoded_message),
+        }
+    }
+
+    /// Decode the SCALE-encoded AlephBFT network message bytes.
+    pub fn message_bytes(&self) -> Result<Vec<u8>> {
+        Ok(crate::util::hex::decode(&self.encoded_message)?)
+    }
+
+    /// Reject this request if the encoded message is malformed or too large.
+    pub fn ensure_admissible_size(&self) -> Result<usize> {
+        let bytes = self.message_bytes()?;
+        let actual = bytes.len();
+        if actual > FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES {
+            return Err(FederationError::ConsensusItemTooLarge {
+                actual,
+                max: FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+            });
+        }
+
+        Ok(actual)
+    }
+}
+
+/// Response to an opaque AlephBFT network-message delivery request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftNetworkMessageResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation addressed by this response.
+    pub federation_id: FederationId,
+    /// AlephBFT session that accepted the message.
+    pub session_id: u64,
+}
+
+impl FederationAlephBftNetworkMessageResponse {
+    /// Create a response for an accepted AlephBFT network message.
+    #[must_use]
+    pub fn new(federation_id: FederationId, session_id: u64) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id,
+            session_id,
+        }
+    }
+
+    /// Verify this response belongs to the expected federation and session.
+    pub fn validate(
+        &self,
+        expected_federation_id: FederationId,
+        expected_session_id: u64,
+    ) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        if self.federation_id != expected_federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: expected_federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.session_id != expected_session_id {
+            return Err(FederationError::AlephBftUnitSessionMismatch {
+                expected: expected_session_id,
+                found: self.session_id,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -2389,6 +2482,54 @@ mod tests {
             .validate(config.federation_id, &unit)
             .expect("response validates");
         assert_eq!(response.operation_ids, vec![operation_id]);
+    }
+
+    #[test]
+    fn signed_aleph_bft_network_message_request_verifies_and_response_validates() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let payload = FederationAlephBftNetworkMessageRequest::new(3, vec![1, 2, 3, 4]);
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            8,
+            FederationRestMessageKind::AlephBftNetworkMessage,
+            payload,
+            &first_private,
+        )
+        .expect("signed AlephBFT network-message request");
+
+        request.verify(&config, receiver).expect("verified request");
+        assert_eq!(
+            request.payload.message_bytes().expect("message bytes"),
+            vec![1, 2, 3, 4]
+        );
+        request
+            .payload
+            .ensure_admissible_size()
+            .expect("admissible network message");
+        let decoded: FederationSignedRequest<FederationAlephBftNetworkMessageRequest> =
+            serde_json::from_str(
+                &serde_json::to_string(&request).expect("AlephBFT network-message json"),
+            )
+            .expect("decoded request");
+        assert_eq!(
+            decoded.kind,
+            FederationRestMessageKind::AlephBftNetworkMessage
+        );
+        decoded.verify(&config, receiver).expect("decoded verifies");
+
+        let response = FederationAlephBftNetworkMessageResponse::new(config.federation_id, 3);
+        response
+            .validate(config.federation_id, 3)
+            .expect("response validates");
+        assert!(matches!(
+            response.validate(config.federation_id, 4),
+            Err(FederationError::AlephBftUnitSessionMismatch {
+                expected: 4,
+                found: 3
+            })
+        ));
     }
 
     #[test]

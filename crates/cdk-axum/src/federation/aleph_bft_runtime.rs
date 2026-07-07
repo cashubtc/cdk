@@ -1,11 +1,13 @@
+use core::fmt;
+
 use std::future::Future;
-use std::hash::{Hash, Hasher};
+use std::hash::{Hash, Hasher as StdHasher};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use aleph_bft::{
-    DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, NodeCount, NodeIndex,
-    SignatureSet, SpawnHandle, TaskHandle,
+    DataProvider, FinalizationHandler, Hasher as AlephHasher, Index, Keychain, MultiKeychain,
+    Network, NetworkData, NodeCount, NodeIndex, Recipient, SignatureSet, SpawnHandle, TaskHandle,
 };
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationConfig, FederationConsensusRuntime, FederationError,
@@ -13,7 +15,119 @@ use cdk::federation::{
 };
 use cdk::nuts::SecretKey;
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+
+/// SHA-256 hasher used by CDK's AlephBFT session units.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftHasher;
+
+impl AlephHasher for CdkAlephBftHasher {
+    type Hash = [u8; 32];
+
+    fn hash(s: &[u8]) -> Self::Hash {
+        Sha256::digest(s).into()
+    }
+}
+
+/// Concrete upstream AlephBFT network payload used by CDK federation sessions.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) type CdkAlephBftNetworkData = NetworkData<
+    CdkAlephBftHasher,
+    CdkAlephBftData,
+    CdkAlephBftSignature,
+    SignatureSet<CdkAlephBftSignature>,
+>;
+
+/// Outbound message emitted by the AlephBFT network adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftOutboundMessage<D> {
+    /// Opaque AlephBFT payload to deliver.
+    pub data: D,
+    /// AlephBFT recipient chosen by the protocol.
+    pub recipient: Recipient,
+}
+
+/// Channel-backed AlephBFT network implementation.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftNetwork<D> {
+    incoming: mpsc::UnboundedReceiver<D>,
+    outgoing: mpsc::UnboundedSender<CdkAlephBftOutboundMessage<D>>,
+}
+
+impl<D> fmt::Debug for CdkAlephBftNetwork<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkAlephBftNetwork").finish_non_exhaustive()
+    }
+}
+
+/// Test and transport bridge handle for a [`CdkAlephBftNetwork`].
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftNetworkHandle<D> {
+    incoming: mpsc::UnboundedSender<D>,
+    outgoing: mpsc::UnboundedReceiver<CdkAlephBftOutboundMessage<D>>,
+}
+
+impl<D> fmt::Debug for CdkAlephBftNetworkHandle<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkAlephBftNetworkHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl<D> CdkAlephBftNetwork<D> {
+    /// Create a network plus bridge handle for injecting inbound and draining outbound messages.
+    pub(crate) fn new_pair() -> (Self, CdkAlephBftNetworkHandle<D>) {
+        let (incoming_sender, incoming_receiver) = mpsc::unbounded_channel();
+        let (outgoing_sender, outgoing_receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                incoming: incoming_receiver,
+                outgoing: outgoing_sender,
+            },
+            CdkAlephBftNetworkHandle {
+                incoming: incoming_sender,
+                outgoing: outgoing_receiver,
+            },
+        )
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl<D> CdkAlephBftNetworkHandle<D> {
+    /// Queue an inbound message as if it arrived from the federation transport.
+    pub(crate) fn queue_incoming(&self, data: D) -> Result<(), mpsc::error::SendError<D>> {
+        self.incoming.send(data)
+    }
+
+    /// Receive the next outbound message produced by AlephBFT.
+    pub(crate) async fn next_outgoing(&mut self) -> Option<CdkAlephBftOutboundMessage<D>> {
+        self.outgoing.recv().await
+    }
+}
+
+#[async_trait::async_trait]
+impl<D> Network<D> for CdkAlephBftNetwork<D>
+where
+    D: Send + 'static,
+{
+    fn send(&self, data: D, recipient: Recipient) {
+        if self
+            .outgoing
+            .send(CdkAlephBftOutboundMessage { data, recipient })
+            .is_err()
+        {
+            tracing::warn!("AlephBFT network outbound bridge is closed");
+        }
+    }
+
+    async fn next_event(&mut self) -> Option<D> {
+        self.incoming.recv().await
+    }
+}
 
 /// Schnorr signature bytes used by CDK's AlephBFT keychain adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
@@ -209,7 +323,7 @@ impl Eq for CdkAlephBftData {}
 impl Hash for CdkAlephBftData {
     fn hash<H>(&self, state: &mut H)
     where
-        H: Hasher,
+        H: StdHasher,
     {
         self.canonical.hash(state);
     }
@@ -355,8 +469,8 @@ mod tests {
     use std::str::FromStr;
 
     use aleph_bft::{
-        DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, PartialMultisignature,
-        SpawnHandle,
+        DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, Network,
+        PartialMultisignature, Recipient, SpawnHandle,
     };
     use cdk::federation::{
         FederationAlephBftUnitPayload, FederationConfig, FederationConsensusBackendKind,
@@ -533,6 +647,64 @@ mod tests {
             err.to_string().contains("BFT consensus threshold 4"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cdk_aleph_bft_hasher_uses_stable_sha256() {
+        assert_eq!(
+            CdkAlephBftHasher::hash(b"cdk aleph bft"),
+            [
+                0x11, 0xc9, 0xad, 0xb6, 0xa5, 0x45, 0x23, 0x9e, 0x59, 0x15, 0xc1, 0x6a, 0xdd, 0x83,
+                0x74, 0x8a, 0x09, 0x51, 0x86, 0x82, 0x5c, 0xc5, 0x35, 0xc2, 0xdb, 0x50, 0xa6, 0xfe,
+                0x5f, 0xe6, 0x53, 0xcf,
+            ]
+        );
+    }
+
+    #[test]
+    fn cdk_aleph_bft_network_data_alias_is_network_compatible() {
+        fn assert_network<N>(_: &N)
+        where
+            N: Network<CdkAlephBftNetworkData>,
+        {
+        }
+
+        let (network, _handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
+
+        assert_network(&network);
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_network_preserves_outbound_recipient() {
+        let (network, mut handle) = CdkAlephBftNetwork::<String>::new_pair();
+
+        network.send("network-message".to_string(), Recipient::Node(NodeIndex(2)));
+        let outbound = handle.next_outgoing().await.expect("outbound message");
+
+        assert_eq!(outbound.data, "network-message");
+        assert_eq!(outbound.recipient, Recipient::Node(NodeIndex(2)));
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_network_delivers_inbound_messages() {
+        let (mut network, handle) = CdkAlephBftNetwork::<String>::new_pair();
+
+        handle
+            .queue_incoming("inbound-message".to_string())
+            .expect("queue inbound message");
+
+        assert_eq!(
+            network.next_event().await.as_deref(),
+            Some("inbound-message")
+        );
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_network_returns_none_when_inbound_bridge_closes() {
+        let (mut network, handle) = CdkAlephBftNetwork::<String>::new_pair();
+        drop(handle);
+
+        assert!(network.next_event().await.is_none());
     }
 
     #[test]

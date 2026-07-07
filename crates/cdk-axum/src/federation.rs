@@ -47,7 +47,7 @@ use self::aleph_bft_driver::{
 pub(crate) use self::aleph_bft_driver::{
     spawn_federation_aleph_bft_driver_loop_with_config, FederationAlephBftDriverTickConfig,
 };
-use self::aleph_bft_routes::post_aleph_bft_finalized_unit;
+use self::aleph_bft_routes::{post_aleph_bft_finalized_unit, post_aleph_bft_network_message};
 use self::catch_up_routes::post_journal;
 use self::dkg_routes::{
     post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,
@@ -107,6 +107,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             "/aleph-bft/finalized-units",
             post(post_aleph_bft_finalized_unit),
         )
+        .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
         .route("/journal", post(post_journal))
 }
 

@@ -1,8 +1,12 @@
 use axum::extract::{Json, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
-    FederationError, FederationRestMessageKind, FederationSignedRequest,
+    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
+    FederationConsensusBackendKind, FederationError, FederationRestMessageKind,
+    FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -53,4 +57,46 @@ pub(super) async fn post_aleph_bft_finalized_unit(
     );
 
     Ok(Json(response))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_aleph_bft_network_message(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>,
+) -> Result<Json<FederationAlephBftNetworkMessageResponse>, Response> {
+    let _permit =
+        acquire_private_rest_admission(&state, FederationRestMessageKind::AlephBftNetworkMessage)?;
+    let verified = verify_federation_request(
+        &state,
+        &payload,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+    )
+    .await?;
+    payload
+        .payload
+        .ensure_admissible_size()
+        .map_err(federation_error_response)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let federation_id = runtime_config.federation_id();
+    let consensus_backend = runtime_config.consensus_backend();
+    if consensus_backend != FederationConsensusBackendKind::AlephBft {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "AlephBFT network messages are not accepted for {} consensus backend",
+                consensus_backend
+            ),
+        )
+            .into_response());
+    }
+
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
+
+    Ok(Json(FederationAlephBftNetworkMessageResponse::new(
+        federation_id,
+        payload.payload.session_id,
+    )))
 }

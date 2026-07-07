@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
+    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationConfig, FederationConsensusBackendKind, FederationDkgCommitmentRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
@@ -184,6 +185,31 @@ where
             )
             .await?;
         response.validate(self.federation_id, &request.payload.unit)?;
+
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_aleph_bft_network_message(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationAlephBftNetworkMessageRequest,
+    ) -> anyhow::Result<FederationAlephBftNetworkMessageResponse> {
+        request.ensure_admissible_size()?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::AlephBftNetworkMessage,
+            request.clone(),
+        )?;
+        let response: FederationAlephBftNetworkMessageResponse = self
+            .http_post_with_timeout(
+                member,
+                "aleph-bft/messages",
+                "AlephBFT network-message submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(self.federation_id, request.payload.session_id)?;
 
         Ok(response)
     }
