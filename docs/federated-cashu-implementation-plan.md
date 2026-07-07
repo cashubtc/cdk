@@ -153,6 +153,16 @@ Current confirmed shape:
   `cargo check -p cdk-sqlite --features federation`,
   `cargo check -p cdk-postgres --features federation`, and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
+- Latest malformed melt checkpoint: federated melt apply now has apply-boundary
+  coverage for oversized proof secret and witness content. Both cases fail with
+  `ProofContentTooLarge` before proof-state storage, saga storage, quote-state
+  mutation, change-share storage, federation-share persistence, or outgoing
+  payment attempts.
+- Focused malformed melt tests:
+  `cargo test -p cdk --features federation oversized_proof_content -- --test-threads 1`
+  and
+  `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`
+  passed on 2026-07-07.
 
 ## Key observations
 
@@ -1201,8 +1211,10 @@ Melt operation tests:
   payment attempt. Failed quote state now retries through the accepted melt
   setup path and reaches the payment-attempt boundary with pending proofs,
   pending quote state, operation-tied saga state, and no terminal completed
-  operation row. Broader malformed-content coverage and a focused `Unknown`
-  quote-state regression remain open.
+  operation row. Oversized proof secret and witness content now fail with
+  `ProofContentTooLarge` before proof state, saga, quote-state, share, or
+  payment side effects. Broader malformed-content coverage and a focused
+  `Unknown` quote-state regression remain open.
 - [x] Accepted melt reserve records pending inputs and payment-attempt intent
   before any external outgoing payment can be attempted. Covered by
   `accepted_federation_melt_persists_reserve_before_payment_attempt`, whose

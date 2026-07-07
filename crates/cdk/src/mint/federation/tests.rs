@@ -3895,6 +3895,97 @@ async fn apply_federation_melt_rejects_bad_proof_signature_before_state_changes(
 }
 
 #[tokio::test]
+async fn apply_federation_melt_rejects_oversized_proof_content_before_state_changes() {
+    use cdk_common::nuts::{P2PKWitness, Witness};
+
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let secret_quote = QuoteId::new();
+    let secret_quote_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_quote_operation(secret_quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &secret_quote_entry).await;
+    let keyset = &runtime_config.public_config().keysets[0];
+
+    let oversized_secret =
+        Secret::new("s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1));
+    let secret_input = proof_for_secret(keyset, 2, oversized_secret);
+    let secret_input_y = secret_input.y().expect("oversized secret melt input y");
+    let secret_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(secret_quote.to_string(), vec![secret_input], None),
+        })),
+    );
+    persist_journal_entry(&localstore, &secret_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&secret_entry))
+            .await,
+        Err(Error::ProofContentTooLarge {
+            actual,
+            max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+        }) if actual == crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1
+    ));
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        secret_entry.operation_id,
+        &secret_quote,
+        &[secret_input_y],
+        &[],
+        &make_payment_calls,
+        "oversized secret",
+    )
+    .await;
+
+    let witness_quote = QuoteId::new();
+    let witness_quote_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_quote_operation(witness_quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &witness_quote_entry).await;
+
+    let mut witness_input = proof_for_runtime(&runtime_config, "oversized witness melt input");
+    witness_input.witness = Some(Witness::P2PKWitness(P2PKWitness {
+        signatures: vec!["s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1)],
+    }));
+    let witness_input_y = witness_input.y().expect("oversized witness melt input y");
+    let witness_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(witness_quote.to_string(), vec![witness_input], None),
+        })),
+    );
+    persist_journal_entry(&localstore, &witness_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&witness_entry))
+            .await,
+        Err(Error::ProofContentTooLarge {
+            max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+            ..
+        })
+    ));
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        witness_entry.operation_id,
+        &witness_quote,
+        &[witness_input_y],
+        &[],
+        &make_payment_calls,
+        "oversized witness",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn apply_federation_melt_rejects_duplicate_inputs_before_state_changes() {
     let runtime_config = runtime_config();
     let (mint, localstore, make_payment_calls) =
