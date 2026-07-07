@@ -16,6 +16,8 @@ use cdk::federation::{
     MemberConfigPrivate, MemberConfigPublic, MemberId,
 };
 use cdk::nuts::SecretKey;
+use cdk_common::database::DynMintDatabase;
+use futures::future::BoxFuture;
 use futures::io::{AsyncRead, AsyncWrite};
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 use sha2::{Digest, Sha256};
@@ -572,6 +574,171 @@ impl AsyncWrite for CdkAlephBftBackupWriter {
     }
 }
 
+/// Mint database backed AlephBFT backup bytes for one local session.
+#[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftDbBackup {
+    db: DynMintDatabase,
+    session_id: u64,
+}
+
+impl fmt::Debug for CdkAlephBftDbBackup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkAlephBftDbBackup")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftDbBackup {
+    /// Create a database backed backup handle for a local AlephBFT session.
+    pub(crate) fn new(db: DynMintDatabase, session_id: u64) -> Self {
+        Self { db, session_id }
+    }
+
+    /// Create a reader over the currently persisted backup bytes.
+    pub(crate) async fn try_reader(&self) -> Result<CdkAlephBftBackupReader, cdk::Error> {
+        let bytes = self
+            .db
+            .get_federation_aleph_bft_backup_bytes(self.session_id)
+            .await
+            .map_err(cdk::Error::Database)?
+            .unwrap_or_default();
+
+        Ok(CdkAlephBftBackupReader { bytes, position: 0 })
+    }
+
+    /// Create an append-only writer that durably persists on flush or close.
+    pub(crate) fn writer(&self) -> CdkAlephBftDbBackupWriter {
+        CdkAlephBftDbBackupWriter {
+            db: Arc::clone(&self.db),
+            session_id: self.session_id,
+            state: Arc::new(Mutex::new(CdkAlephBftDbBackupWriterState::default())),
+        }
+    }
+}
+
+#[derive(Default)]
+struct CdkAlephBftDbBackupWriterState {
+    pending: Vec<u8>,
+    flush: Option<BoxFuture<'static, io::Result<()>>>,
+}
+
+/// Append-only AlephBFT backup writer that commits flushed bytes to mint DB.
+#[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftDbBackupWriter {
+    db: DynMintDatabase,
+    session_id: u64,
+    state: Arc<Mutex<CdkAlephBftDbBackupWriterState>>,
+}
+
+impl fmt::Debug for CdkAlephBftDbBackupWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkAlephBftDbBackupWriter")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AsyncWrite for CdkAlephBftDbBackupWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let mut state = match this.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return Poll::Ready(Err(io::Error::other(
+                    "AlephBFT database backup writer state is poisoned",
+                )));
+            }
+        };
+
+        if state.flush.is_some() {
+            match poll_aleph_bft_db_backup_flush(&this.db, this.session_id, &mut state, cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        state.pending.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let mut state = match this.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return Poll::Ready(Err(io::Error::other(
+                    "AlephBFT database backup writer state is poisoned",
+                )));
+            }
+        };
+
+        poll_aleph_bft_db_backup_flush(&this.db, this.session_id, &mut state, cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.poll_flush(cx)
+    }
+}
+
+fn poll_aleph_bft_db_backup_flush(
+    db: &DynMintDatabase,
+    session_id: u64,
+    state: &mut CdkAlephBftDbBackupWriterState,
+    cx: &mut Context<'_>,
+) -> Poll<io::Result<()>> {
+    loop {
+        if let Some(flush) = state.flush.as_mut() {
+            match flush.as_mut().poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    state.flush = None;
+                }
+                Poll::Ready(Err(err)) => {
+                    state.flush = None;
+                    return Poll::Ready(Err(err));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        } else if state.pending.is_empty() {
+            return Poll::Ready(Ok(()));
+        } else {
+            let bytes = std::mem::take(&mut state.pending);
+            let db = Arc::clone(db);
+            state.flush = Some(Box::pin(async move {
+                persist_aleph_bft_backup_bytes(db, session_id, bytes).await
+            }));
+        }
+    }
+}
+
+async fn persist_aleph_bft_backup_bytes(
+    db: DynMintDatabase,
+    session_id: u64,
+    bytes: Vec<u8>,
+) -> io::Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = db.begin_transaction().await.map_err(database_io_error)?;
+    tx.append_federation_aleph_bft_backup_bytes(session_id, &bytes)
+        .await
+        .map_err(database_io_error)?;
+    tx.commit().await.map_err(database_io_error)
+}
+
+fn database_io_error(err: cdk_common::database::Error) -> io::Error {
+    io::Error::other(format!("AlephBFT backup database error: {err}"))
+}
+
 /// Tokio-backed task spawner for upstream AlephBFT.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -625,6 +792,7 @@ mod tests {
     use cdk::mint_url::MintUrl;
     use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, SecretKey};
     use cdk::{Amount, MintQuoteRequest, MintQuoteResponse};
+    use cdk_common::database::DynMintDatabase;
     use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use parity_scale_codec::{Decode, Encode};
     use serde_json::json;
@@ -998,6 +1166,95 @@ mod tests {
             .read_to_end(&mut new_snapshot)
             .await
             .expect("read new snapshot");
+
+        assert_eq!(old_snapshot, b"before".to_vec());
+        assert_eq!(new_snapshot, b"before-after".to_vec());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_db_backup_writer_satisfies_run_session_io_bounds() {
+        fn assert_writer<W>(_: W)
+        where
+            W: AsyncWrite + Send + Sync + 'static,
+        {
+        }
+
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let backup = CdkAlephBftDbBackup::new(db, 100);
+
+        assert_writer(backup.writer());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_db_backup_writer_persists_on_flush_and_close() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let backup = CdkAlephBftDbBackup::new(Arc::clone(&db), 101);
+        let mut writer = backup.writer();
+
+        writer.write_all(b"first").await.expect("write first bytes");
+        assert_eq!(
+            db.get_federation_aleph_bft_backup_bytes(101)
+                .await
+                .expect("read before flush"),
+            None
+        );
+
+        writer.flush().await.expect("flush first bytes");
+        assert_eq!(
+            db.get_federation_aleph_bft_backup_bytes(101)
+                .await
+                .expect("read after flush"),
+            Some(b"first".to_vec())
+        );
+
+        writer
+            .write_all(b"-second")
+            .await
+            .expect("write second bytes");
+        writer.close().await.expect("close writer");
+
+        assert_eq!(
+            db.get_federation_aleph_bft_backup_bytes(101)
+                .await
+                .expect("read after close"),
+            Some(b"first-second".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_db_backup_reader_loads_persisted_session_snapshot() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let backup = CdkAlephBftDbBackup::new(Arc::clone(&db), 102);
+        let mut tx = db.begin_transaction().await.expect("begin");
+        tx.append_federation_aleph_bft_backup_bytes(102, b"before")
+            .await
+            .expect("append before");
+        tx.commit().await.expect("commit before");
+
+        let mut old_reader = backup.try_reader().await.expect("old db reader");
+        let mut writer = backup.writer();
+        writer
+            .write_all(b"-after")
+            .await
+            .expect("write after bytes");
+        writer.flush().await.expect("flush after bytes");
+
+        let mut old_snapshot = Vec::new();
+        let mut new_snapshot = Vec::new();
+        old_reader
+            .read_to_end(&mut old_snapshot)
+            .await
+            .expect("read old db snapshot");
+        backup
+            .try_reader()
+            .await
+            .expect("new db reader")
+            .read_to_end(&mut new_snapshot)
+            .await
+            .expect("read new db snapshot");
 
         assert_eq!(old_snapshot, b"before".to_vec());
         assert_eq!(new_snapshot, b"before-after".to_vec());

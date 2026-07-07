@@ -216,7 +216,8 @@ Current confirmed shape:
   `cargo test -p cdk-axum --features federation aleph_bft_private_rest_broadcast_stand_in_idles_after_network_finality_activation -- --test-threads 1`
   passed on 2026-07-07.
 - Focused AlephBFT run-session adapter tests:
-  `cargo test -p cdk-axum --features federation cdk_aleph_bft -- --test-threads 1`
+  `cargo test -p cdk-axum --features federation cdk_aleph_bft_db_backup -- --test-threads 1`,
+  `cargo test -p cdk-axum --features federation cdk_aleph_bft -- --test-threads 1`,
   and `cargo check -p cdk-axum --features federation` passed on 2026-07-07.
 - Focused startup authoritative-read tests:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
@@ -1116,6 +1117,10 @@ Architecture checklist:
   response evidence with whole-unit slicing, and returned evidence is replayed
   through the AlephBFT recovery constructor before any catch-up suffix is
   persisted or applied.
+  Raw AlephBFT backup bytes are now persisted per session, and the Axum runtime
+  exposes a run-session-compatible DB backup writer/reader: writes stay buffered
+  until `flush` or `close`, flushes append bytes through a mint DB transaction,
+  and readers load stable persisted snapshots for restart recovery.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
