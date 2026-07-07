@@ -10786,6 +10786,95 @@ async fn catch_up_replay_records_state_digest_checkpoint() {
 }
 
 #[tokio::test]
+async fn catch_up_replay_checkpoints_completed_operation_rows() {
+    let (state, public_config, _) = federation_route_state().await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let quote_id = QuoteId::new();
+    let output = mint_output(&state, &quote_id);
+    let mint_input = MintInput::Single(MintRequest {
+        quote: quote_id.clone(),
+        outputs: vec![output.clone()],
+        signature: None,
+    });
+    let mint_envelope = config.mint_operation(mint_input).expect("mint envelope");
+    let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
+    let mut peer_consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+    peer_consensus
+        .submit_envelope(mint_quote_envelope(&state, &quote_id))
+        .expect("peer accepted mint quote");
+    peer_consensus
+        .submit_envelope(paid_observation_envelope(&state, &quote_id))
+        .expect("peer accepted paid observation");
+    peer_consensus
+        .submit_envelope(mint_envelope)
+        .expect("peer accepted mint");
+    let catch_up_request = state
+        .federation_consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    let catch_up_response = peer_consensus
+        .catch_up_checked(&catch_up_request)
+        .expect("catch-up response");
+
+    let before_snapshot = materialized_state_snapshot(&state, &catch_up_response.entries)
+        .await
+        .expect("before snapshot");
+    assert!(
+        completed_operation_snapshot_row(&before_snapshot, mint_operation_id)
+            .fields
+            .contains_key("missing"),
+        "lagging member should expose a missing completed-operation row before replay"
+    );
+
+    let applied = state
+        .apply_federation_catch_up_response(&catch_up_response)
+        .await
+        .expect("apply catch-up response");
+    assert_eq!(applied.len(), 3);
+
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    let snapshot = materialized_state_snapshot(&state, &entries)
+        .await
+        .expect("materialized snapshot");
+    let expected_state_digest = snapshot.digest().expect("materialized digest");
+    let completed_row = completed_operation_snapshot_row(&snapshot, mint_operation_id);
+    assert_eq!(
+        completed_row.fields.get("kind").map(String::as_str),
+        Some("mint")
+    );
+    assert!(!completed_row.fields.contains_key("missing"));
+
+    let checkpoints = state
+        .mint
+        .localstore()
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoints");
+    let mint_entry = entries.last().expect("mint journal entry");
+
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(mint_entry.operation_id, mint_operation_id);
+    assert_eq!(checkpoints[0].operation_index, mint_entry.index);
+    assert_eq!(checkpoints[0].operation_id, mint_entry.operation_id);
+    assert_eq!(checkpoints[0].order_digest, mint_entry.order_digest);
+    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
+}
+
+#[tokio::test]
 async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
     let (mut public_config, local_private, peer_private) = transport_config();
     public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
