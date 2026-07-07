@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: require restore share provenance</span>
+          <span class="value">test: cover four-member smoke matrix</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation restore now ignores orphan compatibility blind-signature rows and returns signatures only from accepted-operation federation share provenance.</span>
+          <span class="value">The local fakewallet smoke generator now has explicit 4-member/threshold-3 matrix coverage, and the previous CPU-spin issue is marked fixed in the plan rather than tracked as active work.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -772,7 +772,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, concurrent duplicate public value routes are member-local idempotent for mint, swap, and melt, concurrent all-member wallet mint, swap, and melt fanout returns identical aggregate-verifiable responses while leaving one accepted operation per member, mint and swap keep one response cache entry per member, swap fanout spends each input once per member, melt fanout converges through matching paid observations while making only one elected fake-wallet payment attempt, duplicate AlephBFT peer entries cannot inflate quorum or skipped-member telemetry, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
+            <p>Known CPU spin and blocking-call issues are fixed and closed unless they reappear, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, concurrent duplicate public value routes are member-local idempotent for mint, swap, and melt, concurrent all-member wallet mint, swap, and melt fanout returns identical aggregate-verifiable responses while leaving one accepted operation per member, mint and swap keep one response cache entry per member, swap fanout spends each input once per member, melt fanout converges through matching paid observations while making only one elected fake-wallet payment attempt, duplicate AlephBFT peer entries cannot inflate quorum or skipped-member telemetry, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -816,7 +816,8 @@
         <p class="section-note">
           Current verification target: production AlephBFT network finality,
           larger wallet-operation smoke repetitions, storage-backed 4-member
-          and 5-member partition windows, and compile gates.
+          and 5-member partition windows, and compile gates. The previous CPU
+          issue is closed unless it reappears.
         </p>
       </section>
 
@@ -907,7 +908,7 @@
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
-            <p>Extend the now-passing five-member Postgres long-partition smoke to larger rosters, longer offline windows, and repeated runs that can expose slow polling, storage contention, or convergence flakiness.</p>
+            <p>Extend the now-passing five-member Postgres long-partition smoke to larger rosters, longer offline windows, and repeated runs that can expose storage contention or convergence flakiness.</p>
           </article>
           <article class="item">
             <h3>Longer partition windows</h3>

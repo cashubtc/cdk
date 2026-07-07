@@ -773,6 +773,60 @@ fn trusted_dealer_postgres_storage_options_are_validated() {
 }
 
 #[test]
+fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
+    let output_dir = temp_output_dir("four_member_matrix");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let mut args = generator_args(output_dir.clone());
+    args.members = 4;
+    args.threshold = 3;
+    args.port_start = 19_545;
+
+    let artifacts =
+        generate_trusted_dealer_artifacts(&args).expect("four member trusted dealer artifacts");
+    let public_json =
+        std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
+    let public_config: FederationConfig =
+        serde_json::from_str(&public_json).expect("public config json");
+    public_config.validate().expect("public config validates");
+    assert_eq!(public_config.threshold_params.member_count, 4);
+    assert_eq!(public_config.threshold_params.signature_threshold, 3);
+    assert_eq!(public_config.threshold_params.consensus_threshold, 3);
+    assert_eq!(artifacts.member_artifacts.len(), 4);
+
+    let smoke_script =
+        std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+    assert!(smoke_script.contains("MEMBERS=(1 2 3 4)"));
+    assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
+    assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
+    assert!(smoke_script.contains("wait_for_converged"));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum"));
+    assert!(smoke_script.contains("--scenario offline-member-operations"));
+    assert!(smoke_script.contains("--scenario pending-melt-start"));
+    assert!(smoke_script.contains("--scenario pending-melt-finish"));
+    assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
+    assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
+    assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
+    assert!(smoke_script.contains("--scenario offline-member-keyset-rotation"));
+    assert!(smoke_script.contains("federation payment-observations"));
+    assert!(smoke_script.contains("wait_for_prometheus_metrics"));
+
+    for (member_id, member_artifacts) in &artifacts.member_artifacts {
+        assert!(smoke_script.contains(&format!("    {}) printf", member_id.get())));
+        assert!(smoke_script.contains(&member_artifacts.config_path.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(
+            &member_artifacts
+                .private_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(&member_artifacts.prometheus_url));
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
 fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     let output_dir = temp_output_dir("five_member_matrix");
     let _ = std::fs::remove_dir_all(&output_dir);
