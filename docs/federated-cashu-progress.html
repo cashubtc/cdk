@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split mint federation melt tests</span>
+          <span class="value">refactor: split mint federation swap tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Stateful federated melt tests now live in their own module, covering rejection paths, reserve-before-payment ordering, transient backend Unknown, deterministic payment actors, internal settlement, catch-up observations, and stored-quorum finalization.</span>
+          <span class="value">Stateful federated swap tests now live in their own module, covering rotated output signing, malformed proof rejection, accepted materialization, P2PK/HTLC conditions, SIG_ALL mutation rejection, and sliding-window input-reuse attacks.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -756,7 +756,7 @@
           </article>
           <article class="item">
             <h3>Codebase hygiene</h3>
-            <p>Large federation test surfaces are being split into focused modules without changing behavior. Mint runtime/admission tests and stateful melt tests now sit under dedicated modules while shared mint federation fixtures remain available to the remaining apply tests.</p>
+            <p>Large federation test surfaces are being split into focused modules without changing behavior. Mint runtime/admission tests plus stateful swap and melt tests now sit under dedicated modules while shared mint federation fixtures remain available to the remaining apply tests.</p>
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
