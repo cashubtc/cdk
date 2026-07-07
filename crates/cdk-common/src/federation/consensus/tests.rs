@@ -3704,6 +3704,8 @@ fn dummy_consensus_rejects_empty_incomplete_catch_up_response() {
         latest_order_digest: super::super::FederationJournalDigest::genesis(),
         state_digest: FederationStateDigest::genesis(),
         session_outcome: None,
+        aleph_bft_finalized_items: Vec::new(),
+        aleph_bft_finalized_items_complete: true,
         complete: false,
     };
 

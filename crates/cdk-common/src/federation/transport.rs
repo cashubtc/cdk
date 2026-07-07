@@ -14,8 +14,8 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConsensusBackendKind, FederationDkgParticipantCommitment,
+    FederationAlephBftFinalizedItem, FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload,
+    FederationConfig, FederationConsensusBackendKind, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -1173,6 +1173,8 @@ pub struct FederationJournalCatchUpRequest {
     /// Optional digest the requester has after `next_index - 1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub known_order_digest: Option<FederationJournalDigest>,
+    /// Next missing AlephBFT finalized-item index for AlephBFT catch-up.
+    pub aleph_bft_next_item_index: u64,
 }
 
 impl FederationJournalCatchUpRequest {
@@ -1183,6 +1185,7 @@ impl FederationJournalCatchUpRequest {
             next_index,
             limit: None,
             known_order_digest: None,
+            aleph_bft_next_item_index: 0,
         }
     }
 
@@ -1197,6 +1200,13 @@ impl FederationJournalCatchUpRequest {
     #[must_use]
     pub fn with_known_order_digest(mut self, digest: FederationJournalDigest) -> Self {
         self.known_order_digest = Some(digest);
+        self
+    }
+
+    /// Set the requester's next missing AlephBFT finalized-item index.
+    #[must_use]
+    pub fn with_aleph_bft_next_item_index(mut self, next_item_index: u64) -> Self {
+        self.aleph_bft_next_item_index = next_item_index;
         self
     }
 
@@ -1402,6 +1412,10 @@ pub struct FederationJournalCatchUpResponse {
     /// Signed summary of the returned accepted-operation range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_outcome: Option<FederationSessionOutcome>,
+    /// AlephBFT finalized items returned for exact adapter replay.
+    pub aleph_bft_finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    /// Whether all requested AlephBFT finalized items were returned.
+    pub aleph_bft_finalized_items_complete: bool,
     /// Whether the peer returned all entries currently available from `from_index`.
     pub complete: bool,
 }
@@ -1429,8 +1443,22 @@ impl FederationJournalCatchUpResponse {
             latest_order_digest: journal.latest_order_digest(),
             state_digest: journal.state_digest(),
             session_outcome: None,
+            aleph_bft_finalized_items: Vec::new(),
+            aleph_bft_finalized_items_complete: true,
             complete,
         }
+    }
+
+    /// Attach AlephBFT finalized items for adapter replay catch-up.
+    #[must_use]
+    pub fn with_aleph_bft_finalized_items(
+        mut self,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+        complete: bool,
+    ) -> Self {
+        self.aleph_bft_finalized_items = finalized_items;
+        self.aleph_bft_finalized_items_complete = complete;
+        self
     }
 
     /// Attach a member-signed session outcome for the returned entry range.
@@ -1941,6 +1969,78 @@ mod tests {
         assert_eq!(response.latest_index, Some(2));
         assert_eq!(response.latest_order_digest, journal.latest_order_digest());
         assert_eq!(response.state_digest, journal.state_digest());
+        assert!(response.aleph_bft_finalized_items.is_empty());
+        assert!(response.aleph_bft_finalized_items_complete);
+    }
+
+    #[test]
+    fn catch_up_request_and_response_carry_aleph_bft_replay_fields() {
+        let request = FederationJournalCatchUpRequest::new(3).with_aleph_bft_next_item_index(7);
+        assert_eq!(request.aleph_bft_next_item_index, 7);
+        let encoded_request = serde_json::to_value(&request).expect("request json");
+        assert_eq!(encoded_request["aleph_bft_next_item_index"], 7);
+
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(0),
+            50,
+            100,
+        )
+        .with_aleph_bft_finalized_items(Vec::new(), false);
+        let encoded_response = serde_json::to_value(&response).expect("response json");
+        assert!(encoded_response["aleph_bft_finalized_items"]
+            .as_array()
+            .expect("finalized items array")
+            .is_empty());
+        assert_eq!(
+            encoded_response["aleph_bft_finalized_items_complete"],
+            false
+        );
+    }
+
+    #[test]
+    fn catch_up_messages_reject_missing_aleph_bft_replay_fields() {
+        let mut request_value =
+            serde_json::to_value(FederationJournalCatchUpRequest::new(3)).expect("request json");
+        request_value
+            .as_object_mut()
+            .expect("request object")
+            .remove("aleph_bft_next_item_index");
+        assert!(serde_json::from_value::<FederationJournalCatchUpRequest>(request_value).is_err());
+
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(0),
+            50,
+            100,
+        );
+        let mut response_without_items =
+            serde_json::to_value(&response).expect("response json without items");
+        response_without_items
+            .as_object_mut()
+            .expect("response object")
+            .remove("aleph_bft_finalized_items");
+        assert!(
+            serde_json::from_value::<FederationJournalCatchUpResponse>(response_without_items)
+                .is_err()
+        );
+
+        let mut response_without_complete =
+            serde_json::to_value(&response).expect("response json without completeness");
+        response_without_complete
+            .as_object_mut()
+            .expect("response object")
+            .remove("aleph_bft_finalized_items_complete");
+        assert!(serde_json::from_value::<FederationJournalCatchUpResponse>(
+            response_without_complete
+        )
+        .is_err());
     }
 
     #[test]

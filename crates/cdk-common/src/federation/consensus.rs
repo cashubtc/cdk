@@ -2404,8 +2404,14 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
     }
 
     fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
-        FederationJournalCatchUpRequest::new(self.journal().next_index())
-            .with_known_order_digest(self.journal().latest_order_digest())
+        let request = FederationJournalCatchUpRequest::new(self.journal().next_index())
+            .with_known_order_digest(self.journal().latest_order_digest());
+        match &self.backend {
+            FederationConsensusRuntimeBackend::InMemory(_) => request,
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                request.with_aleph_bft_next_item_index(adapter.next_item_index())
+            }
+        }
     }
 
     fn catch_up(

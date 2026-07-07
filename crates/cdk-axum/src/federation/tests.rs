@@ -9843,12 +9843,9 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
         .expect("federation config")
         .member_id();
     state
-        .submit_federation_envelope(restore_envelope(
-            public_config.federation_id,
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
         .await
-        .expect("submit restore");
+        .expect("submit mint quote");
 
     let request = signed_status_request(&public_config, &peer_private, local_member, 1);
     let response = post_local_status(State(state.clone()), Json(request))
@@ -10090,12 +10087,9 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
         federation_route_state_with_local_private().await;
     let local_member = local_private.member_id;
     state
-        .submit_federation_envelope(restore_envelope(
-            public_config.federation_id,
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
         .await
-        .expect("submit restore");
+        .expect("submit mint quote");
     let entries = state
         .mint
         .localstore()
@@ -10488,12 +10482,9 @@ async fn private_journal_route_returns_signed_session_outcome() {
         .expect("federation config")
         .member_id();
     state
-        .submit_federation_envelope(restore_envelope(
-            public_config.federation_id,
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
         .await
-        .expect("submit restore");
+        .expect("submit mint quote");
     reset_federation_runtime_journal(&mut state);
     assert_eq!(consensus_operation_count(&state).await, 0);
 
@@ -10515,6 +10506,77 @@ async fn private_journal_route_returns_signed_session_outcome() {
     response
         .verify_session_outcome(public_config.member(local_member).expect("local member"))
         .expect("session outcome verifies");
+}
+
+#[tokio::test]
+async fn private_journal_route_returns_whole_aleph_bft_finalized_item_units() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let local_member = local_private.member_id;
+    let first_quote_id = QuoteId::new();
+    let second_quote_id = QuoteId::new();
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(mint_quote_envelope(&state, &first_quote_id)),
+            FederationConsensusItem::operation(mint_quote_envelope(&state, &second_quote_id)),
+        ],
+    )
+    .expect("two-item AlephBFT unit");
+    state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect("apply AlephBFT unit");
+
+    let partial_request = signed_catch_up_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        FederationJournalCatchUpRequest::new(0)
+            .with_limit(1)
+            .with_aleph_bft_next_item_index(0),
+    );
+    let partial_response = post_journal(State(state.clone()), Json(partial_request))
+        .await
+        .expect("partial-limit journal response")
+        .0;
+    assert_eq!(partial_response.entries.len(), 1);
+    assert!(partial_response.aleph_bft_finalized_items.is_empty());
+    assert!(!partial_response.aleph_bft_finalized_items_complete);
+
+    let complete_request = signed_catch_up_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        2,
+        FederationJournalCatchUpRequest::new(0)
+            .with_limit(2)
+            .with_aleph_bft_next_item_index(0),
+    );
+    let complete_response = post_journal(State(state), Json(complete_request))
+        .await
+        .expect("complete journal response")
+        .0;
+    assert_eq!(complete_response.entries.len(), 2);
+    assert_eq!(complete_response.aleph_bft_finalized_items.len(), 2);
+    assert!(complete_response.aleph_bft_finalized_items_complete);
+    assert!(complete_response
+        .aleph_bft_finalized_items
+        .iter()
+        .all(|item| item.unit_index == 0));
 }
 
 #[tokio::test]

@@ -695,9 +695,13 @@ where
             .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
         let request = {
             let consensus = consensus.lock().await;
-            consensus
+            let mut request = consensus
                 .catch_up_request()
-                .with_limit(self.sync_config.catch_up_limit)
+                .with_limit(self.sync_config.catch_up_limit);
+            if let Ok(status) = consensus.aleph_bft_status() {
+                request = request.with_aleph_bft_next_item_index(status.next_item_index);
+            }
+            request
         };
         let response = self.catch_up(member, &request).await?;
         let additional_outcomes =

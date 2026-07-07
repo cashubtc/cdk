@@ -338,6 +338,8 @@ async fn session_outcome_quorum_status(
             latest_order_digest: range.latest_order_digest,
             state_digest: range.state_digest,
             session_outcome: None,
+            aleph_bft_finalized_items: Vec::new(),
+            aleph_bft_finalized_items_complete: true,
             complete: true,
         };
 
