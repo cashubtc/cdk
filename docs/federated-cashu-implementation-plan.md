@@ -143,9 +143,10 @@ Current confirmed shape:
   `cargo check -p cdk-common --features federation`,
   `cargo check -p cdk-sql-common --features federation`, and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
-- Latest failed-state melt checkpoint: SQL mint schemas now admit the `FAILED`
-  melt quote state, and federated melt apply treats `Failed` as retryable
-  through the normal accepted melt setup path.
+- Latest failed-state melt checkpoint: base SQL mint schemas admit the
+  `FAILED` melt quote state without introducing a separate development
+  migration, and federated melt apply treats `Failed` as retryable through the
+  normal accepted melt setup path.
 - Focused failed-state tests:
   `cargo test -p cdk --features federation retries_failed_quote -- --test-threads 1`,
   `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`,

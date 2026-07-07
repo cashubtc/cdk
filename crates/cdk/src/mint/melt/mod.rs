@@ -1296,6 +1296,9 @@ impl Mint {
                 .await?;
             }
             MeltQuoteState::Unknown => {
+                // Defensive only: backend uncertainty must remain a transient
+                // payment observation, not a durable federated melt quote
+                // state. Base SQL schemas reject UNKNOWN for melt quotes.
                 tracing::warn!(
                     "Federated melt quote {} has unexpected durable Unknown state",
                     quote_id

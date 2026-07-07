@@ -456,6 +456,12 @@ mod federation_migration_tests {
         }
     }
 
+    fn compact_sql(sql: &str) -> String {
+        sql.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    }
+
     #[test]
     fn federation_mint_migrations_cover_sqlite_and_postgres() {
         let sqlite_saga =
@@ -706,6 +712,41 @@ mod federation_migration_tests {
                     "payload_json",
                     "idx_federation_dkg_transcript_signatures_member",
                 ],
+            );
+        }
+    }
+
+    #[test]
+    fn melt_quote_state_schema_keeps_unknown_transient() {
+        let postgres_initial = include_str!("migrations/postgres/1_initial.sql");
+        let sqlite_quote_state = include_str!("migrations/sqlite/20240618195700_quote_state.sql");
+        let sqlite_request_lookup_rebuild = include_str!(
+            "migrations/sqlite/20250819200000_remove_request_lookup_kind_constraints.sql"
+        );
+
+        for sql in [
+            postgres_initial,
+            sqlite_quote_state,
+            sqlite_request_lookup_rebuild,
+        ] {
+            assert_contains_all(sql, &["'UNPAID'", "'PENDING'", "'PAID'", "'FAILED'"]);
+            let compact = compact_sql(sql);
+            assert!(
+                compact.contains("stateIN('UNPAID','PENDING','PAID','FAILED')"),
+                "melt quote schema must admit FAILED in its durable-state constraint:\n{sql}"
+            );
+            assert!(
+                !compact.contains("stateIN('UNPAID','PENDING','PAID','UNKNOWN'")
+                    && !compact.contains("stateIN('UNPAID','PENDING','PAID','FAILED','UNKNOWN'")
+                    && !compact.contains("stateIN('UNPAID','PENDING','PAID','UNKNOWN','FAILED'"),
+                "melt quote schema must not persist backend Unknown as a durable state:\n{sql}"
+            );
+        }
+
+        for (_, name, _) in super::migrations::MIGRATIONS {
+            assert!(
+                !name.contains("allow_failed_melt_quote_state"),
+                "FAILED quote-state support should be folded into base schemas during federation development"
             );
         }
     }
