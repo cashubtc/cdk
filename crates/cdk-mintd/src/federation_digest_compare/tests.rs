@@ -77,6 +77,19 @@ fn payment_observation_row(
         .expect("payment observation row fingerprint")
 }
 
+fn completed_operation_row(
+    key: &str,
+    kind: &str,
+    response_hash: &str,
+) -> FederationMaterializedStateRowFingerprint {
+    FederationMaterializedStateRow::new("completed_operations", key)
+        .with_field("federation_operation_id", "secret-federation-operation-id")
+        .with_field("kind", kind)
+        .with_field("response_hash", response_hash)
+        .fingerprint()
+        .expect("completed operation row fingerprint")
+}
+
 trait StatusFixtureExt {
     fn with_state_digest(self, state_digest: FederationStateDigest) -> Self;
 }
@@ -283,12 +296,11 @@ fn digest_comparison_diagnoses_missing_completed_operation_row() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
     let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
     let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
-    let completed_operation_row =
-        FederationMaterializedStateRow::new("completed_operations", "completed-operation-row-uuid")
-            .with_field("federation_operation_id", "accepted-operation-id")
-            .with_field("kind", "mint")
-            .fingerprint()
-            .expect("completed operation row fingerprint");
+    let completed_operation_row = completed_operation_row(
+        "completed-operation-row-uuid",
+        "mint",
+        "secret-response-hash",
+    );
     let mut first = local_status(1, 4, order_digest, first_state_digest);
     first.materialized_state_rows = vec![completed_operation_row];
     let second = local_status(2, 4, order_digest, second_state_digest);
@@ -312,7 +324,63 @@ fn digest_comparison_diagnoses_missing_completed_operation_row() {
     assert!(line.contains("table=completed_operations"));
     assert!(line.contains("missing_members=2"));
     assert!(!line.contains("completed-operation-row-uuid"));
-    assert!(!line.contains("accepted-operation-id"));
+    assert!(!line.contains("secret-federation-operation-id"));
+    assert!(!line.contains("secret-response-hash"));
+}
+
+#[test]
+fn digest_comparison_diagnoses_completed_operation_row_variant_without_leaking_response_material() {
+    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+    let matching_state_digest = FederationStateDigest::from_bytes([2; 32]);
+    let divergent_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let completed_operation_key = "completed-operation-row-uuid";
+
+    let mut third = local_status(3, 8, order_digest, matching_state_digest);
+    third.materialized_state_rows = vec![completed_operation_row(
+        completed_operation_key,
+        "melt",
+        "secret-response-hash-a",
+    )];
+    let mut second = local_status(2, 8, order_digest, divergent_state_digest);
+    second.materialized_state_rows = vec![completed_operation_row(
+        completed_operation_key,
+        "melt",
+        "secret-response-hash-b",
+    )];
+    let mut first = local_status(1, 8, order_digest, matching_state_digest);
+    first.materialized_state_rows = vec![completed_operation_row(
+        completed_operation_key,
+        "melt",
+        "secret-response-hash-a",
+    )];
+    let statuses = vec![third, second, first];
+
+    let report = DigestComparisonReport::from_statuses(&statuses);
+
+    assert_eq!(report.row_diffs.len(), 1);
+    let diff = &report.row_diffs[0];
+    assert_eq!(diff.table, "completed_operations");
+    assert!(diff.missing_members.is_empty());
+    assert_eq!(diff.variants.len(), 2);
+    let matching_variant = diff
+        .variants
+        .iter()
+        .find(|variant| variant.members.len() == 2)
+        .expect("matching completed operation variant");
+    assert_eq!(
+        matching_variant.members,
+        vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(3).expect("member three"),
+        ]
+    );
+    let line = materialized_row_diff_line(diff);
+    assert!(line.contains("table=completed_operations"));
+    assert!(line.contains("missing_members=none"));
+    assert!(!line.contains(completed_operation_key));
+    assert!(!line.contains("secret-federation-operation-id"));
+    assert!(!line.contains("secret-response-hash-a"));
+    assert!(!line.contains("secret-response-hash-b"));
 }
 
 #[test]
