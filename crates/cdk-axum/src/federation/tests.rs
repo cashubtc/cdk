@@ -291,6 +291,33 @@ struct DelayTransport {
     delay: Duration,
 }
 
+#[derive(Clone)]
+struct RouterFederationTransport {
+    router: Option<Router>,
+}
+
+impl std::fmt::Debug for RouterFederationTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouterFederationTransport")
+            .field("configured", &self.router.is_some())
+            .finish()
+    }
+}
+
+impl RouterFederationTransport {
+    fn new(router: Router) -> Self {
+        Self {
+            router: Some(router),
+        }
+    }
+}
+
+impl Default for RouterFederationTransport {
+    fn default() -> Self {
+        Self { router: None }
+    }
+}
+
 impl Default for DelayTransport {
     fn default() -> Self {
         Self {
@@ -654,6 +681,69 @@ impl Transport for MockFederationTransport {
             }
             path => Err(HttpError::Other(format!("unexpected POST path {path}"))),
         }
+    }
+}
+
+#[async_trait]
+impl Transport for RouterFederationTransport {
+    fn with_proxy(
+        &mut self,
+        _proxy: url::Url,
+        _host_matcher: Option<&str>,
+        _accept_invalid_certs: bool,
+    ) -> Result<(), HttpError> {
+        Ok(())
+    }
+
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+        Ok(Vec::new())
+    }
+
+    async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
+    where
+        R: DeserializeOwned,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_post<P, R>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, HttpError>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        let router = self
+            .router
+            .clone()
+            .ok_or_else(|| HttpError::Other("router transport not configured".to_string()))?;
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(url.path())
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(serde_json::to_vec(payload)?))
+            .map_err(|err| HttpError::Other(err.to_string()))?;
+        let response = router
+            .oneshot(request)
+            .await
+            .map_err(|err| HttpError::Other(err.to_string()))?;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map_err(|err| HttpError::Other(err.to_string()))?;
+        if !status.is_success() {
+            return Err(HttpError::Status {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).to_string(),
+            });
+        }
+        Ok(serde_json::from_slice(&body)?)
     }
 }
 
@@ -1649,9 +1739,16 @@ fn restore_envelope_for_state(
     label: &'static str,
 ) -> FederationOperationEnvelope {
     let config = state.mint.federation_config().expect("federation config");
+    restore_envelope_for_config(config.public_config(), label)
+}
+
+fn restore_envelope_for_config(
+    config: &FederationConfig,
+    label: &'static str,
+) -> FederationOperationEnvelope {
     restore_envelope_with_output(
-        config.federation_id(),
-        config.public_config().keysets[0].id,
+        config.federation_id,
+        config.keysets[0].id,
         PublicKey::from(BlsG1PublicKey::hash_to_curve(label.as_bytes())),
     )
 }
@@ -2080,15 +2177,10 @@ async fn rest_peer_client_submits_dkg_setup_messages() {
 
 #[tokio::test]
 async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind receiver federation route");
-    let address = listener.local_addr().expect("receiver route address");
     let sender_federation_api_url =
         MintUrl::from_str("http://127.0.0.1:9").expect("sender federation api url");
     let receiver_federation_api_url =
-        MintUrl::from_str(&format!("http://127.0.0.1:{}", address.port()))
-            .expect("receiver federation api url");
+        MintUrl::from_str("http://127.0.0.1:10").expect("receiver federation api url");
     let (public_config, sender_private, receiver_private) =
         transport_config_with_federation_api_urls(
             sender_federation_api_url,
@@ -2113,15 +2205,13 @@ async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
     let router = Router::new()
         .nest("/federation/v1", create_federation_router())
         .with_state(receiver_state.clone());
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .await
-            .expect("receiver federation route server");
-    });
-    tokio::task::yield_now().await;
 
-    let client = FederationRestPeerClient::new(Async::default(), &public_config, sender_private)
-        .expect("client");
+    let client = FederationRestPeerClient::new(
+        RouterFederationTransport::new(router),
+        &public_config,
+        sender_private,
+    )
+    .expect("client");
     client
         .submit_dkg_commitment(receiver_member, &commitment_request)
         .await
@@ -2167,8 +2257,6 @@ async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
     assert_eq!(commitments, vec![expected_commitment]);
     assert_eq!(reveals, vec![expected_reveal]);
     assert_eq!(secret_shares, vec![expected_secret_share]);
-
-    server.abort();
 }
 
 #[tokio::test]
@@ -2452,12 +2540,12 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let witness_member = public_config.member(member_id(3)).expect("witness member");
-    let first = restore_envelope(
-        federation_id,
+    let first = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let second = restore_envelope(
-        federation_id,
+    let second = restore_envelope_for_config(
+        &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
@@ -2549,12 +2637,12 @@ async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let first = restore_envelope(
-        federation_id,
+    let first = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let second = restore_envelope(
-        federation_id,
+    let second = restore_envelope_for_config(
+        &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
@@ -2610,12 +2698,12 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let first = restore_envelope(
-        federation_id,
+    let first = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let second = restore_envelope(
-        federation_id,
+    let second = restore_envelope_for_config(
+        &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
@@ -3411,12 +3499,12 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope(
-        federation_id,
+    let peer_entry = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let local_entry = restore_envelope(
-        federation_id,
+    let local_entry = restore_envelope_for_config(
+        &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
@@ -3542,8 +3630,8 @@ async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
         federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope(
-        federation_id,
+    let peer_entry = restore_envelope_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);

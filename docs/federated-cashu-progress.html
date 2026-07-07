@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: sync AlephBFT finalized cursor lag</span>
+          <span class="value">test: keep peer-client federation fixtures v3-only</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Peer status now carries the AlephBFT finalized-item cursor, statuses missing that cursor are rejected fail-closed, and peer sync catches up when either accepted-operation height or finalized-item evidence lags.</span>
+          <span class="value">Private REST peer-client catch-up tests now use active v3/BLS federation keysets for normal restore operations, and the DKG route smoke posts through an in-process router transport instead of relying on local socket binding.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -710,7 +710,7 @@
           </article>
           <article class="item">
             <h3>Private REST federation</h3>
-            <p>Member traffic uses signed private REST envelopes with roster authentication, sequence watermarks, status, catch-up, operation submission, payment observation, DKG, and AlephBFT finalized-unit routes.</p>
+            <p>Member traffic uses signed private REST envelopes with roster authentication, sequence watermarks, status, catch-up, operation submission, payment observation, DKG, and AlephBFT finalized-unit routes; peer-client route smoke coverage now runs through an in-process router transport without local port binding.</p>
           </article>
           <article class="item">
             <h3>Durable storage</h3>

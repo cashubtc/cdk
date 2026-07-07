@@ -81,7 +81,7 @@ use cdk::federation::{
     FederationPeerStatusRequest,
 };
 #[cfg(test)]
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 #[cfg(test)]
 use tokio::time::{self, Duration};
 
