@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: validate federation mint info metadata</span>
+          <span class="value">refactor: split wallet federation validation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation mints advertise typed Cashu mint-info metadata, and wallets reject missing or mismatched member metadata before aggregate key discovery or value-changing fanout.</span>
+          <span class="value">Wallet-side federation mint-info and aggregate keyset validation now live in a dedicated validation submodule while preserving the public connector API.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -718,7 +718,7 @@
           </article>
           <article class="item">
             <h3>Wallet federation</h3>
-            <p>The wallet connector discovers federation invites, requires typed member mint-info metadata, filters compatible members, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
+            <p>The wallet connector discovers federation invites, requires typed member mint-info metadata, filters compatible members through a dedicated validation module, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement.</p>
           </article>
           <article class="item">
             <h3>DKG and rotation path</h3>
