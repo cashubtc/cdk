@@ -107,6 +107,11 @@ impl<D> CdkAlephBftNetworkHandle<D> {
     pub(crate) async fn next_outgoing(&mut self) -> Option<CdkAlephBftOutboundMessage<D>> {
         self.outgoing.recv().await
     }
+
+    /// Try to receive the next outbound message without waiting.
+    pub(crate) fn try_next_outgoing(&mut self) -> Option<CdkAlephBftOutboundMessage<D>> {
+        self.outgoing.try_recv().ok()
+    }
 }
 
 #[async_trait::async_trait]
@@ -217,6 +222,25 @@ impl CdkAlephBftKeychain {
         self.members_by_node
             .get(node.0)
             .map(|(member_id, _)| *member_id)
+    }
+
+    /// Return the federation member config represented by a given AlephBFT node index.
+    pub(crate) fn member_config_for_node(&self, node: NodeIndex) -> Option<&MemberConfigPublic> {
+        self.members_by_node.get(node.0).map(|(_, member)| member)
+    }
+
+    /// Return the local federation member represented by this keychain.
+    pub(crate) fn local_member(&self) -> MemberId {
+        self.private_config.member_id
+    }
+
+    /// Return all configured remote federation members.
+    pub(crate) fn remote_members(&self) -> Vec<MemberConfigPublic> {
+        self.members_by_node
+            .iter()
+            .filter(|(member_id, _)| *member_id != self.private_config.member_id)
+            .map(|(_, member)| member.clone())
+            .collect()
     }
 }
 

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use aleph_bft::{Network, NodeIndex, Recipient};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::cdk_database::MintDatabase;
@@ -37,12 +38,15 @@ use cdk::types::FeeReserve;
 use cdk::Amount;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use cdk_http_client::HttpError;
+use parity_scale_codec::Decode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tower::ServiceExt;
 
 use crate::auth::AuthHeader;
 
+use super::aleph_bft_network::{run_cdk_aleph_bft_network_pump_tick, CdkAlephBftNetworkPumpConfig};
+use super::aleph_bft_runtime::{CdkAlephBftKeychain, CdkAlephBftNetwork};
 use super::*;
 
 mod aleph_bft_routes;
@@ -7946,6 +7950,178 @@ async fn aleph_bft_private_rest_broadcast_stand_in_idles_after_network_finality_
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
+async fn aleph_bft_network_pump_broadcasts_everyone_to_remote_members() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 7);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+
+    network.send(42, Recipient::Everyone);
+    let outcome = run_cdk_aleph_bft_network_pump_tick(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 7,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+    )
+    .await
+    .expect("network pump tick");
+
+    assert_eq!(outcome.messages_drained, 1);
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![member_id(2), member_id(3), member_id(4), member_id(5)]
+    );
+    assert!(outcome.remote_failed_members.is_empty());
+    assert!(outcome.remote_skipped_members.is_empty());
+    assert!(!outcome.reached_idle);
+    let requests = transport.aleph_bft_network_message_requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.receiver)
+            .collect::<Vec<_>>(),
+        vec![member_id(2), member_id(3), member_id(4), member_id(5)]
+    );
+    for request in requests {
+        request
+            .verify(&public_config, request.receiver)
+            .expect("signed request verifies");
+        assert_eq!(request.sender, local_private.member_id);
+        assert_eq!(request.payload.session_id, 7);
+        let bytes = request.payload.message_bytes().expect("message bytes");
+        let decoded = u64::decode(&mut &bytes[..]).expect("scale u64");
+        assert_eq!(decoded, 42);
+    }
+}
+
+#[tokio::test]
+async fn aleph_bft_network_pump_sends_node_recipient_to_one_remote_member() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 8);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+
+    network.send(99, Recipient::Node(NodeIndex(2)));
+    let outcome = run_cdk_aleph_bft_network_pump_tick(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 8,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+    )
+    .await
+    .expect("network pump tick");
+
+    assert_eq!(outcome.messages_drained, 1);
+    assert_eq!(outcome.remote_accepted_members, vec![member_id(3)]);
+    assert!(outcome.remote_failed_members.is_empty());
+    assert!(outcome.remote_skipped_members.is_empty());
+    let requests = transport.aleph_bft_network_message_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].receiver, member_id(3));
+    let bytes = requests[0].payload.message_bytes().expect("message bytes");
+    let decoded = u64::decode(&mut &bytes[..]).expect("scale u64");
+    assert_eq!(decoded, 99);
+}
+
+#[tokio::test]
+async fn aleph_bft_network_pump_does_not_rest_send_local_node_recipient() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 9);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+
+    network.send(100, Recipient::Node(NodeIndex(0)));
+    let outcome = run_cdk_aleph_bft_network_pump_tick(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 9,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+    )
+    .await
+    .expect("network pump tick");
+
+    assert_eq!(outcome.messages_drained, 1);
+    assert!(outcome.remote_accepted_members.is_empty());
+    assert!(outcome.remote_failed_members.is_empty());
+    assert!(outcome.remote_skipped_members.is_empty());
+    assert!(transport.aleph_bft_network_message_requests().is_empty());
+}
+
+#[tokio::test]
+async fn aleph_bft_network_pump_records_delivery_failures_without_failing_tick() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+
+    network.send(123, Recipient::Everyone);
+    let outcome = run_cdk_aleph_bft_network_pump_tick(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 10,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+    )
+    .await
+    .expect("network pump tick records peer failures");
+
+    assert_eq!(outcome.messages_drained, 1);
+    assert!(outcome.remote_accepted_members.is_empty());
+    assert_eq!(
+        outcome.remote_failed_members,
+        vec![member_id(2), member_id(3), member_id(4), member_id(5)]
+    );
+    assert!(outcome.remote_skipped_members.is_empty());
+    assert_eq!(transport.aleph_bft_network_message_requests().len(), 4);
 }
 
 #[tokio::test]
