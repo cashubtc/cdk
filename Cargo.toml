@@ -45,6 +45,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1"
+aleph-bft = "0.45.4"
 async-trait = "0.1"
 axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
@@ -105,6 +106,7 @@ uuid = { version = "1.17", features = ["v4", "v7", "serde"] }
 maud = { version = "0.27.0", features = ["axum"] }
 serde_with = "3"
 paste = { version = "1.0.15", default-features = false }
+parity-scale-codec = { version = "3.0", default-features = false, features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",

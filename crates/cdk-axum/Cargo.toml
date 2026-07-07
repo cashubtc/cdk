@@ -11,12 +11,13 @@ readme = "README.md"
 
 
 [features]
-federation = ["cdk/federation"]
+federation = ["cdk/federation", "dep:aleph-bft", "dep:parity-scale-codec"]
 redis = ["dep:redis"]
 prometheus = ["dep:cdk-prometheus"]
 info-page = ["dep:maud"]
 
 [dependencies]
+aleph-bft = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["ws"] }
@@ -32,6 +33,7 @@ cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }
 serde_json.workspace = true
 paste.workspace = true
+parity-scale-codec = { workspace = true, optional = true }
 serde.workspace = true
 url.workspace = true
 uuid.workspace = true

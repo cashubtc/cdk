@@ -28,6 +28,7 @@ use crate::MintState;
 
 mod aleph_bft_driver;
 mod aleph_bft_routes;
+mod aleph_bft_runtime;
 mod catch_up_routes;
 mod dkg_routes;
 mod payment_observation;
