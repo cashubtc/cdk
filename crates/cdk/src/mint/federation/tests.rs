@@ -907,6 +907,23 @@ async fn apply_paid_melt_observation_quorum(
     }
 }
 
+async fn set_melt_quote_state(
+    localstore: &Arc<MintSqliteDatabase>,
+    quote: &QuoteId,
+    state: MeltQuoteState,
+) {
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    let mut stored_quote = tx
+        .get_melt_quote(quote)
+        .await
+        .expect("melt quote lookup")
+        .expect("melt quote");
+    tx.update_melt_quote_state(&mut stored_quote, state, None)
+        .await
+        .expect("update melt quote state");
+    tx.commit().await.expect("commit melt quote state");
+}
+
 fn output_for_runtime(runtime_config: &FederationRuntimeConfig, label: &[u8]) -> BlindedMessage {
     let keyset = &runtime_config.public_config().keysets[0];
     output_for_keyset(keyset, label)
@@ -4377,6 +4394,73 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
         make_payment_calls.load(Ordering::Relaxed),
         payment_calls_after_paid,
         "conflicting terminal-paid change operation must not attempt another payment"
+    );
+}
+
+#[tokio::test]
+async fn apply_federation_melt_retries_failed_quote_state_with_payment_attempt() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    set_melt_quote_state(&localstore, &quote, MeltQuoteState::Failed).await;
+
+    let inputs = vec![
+        proof_for_runtime(&runtime_config, "failed quote retry input one"),
+        proof_for_runtime(&runtime_config, "failed quote retry input two"),
+    ];
+    let input_ys = inputs.ys().expect("failed quote retry input ys");
+    let request = MeltRequest::new(quote.clone(), inputs, None);
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(request)
+            .expect("failed quote retry melt operation"),
+    );
+
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        1,
+        "failed quote retry should attempt the accepted outgoing payment"
+    );
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("failed quote retry quote lookup")
+        .expect("failed quote retry quote");
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    let saga = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("failed quote retry saga lookup")
+        .expect("failed quote retry saga");
+    let operation_id = melt_entry.operation_id.to_string();
+    assert_eq!(
+        saga.federation_operation_id.as_deref(),
+        Some(operation_id.as_str())
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("failed quote retry proof state"),
+        vec![Some(State::Pending), Some(State::Pending)]
+    );
+    assert!(
+        localstore
+            .get_completed_operation(&super::federation_operation_uuid(melt_entry.operation_id))
+            .await
+            .expect("failed quote retry completed operation lookup")
+            .is_none(),
+        "pending retry must not store a terminal completed operation"
     );
 }
 

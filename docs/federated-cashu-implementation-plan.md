@@ -12,7 +12,7 @@ The grand vision of this project is to evolve Cashu from a single-operator Chaum
 - Let a federation-aware CDK wallet talk to multiple mint members and aggregate BLS blind signature shares into normal Cashu proofs.
 - Serialize all safety-critical mint state transitions through consensus before any member returns a usable signature share.
 - Keep existing standalone mint and wallet behavior unchanged unless federation mode is explicitly enabled.
-- Do not preserve backward compatibility for old experimental federated Cashu formats or non-v3 federation keysets; federation is still undeployed, so cut through with the simplest safe v3/BLS-only design. Regenerate development configs and test fixtures instead of carrying migration shims for formats that have never been deployed.
+- Do not preserve backward compatibility for old experimental federated Cashu formats or non-v3 federation keysets; federation is still undeployed, so cut through with the simplest safe v3/BLS-only design. This applies to old in-repo federation fixtures, invite shapes, config defaults, keyset metadata, and route semantics as well as any external-looking development artifacts. Regenerate development configs and test fixtures instead of carrying migration shims for formats that have never been deployed.
 - Start with fakewallet as a normal configured CDK payment backend for local development and trusted-dealer key shares, then add payment observation quorum and real DKG.
 
 ## Hard keyset constraint
@@ -141,6 +141,17 @@ Current confirmed shape:
   `cargo test -p cdk --features federation apply_federation_melt_rejects_ -- --test-threads 1`,
   `cargo check -p cdk-common --features federation`,
   `cargo check -p cdk-sql-common --features federation`, and
+  `cargo check -p cdk --features federation` passed on 2026-07-07.
+- Latest failed-state melt checkpoint: SQL mint schemas now admit the `FAILED`
+  melt quote state, and federated melt apply treats `Failed` as retryable
+  through the normal accepted melt setup path. `Unknown` quote states now fail
+  closed with `UnknownPaymentState` instead of returning an applied response.
+- Focused failed-state tests:
+  `cargo test -p cdk --features federation retries_failed_quote -- --test-threads 1`,
+  `cargo test -p cdk --features federation apply_federation_melt_ -- --test-threads 1`,
+  `cargo check -p cdk-sql-common --features federation`,
+  `cargo check -p cdk-sqlite --features federation`,
+  `cargo check -p cdk-postgres --features federation`, and
   `cargo check -p cdk --features federation` passed on 2026-07-07.
 
 ## Key observations
@@ -1187,8 +1198,11 @@ Melt operation tests:
   payment attempt. Paid quote reuse with different input sets or different
   change outputs now fails before proof state storage, completed-operation
   storage, journal applied status, unsigned change-share storage, or another
-  payment attempt. Failed terminal quote-state permutations and broader
-  malformed-content coverage remain open.
+  payment attempt. Failed quote state now retries through the accepted melt
+  setup path and reaches the payment-attempt boundary with pending proofs,
+  pending quote state, operation-tied saga state, and no terminal completed
+  operation row. Broader malformed-content coverage and a focused `Unknown`
+  quote-state regression remain open.
 - [x] Accepted melt reserve records pending inputs and payment-attempt intent
   before any external outgoing payment can be attempted. Covered by
   `accepted_federation_melt_persists_reserve_before_payment_attempt`, whose

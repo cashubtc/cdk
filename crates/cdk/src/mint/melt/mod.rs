@@ -1278,7 +1278,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if quote.state != MeltQuoteState::Unpaid {
+        if quote.state != MeltQuoteState::Unpaid && quote.state != MeltQuoteState::Failed {
             if quote.state == MeltQuoteState::Pending {
                 let saga = self.localstore.get_melt_saga_by_quote_id(&quote_id).await?;
                 let operation_id = federation_operation_id.to_string();
@@ -1296,6 +1296,8 @@ impl Mint {
                     melt_request,
                 )
                 .await?;
+            } else if quote.state == MeltQuoteState::Unknown {
+                return Err(Error::UnknownPaymentState);
             }
 
             let change = self
