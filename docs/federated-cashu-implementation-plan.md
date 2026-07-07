@@ -152,6 +152,8 @@ Current confirmed shape:
   passed on 2026-07-07.
 - Focused startup authoritative-read tests:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
+  plus the verified-read reopen coverage in
+  `startup_returns_healthy_when_replayed_journal_has_session_outcome_quorum`,
   and `cargo test -p cdk-axum --features federation startup_ -- --test-threads 1`
   passed on 2026-07-07.
 - Latest wallet mint-info metadata checkpoint: federation mints now advertise
@@ -348,9 +350,13 @@ Current confirmed shape:
   quorum session-outcome evidence refuses public restore and check-state reads
   while it is in `verifying_session_outcome`. This keeps read-only routes from
   serving authoritative signature shares or proof states until startup
-  readiness has proven the accepted history.
+  readiness has proven the accepted history. Once quorum evidence is present,
+  the verified startup path reopens check-state and restore through the normal
+  read handlers.
 - Focused startup authoritative-read test:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
+  and
+  `cargo test -p cdk-axum --features federation startup_returns_healthy_when_replayed_journal_has_session_outcome_quorum -- --test-threads 1`
   passed on 2026-07-07.
 - Latest AlephBFT router-startup finalized replay checkpoint: Axum router
   startup now has focused coverage for persisted finalized-item evidence plus a
@@ -1749,7 +1755,8 @@ Success criteria:
   journal envelopes before accepted responses can be used for share-returning
   public paths, plus startup readiness coverage proving restore/check-state
   reads fail closed while replayed journal history is still awaiting quorum
-  session-outcome verification.
+  session-outcome verification and reopen only after that quorum evidence is
+  present.
 - [ ] Every safety-critical federation mutation is reachable from ordered
   consensus apply, replay, or catch-up; no public route commits those mutations
   directly.

@@ -12418,11 +12418,16 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
     let (state, public_config, _, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
+    let restore_envelope = restore_envelope_for_config(
+        &public_config,
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let restore_request = match &restore_envelope.operation {
+        FederationOperation::Restore(operation) => operation.request.clone(),
+        _ => unreachable!("helper returns restore operation"),
+    };
     state
-        .submit_federation_envelope(restore_envelope_for_config(
-            &public_config,
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
+        .submit_federation_envelope(restore_envelope)
         .await
         .expect("persist accepted operation");
     let entries = state
@@ -12476,6 +12481,25 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
         restarted.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
     );
+
+    let y = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"startup verified checkstate read",
+    ));
+    let _ = crate::router_handlers::post_check(
+        AuthHeader::None,
+        State(restarted.clone()),
+        Json(CheckStateRequest { ys: vec![y] }),
+    )
+    .await
+    .expect("verified startup member can serve check-state");
+
+    let _ = crate::router_handlers::post_restore(
+        AuthHeader::None,
+        State(restarted),
+        Json(restore_request.clone()),
+    )
+    .await
+    .expect("verified startup member can serve restore");
 }
 
 #[tokio::test]
