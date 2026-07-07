@@ -169,7 +169,7 @@ jobs:
   clippy-and-test:
     name: "Check: ${{ matrix.check }}"
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [warm-nix-cache, discover_ci_groups]
     strategy:
       fail-fast: false
