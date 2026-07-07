@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use aleph_bft::{
-    DataProvider, FinalizationHandler, Hasher as AlephHasher, Index, Keychain, MultiKeychain,
-    Network, NetworkData, NodeCount, NodeIndex, Recipient, SignatureSet, SpawnHandle, TaskHandle,
+    DataProvider, FinalizationHandler, Hasher as AlephHasher, Index, Keychain, LocalIO,
+    MultiKeychain, Network, NetworkData, NodeCount, NodeIndex, OrderedUnit, Recipient,
+    SignatureSet, SpawnHandle, TaskHandle, UnitFinalizationHandler,
 };
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationConfig, FederationConsensusRuntime, FederationError,
@@ -463,6 +464,19 @@ impl FinalizationHandler<CdkAlephBftData> for CdkAlephBftFinalizationHandler {
     }
 }
 
+impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
+    type Data = CdkAlephBftData;
+    type Hasher = CdkAlephBftHasher;
+
+    fn batch_finalized(&mut self, batch: Vec<OrderedUnit<Self::Data, Self::Hasher>>) {
+        for unit in batch {
+            if let Some(data) = unit.data {
+                self.data_finalized(data);
+            }
+        }
+    }
+}
+
 /// Shared append-only AlephBFT backup bytes for one session.
 ///
 /// Upstream AlephBFT owns the encoded unit format. CDK keeps this adapter
@@ -739,6 +753,67 @@ fn database_io_error(err: cdk_common::database::Error) -> io::Error {
     io::Error::other(format!("AlephBFT backup database error: {err}"))
 }
 
+/// Concrete local IO bundle passed into an upstream AlephBFT session.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) type CdkAlephBftLocalIo = LocalIO<
+    CdkAlephBftDataProvider,
+    CdkAlephBftFinalizationHandler,
+    CdkAlephBftDbBackupWriter,
+    CdkAlephBftBackupReader,
+>;
+
+/// Local AlephBFT session IO plus the receiver used by CDK's apply loop.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftSessionIo {
+    local_io: CdkAlephBftLocalIo,
+    finalized_units: mpsc::UnboundedReceiver<FederationAlephBftUnitPayload>,
+}
+
+impl fmt::Debug for CdkAlephBftSessionIo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkAlephBftSessionIo")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftSessionIo {
+    /// Build local IO for a live session from the consensus runtime and mint DB backup.
+    pub(crate) async fn from_db(
+        consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
+        db: DynMintDatabase,
+        session_id: u64,
+    ) -> Result<Self, cdk::Error> {
+        let backup = CdkAlephBftDbBackup::new(db, session_id);
+        let unit_loader = backup.try_reader().await?;
+        let unit_saver = backup.writer();
+        let data_provider = CdkAlephBftDataProvider::new(consensus);
+        let (sender, finalized_units) = mpsc::unbounded_channel();
+        let finalization_handler = CdkAlephBftFinalizationHandler::new(sender);
+        let local_io = LocalIO::new_with_unit_finalization_handler(
+            data_provider,
+            finalization_handler,
+            unit_saver,
+            unit_loader,
+        );
+
+        Ok(Self {
+            local_io,
+            finalized_units,
+        })
+    }
+
+    /// Split the upstream session IO from the receiver consumed by the CDK apply loop.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CdkAlephBftLocalIo,
+        mpsc::UnboundedReceiver<FederationAlephBftUnitPayload>,
+    ) {
+        (self.local_io, self.finalized_units)
+    }
+}
+
 /// Tokio-backed task spawner for upstream AlephBFT.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -779,8 +854,8 @@ mod tests {
     use std::str::FromStr;
 
     use aleph_bft::{
-        DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, Network,
-        PartialMultisignature, Recipient, SpawnHandle,
+        DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, Network, OrderedUnit,
+        PartialMultisignature, Recipient, SpawnHandle, UnitFinalizationHandler,
     };
     use cdk::federation::{
         FederationAlephBftUnitPayload, FederationConfig, FederationConsensusBackendKind,
@@ -860,6 +935,19 @@ mod tests {
             )],
         )
         .expect("unit payload")
+    }
+
+    fn ordered_unit(
+        data: Option<CdkAlephBftData>,
+        round: u16,
+    ) -> OrderedUnit<CdkAlephBftData, CdkAlephBftHasher> {
+        OrderedUnit {
+            data,
+            parents: Vec::new(),
+            hash: [u8::try_from(round).expect("round fits in hash byte"); 32],
+            creator: NodeIndex(0),
+            round,
+        }
     }
 
     fn mint_quote_envelope(quote: &str) -> FederationOperationEnvelope {
@@ -1095,6 +1183,29 @@ mod tests {
         assert_eq!(finalized.unit_index, payload.unit_index);
     }
 
+    #[tokio::test]
+    async fn cdk_aleph_bft_finalization_handler_forwards_batch_payloads() {
+        let first = module_fact_payload(3);
+        let second = module_fact_payload(4);
+        let first_data = CdkAlephBftData::try_from_payload(first.clone()).expect("first data");
+        let second_data = CdkAlephBftData::try_from_payload(second.clone()).expect("second data");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let mut handler = CdkAlephBftFinalizationHandler::new(sender);
+
+        handler.batch_finalized(vec![
+            ordered_unit(None, 0),
+            ordered_unit(Some(first_data), 1),
+            ordered_unit(Some(second_data), 2),
+        ]);
+
+        let first_finalized = receiver.recv().await.expect("first finalized payload");
+        let second_finalized = receiver.recv().await.expect("second finalized payload");
+
+        assert_eq!(first_finalized.unit_index, first.unit_index);
+        assert_eq!(second_finalized.unit_index, second.unit_index);
+        assert!(receiver.try_recv().is_err());
+    }
+
     #[test]
     fn cdk_aleph_bft_backup_reader_writer_satisfy_run_session_io_bounds() {
         fn assert_io<R, W>(_: R, _: W)
@@ -1169,6 +1280,62 @@ mod tests {
 
         assert_eq!(old_snapshot, b"before".to_vec());
         assert_eq!(new_snapshot, b"before-after".to_vec());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_session_io_loads_db_backup_and_forwards_finalized_units() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mut tx = db.begin_transaction().await.expect("begin");
+        tx.append_federation_aleph_bft_backup_bytes(103, b"persisted")
+            .await
+            .expect("append persisted backup");
+        tx.commit().await.expect("commit persisted backup");
+        let runtime = FederationConsensusRuntime::with_backend(
+            FederationConsensusBackendKind::AlephBft,
+            federation_id(8),
+            member_id(1),
+        )
+        .expect("runtime");
+        let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        let session_io =
+            CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&db), 103)
+                .await
+                .expect("session io");
+        let (local_io, mut finalized_units) = session_io.into_parts();
+        let (mut data_provider, mut finalization_handler, mut unit_saver, mut unit_loader) =
+            local_io.into_components();
+        let mut loaded = Vec::new();
+
+        unit_loader
+            .read_to_end(&mut loaded)
+            .await
+            .expect("read persisted backup");
+        unit_saver
+            .write_all(b"-next")
+            .await
+            .expect("write next backup bytes");
+        unit_saver.flush().await.expect("flush next backup bytes");
+        finalization_handler.data_finalized(
+            CdkAlephBftData::try_from_payload(module_fact_payload(5)).expect("finalized data"),
+        );
+
+        assert_eq!(loaded, b"persisted".to_vec());
+        assert_eq!(
+            db.get_federation_aleph_bft_backup_bytes(103)
+                .await
+                .expect("read appended backup"),
+            Some(b"persisted-next".to_vec())
+        );
+        assert!(data_provider.get_data().await.is_none());
+        assert_eq!(
+            finalized_units
+                .recv()
+                .await
+                .expect("forwarded finalized unit")
+                .unit_index,
+            5
+        );
     }
 
     #[tokio::test]

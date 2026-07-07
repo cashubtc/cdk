@@ -219,6 +219,8 @@ Current confirmed shape:
   `cargo test -p cdk-axum --features federation cdk_aleph_bft_db_backup -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation cdk_aleph_bft -- --test-threads 1`,
   and `cargo check -p cdk-axum --features federation` passed on 2026-07-07.
+  This covers DB-backed backup IO, named upstream `LocalIO` session assembly,
+  and batched finalized-unit forwarding into the future CDK apply-loop channel.
 - Focused startup authoritative-read tests:
   `cargo test -p cdk-axum --features federation startup_verifying_session_outcome_blocks_restore_and_checkstate_reads -- --test-threads 1`
   plus the verified-read reopen coverage in
@@ -1121,6 +1123,10 @@ Architecture checklist:
   exposes a run-session-compatible DB backup writer/reader: writes stay buffered
   until `flush` or `close`, flushes append bytes through a mint DB transaction,
   and readers load stable persisted snapshots for restart recovery.
+  The same runtime now assembles the concrete upstream `LocalIO` bundle from the
+  consensus data provider, DB backup IO, and finalized-unit receiver so startup
+  can spawn `run_session` in a later checkpoint without changing the public
+  route semantics.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
