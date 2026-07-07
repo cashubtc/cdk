@@ -3354,17 +3354,36 @@ impl MintState {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) async fn mark_aleph_bft_network_finality_available_for_tests(&self) {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn mark_aleph_bft_network_finality_available(&self) -> Result<(), cdk::Error> {
+        let Some(config) = self.mint.federation_config() else {
+            return Err(cdk::Error::Custom(
+                "AlephBFT network finality requires federation config".to_string(),
+            ));
+        };
+        if config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT network finality requires aleph_bft consensus backend, found {}",
+                config.consensus_backend()
+            )));
+        }
         let Some(consensus) = &self.federation_consensus else {
-            return;
+            return Err(cdk::Error::Custom(
+                "AlephBFT network finality requires federation consensus runtime".to_string(),
+            ));
         };
         let mut consensus = consensus.lock().await;
-        if let Err(err) = consensus
-            .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
-        {
-            panic!("test AlephBFT finality hook must target AlephBFT runtime: {err}");
-        }
+        consensus.set_aleph_bft_finality_mode(
+            FederationAlephBftFinalityMode::NetworkFinalityAvailable,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mark_aleph_bft_network_finality_available_for_tests(&self) {
+        self.mark_aleph_bft_network_finality_available()
+            .await
+            .expect("test AlephBFT finality hook must target AlephBFT runtime");
     }
 
     pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {

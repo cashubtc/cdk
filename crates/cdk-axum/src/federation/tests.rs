@@ -7734,6 +7734,122 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_networ
 }
 
 #[tokio::test]
+async fn aleph_bft_network_finality_activation_rejects_non_aleph_bft_runtime() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::InMemory,
+    )
+    .await;
+
+    let err = state
+        .mark_aleph_bft_network_finality_available()
+        .await
+        .expect_err("in-memory runtime must not activate AlephBFT finality");
+
+    assert!(
+        err.to_string()
+            .contains("requires aleph_bft consensus backend"),
+        "unexpected error: {err}"
+    );
+    assert!(state.federation_aleph_bft_status().await.is_none());
+}
+
+#[tokio::test]
+async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_for_finalized_unit() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.mark_federation_healthy().await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        ..FederationPeerSyncConfig::default()
+    });
+    assert!(matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    ));
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("aleph-bft status")
+            .finality,
+        FederationAlephBftFinalityMode::ExternalFinalizationRequired
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let err = state
+        .submit_federation_envelope(envelope.clone())
+        .await
+        .expect_err("healthy sync without live AlephBFT finality must stay gated");
+    assert!(
+        err.to_string()
+            .contains("public federation submissions are disabled"),
+        "unexpected error: {err}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after gated submit")
+        .is_none());
+    {
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let consensus = consensus.lock().await;
+        assert_eq!(consensus.queued_len(), 0);
+        assert_eq!(consensus.peer_status().operation_count, 0);
+    }
+
+    state
+        .mark_aleph_bft_network_finality_available()
+        .await
+        .expect("AlephBFT runtime can enable network finality");
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("aleph-bft status")
+            .finality,
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable
+    );
+
+    let err = state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect_err("network finality mode should still wait for a finalized unit");
+
+    assert_pending_finalization_error(&err, operation_id, 10);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after unfinalized submit")
+        .is_none());
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
 async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy_status() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
