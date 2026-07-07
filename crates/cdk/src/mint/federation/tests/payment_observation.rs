@@ -1,0 +1,401 @@
+use super::*;
+
+fn mint_payment_observation_envelope(
+    runtime_config: &FederationRuntimeConfig,
+    quote: &QuoteId,
+    observer: u16,
+    amount_paid: u64,
+    payment_proof: &str,
+) -> FederationOperationEnvelope {
+    runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+        FederationMintQuotePaymentObservation {
+            quote: quote.to_string(),
+            observer: MemberId::new(observer).expect("observer"),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(amount_paid),
+            amount_issued: Amount::ZERO,
+            payment_id: None,
+            payment_proof: Some(payment_proof.to_string()),
+            observed_time: None,
+        },
+    ))
+}
+
+#[test]
+fn runtime_config_builds_mint_payment_observation_operations() {
+    let runtime_config = runtime_config();
+    let quote = QuoteId::new();
+    let paid = runtime_config.mint_quote_payment_observation(
+        quote.clone(),
+        PaymentMethod::Known(KnownMethod::Bolt11),
+        MintQuoteState::Paid,
+        Amount::from(10),
+        Amount::ZERO,
+        Some("settled".to_string()),
+    );
+
+    assert_eq!(paid.federation_id, runtime_config.federation_id());
+    assert!(matches!(
+        paid.operation,
+        FederationOperation::MintQuotePayment(_)
+    ));
+
+    let mut consensus = InMemoryFederationConsensus::new(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+    );
+    consensus.submit_envelope(paid).expect("submit paid");
+    let conflicting_paid = runtime_config.mint_quote_payment_observation(
+        quote,
+        PaymentMethod::Known(KnownMethod::Bolt11),
+        MintQuoteState::Paid,
+        Amount::from(10),
+        Amount::ZERO,
+        Some("different-settlement".to_string()),
+    );
+
+    assert!(matches!(
+        consensus.submit_envelope(conflicting_paid),
+        Err(FederationError::ConflictingOperation { .. })
+    ));
+}
+
+#[tokio::test]
+async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore) =
+        federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(10),
+            bolt11_quote_response(&quote, 10),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let first_observation = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 1, 10, "settled"),
+    );
+    persist_and_apply_entry(&mint, &first_observation).await;
+    let quote_after_single = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(quote_after_single.state(), MintQuoteState::Unpaid);
+    assert_eq!(
+        quote_after_single.amount_paid(),
+        Amount::new(0, CurrencyUnit::Sat)
+    );
+
+    let observations_after_single = localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            &quote.to_string(),
+        )
+        .await
+        .expect("single observation rows");
+    assert_eq!(observations_after_single.len(), 1);
+
+    let matching_second = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 2, 10, "settled"),
+    );
+    persist_and_apply_entry(&mint, &matching_second).await;
+    let quote_after_quorum = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(quote_after_quorum.state(), MintQuoteState::Paid);
+    assert_eq!(
+        quote_after_quorum.amount_paid(),
+        Amount::new(10, CurrencyUnit::Sat)
+    );
+
+    let conflicting_third = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 3, 11, "different-settlement"),
+    );
+    persist_and_apply_entry(&mint, &conflicting_third).await;
+    let quote_after_conflict = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(
+        quote_after_conflict.amount_paid(),
+        Amount::new(10, CurrencyUnit::Sat)
+    );
+
+    let observations_after_conflict = localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            &quote.to_string(),
+        )
+        .await
+        .expect("conflicting observation rows");
+    assert_eq!(observations_after_conflict.len(), 3);
+    assert_eq!(
+        observations_after_conflict[2].observation.observer(),
+        MemberId::new(3).expect("member three")
+    );
+}
+
+#[tokio::test]
+async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore) =
+        federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let payment_id = PaymentIdentifier::CustomId("metadata-payment".to_string());
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(7),
+            bolt11_quote_response(&quote, 7),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let first_observation = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+            FederationMintQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: MemberId::new(1).expect("member one"),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(7),
+                amount_issued: Amount::ZERO,
+                payment_id: Some(payment_id.clone()),
+                payment_proof: None,
+                observed_time: Some(111),
+            },
+        )),
+    );
+    persist_and_apply_entry(&mint, &first_observation).await;
+
+    let matching_second = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+            FederationMintQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: MemberId::new(2).expect("member two"),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(7),
+                amount_issued: Amount::ZERO,
+                payment_id: Some(payment_id.clone()),
+                payment_proof: None,
+                observed_time: Some(222),
+            },
+        )),
+    );
+    persist_and_apply_entry(&mint, &matching_second).await;
+
+    let stored_quote = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(stored_quote.state(), MintQuoteState::Paid);
+    assert_eq!(stored_quote.payments.len(), 1);
+    assert_eq!(
+        stored_quote.payments[0].payment_id,
+        "custom:metadata-payment"
+    );
+    assert_eq!(stored_quote.payments[0].time, 222);
+}
+
+#[tokio::test]
+async fn payment_quarantine_blocks_mint_signing() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    let first_observation = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 1, 1, "settled"),
+    );
+    persist_and_apply_entry(&mint, &first_observation).await;
+    let matching_second = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 2, 1, "settled"),
+    );
+    persist_and_apply_entry(&mint, &matching_second).await;
+    let quote_after_quorum = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(quote_after_quorum.state(), MintQuoteState::Paid);
+
+    let quarantine_entry = appended_entry(
+        &mut journal,
+        runtime_config.payment_observation_quarantine(
+            FederationPaymentObservationContext::MintQuote,
+            quote.clone(),
+            FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+            vec![first_observation.operation_id, matching_second.operation_id],
+        ),
+    );
+    persist_and_apply_entry(&mint, &quarantine_entry).await;
+
+    let output = output_for_runtime(&runtime_config, b"quarantined mint output");
+    let input = MintInput::Single(MintRequest {
+        quote: quote.clone(),
+        outputs: vec![output.clone()],
+        signature: None,
+    });
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(input)
+            .expect("mint operation"),
+    );
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    tx.add_federation_journal_entry(&mint_entry)
+        .await
+        .expect("persist mint entry");
+    tx.commit().await.expect("commit mint entry");
+    let err = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+        .await
+        .expect_err("quarantined quote must not mint");
+    assert!(
+        err.to_string().contains("quarantined"),
+        "unexpected error: {err}"
+    );
+
+    let signatures = localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("signature lookup");
+    assert!(signatures[0].is_none());
+}
+
+#[tokio::test]
+async fn future_quarantine_does_not_suppress_prior_mint_payment_replay() {
+    let runtime_config =
+        runtime_config_with_payment_policy(FederationPaymentObservationPolicy::default());
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    let first_observation = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 1, 1, "settled"),
+    );
+    let conflicting_observation = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 2, 2, "conflicting"),
+    );
+    let quarantine_entry = appended_entry(
+        &mut journal,
+        runtime_config.payment_observation_quarantine(
+            FederationPaymentObservationContext::MintQuote,
+            quote.clone(),
+            FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+            vec![
+                first_observation.operation_id,
+                conflicting_observation.operation_id,
+            ],
+        ),
+    );
+    let entries = vec![
+        quote_entry,
+        first_observation,
+        conflicting_observation,
+        quarantine_entry,
+    ];
+
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    for entry in &entries {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist journal entry");
+    }
+    tx.commit().await.expect("commit journal entries");
+
+    for entry in &entries {
+        mint.apply_federation_journal_entries(std::slice::from_ref(entry))
+            .await
+            .expect("apply journal entry");
+    }
+
+    let quote_after_replay = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(quote_after_replay.amount_paid().value(), 1);
+    assert_eq!(quote_after_replay.state(), MintQuoteState::Paid);
+
+    let output = output_for_runtime(&runtime_config, b"future quarantine mint output");
+    let input = MintInput::Single(MintRequest {
+        quote: quote.clone(),
+        outputs: vec![output],
+        signature: None,
+    });
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(input)
+            .expect("mint operation"),
+    );
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    tx.add_federation_journal_entry(&mint_entry)
+        .await
+        .expect("persist mint entry");
+    tx.commit().await.expect("commit mint entry");
+
+    let err = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+        .await
+        .expect_err("quarantined quote must not mint after replay");
+    assert!(
+        err.to_string().contains("quarantined"),
+        "unexpected error: {err}"
+    );
+}
