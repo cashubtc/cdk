@@ -3,10 +3,166 @@ use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use aleph_bft::{DataProvider, FinalizationHandler, SpawnHandle, TaskHandle};
-use cdk::federation::{FederationAlephBftUnitPayload, FederationConsensusRuntime, FederationError};
+use aleph_bft::{
+    DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, NodeCount, NodeIndex,
+    SignatureSet, SpawnHandle, TaskHandle,
+};
+use cdk::federation::{
+    FederationAlephBftUnitPayload, FederationConfig, FederationConsensusRuntime, FederationError,
+    MemberConfigPrivate, MemberConfigPublic, MemberId,
+};
+use cdk::nuts::SecretKey;
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 use tokio::sync::mpsc;
+
+/// Schnorr signature bytes used by CDK's AlephBFT keychain adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftSignature([u8; 64]);
+
+impl CdkAlephBftSignature {
+    fn from_schnorr(signature: cdk::secp256k1::schnorr::Signature) -> Self {
+        Self(signature.serialize())
+    }
+
+    fn as_schnorr(self) -> Option<cdk::secp256k1::schnorr::Signature> {
+        cdk::secp256k1::schnorr::Signature::from_slice(&self.0).ok()
+    }
+}
+
+/// AlephBFT keychain backed by the federation secp256k1 identity roster.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftKeychain {
+    private_config: MemberConfigPrivate,
+    members_by_node: Vec<(MemberId, MemberConfigPublic)>,
+    local_index: NodeIndex,
+    node_count: NodeCount,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftKeychain {
+    /// Build an AlephBFT keychain from the validated federation config and local identity key.
+    pub(crate) fn try_new(
+        public_config: &FederationConfig,
+        private_config: MemberConfigPrivate,
+    ) -> Result<Self, cdk::Error> {
+        public_config.validate()?;
+        if !matches!(&private_config.identity_secret_key, SecretKey::Secp256k1(_)) {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT keychain requires secp256k1 identity key for member {}",
+                private_config.member_id
+            )));
+        }
+        if let Some(federation_id) = private_config.federation_id {
+            if federation_id != public_config.federation_id {
+                return Err(cdk::Error::from(FederationError::FederationIdMismatch {
+                    expected: public_config.federation_id,
+                    found: federation_id,
+                }));
+            }
+        }
+
+        let node_count = NodeCount(public_config.members.len());
+        let expected_consensus_threshold = u16::try_from(node_count.consensus_threshold().0)
+            .map_err(|_| cdk::Error::Custom("AlephBFT node count exceeds u16".to_string()))?;
+        if public_config.threshold_params.consensus_threshold != expected_consensus_threshold {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT keychain requires BFT consensus threshold {}, found {}",
+                expected_consensus_threshold, public_config.threshold_params.consensus_threshold
+            )));
+        }
+
+        let mut members_by_node = Vec::with_capacity(public_config.members.len());
+        let mut local_index = None;
+        for (index, (member_id, member)) in public_config.members.iter().enumerate() {
+            if *member_id == private_config.member_id {
+                local_index = Some(NodeIndex(index));
+                if private_config.identity_secret_key.public_key() != member.identity_public_key {
+                    return Err(cdk::Error::from(FederationError::PrivateIdentityMismatch {
+                        member_id: *member_id,
+                    }));
+                }
+            }
+            members_by_node.push((*member_id, member.clone()));
+        }
+        let local_index = local_index.ok_or(cdk::Error::from(FederationError::UnknownMember {
+            member_id: private_config.member_id,
+        }))?;
+
+        Ok(Self {
+            private_config,
+            members_by_node,
+            local_index,
+            node_count,
+        })
+    }
+
+    /// Return the federation member represented by a given AlephBFT node index.
+    pub(crate) fn member_for_node(&self, node: NodeIndex) -> Option<MemberId> {
+        self.members_by_node
+            .get(node.0)
+            .map(|(member_id, _)| *member_id)
+    }
+}
+
+impl Index for CdkAlephBftKeychain {
+    fn index(&self) -> NodeIndex {
+        self.local_index
+    }
+}
+
+impl Keychain for CdkAlephBftKeychain {
+    type Signature = CdkAlephBftSignature;
+
+    fn node_count(&self) -> NodeCount {
+        self.node_count
+    }
+
+    fn sign(&self, msg: &[u8]) -> Self::Signature {
+        CdkAlephBftSignature::from_schnorr(
+            self.private_config
+                .identity_secret_key
+                .sign(msg)
+                .expect("validated secp256k1 federation identity key signs AlephBFT messages"),
+        )
+    }
+
+    fn verify(&self, msg: &[u8], signature: &Self::Signature, index: NodeIndex) -> bool {
+        let Some((_, member)) = self.members_by_node.get(index.0) else {
+            return false;
+        };
+        let Some(signature) = signature.as_schnorr() else {
+            return false;
+        };
+
+        member.identity_public_key.verify(msg, &signature).is_ok()
+    }
+}
+
+impl MultiKeychain for CdkAlephBftKeychain {
+    type PartialMultisignature = SignatureSet<CdkAlephBftSignature>;
+
+    fn bootstrap_multi(
+        &self,
+        signature: &Self::Signature,
+        index: NodeIndex,
+    ) -> Self::PartialMultisignature {
+        let mut partial = SignatureSet::with_size(self.node_count());
+        partial.insert(index, *signature);
+        partial
+    }
+
+    fn is_complete(&self, msg: &[u8], partial: &Self::PartialMultisignature) -> bool {
+        if partial.iter().count() < self.node_count().consensus_threshold().0 {
+            return false;
+        }
+
+        partial
+            .iter()
+            .all(|(index, signature)| self.verify(msg, signature, index))
+    }
+}
 
 /// AlephBFT data wrapper that preserves CDK's canonical consensus encoding.
 #[derive(Debug, Clone)]
@@ -195,14 +351,22 @@ impl SpawnHandle for CdkAlephBftTokioSpawnHandle {
 
 #[cfg(test)]
 mod tests {
-    use aleph_bft::{DataProvider, FinalizationHandler, SpawnHandle};
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    use aleph_bft::{
+        DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, PartialMultisignature,
+        SpawnHandle,
+    };
     use cdk::federation::{
-        FederationAlephBftUnitPayload, FederationConsensusBackendKind,
+        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusBackendKind,
         FederationConsensusDefaultItem, FederationConsensusItem, FederationConsensusRuntime,
         FederationId, FederationMintQuoteOperation, FederationOperation,
-        FederationOperationEnvelope, MemberId,
+        FederationOperationEnvelope, MemberConfigPrivate, MemberConfigPublic, MemberId,
+        ThresholdParams,
     };
-    use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response};
+    use cdk::mint_url::MintUrl;
+    use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, SecretKey};
     use cdk::{Amount, MintQuoteRequest, MintQuoteResponse};
     use parity_scale_codec::{Decode, Encode};
     use serde_json::json;
@@ -215,6 +379,48 @@ mod tests {
 
     fn member_id(id: u16) -> MemberId {
         MemberId::new(id).expect("member id")
+    }
+
+    fn identity_secret(id: u16) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = u8::try_from(id).expect("test member id fits in u8");
+        SecretKey::from_slice(&bytes).expect("identity secret")
+    }
+
+    fn public_member(id: u16, identity_secret: &SecretKey) -> MemberConfigPublic {
+        MemberConfigPublic {
+            member_id: member_id(id),
+            public_mint_url: MintUrl::from_str(&format!("https://mint{id}.example.test"))
+                .expect("mint url"),
+            federation_api_url: MintUrl::from_str(&format!("https://fed{id}.example.test"))
+                .expect("federation url"),
+            identity_public_key: identity_secret.public_key(),
+        }
+    }
+
+    fn private_member(id: u16, identity_secret: SecretKey) -> MemberConfigPrivate {
+        MemberConfigPrivate {
+            federation_id: None,
+            member_id: member_id(id),
+            identity_secret_key: identity_secret,
+            keyset_secret_shares: BTreeMap::new(),
+            setup_transcript_hash: None,
+        }
+    }
+
+    fn keychain_fixture() -> (FederationConfig, Vec<MemberConfigPrivate>) {
+        let mut members = BTreeMap::new();
+        let mut private_members = Vec::new();
+        for id in 1..=4 {
+            let secret = identity_secret(id);
+            members.insert(member_id(id), public_member(id, &secret));
+            private_members.push(private_member(id, secret));
+        }
+        let threshold_params = ThresholdParams::with_bft_consensus(4, 3).expect("threshold params");
+        let public_config =
+            FederationConfig::new(threshold_params, members, Vec::new()).expect("public config");
+
+        (public_config, private_members)
     }
 
     fn module_fact_payload(index: u64) -> FederationAlephBftUnitPayload {
@@ -252,6 +458,81 @@ mod tests {
                 }),
             }),
         )
+    }
+
+    #[test]
+    fn cdk_aleph_bft_keychain_signs_and_verifies_roster_members() {
+        let (public_config, private_members) = keychain_fixture();
+        let first = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
+        let second = CdkAlephBftKeychain::try_new(&public_config, private_members[1].clone())
+            .expect("keychain");
+        let message = b"cdk aleph bft keychain message";
+
+        let signature = first.sign(message);
+
+        assert_eq!(first.index(), NodeIndex(0));
+        assert_eq!(first.member_for_node(NodeIndex(0)), Some(member_id(1)));
+        assert_eq!(first.member_for_node(NodeIndex(3)), Some(member_id(4)));
+        assert_eq!(first.member_for_node(NodeIndex(4)), None);
+        assert!(first.verify(message, &signature, NodeIndex(0)));
+        assert!(!first.verify(b"tampered", &signature, NodeIndex(0)));
+        assert!(!first.verify(message, &signature, NodeIndex(99)));
+        assert!(!second.verify(message, &signature, second.index()));
+    }
+
+    #[test]
+    fn cdk_aleph_bft_keychain_requires_bft_multisignature_quorum() {
+        let (public_config, private_members) = keychain_fixture();
+        let keychains = private_members
+            .into_iter()
+            .map(|private_config| {
+                CdkAlephBftKeychain::try_new(&public_config, private_config).expect("keychain")
+            })
+            .collect::<Vec<_>>();
+        let message = b"cdk aleph bft multisignature message";
+        let first = keychains[0].sign(message);
+        let second = keychains[1].sign(message);
+        let third = keychains[2].sign(message);
+
+        let partial = keychains[0].bootstrap_multi(&first, keychains[0].index());
+        assert!(!keychains[0].is_complete(message, &partial));
+        let partial = partial.add_signature(&second, keychains[1].index());
+        assert!(!keychains[0].is_complete(message, &partial));
+        let partial = partial.add_signature(&third, keychains[2].index());
+        assert!(keychains[0].is_complete(message, &partial));
+
+        let bad_third = keychains[2].sign(b"different message");
+        let bad_partial = keychains[0]
+            .bootstrap_multi(&first, keychains[0].index())
+            .add_signature(&second, keychains[1].index())
+            .add_signature(&bad_third, keychains[2].index());
+        assert!(!keychains[0].is_complete(message, &bad_partial));
+    }
+
+    #[test]
+    fn cdk_aleph_bft_keychain_rejects_non_bft_consensus_threshold() {
+        let mut members = BTreeMap::new();
+        let mut private_members = Vec::new();
+        for id in 1..=5 {
+            let secret = identity_secret(id);
+            members.insert(member_id(id), public_member(id, &secret));
+            private_members.push(private_member(id, secret));
+        }
+        let public_config = FederationConfig::new(
+            ThresholdParams::new(5, 3, 3).expect("threshold params"),
+            members,
+            Vec::new(),
+        )
+        .expect("public config");
+
+        let err = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect_err("non-BFT threshold must fail");
+
+        assert!(
+            err.to_string().contains("BFT consensus threshold 4"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
