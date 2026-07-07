@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover aleph bft unfinalized restart retry</span>
+          <span class="value">test: replay aleph bft finalized items on router startup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Storage-backed AlephBFT startup now covers restart after a local unit is queued but before finalization: no mint state is materialized, accepted order stays empty, and the wallet retry recreates the same canonical unit bytes.</span>
+          <span class="value">Axum router startup now replays persisted AlephBFT finalized-item evidence before signed local status can report materialized rows, while public value-changing submissions remain halted until external finality is available.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, unfinalized restart retry coverage, batched finalized-unit response accounting, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, wrong-federation unit rejection, future-session unit rejection, tampered finalized-unit operation-ID and body-hash rejection before durable mutation, strict whole-unit catch-up finalized-item evidence replay, incomplete finalized-unit page rejection before durable mutation, finalized-cursor peer status and sync lag detection, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for single and batch public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, unfinalized restart retry coverage, router-startup finalized-evidence replay, batched finalized-unit response accounting, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, wrong-federation unit rejection, future-session unit rejection, tampered finalized-unit operation-ID and body-hash rejection before durable mutation, strict whole-unit catch-up finalized-item evidence replay, incomplete finalized-unit page rejection before durable mutation, finalized-cursor peer status and sync lag detection, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for single and batch public minting without double issuance, pending conflict-key rejection, explicit finality mode gating, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>

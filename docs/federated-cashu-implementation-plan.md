@@ -274,6 +274,15 @@ Current confirmed shape:
 - Focused AlephBFT unfinalized-restart test:
   `cargo test -p cdk-axum --features federation aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_state_mutation -- --test-threads 1`
   passed on 2026-07-07.
+- Latest AlephBFT router-startup finalized replay checkpoint: Axum router
+  startup now has focused coverage for persisted finalized-item evidence plus a
+  matching journal row before materialized mint state exists. Router creation
+  replays the finalized mint quote before serving signed local status, reports
+  AlephBFT accepted-operation counters and materialized rows, and keeps public
+  value-changing submissions halted under external-finalization mode.
+- Focused AlephBFT router-startup replay test:
+  `cargo test -p cdk-axum --features federation router_startup_replays_aleph_bft_finalized_items_before_serving_local_status -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest AlephBFT batched-driver checkpoint: the bounded driver tick now has
   focused coverage for one finalized unit carrying multiple operation items.
   The regression proves the tick reports both local responses, persists both
@@ -928,6 +937,9 @@ Architecture checklist:
   rebuilds the recovered journal, compares it against any stored journal rows,
   replays unapplied operations into mint state, and rejects synchronous submits
   with an external-finalization error until the live AlephBFT driver exists.
+  Router startup now has coverage proving finalized-item replay happens before
+  signed local status can report materialized rows, while public submissions
+  remain halted in external-finalization mode.
   Newly applied externally finalized units are persisted through the same
   finalized-item store and journal transaction before local runtime mutation.
   The same retained finalized-item store is now exposed through strict catch-up
@@ -1326,8 +1338,9 @@ AlephBFT and consensus unit tests:
   finalized-item row, rebuilds with zero accepted operations, and lets a wallet
   retry recreate the same canonical unit bytes. Existing replay coverage also
   exercises accepted-but-unapplied journal replay and lost waiter/cache duplicate
-  handling; full production AlephBFT crash-window coverage remains open until
-  the live finality task owns durable delivery.
+  handling, and router startup now replays persisted finalized-item evidence
+  before serving local status; full production AlephBFT crash-window coverage
+  remains open until the live finality task owns durable delivery.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by

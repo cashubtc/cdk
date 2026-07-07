@@ -5995,6 +5995,142 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
 }
 
 #[tokio::test]
+async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_status() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("AlephBFT adapter");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("AlephBFT finalized unit");
+    adapter.finalize_unit(unit).expect("finalize unit");
+    let entry = adapter.journal().entries()[0].clone();
+
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin AlephBFT router startup transaction");
+    tx.add_federation_aleph_bft_finalized_items(adapter.finalized_items())
+        .await
+        .expect("persist finalized items");
+    tx.add_federation_journal_entry(&entry)
+        .await
+        .expect("persist matching journal entry");
+    tx.commit()
+        .await
+        .expect("commit AlephBFT router startup state");
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup before router startup")
+        .is_none());
+
+    let router =
+        crate::create_mint_router(state.mint.clone(), vec![KnownMethod::Bolt11.to_string()])
+            .await
+            .expect("mint router");
+    let request = signed_status_request_with_payload(
+        &public_config,
+        &peer_private,
+        local_private.member_id,
+        1,
+        FederationPeerStatusRequest::with_materialized_rows(),
+    );
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/federation/v1/local-status")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&request).expect("request json"),
+                ))
+                .expect("local status request"),
+        )
+        .await
+        .expect("local status response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("local status body");
+    let local_status: FederationLocalStatusResponse =
+        serde_json::from_slice(&body).expect("local status json");
+
+    assert_eq!(local_status.peer_status.operation_count, 1);
+    assert!(!local_status.sync_ready);
+    assert_eq!(local_status.sync_state, "halted");
+    assert!(
+        local_status
+            .sync_message
+            .contains("public federation submissions are disabled"),
+        "unexpected sync message: {}",
+        local_status.sync_message
+    );
+    let aleph_bft_status = local_status
+        .aleph_bft_status
+        .expect("AlephBFT local status");
+    assert_eq!(
+        aleph_bft_status.finality,
+        FederationAlephBftFinalityMode::ExternalFinalizationRequired
+    );
+    assert_eq!(aleph_bft_status.accepted_operation_count, 1);
+    assert!(
+        local_status
+            .materialized_state_rows
+            .iter()
+            .any(|row| row.table == "mint_quotes"),
+        "router startup should materialize AlephBFT finalized mint quote before serving status"
+    );
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after router startup")
+        .expect("mint quote replayed from finalized items");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+    let replayed_entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("replayed journal entries");
+    assert_eq!(replayed_entries.len(), 1);
+    assert_eq!(replayed_entries[0].operation_id, operation_id);
+    assert_eq!(
+        replayed_entries[0].status,
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
