@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 use crate::MintState;
 
 use super::aleph_bft_network::{
-    run_cdk_aleph_bft_network_pump_tick, CdkAlephBftNetworkInboundHandle,
-    CdkAlephBftNetworkPumpConfig,
+    run_cdk_aleph_bft_network_pump_tick_with_retry_queue, CdkAlephBftNetworkInboundHandle,
+    CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
 };
 use super::aleph_bft_runtime::{
     CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData, CdkAlephBftSessionIo,
@@ -233,24 +233,29 @@ where
     let pump_keychain = keychain.clone();
     let network_pump_task = tokio::spawn(async move {
         let mut interval = federation_peer_sync_interval(sync_config);
+        let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
         loop {
             interval.tick().await;
-            match run_cdk_aleph_bft_network_pump_tick(
+            match run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
                 &mut network_handle,
                 &pump_keychain,
                 &client,
                 pump_config,
+                &mut retry_queue,
             )
             .await
             {
                 Ok(outcome) => {
-                    if outcome.messages_drained > 0 {
+                    if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
                         tracing::debug!(
                             messages_drained = outcome.messages_drained,
+                            retry_messages_drained = outcome.retry_messages_drained,
                             encoded_bytes = outcome.encoded_bytes,
                             remote_accepted_members = outcome.remote_accepted_members.len(),
                             remote_failed_members = outcome.remote_failed_members.len(),
+                            remote_requeued_members = outcome.remote_requeued_members.len(),
                             remote_skipped_members = outcome.remote_skipped_members.len(),
+                            retry_queue_len = outcome.retry_queue_len,
                             reached_idle = outcome.reached_idle,
                             "AlephBFT network pump tick completed"
                         );

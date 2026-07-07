@@ -140,7 +140,8 @@ Current confirmed shape:
   from the data provider, DB-backed backup IO, and finalized-unit receiver, and
   has a live-session starter that installs the inbound network queue, spawns
   upstream `run_session`, runs the bounded outbound REST pump, owns terminator
-  shutdown, forwards finalized payloads into the CDK apply loop, and marks
+  shutdown, retains failed network-message deliveries in a bounded in-memory
+  retry queue, forwards finalized payloads into the CDK apply loop, and marks
   network finality available only after a valid AlephBFT live session is
   started. Router startup now owns that live-session handle for `aleph_bft`
   mints, restores sync status only after live finality is available, retires
@@ -1145,6 +1146,7 @@ Architecture checklist:
   can spawn `run_session` without changing the public route semantics. A
   focused live-session starter now builds that `run_session` task, installs the
   private REST inbound network queue, starts the bounded outbound network pump,
+  retains failed network-message deliveries in a bounded in-memory retry queue,
   owns task shutdown, forwards finalized units into the CDK apply loop, and
   activates network-finality mode for valid AlephBFT federations with remote
   peers. Router startup now owns that live-session handle for `aleph_bft` mints,
@@ -1157,9 +1159,13 @@ Architecture checklist:
   into both router-owned upstream AlephBFT tasks, queues a real mint-quote
   operation on one member, exchanges SCALE AlephBFT network messages through the
   signed `/aleph-bft/messages` route, and proves both members finalize and apply
-  the same operation with matching finalized-item counters. Broader
-  process-level coverage for larger rosters, network faults, restart windows,
-  and operator `cdk-mintd` startup remains open.
+  the same operation with matching finalized-item counters. Five-member
+  live-session coverage now proves one unavailable member leaves public
+  submission retryably pending without durable mint state mutation, then
+  finalizes the exact same operation after the member returns and retained
+  network messages are redelivered. Broader process-level coverage for delayed,
+  duplicated, and reordered messages, restart windows, durable redelivery, and
+  operator `cdk-mintd` startup remains open.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1547,8 +1553,9 @@ AlephBFT and consensus unit tests:
   real network-message exchange can finalize and apply the same operation on
   both members. Cargo registry checks confirm upstream `aleph-bft` 0.45.4 is
   available and is the workspace dependency used by the federation feature.
-  Production AlephBFT network duplicate, delay, retry, and reorder handling
-  remains open for the larger fault matrix.
+  Bounded in-memory redelivery now retries failed network-message deliveries to
+  recovered peers; production duplicate, delay, persisted retry, and reorder
+  handling remains open for the larger fault matrix.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
@@ -1565,9 +1572,11 @@ AlephBFT and consensus unit tests:
   Router-started upstream AlephBFT coverage now also proves a 5-member live
   session with four started members and one unavailable member leaves the public
   operation retryably pending and writes no mint quote, journal entry, or
-  finalized item before finality. Production AlephBFT offline-member liveness
-  and catch-up remain open until the private REST network bridge owns durable
-  redelivery/retry semantics for upstream AlephBFT messages.
+  finalized item before finality, then finalizes the exact operation after the
+  member returns and the in-memory retry queue redelivers failed messages.
+  Production AlephBFT catch-up across process restart remains open until the
+  private REST network bridge persists retry material or reconstructs it from
+  durable AlephBFT backup/session state.
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.

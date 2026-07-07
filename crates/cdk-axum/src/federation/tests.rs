@@ -46,7 +46,10 @@ use tower::ServiceExt;
 use crate::auth::AuthHeader;
 
 use super::aleph_bft_network::CdkAlephBftNetworkInboundHandle;
-use super::aleph_bft_network::{run_cdk_aleph_bft_network_pump_tick, CdkAlephBftNetworkPumpConfig};
+use super::aleph_bft_network::{
+    run_cdk_aleph_bft_network_pump_tick, run_cdk_aleph_bft_network_pump_tick_with_retry_queue,
+    CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
+};
 use super::aleph_bft_runtime::{CdkAlephBftKeychain, CdkAlephBftNetwork};
 use super::*;
 
@@ -8179,6 +8182,140 @@ async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_du
     }
 }
 
+#[tokio::test]
+async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
+    let federation_api_urls = vec![
+        MintUrl::from_str("http://fed1.test").expect("first federation api url"),
+        MintUrl::from_str("http://fed2.test").expect("second federation api url"),
+        MintUrl::from_str("http://fed3.test").expect("third federation api url"),
+        MintUrl::from_str("http://fed4.test").expect("fourth federation api url"),
+        MintUrl::from_str("http://fed5.test").expect("fifth federation api url"),
+    ];
+    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+        federation_api_urls.clone(),
+    );
+    let mut states = Vec::new();
+    for private_config in private_configs {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        states.push(
+            federation_route_state_for_private_with_db_and_backend(
+                public_config.clone(),
+                private_config,
+                db,
+                &mnemonic.to_seed_normalized(""),
+                FederationConsensusBackendKind::AlephBft,
+            )
+            .await,
+        );
+    }
+    let transport = RouterFederationTransportRegistry::default()
+        .with_missing_router_wait(Duration::from_secs(1));
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_millis(250),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let mut live_session_handles = Vec::new();
+    transport.insert(
+        federation_api_urls[4].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(states[0].clone()),
+    );
+
+    for index in 0..4 {
+        let handle = start_federation_aleph_bft_live_session_with_transport(
+            &mut states[index],
+            sync_config,
+            pump_config,
+            transport.clone(),
+        )
+        .await
+        .expect("start live session")
+        .expect("live session handle");
+        live_session_handles.push(handle);
+        transport.insert(
+            federation_api_urls[index].clone(),
+            Router::new()
+                .nest("/federation/v1", create_federation_router())
+                .with_state(states[index].clone()),
+        );
+    }
+
+    states[0].federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(250),
+        ..FederationPeerSyncConfig::default()
+    });
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&states[0], &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let err = states[0]
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect_err("unavailable member should leave operation pending first");
+    assert_pending_finalization_error(&err, operation_id, 250);
+
+    let fifth_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut states[4],
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start returned member live session")
+    .expect("returned member live session handle");
+    live_session_handles.push(fifth_handle);
+    transport.insert(
+        federation_api_urls[4].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(states[4].clone()),
+    );
+    assert_eq!(live_session_handles.len(), 5);
+
+    states[0].federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_secs(10),
+        ..FederationPeerSyncConfig::default()
+    });
+    let retry_envelope = mint_quote_envelope(&states[0], &quote_id);
+    let response = states[0]
+        .submit_federation_envelope_with_sequence(retry_envelope, None)
+        .await
+        .expect("returned member should allow live finality");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    for state in &states {
+        wait_for_applied_operation(state, operation_id).await;
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status")
+                .finalized_item_count,
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_some());
+    }
+}
+
 async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
     time::timeout(Duration::from_secs(5), async {
         loop {
@@ -8636,6 +8773,77 @@ async fn aleph_bft_network_pump_records_delivery_failures_without_failing_tick()
     );
     assert!(outcome.remote_skipped_members.is_empty());
     assert_eq!(transport.aleph_bft_network_message_requests().len(), 4);
+}
+
+#[tokio::test]
+async fn aleph_bft_network_retry_queue_redelivers_failed_members_after_recovery() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
+
+    network.send(456, Recipient::Everyone);
+    let first = run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 11,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+        &mut retry_queue,
+    )
+    .await
+    .expect("network pump first tick");
+
+    assert_eq!(first.messages_drained, 1);
+    assert_eq!(first.retry_messages_drained, 0);
+    assert!(first.remote_accepted_members.is_empty());
+    assert_eq!(
+        first.remote_failed_members,
+        vec![member_id(2), member_id(3), member_id(4), member_id(5)]
+    );
+    assert_eq!(first.remote_requeued_members, first.remote_failed_members);
+    assert_eq!(first.retry_queue_len, 1);
+    assert_eq!(retry_queue.len(), 1);
+    assert_eq!(transport.aleph_bft_network_message_requests().len(), 4);
+
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 11);
+    transport
+        .clone()
+        .with_aleph_bft_network_message_response(response);
+    let second = run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 11,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+        &mut retry_queue,
+    )
+    .await
+    .expect("network pump retry tick");
+
+    assert_eq!(second.messages_drained, 0);
+    assert_eq!(second.retry_messages_drained, 1);
+    assert_eq!(
+        second.remote_accepted_members,
+        vec![member_id(2), member_id(3), member_id(4), member_id(5)]
+    );
+    assert!(second.remote_failed_members.is_empty());
+    assert!(second.remote_requeued_members.is_empty());
+    assert_eq!(second.retry_queue_len, 0);
+    assert!(retry_queue.is_empty());
+    assert_eq!(transport.aleph_bft_network_message_requests().len(), 8);
 }
 
 #[tokio::test]
