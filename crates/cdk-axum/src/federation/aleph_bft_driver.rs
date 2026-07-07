@@ -342,6 +342,9 @@ where
         if peer.member_id == local_member {
             continue;
         }
+        if attempted_members.contains(&peer.member_id) {
+            continue;
+        }
         if attempted_members.len() >= driver_config.max_remote_peer_deliveries_per_unit {
             break;
         }

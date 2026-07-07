@@ -283,6 +283,15 @@ Current confirmed shape:
 - Focused AlephBFT router-startup replay test:
   `cargo test -p cdk-axum --features federation router_startup_replays_aleph_bft_finalized_items_before_serving_local_status -- --test-threads 1`
   passed on 2026-07-07.
+- Latest AlephBFT distinct-peer quorum checkpoint: the private REST
+  finalized-unit driver now skips duplicate peer entries before attempting
+  delivery, consuming the delivery budget, or counting acknowledgements toward
+  quorum. A 3-member threshold-3 regression proves a duplicated remote member
+  cannot satisfy quorum twice; the driver must collect acknowledgements from
+  two distinct remote members before draining and applying the local unit.
+- Focused AlephBFT distinct-peer quorum test:
+  `cargo test -p cdk-axum --features federation aleph_bft_broadcast_round_counts_distinct_remote_members_for_quorum -- --test-threads 1`
+  passed on 2026-07-07.
 - Latest AlephBFT batched-driver checkpoint: the bounded driver tick now has
   focused coverage for one finalized unit carrying multiple operation items.
   The regression proves the tick reports both local responses, persists both
@@ -1314,8 +1323,11 @@ AlephBFT and consensus unit tests:
   the final accepted order seen by honest members.
   Private REST stand-in coverage now proves exact duplicate finalized-unit
   delivery is idempotent at the route/apply boundary and does not append another
-  finalized item or journal entry. Production AlephBFT network duplicate,
-  delay, and reorder handling remains open until the live network task exists.
+  finalized item or journal entry. The broadcast driver also now skips duplicate
+  peer entries before delivery attempts or quorum accounting, so one remote
+  member cannot be counted twice toward a threshold. Production AlephBFT network
+  duplicate, delay, and reorder handling remains open until the live network
+  task exists.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
