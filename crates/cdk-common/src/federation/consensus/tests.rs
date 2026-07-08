@@ -2037,6 +2037,127 @@ fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_from_finalized_ite
 }
 
 #[test]
+fn aleph_bft_consensus_adapter_session_rotation_waits_for_pending_local_finality() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter =
+        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+            .expect("adapter");
+
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-local-pending-before-rotation",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .expect("submit operation");
+    let pending_unit = adapter
+        .next_unit_payload()
+        .expect("next unit")
+        .expect("pending unit present");
+    assert_eq!(pending_unit.session, 0);
+    assert_eq!(adapter.status().pending_finalization_item_count, 1);
+
+    assert!(matches!(
+        adapter.begin_session(1),
+        Err(FederationError::PendingAlephBftFinalization {
+            current_session: 0,
+            requested_session: 1,
+            pending_units: 1,
+            pending_items: 1,
+        })
+    ));
+    assert_eq!(adapter.session(), 0);
+    assert_eq!(adapter.next_unit_index(), 1);
+
+    adapter
+        .finalize_unit(pending_unit)
+        .expect("finalize old-session local unit");
+    assert_eq!(adapter.status().pending_finalization_item_count, 0);
+    adapter
+        .begin_session(1)
+        .expect("begin session after finality");
+    let status = adapter.status();
+    assert_eq!(status.session, 1);
+    assert_eq!(status.next_unit_index, 0);
+    assert_eq!(status.next_unit_finalization_index, 0);
+    assert_eq!(status.next_item_index, 1);
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_per_rotated_session() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter =
+        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+            .expect("adapter");
+
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-session-zero",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .expect("submit session zero operation");
+    let session_zero_unit = adapter
+        .next_unit_payload()
+        .expect("next session zero unit")
+        .expect("session zero unit present");
+    assert_eq!(session_zero_unit.session, 0);
+    assert_eq!(session_zero_unit.unit_index, 0);
+    adapter
+        .finalize_unit(session_zero_unit)
+        .expect("finalize session zero unit");
+
+    adapter.begin_session(1).expect("begin session one");
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-session-one",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        ))
+        .expect("submit session one operation");
+    let session_one_unit = adapter
+        .next_unit_payload()
+        .expect("next session one unit")
+        .expect("session one unit present");
+    assert_eq!(session_one_unit.session, 1);
+    assert_eq!(session_one_unit.unit_index, 0);
+    adapter
+        .finalize_unit(session_one_unit)
+        .expect("finalize session one unit");
+
+    let mut recovered =
+        FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+            federation_id,
+            members[0],
+            1,
+            members,
+            adapter.finalized_items().to_vec(),
+        )
+        .expect("recover rotated adapter");
+    let status = recovered.status();
+    assert_eq!(status.session, 1);
+    assert_eq!(status.next_unit_index, 1);
+    assert_eq!(status.next_unit_finalization_index, 1);
+    assert_eq!(status.next_item_index, 2);
+
+    recovered
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-session-one-after-recovery",
+            "03df68495f84c316a440429c7e85e6c4b7335e6bad6c80f8591cc735a49ea0e9f6",
+        ))
+        .expect("submit recovered session one operation");
+    let next_unit = recovered
+        .next_unit_payload()
+        .expect("next recovered unit")
+        .expect("recovered unit present");
+    assert_eq!(next_unit.session, 1);
+    assert_eq!(next_unit.unit_index, 1);
+}
+
+#[test]
 fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let federation_id = federation_id(13);
     let envelope = mint_envelope(

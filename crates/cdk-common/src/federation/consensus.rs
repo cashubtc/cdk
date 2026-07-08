@@ -1700,6 +1700,15 @@ impl FederationAlephBftConsensusAdapter {
 
     /// Begin a later AlephBFT session for both data-provider and finalizer.
     pub fn begin_session(&mut self, session: u64) -> Result<()> {
+        if !self.pending_finalization_units.is_empty() {
+            return Err(FederationError::PendingAlephBftFinalization {
+                current_session: self.session(),
+                requested_session: session,
+                pending_units: self.pending_finalization_units.len(),
+                pending_items: self.pending_finalization_len(),
+            });
+        }
+
         self.finalization_handler.begin_session(session)?;
         self.data_provider.begin_session(session);
         Ok(())

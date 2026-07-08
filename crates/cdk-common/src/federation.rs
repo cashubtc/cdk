@@ -517,6 +517,20 @@ pub enum FederationError {
         /// Found payload session.
         found: u64,
     },
+    /// An AlephBFT session cannot rotate while local units are awaiting finality.
+    #[error(
+        "Federation AlephBFT session rotation blocked: current_session={current_session}, requested_session={requested_session}, pending_units={pending_units}, pending_items={pending_items}"
+    )]
+    PendingAlephBftFinalization {
+        /// Session currently accepted by the adapter.
+        current_session: u64,
+        /// Later session requested by the caller.
+        requested_session: u64,
+        /// Locally drained units still waiting for finality.
+        pending_units: usize,
+        /// Consensus items inside locally drained units still waiting for finality.
+        pending_items: usize,
+    },
     /// An opaque AlephBFT network message could not be decoded.
     #[error("Invalid federation AlephBFT network message: {reason}")]
     InvalidAlephBftNetworkMessage {
