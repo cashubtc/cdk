@@ -10261,6 +10261,242 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_local_apply() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_seed = Mnemonic::generate(12)
+        .expect("first mnemonic")
+        .to_seed_normalized("");
+    let second_seed = Mnemonic::generate(12)
+        .expect("second mnemonic")
+        .to_seed_normalized("");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private.clone(),
+        first_db,
+        &first_seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        second_private,
+        second_db,
+        &second_seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(10),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+
+    let first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url.clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let _second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let first_quote_id = QuoteId::new();
+    let first_envelope = mint_quote_envelope(&first_state, &first_quote_id);
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .await
+        .expect("first operation finality before crash-window recovery");
+    assert_eq!(response.operation_id, first_operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    wait_for_applied_operation(&first_state, first_operation_id).await;
+    wait_for_applied_operation(&second_state, first_operation_id).await;
+    let backup_bytes = wait_for_aleph_bft_backup_bytes(&first_state, 0).await;
+
+    first_state.federation_aleph_bft_network_inbound = None;
+    first_state.federation_aleph_bft_live_session = None;
+    drop(first_handle);
+    transport.insert(
+        first_url.clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(second_state.clone()),
+    );
+
+    let crash_window_db = Arc::new(
+        cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("crash-window first db"),
+    );
+    let mut recovered_first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        first_private,
+        Arc::clone(&crash_window_db),
+        &first_seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut tx = recovered_first_state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin crash-window backup transaction");
+    tx.append_federation_aleph_bft_backup_bytes(0, &backup_bytes)
+        .await
+        .expect("copy upstream AlephBFT backup bytes");
+    tx.set_federation_aleph_bft_active_session(0)
+        .await
+        .expect("persist crash-window active session");
+    tx.commit()
+        .await
+        .expect("commit crash-window backup transaction");
+
+    assert!(recovered_first_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal before backup-only recovery")
+        .is_empty());
+    assert!(recovered_first_state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items before backup-only recovery")
+        .is_empty());
+    assert!(recovered_first_state
+        .mint
+        .localstore()
+        .get_mint_quote(&first_quote_id)
+        .await
+        .expect("quote before backup-only recovery")
+        .is_none());
+
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&recovered_first_state.mint)
+            .await
+            .expect("replay backup-only AlephBFT runtime");
+    recovered_first_state.federation_consensus = replayed_consensus;
+    recovered_first_state.federation_sequences = replayed_sequences;
+    let recovered_status = recovered_first_state
+        .federation_aleph_bft_status()
+        .await
+        .expect("backup-only AlephBFT status before live start");
+    assert_eq!(recovered_status.session, 0);
+    assert_eq!(recovered_status.finalized_item_count, 0);
+
+    let _recovered_first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut recovered_first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("restart backup-only first live session")
+    .expect("backup-only first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(recovered_first_state.clone()),
+    );
+
+    wait_for_applied_operation(&recovered_first_state, first_operation_id).await;
+    assert!(recovered_first_state
+        .mint
+        .localstore()
+        .get_mint_quote(&first_quote_id)
+        .await
+        .expect("quote after backup-only recovery")
+        .is_some());
+    let recovered_entries = recovered_first_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after backup-only recovery");
+    assert_eq!(recovered_entries.len(), 1);
+    assert_eq!(recovered_entries[0].operation_id, first_operation_id);
+
+    let second_quote_id = QuoteId::new();
+    let second_envelope = mint_quote_envelope(&recovered_first_state, &second_quote_id);
+    let second_operation_id = second_envelope.operation_id().expect("second operation id");
+    let response = recovered_first_state
+        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .await
+        .expect("second operation finality after backup-only recovery");
+    assert_eq!(response.operation_id, second_operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+
+    for state in [&recovered_first_state, &second_state] {
+        wait_for_applied_operation(state, second_operation_id).await;
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal after backup-only continuation");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.operation_id)
+                .collect::<Vec<_>>(),
+            vec![first_operation_id, second_operation_id]
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status after backup-only continuation")
+                .finalized_item_count,
+            2
+        );
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_with_multiple_operations(
 ) {
     let federation_api_urls = vec![

@@ -2267,6 +2267,49 @@ fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_per_rotated_sessio
 }
 
 #[test]
+fn aleph_bft_consensus_adapter_advances_local_unit_index_from_replayed_finalized_unit() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter =
+        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+            .expect("adapter");
+
+    let replayed_envelope = mint_envelope(
+        federation_id,
+        "quote-replayed-local-unit",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let replayed_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        members[0],
+        0,
+        0,
+        vec![FederationConsensusItem::operation(replayed_envelope)],
+    )
+    .expect("replayed local unit");
+    assert_eq!(adapter.next_unit_index(), 0);
+
+    adapter
+        .finalize_unit(replayed_unit)
+        .expect("finalize replayed local unit");
+    assert_eq!(adapter.next_unit_index(), 1);
+
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-after-replayed-local-unit",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        ))
+        .expect("submit next operation");
+    let next_unit = adapter
+        .next_unit_payload()
+        .expect("next local unit")
+        .expect("next local unit present");
+    assert_eq!(next_unit.submitting_member, members[0]);
+    assert_eq!(next_unit.unit_index, 1);
+}
+
+#[test]
 fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let federation_id = federation_id(13);
     let envelope = mint_envelope(

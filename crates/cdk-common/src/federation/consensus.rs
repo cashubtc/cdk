@@ -918,6 +918,17 @@ impl FederationAlephBftUnitDataProvider {
         self.next_unit_index = 0;
     }
 
+    fn advance_next_unit_index_after_finalized_local_unit(
+        &mut self,
+        payload: &FederationAlephBftUnitPayload,
+    ) {
+        if payload.session == self.session && payload.submitting_member == self.submitting_member {
+            self.next_unit_index = self
+                .next_unit_index
+                .max(payload.unit_index.saturating_add(1));
+        }
+    }
+
     fn with_next_unit_index(mut self, next_unit_index: u64) -> Self {
         self.next_unit_index = next_unit_index;
         self
@@ -1774,6 +1785,8 @@ impl FederationAlephBftConsensusAdapter {
     ) -> Result<Vec<FederationSubmitOperationResponse>> {
         let pending_payload = payload.clone();
         let outcome = self.finalization_handler.finalize_next_unit(payload)?;
+        self.data_provider
+            .advance_next_unit_index_after_finalized_local_unit(&pending_payload);
         let mut responses = Vec::new();
 
         for finalized_item in outcome.items {
