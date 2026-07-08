@@ -111,8 +111,8 @@ impl std::fmt::Debug for FederationAlephBftLiveSessionHandle {
     }
 }
 
-impl Drop for FederationAlephBftLiveSessionHandle {
-    fn drop(&mut self) {
+impl FederationAlephBftLiveSessionHandle {
+    fn shutdown(&self) {
         if let Ok(mut exit) = self.exit.lock() {
             if let Some(exit) = exit.take() {
                 let _ = exit.send(());
@@ -122,6 +122,12 @@ impl Drop for FederationAlephBftLiveSessionHandle {
         self.network_pump_task.abort();
         self.apply_task.abort();
         self.session_task.abort();
+    }
+}
+
+impl Drop for FederationAlephBftLiveSessionHandle {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -365,6 +371,87 @@ where
     }
 
     Ok(Some(handle))
+}
+
+/// Rotate a live upstream AlephBFT task into the next empty session.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_transport<T>(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+    pump_config: CdkAlephBftNetworkPumpConfig,
+    transport: T,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
+    sync_config.validate().map_err(|err| {
+        cdk::Error::Custom(format!(
+            "Invalid AlephBFT live session rotation sync config: {err}"
+        ))
+    })?;
+    pump_config.validate()?;
+
+    if state.federation_aleph_bft_live_session.is_none() {
+        return Ok(None);
+    }
+
+    let Some(consensus) = state.federation_consensus.as_ref().cloned() else {
+        return Err(cdk::Error::Custom(
+            "AlephBFT live session rotation requires federation consensus runtime".to_string(),
+        ));
+    };
+
+    let next_session = {
+        let mut consensus = consensus.lock().await;
+        let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
+        let pending = consensus.pending_mempool_len();
+        if pending != 0 {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT live session rotation requires empty pending mempool, found {pending}"
+            )));
+        }
+        let next_session = status.session.checked_add(1).ok_or_else(|| {
+            cdk::Error::Custom("AlephBFT live session rotation overflowed session id".to_string())
+        })?;
+        consensus
+            .set_aleph_bft_finality_mode(
+                FederationAlephBftFinalityMode::ExternalFinalizationRequired,
+            )
+            .map_err(cdk::Error::from)?;
+        next_session
+    };
+
+    if let Some(handle) = state.federation_aleph_bft_live_session.take() {
+        handle.shutdown();
+    }
+    state.federation_aleph_bft_network_inbound = None;
+
+    {
+        let mut consensus = consensus.lock().await;
+        let pending = consensus.pending_mempool_len();
+        if pending != 0 {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT live session rotation requires empty pending mempool, found {pending}"
+            )));
+        }
+        consensus
+            .begin_aleph_bft_session(next_session)
+            .map_err(cdk::Error::from)?;
+    }
+
+    match start_federation_aleph_bft_live_session_with_transport(
+        state,
+        sync_config,
+        pump_config,
+        transport,
+    )
+    .await?
+    {
+        Some(handle) => Ok(Some(handle)),
+        None => Err(cdk::Error::Custom(
+            "AlephBFT live session rotation could not restart the live session".to_string(),
+        )),
+    }
 }
 
 async fn run_federation_aleph_bft_finalized_unit_apply_loop(

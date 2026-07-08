@@ -106,6 +106,14 @@ Current confirmed shape:
   from durable finalized items and journal rows, and proves an exact duplicate
   submit returns the durable journal duplicate without queuing or signing a
   second operation.
+- Latest AlephBFT live empty-session rotation checkpoint: Axum can now shut
+  down the active live `run_session` task set, close the adapter back to
+  external-finalization-required while swapping sessions, begin the next empty
+  AlephBFT session, restart the live network pump, persist the new active
+  session marker, and prove post-rotation outbound private REST network
+  messages use the new session while the old pump stays stopped. Focused
+  refusal coverage proves a non-empty pending mempool blocks rotation without
+  changing the active session.
 - Latest AlephBFT network-finality activation checkpoint: the Axum federation
   state now has a guarded method for the future live AlephBFT task to announce
   that network finality is available. The method validates that federation mode
@@ -1233,8 +1241,11 @@ Architecture checklist:
   focused tests for successful rotation, in-memory rejection, and pending-local
   finality rejection. Storage-backed live-session startup now persists a
   monotonic active-session marker, runtime startup recovers the maximum of that
-  marker and finalized-item evidence, and an Axum regression proves a newly
-  rotated empty session survives restart before any finalized item exists.
+  marker and finalized-item evidence, an Axum regression proves a newly
+  rotated empty session survives restart before any finalized item exists, and
+  the Axum live-session wrapper can now explicitly rotate a running empty
+  session into the next live network pump while refusing non-empty pending
+  mempools.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1774,9 +1785,11 @@ AlephBFT and consensus unit tests:
   finalizes a later operation. SQLite-backed apply-without-response coverage
   now also proves a timed-out submit can be finalized and applied after its
   waiter is gone, survive restart with no response cache, and return the
-  durable duplicate response without requeueing. Remaining crash-window
-  coverage is still open for live session rotation beyond the adapter-boundary
-  guard and recovered finalized-session startup path.
+  durable duplicate response without requeueing. Live empty-session rotation
+  now has Axum wrapper coverage for shutting down the old task set, persisting
+  the next active session, restarting the pump, and refusing non-empty pending
+  mempools. Remaining crash-window coverage is still open for automatic
+  session-completion rotation and longer process-level rotation windows.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by

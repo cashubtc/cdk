@@ -8244,6 +8244,223 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_network_pump() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let initial_transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(
+            FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
+        );
+    let initial_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        pump_config,
+        initial_transport.clone(),
+    )
+    .await
+    .expect("start initial live session")
+    .expect("initial live session handle");
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("initial AlephBFT status")
+            .session,
+        0
+    );
+
+    let rotated_transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(
+            FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 1),
+        );
+    let rotated_handle = rotate_federation_aleph_bft_live_session_to_next_empty_with_transport(
+        &mut state,
+        sync_config,
+        pump_config,
+        rotated_transport.clone(),
+    )
+    .await
+    .expect("rotate live session")
+    .expect("rotated live session handle");
+
+    assert!(!Arc::ptr_eq(&initial_handle, &rotated_handle));
+    let status = state
+        .federation_aleph_bft_status()
+        .await
+        .expect("rotated AlephBFT status");
+    assert_eq!(status.session, 1);
+    assert_eq!(status.next_unit_index, 0);
+    assert_eq!(status.next_unit_finalization_index, 0);
+    assert_eq!(
+        status.finality,
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable
+    );
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_active_session()
+            .await
+            .expect("persisted rotated active session"),
+        Some(1)
+    );
+    assert!(state.federation_aleph_bft_network_inbound_active());
+    assert!(state.federation_aleph_bft_live_session_active());
+    assert_eq!(
+        federation_aleph_bft_live_session_startup_decision(&state)
+            .await
+            .expect("rotated startup decision"),
+        FederationAlephBftLiveSessionStartupDecision::AlreadyStarted
+    );
+    let initial_request_count_after_rotation =
+        initial_transport.aleph_bft_network_message_requests().len();
+
+    let next_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .submit_aleph_bft_envelope(next_envelope)
+        .expect("queue rotated-session operation");
+    let requests = time::timeout(Duration::from_secs(5), async {
+        loop {
+            let requests = rotated_transport.aleph_bft_network_message_requests();
+            if !requests.is_empty() {
+                return requests;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("rotated-session network-message request");
+
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.payload.session_id == 1),
+        "rotated live network pump must deliver only the new session"
+    );
+    for request in requests {
+        request
+            .verify(&public_config, request.receiver)
+            .expect("rotated session network-message request verifies");
+        assert_eq!(request.sender, local_private.member_id);
+    }
+    assert_eq!(
+        initial_transport.aleph_bft_network_message_requests().len(),
+        initial_request_count_after_rotation,
+        "the old live-session pump must stay stopped after rotation"
+    );
+
+    drop(initial_handle);
+    drop(rotated_handle);
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
+        FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
+    );
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        pump_config,
+        transport,
+    )
+    .await
+    .expect("start live session")
+    .expect("live session handle");
+
+    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .submit_aleph_bft_envelope(envelope)
+        .expect("queue pending operation");
+
+    let rotated_transport =
+        MockFederationTransport::default().with_aleph_bft_network_message_response(
+            FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 1),
+        );
+    let err = rotate_federation_aleph_bft_live_session_to_next_empty_with_transport(
+        &mut state,
+        sync_config,
+        pump_config,
+        rotated_transport,
+    )
+    .await
+    .expect_err("non-empty mempool must block live-session rotation");
+    assert!(
+        err.to_string()
+            .contains("requires empty pending mempool, found 1"),
+        "unexpected rotation error: {err}"
+    );
+    let status = state
+        .federation_aleph_bft_status()
+        .await
+        .expect("unrotated AlephBFT status");
+    assert_eq!(status.session, 0);
+    assert_eq!(status.queued_item_count, 1);
+    assert_eq!(
+        status.finality,
+        FederationAlephBftFinalityMode::NetworkFinalityAvailable
+    );
+    assert!(state.federation_aleph_bft_network_inbound_active());
+    assert!(state.federation_aleph_bft_live_session_active());
+
+    drop(handle);
+}
+
+#[tokio::test]
 async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
