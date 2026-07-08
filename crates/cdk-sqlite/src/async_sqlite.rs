@@ -128,7 +128,7 @@ impl DatabaseExecutor for AsyncSqlite {
                 rows.next()?
                     .map(|row| {
                         (0..columns)
-                            .map(|i| row.get(i).map(from_sqlite))
+                            .map(|i| row.get_ref(i).map(from_sqlite))
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .transpose()
@@ -154,7 +154,7 @@ impl DatabaseExecutor for AsyncSqlite {
                 while let Some(row) = rows.next()? {
                     results.push(
                         (0..columns)
-                            .map(|i| row.get(i).map(from_sqlite))
+                            .map(|i| row.get_ref(i).map(from_sqlite))
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
@@ -176,7 +176,7 @@ impl DatabaseExecutor for AsyncSqlite {
             || {
                 let mut rows = stmt.raw_query();
                 rows.next()?
-                    .map(|row| row.get(0usize).map(from_sqlite))
+                    .map(|row| row.get_ref(0usize).map(from_sqlite))
                     .transpose()
             },
             to_sqlite_error,

@@ -69,14 +69,14 @@ pub use self::signing::{
 pub use self::transport::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FEDERATION_REST_API_VERSION,
-    FEDERATION_SESSION_OUTCOME_VERSION,
+    FederationAlephBftNetworkRetryRecord, FederationDkgCommitmentRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationRestSignature, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FEDERATION_REST_API_VERSION, FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,

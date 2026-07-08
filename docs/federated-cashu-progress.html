@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: retry aleph bft network deliveries</span>
+          <span class="value">feat: persist aleph bft network retries</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Cargo registry search confirms upstream aleph-bft 0.45.4 is available and wired through the federation feature. Two-member live finality works, and the live network pump now retains failed deliveries so a five-member session can stay safely pending while one member is unavailable and finalize the exact operation after that member returns.</span>
+          <span class="value">AlephBFT network retry rows are now persisted in SQL, reloaded only when a matching durable AlephBFT backup exists, and cleared as orphan transport metadata otherwise. Peer delivery is concurrent per message, SQLite backup reads preserve invalid UTF-8 bytes as blobs, and live-session shutdown now owns upstream child tasks.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist or reconstruct AlephBFT network retry material across process restart, then extend live-session coverage to delayed/duplicated/reordered messages, restart windows, and the operator mintd startup gate.</span>
+          <span class="value">Extend AlephBFT backup/replay coverage so unfinalized units can be reconstructed across full process restart, then broaden delayed/duplicated/reordered message tests and the operator mintd startup gate.</span>
         </div>
       </aside>
     </header>
@@ -786,7 +786,7 @@
         <div class="stack">
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
-            <p>Cargo registry checks confirm upstream aleph-bft and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test now proves real private REST network-message finality, and five-member live-session regressions prove one unavailable member leaves public submission retryably pending without durable quote, journal, or finalized-item mutation, then finalizes after the member returns and retained messages are retried. Remaining risk is persisted redelivery across restart, the larger delay/duplicate/reorder matrix, restart windows, and operator startup readiness.</p>
+            <p>Cargo registry checks confirm upstream aleph-bft and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, five-member live-session regressions prove unavailable-member pending/finalize behavior, and SQL-backed retry rows now survive until a valid AlephBFT backup can reload them. Remaining risk is full unfinalized-unit replay across process restart, the larger delay/duplicate/reorder matrix, and operator startup readiness.</p>
           </article>
           <article class="item">
             <h3>State-machine extraction</h3>
@@ -814,9 +814,9 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: restart-safe AlephBFT network redelivery
-          on top of the guarded activation handoff, followed by larger
-          live-session network fault assertions,
+          Current verification target: full AlephBFT backup/replay for
+          unfinalized-unit restart recovery on top of the persisted retry-row
+          and orphan-cleanup checkpoint, followed by larger live-session network fault assertions,
           larger wallet-operation smoke
           repetitions, storage-backed 4-member and 5-member partition windows,
           and compile gates. The previous CPU issue is closed unless it
@@ -907,7 +907,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Persist or reconstruct AlephBFT network retry material across process restart, then extend live-session proofs to delayed and duplicated messages and restart windows before opening the operator mintd AlephBFT startup gate.</p>
+            <p>Extend AlephBFT backup/replay so persisted network retries can safely recreate unfinalized units after process restart, then cover delayed, duplicated, and reordered messages before opening the operator mintd AlephBFT startup gate.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

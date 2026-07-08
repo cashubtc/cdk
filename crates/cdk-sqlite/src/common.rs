@@ -144,14 +144,17 @@ pub fn to_sqlite(v: Value) -> rusqlite::types::Value {
     }
 }
 
-/// Convert from rusqlite Valute to cdk_sql_common::value::Value
+/// Convert from rusqlite ValueRef to cdk_sql_common::value::Value.
 #[inline(always)]
-pub fn from_sqlite(v: rusqlite::types::Value) -> Value {
+pub fn from_sqlite(v: rusqlite::types::ValueRef<'_>) -> Value {
     match v {
-        rusqlite::types::Value::Blob(blob) => Value::Blob(blob),
-        rusqlite::types::Value::Integer(i) => Value::Integer(i),
-        rusqlite::types::Value::Null => Value::Null,
-        rusqlite::types::Value::Text(t) => Value::Text(t),
-        rusqlite::types::Value::Real(r) => Value::Real(r),
+        rusqlite::types::ValueRef::Blob(blob) => Value::Blob(blob.to_vec()),
+        rusqlite::types::ValueRef::Integer(i) => Value::Integer(i),
+        rusqlite::types::ValueRef::Null => Value::Null,
+        rusqlite::types::ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => Value::Text(text.to_owned()),
+            Err(_) => Value::Blob(bytes.to_vec()),
+        },
+        rusqlite::types::ValueRef::Real(r) => Value::Real(r),
     }
 }

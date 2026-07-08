@@ -1140,6 +1140,19 @@ impl FederationAlephBftNetworkMessageRequest {
     }
 }
 
+/// Persisted outbound AlephBFT network message retry material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftNetworkRetryRecord {
+    /// Deterministic retry identifier derived from the request and target peers.
+    pub retry_id: String,
+    /// AlephBFT session this retry belongs to.
+    pub session_id: u64,
+    /// Opaque AlephBFT network-message request to redeliver.
+    pub request: FederationAlephBftNetworkMessageRequest,
+    /// Federation peers that still need this message.
+    pub peer_member_ids: Vec<MemberId>,
+}
+
 /// Response to an opaque AlephBFT network-message delivery request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationAlephBftNetworkMessageResponse {

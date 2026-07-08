@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTransaction};
 use cdk_common::database::Error;
 use cdk_common::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus, FederationConfigDigest,
-    FederationConfigSnapshot, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
+    FederationAlephBftNetworkRetryRecord, FederationConfigDigest, FederationConfigSnapshot,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationId,
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
@@ -384,6 +385,31 @@ fn sql_row_to_federation_member_status(
         operation_count: column_as_nullable_number!(operation_count),
         message: column_as_nullable_string!(message),
         updated_time: column_as_number!(updated_time),
+    })
+}
+
+fn sql_row_to_federation_aleph_bft_network_retry(
+    row: Vec<Column>,
+) -> Result<FederationAlephBftNetworkRetryRecord, Error> {
+    unpack_into!(let (retry_id, session, request_json, peer_member_ids_json) = row);
+
+    let request = serde_json::from_str(&column_as_string!(&request_json)).map_err(|e| {
+        Error::Internal(format!(
+            "Invalid federation AlephBFT network retry request JSON: {e}"
+        ))
+    })?;
+    let peer_member_ids =
+        serde_json::from_str(&column_as_string!(&peer_member_ids_json)).map_err(|e| {
+            Error::Internal(format!(
+                "Invalid federation AlephBFT network retry peer member JSON: {e}"
+            ))
+        })?;
+
+    Ok(FederationAlephBftNetworkRetryRecord {
+        retry_id: column_as_string!(&retry_id).to_string(),
+        session_id: column_as_number!(session),
+        request,
+        peer_member_ids,
     })
 }
 
@@ -1568,6 +1594,92 @@ where
             Ok(column_as_binary!(&bytes))
         })
         .transpose()
+    }
+
+    async fn add_federation_aleph_bft_network_retry(
+        &self,
+        retry: &FederationAlephBftNetworkRetryRecord,
+    ) -> Result<(), Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            INSERT INTO federation_aleph_bft_network_retries
+            (retry_id, session, request_json, peer_member_ids_json)
+            VALUES
+            (:retry_id, :session, :request_json, :peer_member_ids_json)
+            ON CONFLICT (retry_id)
+            DO UPDATE SET
+                session = EXCLUDED.session,
+                request_json = EXCLUDED.request_json,
+                peer_member_ids_json = EXCLUDED.peer_member_ids_json
+            "#,
+        )?
+        .bind("retry_id", retry.retry_id.clone())
+        .bind("session", retry.session_id as i64)
+        .bind("request_json", serde_json::to_string(&retry.request)?)
+        .bind(
+            "peer_member_ids_json",
+            serde_json::to_string(&retry.peer_member_ids)?,
+        )
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn remove_federation_aleph_bft_network_retry(
+        &self,
+        retry_id: &str,
+    ) -> Result<(), Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            DELETE FROM federation_aleph_bft_network_retries
+            WHERE retry_id = :retry_id
+            "#,
+        )?
+        .bind("retry_id", retry_id)
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_federation_aleph_bft_network_retries(
+        &self,
+        session: u64,
+    ) -> Result<Vec<FederationAlephBftNetworkRetryRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                retry_id,
+                session,
+                request_json,
+                peer_member_ids_json
+            FROM federation_aleph_bft_network_retries
+            WHERE session = :session
+            ORDER BY retry_id ASC
+            "#,
+        )?
+        .bind("session", session as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_aleph_bft_network_retry)
+        .collect()
     }
 
     async fn get_federation_payment_observations(

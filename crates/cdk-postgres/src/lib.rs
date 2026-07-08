@@ -494,6 +494,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_aleph_bft_network_retry_persistence() {
+        cdk_common::database::mint::test::federation_aleph_bft_network_retry_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_aleph_bft_network_retry_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_payment_observation_persistence() {
         cdk_common::database::mint::test::federation_payment_observation_persistence(
             provide_mint_db(unique_federation_test_id(

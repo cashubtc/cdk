@@ -23,6 +23,7 @@ use futures::io::{AsyncRead, AsyncWrite};
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -815,16 +816,38 @@ impl CdkAlephBftSessionIo {
 }
 
 /// Tokio-backed task spawner for upstream AlephBFT.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) struct CdkAlephBftTokioSpawnHandle;
+pub(crate) struct CdkAlephBftTokioSpawnHandle {
+    spawned_tasks: Arc<Mutex<Vec<AbortHandle>>>,
+}
+
+impl CdkAlephBftTokioSpawnHandle {
+    /// Abort every child task spawned through this handle.
+    pub(crate) fn abort_all(&self) {
+        let Ok(mut tasks) = self.spawned_tasks.lock() else {
+            return;
+        };
+        for task in tasks.drain(..) {
+            task.abort();
+        }
+    }
+
+    fn track(&self, abort_handle: AbortHandle) {
+        match self.spawned_tasks.lock() {
+            Ok(mut tasks) => tasks.push(abort_handle),
+            Err(_) => abort_handle.abort(),
+        }
+    }
+}
 
 impl SpawnHandle for CdkAlephBftTokioSpawnHandle {
     fn spawn(&self, name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             tracing::trace!(task = name, "AlephBFT task started");
             task.await;
         });
+        self.track(handle.abort_handle());
     }
 
     fn spawn_essential(
@@ -836,6 +859,7 @@ impl SpawnHandle for CdkAlephBftTokioSpawnHandle {
             tracing::trace!(task = name, "AlephBFT essential task started");
             task.await;
         });
+        self.track(handle.abort_handle());
         Box::pin(async move {
             match handle.await {
                 Ok(()) => Ok(()),
@@ -1429,7 +1453,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_tokio_spawn_handle_reports_essential_completion() {
-        let spawn = CdkAlephBftTokioSpawnHandle;
+        let spawn = CdkAlephBftTokioSpawnHandle::default();
         let handle = spawn.spawn_essential("adapter-test", async {});
 
         assert!(handle.await.is_ok());

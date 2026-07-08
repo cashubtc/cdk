@@ -98,6 +98,7 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationAlephBftLiveSessionHandle {
     exit: Mutex<Option<oneshot::Sender<()>>>,
+    spawn_handle: CdkAlephBftTokioSpawnHandle,
     session_task: JoinHandle<()>,
     network_pump_task: JoinHandle<()>,
     apply_task: JoinHandle<()>,
@@ -117,6 +118,7 @@ impl Drop for FederationAlephBftLiveSessionHandle {
                 let _ = exit.send(());
             }
         }
+        self.spawn_handle.abort_all();
         self.network_pump_task.abort();
         self.apply_task.abort();
         self.session_task.abort();
@@ -187,9 +189,46 @@ where
         .ok_or_else(|| {
             cdk::Error::Custom("AlephBFT live session missing consensus runtime".to_string())
         })?;
+    let retry_store = state.mint.localstore();
     let session_io =
-        CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), state.mint.localstore(), session_id)
+        CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&retry_store), session_id)
             .await?;
+    let reload_persisted_network_retries = retry_store
+        .get_federation_aleph_bft_backup_bytes(session_id)
+        .await
+        .map_err(|err| {
+            cdk::Error::Custom(format!(
+                "AlephBFT network retry backup lookup failed: {err}"
+            ))
+        })?
+        .is_some_and(|bytes| !bytes.is_empty());
+    if !reload_persisted_network_retries {
+        let orphan_retries = retry_store
+            .get_federation_aleph_bft_network_retries(session_id)
+            .await
+            .map_err(|err| {
+                cdk::Error::Custom(format!(
+                    "AlephBFT orphan network retry lookup failed: {err}"
+                ))
+            })?;
+        for retry in &orphan_retries {
+            retry_store
+                .remove_federation_aleph_bft_network_retry(&retry.retry_id)
+                .await
+                .map_err(|err| {
+                    cdk::Error::Custom(format!(
+                        "AlephBFT orphan network retry removal failed: {err}"
+                    ))
+                })?;
+        }
+        if !orphan_retries.is_empty() {
+            tracing::warn!(
+                session_id,
+                orphan_retry_count = orphan_retries.len(),
+                "Cleared AlephBFT network retries without a durable session backup"
+            );
+        }
+    }
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
     let inbound = CdkAlephBftNetworkInboundHandle::new(session_id, &network_handle);
@@ -205,15 +244,17 @@ where
     .map_err(|_| cdk::Error::Custom("Invalid AlephBFT live session config".to_string()))?;
     let (exit_sender, exit_receiver) = oneshot::channel();
     let terminator = Terminator::create_root(exit_receiver, "cdk-aleph-bft-session");
+    let spawn_handle = CdkAlephBftTokioSpawnHandle::default();
 
     let session_keychain = keychain.clone();
+    let session_spawn_handle = spawn_handle.clone();
     let session_task = tokio::spawn(async move {
         run_session(
             aleph_config,
             local_io,
             network,
             session_keychain,
-            CdkAlephBftTokioSpawnHandle,
+            session_spawn_handle,
             terminator,
         )
         .await;
@@ -233,7 +274,20 @@ where
     let pump_keychain = keychain.clone();
     let network_pump_task = tokio::spawn(async move {
         let mut interval = federation_peer_sync_interval(sync_config);
-        let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
+        interval.tick().await;
+        let mut retry_queue = if reload_persisted_network_retries {
+            match CdkAlephBftNetworkRetryQueue::from_db(&retry_store, &pump_keychain, session_id)
+                .await
+            {
+                Ok(queue) => queue,
+                Err(err) => {
+                    tracing::warn!("AlephBFT network retry reload failed: {}", err);
+                    CdkAlephBftNetworkRetryQueue::default()
+                }
+            }
+        } else {
+            CdkAlephBftNetworkRetryQueue::default()
+        };
         loop {
             interval.tick().await;
             match run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
@@ -242,6 +296,7 @@ where
                 &client,
                 pump_config,
                 &mut retry_queue,
+                Some(&retry_store),
             )
             .await
             {
@@ -274,6 +329,7 @@ where
     });
     let handle = Arc::new(FederationAlephBftLiveSessionHandle {
         exit: Mutex::new(Some(exit_sender)),
+        spawn_handle,
         session_task,
         network_pump_task,
         apply_task,

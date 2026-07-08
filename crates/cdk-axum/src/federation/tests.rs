@@ -11,12 +11,12 @@ use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
     FederationAlephBftFinalityMode, FederationAlephBftFinalizedUnitRequest,
     FederationAlephBftFinalizedUnitResponse, FederationAlephBftNetworkMessageRequest,
-    FederationAlephBftNetworkMessageResponse, FederationAlephBftUnitBodyHash,
-    FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusBackendKind,
-    FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
+    FederationAlephBftNetworkMessageResponse, FederationAlephBftNetworkRetryRecord,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
+    FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationKeysetRotationOperation, FederationMemberStatusKind,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
@@ -8316,6 +8316,68 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
     }
 }
 
+#[tokio::test]
+async fn aleph_bft_live_session_startup_clears_orphan_network_retries_without_backup() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url, second_url);
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        first_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let orphan_retry = FederationAlephBftNetworkRetryRecord {
+        retry_id: "orphan-retry".to_string(),
+        session_id: 0,
+        request: FederationAlephBftNetworkMessageRequest::new(0, vec![1, 2, 3]),
+        peer_member_ids: vec![second_private.member_id],
+    };
+    state
+        .mint
+        .localstore()
+        .add_federation_aleph_bft_network_retry(&orphan_retry)
+        .await
+        .expect("persist orphan retry");
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_network_retries(0)
+            .await
+            .expect("orphan retry before startup"),
+        vec![orphan_retry]
+    );
+
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_secs(60),
+        ..FederationPeerSyncConfig::default()
+    };
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        CdkAlephBftNetworkPumpConfig::default(),
+        RouterFederationTransportRegistry::default(),
+    )
+    .await
+    .expect("start live session")
+    .expect("live session handle");
+
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_network_retries(0)
+        .await
+        .expect("orphan retry after startup")
+        .is_empty());
+    drop(handle);
+}
+
 async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
     time::timeout(Duration::from_secs(5), async {
         loop {
@@ -8800,6 +8862,7 @@ async fn aleph_bft_network_retry_queue_redelivers_failed_members_after_recovery(
             ..CdkAlephBftNetworkPumpConfig::default()
         },
         &mut retry_queue,
+        None,
     )
     .await
     .expect("network pump first tick");
@@ -8829,6 +8892,7 @@ async fn aleph_bft_network_retry_queue_redelivers_failed_members_after_recovery(
             ..CdkAlephBftNetworkPumpConfig::default()
         },
         &mut retry_queue,
+        None,
     )
     .await
     .expect("network pump retry tick");

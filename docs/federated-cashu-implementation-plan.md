@@ -1554,8 +1554,15 @@ AlephBFT and consensus unit tests:
   both members. Cargo registry checks confirm upstream `aleph-bft` 0.45.4 is
   available and is the workspace dependency used by the federation feature.
   Bounded in-memory redelivery now retries failed network-message deliveries to
-  recovered peers; production duplicate, delay, persisted retry, and reorder
-  handling remains open for the larger fault matrix.
+  recovered peers. SQL-backed retry rows now persist outbound network-message
+  retry material, reload it only when the same session has durable AlephBFT
+  backup bytes, and clear orphan retry rows that cannot safely reconstruct
+  uncheckpointed upstream state. Peer delivery is concurrent per message, the
+  first live-session pump tick is delayed by one configured interval to avoid
+  startup-router races, live-session shutdown now aborts upstream child tasks,
+  and SQLite backup reads preserve invalid UTF-8 bytes as blobs. Production
+  duplicate, delay, full unfinalized-unit restart replay, and reorder handling
+  remain open for the larger fault matrix.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
@@ -1574,9 +1581,10 @@ AlephBFT and consensus unit tests:
   operation retryably pending and writes no mint quote, journal entry, or
   finalized item before finality, then finalizes the exact operation after the
   member returns and the in-memory retry queue redelivers failed messages.
-  Production AlephBFT catch-up across process restart remains open until the
-  private REST network bridge persists retry material or reconstructs it from
-  durable AlephBFT backup/session state.
+  Production AlephBFT catch-up across full process restart remains open until
+  durable AlephBFT backup/session replay can reconstruct unfinalized units;
+  orphan network retry rows without that backup are now deleted at startup
+  instead of being replayed unsafely.
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.

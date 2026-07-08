@@ -6,15 +6,16 @@ use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
-    FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftUnitPayload,
-    FederationConfig, FederationConfigSnapshot, FederationConsensusItem,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftNetworkRetryRecord, FederationAlephBftUnitPayload, FederationConfig,
+    FederationConfigSnapshot, FederationConsensusItem, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -611,6 +612,76 @@ where
             .expect("session 8 backup bytes"),
         Some(b"other-session".to_vec())
     );
+}
+
+/// Assert AlephBFT network retry rows persist per session and can be removed.
+pub async fn federation_aleph_bft_network_retry_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let peer_one = MemberId::new(1).expect("peer one");
+    let peer_two = MemberId::new(2).expect("peer two");
+    let retry = FederationAlephBftNetworkRetryRecord {
+        retry_id: "retry-a".to_string(),
+        session_id: 7,
+        request: FederationAlephBftNetworkMessageRequest::new(7, vec![1, 2, 3]),
+        peer_member_ids: vec![peer_one, peer_two],
+    };
+    let other_session = FederationAlephBftNetworkRetryRecord {
+        retry_id: "retry-b".to_string(),
+        session_id: 8,
+        request: FederationAlephBftNetworkMessageRequest::new(8, vec![9]),
+        peer_member_ids: vec![peer_two],
+    };
+
+    assert!(db
+        .get_federation_aleph_bft_network_retries(7)
+        .await
+        .expect("missing retry session")
+        .is_empty());
+
+    db.add_federation_aleph_bft_network_retry(&retry)
+        .await
+        .expect("persist retry");
+    db.add_federation_aleph_bft_network_retry(&other_session)
+        .await
+        .expect("persist other session retry");
+    assert_eq!(
+        db.get_federation_aleph_bft_network_retries(7)
+            .await
+            .expect("session 7 retries"),
+        vec![retry.clone()]
+    );
+
+    let updated = FederationAlephBftNetworkRetryRecord {
+        request: FederationAlephBftNetworkMessageRequest::new(7, vec![4, 5]),
+        peer_member_ids: vec![peer_two],
+        ..retry.clone()
+    };
+    db.add_federation_aleph_bft_network_retry(&updated)
+        .await
+        .expect("update retry");
+    assert_eq!(
+        db.get_federation_aleph_bft_network_retries(7)
+            .await
+            .expect("updated session 7 retries"),
+        vec![updated.clone()]
+    );
+    assert_eq!(
+        db.get_federation_aleph_bft_network_retries(8)
+            .await
+            .expect("session 8 retries"),
+        vec![other_session]
+    );
+
+    db.remove_federation_aleph_bft_network_retry(&updated.retry_id)
+        .await
+        .expect("remove retry");
+    assert!(db
+        .get_federation_aleph_bft_network_retries(7)
+        .await
+        .expect("removed retry session")
+        .is_empty());
 }
 
 /// Assert public federation config snapshots are durable and conflict-checked.
