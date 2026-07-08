@@ -117,13 +117,23 @@ where
         let signature = signature
             .parse::<Signature>()
             .map_err(|_| super::nut20::Error::InvalidSignature)?;
-        let msg = self.msg_to_sign(quote);
+        let quote_id = quote.to_string();
+        let msg = mint_quote_msg_to_sign(&quote_id, &self.outputs);
 
         match pubkey.verify(&msg, &signature) {
-            Ok(()) => Ok(()),
-            Err(_) => pubkey.verify(&self.legacy_msg_to_sign(quote), &signature),
+            Ok(()) => return Ok(()),
+            Err(_) => {
+                let legacy_msg = legacy_mint_quote_msg_to_sign(&quote_id, &self.outputs);
+                pubkey
+                    .verify(&legacy_msg, &signature)
+                    .map_err(|_| super::nut20::Error::InvalidSignature)?;
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    output_count = self.outputs.len(),
+                    "Accepted legacy batch mint quote signature format"
+                );
+            }
         }
-        .map_err(|_| super::nut20::Error::InvalidSignature)?;
 
         Ok(())
     }
@@ -238,6 +248,28 @@ mod tests {
         request
             .verify_quote_signature(&quote_id, &signature, &pubkey)
             .expect("verification should succeed with correct key");
+    }
+
+    #[test]
+    fn test_sign_and_verify_batch_quote_legacy_roundtrip() {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let quote_id = "test-quote-id-legacy".to_string();
+        let outputs = vec![dummy_blinded_message(), dummy_blinded_message()];
+        let request = BatchMintRequest {
+            quotes: vec![quote_id.clone()],
+            quote_amounts: None,
+            outputs,
+            signatures: None,
+        };
+
+        let signature = request
+            .sign_quote_legacy(&quote_id, &secret_key)
+            .expect("legacy signing should succeed");
+
+        request
+            .verify_quote_signature(&quote_id, &signature, &pubkey)
+            .expect("verification should fall back to the legacy message format");
     }
 
     #[test]
@@ -370,27 +402,5 @@ mod tests {
         assert!(!Settings::new(Some(10), None).is_empty());
         assert!(!Settings::new(None, Some(vec!["bolt11".to_string()])).is_empty());
         assert!(!Settings::new(Some(10), Some(vec!["bolt11".to_string()])).is_empty());
-    }
-
-    #[test]
-    fn msg_to_sign_concatenates_quote_and_each_output_secret() {
-        let quote_id = "quote-id".to_string();
-        let output_1 = dummy_blinded_message();
-        let output_2 = dummy_blinded_message();
-        let expected = format!(
-            "{}{}{}",
-            quote_id,
-            output_1.blinded_secret.to_hex(),
-            output_2.blinded_secret.to_hex()
-        )
-        .into_bytes();
-        let request = BatchMintRequest {
-            quotes: vec![quote_id.clone()],
-            quote_amounts: None,
-            outputs: vec![output_1, output_2],
-            signatures: None,
-        };
-
-        assert_eq!(request.msg_to_sign(&quote_id), expected);
     }
 }

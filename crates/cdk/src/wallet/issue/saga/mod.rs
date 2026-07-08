@@ -88,8 +88,17 @@ async fn post_mint_request_with_legacy_fallback(
         {
             Ok(response) => Ok(response),
             Err(error) if should_retry_with_legacy_quote_signature(&error) => {
-                let Some(secret_key) = wallet.mint_quote_signing_key(quote_info).await? else {
-                    return Err(error);
+                let secret_key = match wallet.mint_quote_signing_key(quote_info).await {
+                    Ok(Some(secret_key)) => secret_key,
+                    Ok(None) => return Err(error),
+                    Err(fallback_error) => {
+                        tracing::warn!(
+                            original_error = %error,
+                            fallback_error = %fallback_error,
+                            "Could not prepare legacy mint quote signature retry; returning original mint error"
+                        );
+                        return Err(error);
+                    }
                 };
 
                 tracing::info!(
@@ -97,9 +106,26 @@ async fn post_mint_request_with_legacy_fallback(
                 );
 
                 let mut retry_request = request.clone();
-                retry_request.sign_legacy(secret_key)?;
+                if let Err(fallback_error) = retry_request.sign_legacy(secret_key) {
+                    tracing::warn!(
+                        original_error = %error,
+                        fallback_error = %fallback_error,
+                        "Could not sign legacy mint quote retry; returning original mint error"
+                    );
+                    return Err(error);
+                }
 
-                wallet.client.post_mint(payment_method, retry_request).await
+                match wallet.client.post_mint(payment_method, retry_request).await {
+                    Ok(response) => Ok(response),
+                    Err(fallback_error) => {
+                        tracing::warn!(
+                            original_error = %error,
+                            fallback_error = %fallback_error,
+                            "Legacy mint quote signature retry failed; returning original mint error"
+                        );
+                        Err(error)
+                    }
+                }
             }
             Err(error) => Err(error),
         },
@@ -115,10 +141,23 @@ async fn post_mint_request_with_legacy_fallback(
             {
                 Ok(response) => Ok(response),
                 Err(error) if should_retry_with_legacy_quote_signature(&error) => {
-                    let Some(legacy_signatures) =
-                        legacy_batch_signatures(wallet, request, quote_infos).await?
-                    else {
-                        return Err(error);
+                    let legacy_signatures = match legacy_batch_signatures(
+                        wallet,
+                        request,
+                        quote_infos,
+                    )
+                    .await
+                    {
+                        Ok(Some(legacy_signatures)) => legacy_signatures,
+                        Ok(None) => return Err(error),
+                        Err(fallback_error) => {
+                            tracing::warn!(
+                                original_error = %error,
+                                fallback_error = %fallback_error,
+                                "Could not prepare legacy batch mint quote signature retry; returning original mint error"
+                            );
+                            return Err(error);
+                        }
                     };
 
                     tracing::info!(
@@ -132,6 +171,14 @@ async fn post_mint_request_with_legacy_fallback(
                         .client
                         .post_batch_mint(payment_method, retry_request)
                         .await
+                        .map_err(|fallback_error| {
+                            tracing::warn!(
+                                original_error = %error,
+                                fallback_error = %fallback_error,
+                                "Legacy batch mint quote signature retry failed; returning original mint error"
+                            );
+                            error
+                        })
                 }
                 Err(error) => Err(error),
             }
@@ -156,6 +203,10 @@ async fn legacy_batch_signatures(
     for ((quote_id, quote_info), signature) in
         request.quotes.iter().zip(quote_infos).zip(signatures)
     {
+        if quote_info.id.as_str() != quote_id.as_str() {
+            return Ok(None);
+        }
+
         if signature.is_some() {
             let Some(secret_key) = wallet.mint_quote_signing_key(quote_info).await? else {
                 return Ok(None);
@@ -964,7 +1015,7 @@ mod tests {
     use cdk_common::nuts::MintQuoteState;
 
     use super::*;
-    use crate::nuts::{BlindSignature, BlindedMessage, MintResponse};
+    use crate::nuts::{BatchMintRequest, BlindSignature, BlindedMessage, MintResponse};
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
         MockMintConnector,
@@ -1022,7 +1073,9 @@ mod tests {
             .expect("prepare mint saga");
 
         mock_client.push_post_mint_response(Err(Error::SignatureMissingOrInvalid));
-        mock_client.push_post_mint_response(Err(Error::SignatureMissingOrInvalid));
+        mock_client.push_post_mint_response(Err(Error::Custom(
+            "legacy retry should not replace original error".to_string(),
+        )));
 
         let result = prepared.execute().await;
 
@@ -1079,7 +1132,9 @@ mod tests {
             .expect("prepare batch mint saga");
 
         mock_client.push_post_batch_mint_response(Err(Error::SignatureMissingOrInvalid));
-        mock_client.push_post_batch_mint_response(Err(Error::SignatureMissingOrInvalid));
+        mock_client.push_post_batch_mint_response(Err(Error::Custom(
+            "legacy retry should not replace original error".to_string(),
+        )));
 
         let result = prepared.execute().await;
 
@@ -1124,6 +1179,28 @@ mod tests {
             .is_err());
         assert_ne!(new_signature, legacy_signature);
         assert_eq!(first_request.outputs, legacy_request.outputs);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_batch_signatures_rejects_misaligned_quote_infos() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let request = BatchMintRequest {
+            quotes: vec!["request-quote-id".to_string()],
+            quote_amounts: None,
+            outputs: vec![],
+            signatures: Some(vec![Some("signature-placeholder".to_string())]),
+        };
+        let quote_infos = vec![test_mint_quote(mint_url)];
+
+        let result = legacy_batch_signatures(&wallet, &request, &quote_infos)
+            .await
+            .expect("alignment check should not fail");
+
+        assert!(result.is_none());
     }
 
     #[tokio::test]

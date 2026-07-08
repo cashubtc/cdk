@@ -119,12 +119,21 @@ where
 
         let signature = Signature::from_str(signature).map_err(|_| Error::InvalidSignature)?;
 
-        let msg_to_sign = self.msg_to_sign();
+        let quote_id = self.quote.to_string();
+        let msg_to_sign = mint_quote_msg_to_sign(&quote_id, &self.outputs);
 
         match pubkey.verify(&msg_to_sign, &signature) {
-            Ok(()) => Ok(()),
-            Err(_) => pubkey.verify(&self.legacy_msg_to_sign(), &signature),
-        }?;
+            Ok(()) => return Ok(()),
+            Err(_) => {
+                let legacy_msg = legacy_mint_quote_msg_to_sign(&quote_id, &self.outputs);
+                pubkey.verify(&legacy_msg, &signature)?;
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    output_count = self.outputs.len(),
+                    "Accepted legacy mint quote signature format"
+                );
+            }
+        }
 
         Ok(())
     }
