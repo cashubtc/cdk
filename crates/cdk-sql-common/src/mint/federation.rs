@@ -29,6 +29,7 @@ use crate::{
 
 const FEDERATION_DKG_COMMITMENT_PHASE: &str = "commitment";
 const FEDERATION_DKG_REVEAL_PHASE: &str = "reveal";
+const FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY: &str = "active";
 
 fn status_to_str(status: FederationOperationStatus) -> &'static str {
     match status {
@@ -977,6 +978,33 @@ where
         Ok(())
     }
 
+    async fn set_federation_aleph_bft_active_session(
+        &mut self,
+        session: u64,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO federation_aleph_bft_session_state
+            (session_key, active_session)
+            VALUES
+            (:session_key, :active_session)
+            ON CONFLICT (session_key)
+            DO UPDATE SET active_session =
+                CASE
+                    WHEN federation_aleph_bft_session_state.active_session < EXCLUDED.active_session
+                    THEN EXCLUDED.active_session
+                    ELSE federation_aleph_bft_session_state.active_session
+                END
+            "#,
+        )?
+        .bind("session_key", FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY)
+        .bind("active_session", session as i64)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
     async fn add_federation_aleph_bft_pending_operation(
         &mut self,
         operation: &FederationAlephBftPendingOperationRecord,
@@ -1666,6 +1694,29 @@ where
         .map(|mut row| {
             let bytes = row.remove(0);
             Ok(column_as_binary!(&bytes))
+        })
+        .transpose()
+    }
+
+    async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT active_session
+            FROM federation_aleph_bft_session_state
+            WHERE session_key = :session_key
+            "#,
+        )?
+        .bind("session_key", FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY)
+        .fetch_one(&*conn)
+        .await?
+        .map(|mut row| {
+            let active_session = row.remove(0);
+            Ok(column_as_number!(active_session))
         })
         .transpose()
     }

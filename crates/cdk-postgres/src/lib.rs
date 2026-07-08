@@ -494,6 +494,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_aleph_bft_active_session_persistence() {
+        cdk_common::database::mint::test::federation_aleph_bft_active_session_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_aleph_bft_active_session_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_aleph_bft_pending_operation_persistence() {
         cdk_common::database::mint::test::federation_aleph_bft_pending_operation_persistence(
             provide_mint_db(unique_federation_test_id(
@@ -685,6 +697,7 @@ mod test {
             "federation_session_outcomes",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
+            "federation_aleph_bft_session_state",
             "federation_state_digest",
             "federation_payment_observations",
             "federation_member_status",

@@ -614,6 +614,75 @@ where
     );
 }
 
+/// Assert AlephBFT active-session state is durable and monotonic.
+pub async fn federation_aleph_bft_active_session_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    assert_eq!(
+        db.get_federation_aleph_bft_active_session()
+            .await
+            .expect("missing active session"),
+        None
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin first session tx");
+    tx.set_federation_aleph_bft_active_session(7)
+        .await
+        .expect("set active session");
+    tx.commit().await.expect("commit active session");
+    assert_eq!(
+        db.get_federation_aleph_bft_active_session()
+            .await
+            .expect("active session after first commit"),
+        Some(7)
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin rollback session tx");
+    tx.set_federation_aleph_bft_active_session(8)
+        .await
+        .expect("set rolled-back active session");
+    tx.rollback().await.expect("rollback active session");
+    assert_eq!(
+        db.get_federation_aleph_bft_active_session()
+            .await
+            .expect("active session after rollback"),
+        Some(7)
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin stale session tx");
+    tx.set_federation_aleph_bft_active_session(6)
+        .await
+        .expect("set stale active session");
+    tx.commit().await.expect("commit stale session");
+    assert_eq!(
+        db.get_federation_aleph_bft_active_session()
+            .await
+            .expect("active session after stale write"),
+        Some(7)
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin newer session tx");
+    tx.set_federation_aleph_bft_active_session(9)
+        .await
+        .expect("set newer active session");
+    tx.commit().await.expect("commit newer session");
+    assert_eq!(
+        db.get_federation_aleph_bft_active_session()
+            .await
+            .expect("active session after newer write"),
+        Some(9)
+    );
+}
+
 /// Assert AlephBFT pending operation rows persist per session and can be removed.
 pub async fn federation_aleph_bft_pending_operation_persistence<DB>(db: DB)
 where

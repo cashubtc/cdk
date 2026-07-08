@@ -524,6 +524,12 @@ mod federation_migration_tests {
         let postgres_aleph_bft_pending_operations = include_str!(
             "migrations/postgres/20260703172000_add_federation_aleph_bft_pending_operations.sql"
         );
+        let sqlite_aleph_bft_session_state = include_str!(
+            "migrations/sqlite/20260703173000_add_federation_aleph_bft_session_state.sql"
+        );
+        let postgres_aleph_bft_session_state = include_str!(
+            "migrations/postgres/20260703173000_add_federation_aleph_bft_session_state.sql"
+        );
         let sqlite_outcomes =
             include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
         let postgres_outcomes =
@@ -668,6 +674,20 @@ mod federation_migration_tests {
                     "session",
                     "envelope_json",
                     "idx_federation_aleph_bft_pending_operations_session",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_aleph_bft_session_state,
+            postgres_aleph_bft_session_state,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_aleph_bft_session_state",
+                    "session_key",
+                    "active_session",
                 ],
             );
         }

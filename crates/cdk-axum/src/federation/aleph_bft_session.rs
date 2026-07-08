@@ -194,6 +194,21 @@ where
             cdk::Error::Custom("AlephBFT live session missing consensus runtime".to_string())
         })?;
     let retry_store = state.mint.localstore();
+    let mut tx = retry_store.begin_transaction().await.map_err(|err| {
+        cdk::Error::Custom(format!(
+            "AlephBFT active session transaction begin failed: {err}"
+        ))
+    })?;
+    tx.set_federation_aleph_bft_active_session(session_id)
+        .await
+        .map_err(|err| {
+            cdk::Error::Custom(format!("AlephBFT active session persistence failed: {err}"))
+        })?;
+    tx.commit().await.map_err(|err| {
+        cdk::Error::Custom(format!(
+            "AlephBFT active session transaction commit failed: {err}"
+        ))
+    })?;
     let session_io =
         CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&retry_store), session_id)
             .await?;

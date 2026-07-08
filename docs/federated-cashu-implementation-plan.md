@@ -1189,7 +1189,10 @@ Architecture checklist:
   operation without reusing its local CDK unit index. The runtime and
   backend-adapter runtime now expose a guarded empty-session rollover API with
   focused tests for successful rotation, in-memory rejection, and pending-local
-  finality rejection.
+  finality rejection. Storage-backed live-session startup now persists a
+  monotonic active-session marker, runtime startup recovers the maximum of that
+  marker and finalized-item evidence, and an Axum regression proves a newly
+  rotated empty session survives restart before any finalized item exists.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1569,6 +1572,14 @@ AlephBFT and consensus unit tests:
   `backend_adapter_runtime_rejects_begin_aleph_bft_session_for_in_memory_backend`
   pass under
   `cargo test -p cdk-common --features federation begin_aleph_bft_session -- --test-threads 1`.
+- [x] Durable empty-session AlephBFT recovery has focused storage and Axum
+  coverage. `federation_aleph_bft_active_session_persistence` proves the
+  active-session marker is durable, rollback-safe, and monotonic under SQLite,
+  `federation_mint_migrations_cover_sqlite_and_postgres` covers the migration
+  pair, and
+  `aleph_bft_live_session_persists_and_recovers_empty_active_session` proves
+  live-session startup persists session 1 and restart recovers it before any
+  finalized item exists.
 - [x] Duplicate proposals from multiple members produce at most one applied
   operation outcome and identical idempotent responses. Covered by the
   4-member and 5-member adapter finalization regressions, which include
@@ -1624,8 +1635,11 @@ AlephBFT and consensus unit tests:
   network-message envelopes. Runtime-level AlephBFT wrappers now expose a
   guarded `begin_aleph_bft_session` API that can rotate to an empty later
   session, rejects in-memory runtimes, and refuses rotation while drained local
-  units still await finality. Durable live-session rollover for empty
-  newly-rotated sessions and long-partition fault coverage remain open.
+  units still await finality. Live-session startup now durably records a
+  monotonic active-session marker, startup recovers the maximum of that marker
+  and finalized-item evidence, and focused storage/Axum tests cover empty
+  newly-rotated session recovery before finalized evidence exists.
+  Long-partition fault coverage remains open.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload

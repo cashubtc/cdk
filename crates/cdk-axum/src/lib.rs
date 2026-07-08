@@ -3910,7 +3910,12 @@ async fn create_federation_runtime_state(
         }
         FederationConsensusBackendKind::AlephBft => {
             let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
-            let recovered_session = latest_aleph_bft_finalized_session(&finalized_items);
+            let active_session = db
+                .get_federation_aleph_bft_active_session()
+                .await?
+                .unwrap_or(0);
+            let recovered_session =
+                latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
             let member_ids = config.public_config().members.keys().copied();
             let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
                 config.federation_id(),
@@ -3946,6 +3951,10 @@ async fn create_federation_runtime_state(
                 }
                 consensus.submit_aleph_bft_envelope(pending.envelope)?;
             }
+            let mut tx = db.begin_transaction().await?;
+            tx.set_federation_aleph_bft_active_session(session_id)
+                .await?;
+            tx.commit().await?;
             consensus
         }
     };

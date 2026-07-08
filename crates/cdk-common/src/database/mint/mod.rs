@@ -688,6 +688,12 @@ pub trait FederationJournalTransaction {
         bytes: &[u8],
     ) -> Result<(), Self::Err>;
 
+    /// Persist the latest active AlephBFT session marker.
+    async fn set_federation_aleph_bft_active_session(
+        &mut self,
+        session: u64,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one local AlephBFT operation admitted to the pending mempool.
     async fn add_federation_aleph_bft_pending_operation(
         &mut self,
@@ -840,6 +846,9 @@ pub trait FederationJournalDatabase {
         &self,
         session: u64,
     ) -> Result<Option<Vec<u8>>, Self::Err>;
+
+    /// Get the latest active AlephBFT session marker.
+    async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err>;
 
     /// Get local AlephBFT pending operations for one session.
     async fn get_federation_aleph_bft_pending_operations(

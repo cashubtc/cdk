@@ -8127,6 +8127,95 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let seed = mnemonic.to_seed_normalized("");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::clone(&db),
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .begin_aleph_bft_session(1)
+        .expect("begin empty session one");
+
+    let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
+        FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 1),
+    );
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let stale_pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        stale_pump_config,
+        transport,
+    )
+    .await
+    .expect("start empty session")
+    .expect("live session handle");
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_active_session()
+            .await
+            .expect("persisted active session"),
+        Some(1)
+    );
+    drop(handle);
+
+    let mut restarted_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::clone(&db),
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let (consensus, sequences) = crate::create_federation_runtime_state(&restarted_state.mint)
+        .await
+        .expect("recover active empty session");
+    restarted_state.federation_consensus = consensus;
+    restarted_state.federation_sequences = sequences;
+    let status = restarted_state
+        .federation_aleph_bft_status()
+        .await
+        .expect("recovered AlephBFT status");
+    assert_eq!(status.session, 1);
+    assert_eq!(status.finalized_item_count, 0);
+    assert_eq!(status.next_unit_index, 0);
+    assert_eq!(
+        federation_aleph_bft_live_session_startup_decision(&restarted_state)
+            .await
+            .expect("startup decision"),
+        FederationAlephBftLiveSessionStartupDecision::Spawn {
+            local_member: local_private.member_id,
+            peer_count: 1,
+            session_id: 1,
+        }
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
