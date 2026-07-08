@@ -122,6 +122,14 @@ Current confirmed shape:
   network queue are now shared across `MintState` clones, which makes router
   clones observe rotation without route reinsertion and sets up automatic
   session-completion rotation triggers.
+- Latest AlephBFT automatic session-completion rotation checkpoint: the live
+  `run_session` wrapper now emits a completion signal only when the upstream
+  session returns normally, and a supervised watcher rotates the shared live
+  session state into the next AlephBFT session. Manual shutdown still cancels
+  the completion signal path. A two-member private-REST regression uses a
+  fast test-only round schedule, waits for session 0 to auto-rotate into
+  session 1 through the pre-existing routers, verifies the durable active
+  session marker, and then finalizes a real mint-quote operation in session 1.
 - Latest AlephBFT network-finality activation checkpoint: the Axum federation
   state now has a guarded method for the future live AlephBFT task to announce
   that network finality is available. The method validates that federation mode
@@ -1257,6 +1265,9 @@ Architecture checklist:
   works after a session has finalized real traffic, and the live-session and
   inbound-network slots are shared across router state clones so the original
   private REST routers observe the rotated session without route reinsertion.
+  Live `run_session` completion now also supervises automatic rotation into the
+  next session; a focused two-member regression proves the auto-rotated session
+  stays live and can finalize a later operation through those original routers.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1802,10 +1813,11 @@ AlephBFT and consensus unit tests:
   mempools; post-finality rotation coverage now proves two live members can
   finalize session-0 traffic, rotate into session 1, and finalize another
   operation through the router clones that were installed before rotation. The
-  latest crates.io check reconfirmed upstream `aleph-bft = 0.45.4` as the
-  direct dependency. Remaining crash-window coverage is still open for
-  automatic session-completion rotation triggers and longer process-level
-  rotation windows.
+  automatic completion watcher now rotates a naturally completed `run_session`
+  into the next live session and proves the next operation can finalize there.
+  The latest crates.io check reconfirmed upstream `aleph-bft = 0.45.4` as the
+  direct dependency. Remaining crash-window coverage is still open for longer
+  process-level rotation windows.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by

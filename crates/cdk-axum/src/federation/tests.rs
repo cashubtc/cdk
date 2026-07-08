@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use aleph_bft::{Network, NodeIndex, Recipient};
+use aleph_bft::{default_delay_config, Network, NodeIndex, Recipient};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::cdk_database::MintDatabase;
@@ -8896,6 +8896,125 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
 }
 
 #[tokio::test]
+async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private,
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        second_private,
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(5),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let options =
+        fast_aleph_bft_live_session_options(pump_config, 6).with_automatic_rotation_limit(1);
+
+    let first_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut first_state,
+        sync_config,
+        options.clone(),
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let second_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut second_state,
+        sync_config,
+        options,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    wait_for_aleph_bft_session(&first_state, 1).await;
+    wait_for_aleph_bft_session(&second_state, 1).await;
+    for state in [&first_state, &second_state] {
+        assert!(state.federation_aleph_bft_live_session_active().await);
+        assert!(state.federation_aleph_bft_network_inbound_active().await);
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_aleph_bft_active_session()
+                .await
+                .expect("auto-rotated active session"),
+            Some(1)
+        );
+    }
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("session-one operation response");
+    assert_eq!(response.operation_id, operation_id);
+    wait_for_applied_operation(&first_state, operation_id).await;
+    wait_for_applied_operation(&second_state, operation_id).await;
+
+    for state in [&first_state, &second_state] {
+        let status = state
+            .federation_aleph_bft_status()
+            .await
+            .expect("post-auto-rotation AlephBFT status");
+        assert_eq!(status.session, 1);
+        assert_eq!(status.accepted_operation_count, 1);
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("auto-rotated quote lookup")
+            .is_some());
+    }
+
+    drop(first_handle);
+    drop(second_handle);
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_rest_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
@@ -11468,6 +11587,41 @@ async fn wait_for_applied_operation(state: &MintState, operation_id: FederationO
         operation_applied_within(state, operation_id, Duration::from_secs(15)).await,
         "operation applied before timeout"
     );
+}
+
+fn fast_aleph_bft_live_session_options(
+    pump_config: CdkAlephBftNetworkPumpConfig,
+    max_round: u16,
+) -> FederationAlephBftLiveSessionOptions {
+    let mut delay_config = default_delay_config();
+    delay_config.tick_interval = Duration::from_millis(5);
+    delay_config.unit_rebroadcast_interval_min = Duration::from_millis(20);
+    delay_config.unit_rebroadcast_interval_max = Duration::from_millis(40);
+    delay_config.unit_creation_delay = Arc::new(|_| Duration::from_millis(10));
+    delay_config.coord_request_delay = Arc::new(|_| Duration::from_millis(10));
+    delay_config.parent_request_delay = Arc::new(|_| Duration::from_millis(10));
+    delay_config.newest_request_delay = Arc::new(|_| Duration::from_millis(10));
+
+    FederationAlephBftLiveSessionOptions::new(pump_config)
+        .with_max_round(max_round)
+        .with_delay_config(delay_config)
+}
+
+async fn wait_for_aleph_bft_session(state: &MintState, session_id: u64) {
+    time::timeout(Duration::from_secs(10), async {
+        loop {
+            let status = state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status");
+            if status.session == session_id {
+                return;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("AlephBFT session did not advance before timeout")
 }
 
 async fn operation_applied_within(

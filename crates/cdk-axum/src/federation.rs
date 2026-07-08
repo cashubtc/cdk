@@ -56,7 +56,8 @@ use self::aleph_bft_session::{
     federation_aleph_bft_live_session_startup_decision,
     rotate_federation_aleph_bft_live_session_to_next_empty_with_transport,
     start_federation_aleph_bft_live_session_with_config,
-    start_federation_aleph_bft_live_session_with_transport,
+    start_federation_aleph_bft_live_session_with_options_and_transport,
+    start_federation_aleph_bft_live_session_with_transport, FederationAlephBftLiveSessionOptions,
     FederationAlephBftLiveSessionStartupDecision,
 };
 pub(crate) use self::aleph_bft_session::{

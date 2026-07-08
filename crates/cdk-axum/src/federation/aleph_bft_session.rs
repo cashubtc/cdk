@@ -1,7 +1,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aleph_bft::{default_config, run_session, Index, NodeCount, Terminator};
+use aleph_bft::{
+    create_config, default_config, run_session, Config as AlephBftConfig, DelayConfig, Index,
+    NodeCount, Terminator,
+};
 use cdk::federation::{FederationAlephBftFinalityMode, FederationConsensusBackendKind, MemberId};
 use cdk_http_client::{Async, Transport};
 use futures::channel::oneshot;
@@ -21,9 +24,71 @@ use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
 
 // AlephBFT validates its default delay schedule by summing all configured
-// round delays. Keep the first live-session cap comfortably bounded until
-// session rotation/checkpointing is wired as a deliberate follow-up.
+// round delays. Keep production live sessions comfortably bounded; natural
+// completion now rotates into the next session, while longer process-level
+// checkpoint windows remain separate coverage.
 const CDK_ALEPH_BFT_MAX_ROUND: u16 = 3000;
+
+#[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct FederationAlephBftLiveSessionOptions {
+    pump_config: CdkAlephBftNetworkPumpConfig,
+    max_round: u16,
+    time_to_reach_max_round: Duration,
+    delay_config: Option<DelayConfig>,
+    automatic_rotation_limit: Option<usize>,
+}
+
+impl FederationAlephBftLiveSessionOptions {
+    pub(crate) fn new(pump_config: CdkAlephBftNetworkPumpConfig) -> Self {
+        Self {
+            pump_config,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_max_round(mut self, max_round: u16) -> Self {
+        self.max_round = max_round;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_delay_config(mut self, delay_config: DelayConfig) -> Self {
+        self.delay_config = Some(delay_config);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_automatic_rotation_limit(mut self, limit: usize) -> Self {
+        self.automatic_rotation_limit = Some(limit);
+        self
+    }
+
+    fn automatic_rotation_enabled(&self) -> bool {
+        self.automatic_rotation_limit != Some(0)
+    }
+
+    fn after_automatic_rotation(&self) -> Self {
+        let mut next = self.clone();
+        if let Some(limit) = next.automatic_rotation_limit.as_mut() {
+            *limit = limit.saturating_sub(1);
+        }
+        next
+    }
+}
+
+impl Default for FederationAlephBftLiveSessionOptions {
+    fn default() -> Self {
+        Self {
+            pump_config: CdkAlephBftNetworkPumpConfig::default(),
+            max_round: CDK_ALEPH_BFT_MAX_ROUND,
+            time_to_reach_max_round: Duration::from_secs(0),
+            delay_config: None,
+            automatic_rotation_limit: None,
+        }
+    }
+}
 
 /// Router-startup decision for the live upstream AlephBFT session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +175,7 @@ pub(crate) struct FederationAlephBftLiveSessionHandle {
     session_task: JoinHandle<()>,
     network_pump_task: JoinHandle<()>,
     apply_task: JoinHandle<()>,
+    completion_watcher_task: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for FederationAlephBftLiveSessionHandle {
@@ -121,6 +187,14 @@ impl std::fmt::Debug for FederationAlephBftLiveSessionHandle {
 
 impl FederationAlephBftLiveSessionHandle {
     fn shutdown(&self) {
+        self.shutdown_inner(true);
+    }
+
+    fn shutdown_for_rotation(&self) {
+        self.shutdown_inner(false);
+    }
+
+    fn shutdown_inner(&self, abort_completion_watcher: bool) {
         if let Ok(mut exit) = self.exit.lock() {
             if let Some(exit) = exit.take() {
                 let _ = exit.send(());
@@ -130,6 +204,11 @@ impl FederationAlephBftLiveSessionHandle {
         self.network_pump_task.abort();
         self.apply_task.abort();
         self.session_task.abort();
+        if abort_completion_watcher {
+            if let Some(completion_watcher_task) = &self.completion_watcher_task {
+                completion_watcher_task.abort();
+            }
+        }
     }
 }
 
@@ -159,10 +238,10 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
 ) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error> {
-    start_federation_aleph_bft_live_session_with_transport(
+    start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
-        pump_config,
+        FederationAlephBftLiveSessionOptions::new(pump_config),
         Async::default(),
     )
     .await
@@ -179,10 +258,29 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_transport<T>(
 where
     T: Transport + 'static,
 {
+    start_federation_aleph_bft_live_session_with_options_and_transport(
+        state,
+        sync_config,
+        FederationAlephBftLiveSessionOptions::new(pump_config),
+        transport,
+    )
+    .await
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn start_federation_aleph_bft_live_session_with_options_and_transport<T>(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+    options: FederationAlephBftLiveSessionOptions,
+    transport: T,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
     sync_config.validate().map_err(|err| {
         cdk::Error::Custom(format!("Invalid AlephBFT live session sync config: {err}"))
     })?;
-    pump_config.validate()?;
+    options.pump_config.validate()?;
 
     let decision = federation_aleph_bft_live_session_startup_decision(state).await?;
     let FederationAlephBftLiveSessionStartupDecision::Spawn { session_id, .. } = decision else {
@@ -190,7 +288,7 @@ where
     };
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id,
-        ..pump_config
+        ..options.pump_config
     };
 
     let config =
@@ -267,20 +365,19 @@ where
     let inbound = CdkAlephBftNetworkInboundHandle::new(session_id, &network_handle);
     *state.federation_aleph_bft_network_inbound.write().await = Some(Arc::new(inbound));
 
-    let aleph_config = default_config(
+    let aleph_config = aleph_bft_config(
         NodeCount(public_config.members.len()),
         keychain.index(),
         session_id,
-        CDK_ALEPH_BFT_MAX_ROUND,
-        Duration::from_secs(0),
-    )
-    .map_err(|_| cdk::Error::Custom("Invalid AlephBFT live session config".to_string()))?;
+        &options,
+    )?;
     let (exit_sender, exit_receiver) = oneshot::channel();
     let terminator = Terminator::create_root(exit_receiver, "cdk-aleph-bft-session");
     let spawn_handle = CdkAlephBftTokioSpawnHandle::default();
 
     let session_keychain = keychain.clone();
     let session_spawn_handle = spawn_handle.clone();
+    let (session_completed_sender, session_completed_receiver) = oneshot::channel();
     let session_task = tokio::spawn(async move {
         run_session(
             aleph_config,
@@ -291,8 +388,10 @@ where
             terminator,
         )
         .await;
+        let _ = session_completed_sender.send(());
     });
 
+    let rotation_transport = transport.clone();
     let client = FederationRestPeerClient::new_with_config(
         transport,
         &public_config,
@@ -360,12 +459,21 @@ where
     let apply_task = tokio::spawn(async move {
         run_federation_aleph_bft_finalized_unit_apply_loop(apply_state, finalized_units).await;
     });
+    let completion_watcher_task = spawn_federation_aleph_bft_session_completion_watcher(
+        state.clone(),
+        sync_config,
+        options,
+        rotation_transport,
+        session_id,
+        session_completed_receiver,
+    );
     let handle = Arc::new(FederationAlephBftLiveSessionHandle {
         exit: Mutex::new(Some(exit_sender)),
         spawn_handle,
         session_task,
         network_pump_task,
         apply_task,
+        completion_watcher_task,
     });
     *state.federation_aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
 
@@ -381,6 +489,80 @@ where
     Ok(Some(handle))
 }
 
+fn aleph_bft_config(
+    node_count: NodeCount,
+    node_index: aleph_bft::NodeIndex,
+    session_id: u64,
+    options: &FederationAlephBftLiveSessionOptions,
+) -> Result<AlephBftConfig, cdk::Error> {
+    let config = match options.delay_config.clone() {
+        Some(delay_config) => create_config(
+            node_count,
+            node_index,
+            session_id,
+            options.max_round,
+            delay_config,
+            options.time_to_reach_max_round,
+        ),
+        None => default_config(
+            node_count,
+            node_index,
+            session_id,
+            options.max_round,
+            options.time_to_reach_max_round,
+        ),
+    };
+    config.map_err(|_| cdk::Error::Custom("Invalid AlephBFT live session config".to_string()))
+}
+
+fn spawn_federation_aleph_bft_session_completion_watcher<T>(
+    state: MintState,
+    sync_config: FederationPeerSyncConfig,
+    options: FederationAlephBftLiveSessionOptions,
+    transport: T,
+    completed_session: u64,
+    session_completed_receiver: oneshot::Receiver<()>,
+) -> Option<JoinHandle<()>>
+where
+    T: Transport + 'static,
+{
+    if !options.automatic_rotation_enabled() {
+        return None;
+    }
+
+    Some(tokio::spawn(async move {
+        match session_completed_receiver.await {
+            Ok(()) => {
+                let mut state = state;
+                let next_options = options.after_automatic_rotation();
+                if let Err(err) = Box::pin(
+                    rotate_federation_aleph_bft_completed_live_session_with_options_and_transport(
+                        &mut state,
+                        sync_config,
+                        next_options,
+                        transport,
+                        completed_session,
+                    ),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        completed_session,
+                        "AlephBFT automatic live-session rotation failed: {}",
+                        err
+                    );
+                }
+            }
+            Err(_) => {
+                tracing::debug!(
+                    completed_session,
+                    "AlephBFT live session stopped before natural completion"
+                );
+            }
+        }
+    }))
+}
+
 /// Rotate a live upstream AlephBFT task into the next empty session.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_transport<T>(
@@ -392,12 +574,30 @@ pub(crate) async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_
 where
     T: Transport + 'static,
 {
+    rotate_federation_aleph_bft_live_session_to_next_empty_with_options_and_transport(
+        state,
+        sync_config,
+        FederationAlephBftLiveSessionOptions::new(pump_config),
+        transport,
+    )
+    .await
+}
+
+async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_options_and_transport<T>(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+    options: FederationAlephBftLiveSessionOptions,
+    transport: T,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
     sync_config.validate().map_err(|err| {
         cdk::Error::Custom(format!(
             "Invalid AlephBFT live session rotation sync config: {err}"
         ))
     })?;
-    pump_config.validate()?;
+    options.pump_config.validate()?;
 
     if state
         .federation_aleph_bft_live_session
@@ -453,10 +653,89 @@ where
             .map_err(cdk::Error::from)?;
     }
 
-    match start_federation_aleph_bft_live_session_with_transport(
+    match start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
-        pump_config,
+        options,
+        transport,
+    )
+    .await?
+    {
+        Some(handle) => Ok(Some(handle)),
+        None => Err(cdk::Error::Custom(
+            "AlephBFT live session rotation could not restart the live session".to_string(),
+        )),
+    }
+}
+
+async fn rotate_federation_aleph_bft_completed_live_session_with_options_and_transport<T>(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+    options: FederationAlephBftLiveSessionOptions,
+    transport: T,
+    completed_session: u64,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
+    sync_config.validate().map_err(|err| {
+        cdk::Error::Custom(format!(
+            "Invalid AlephBFT completed-session rotation sync config: {err}"
+        ))
+    })?;
+    options.pump_config.validate()?;
+
+    if state
+        .federation_aleph_bft_live_session
+        .read()
+        .await
+        .is_none()
+    {
+        return Ok(None);
+    }
+
+    let Some(consensus) = state.federation_consensus.as_ref().cloned() else {
+        return Err(cdk::Error::Custom(
+            "AlephBFT completed-session rotation requires federation consensus runtime".to_string(),
+        ));
+    };
+
+    let next_session = {
+        let mut consensus = consensus.lock().await;
+        let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
+        if status.session != completed_session {
+            return Ok(None);
+        }
+        let next_session = status.session.checked_add(1).ok_or_else(|| {
+            cdk::Error::Custom("AlephBFT live session rotation overflowed session id".to_string())
+        })?;
+        consensus
+            .set_aleph_bft_finality_mode(
+                FederationAlephBftFinalityMode::ExternalFinalizationRequired,
+            )
+            .map_err(cdk::Error::from)?;
+        consensus
+            .begin_aleph_bft_session(next_session)
+            .map_err(cdk::Error::from)?;
+        next_session
+    };
+
+    let previous_handle = state.federation_aleph_bft_live_session.write().await.take();
+    if let Some(handle) = previous_handle {
+        handle.shutdown_for_rotation();
+    }
+    *state.federation_aleph_bft_network_inbound.write().await = None;
+
+    tracing::info!(
+        completed_session,
+        next_session,
+        "AlephBFT live session completed; rotating automatically"
+    );
+
+    match start_federation_aleph_bft_live_session_with_options_and_transport(
+        state,
+        sync_config,
+        options,
         transport,
     )
     .await?
