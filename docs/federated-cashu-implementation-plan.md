@@ -1657,6 +1657,11 @@ AlephBFT and consensus unit tests:
   upstream AlephBFT backup bytes, restarts the submitting member, verifies the
   recovered local unit index, appends new backup bytes after restart, and proves
   two more operations converge in identical order across all members.
+  Route-level same-sequence equivocation coverage now accepts one signed
+  AlephBFT network message, rejects a second valid-but-different payload signed
+  with the same sender sequence as stale, leaves the sender watermark unchanged,
+  and proves the equivocated payload is not delivered to the inbound network
+  queue.
   Adapter-boundary session-rotation coverage now blocks `begin_session` while a
   locally drained unit is still awaiting finality, proves the adapter remains on
   the old session until that unit finalizes, and verifies recovered local unit
@@ -1684,8 +1689,9 @@ AlephBFT and consensus unit tests:
   federation ID, or a future session is rejected before finalized-item, journal,
   sequence, quote, or consensus-runtime mutation. Signed AlephBFT
   network-message route coverage also rejects bad SCALE payloads, valid SCALE
-  messages with trailing bytes, and session mismatches before sender sequence
-  persistence or inbound queue delivery. Router-started live-session coverage
+  messages with trailing bytes, session mismatches, and same-sequence
+  different-payload equivocation before sender sequence persistence or inbound
+  queue delivery. Router-started live-session coverage
   now sends a malformed but correctly signed AlephBFT network message through
   the private REST route, proves the sender sequence is not consumed by the
   rejection, and then proves later valid network traffic still finalizes and

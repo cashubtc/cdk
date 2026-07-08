@@ -752,6 +752,57 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
 }
 
 #[tokio::test]
+async fn private_aleph_bft_network_message_route_rejects_same_sequence_equivocation() {
+    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    state.federation_aleph_bft_network_inbound =
+        Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
+    let first_request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        42u64.encode(),
+    );
+    let equivocated_request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        43u64.encode(),
+    );
+
+    let _ = post_aleph_bft_network_message(State(state.clone()), Json(first_request))
+        .await
+        .expect("first AlephBFT network message accepted");
+    assert_eq!(network.next_event().await, Some(42));
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(equivocated_request))
+        .await
+        .expect_err("same-sequence equivocated message must fail");
+    let detail = response_error_detail(response).await;
+
+    assert!(
+        detail.contains("stale sequence"),
+        "unexpected detail: {detail}"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), network.next_event())
+            .await
+            .is_err(),
+        "same-sequence equivocated payload must not be delivered"
+    );
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences after equivocation");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+}
+
+#[tokio::test]
 async fn private_aleph_bft_network_message_route_rejects_kind_mismatch_before_sequence() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let request = signed_aleph_bft_network_message_request(
