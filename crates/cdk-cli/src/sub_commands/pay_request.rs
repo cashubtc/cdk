@@ -75,7 +75,6 @@ mod tests {
             single_use: None,
             mints: vec![],
             mint_preferred: None,
-            fee_reserve: None,
             supported_methods: vec![],
             description: None,
             transports: vec![],

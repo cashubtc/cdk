@@ -47,6 +47,33 @@ pub struct Transport {
     pub tags: Vec<Vec<String>>,
 }
 
+/// Supported payment method for a NUT-18 payment request
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct SupportedMethod {
+    /// Payment method name, such as "bolt11", "bolt12", or "onchain"
+    pub method: String,
+    /// Additional fee for payments from non-preferred mints
+    pub fee: Option<Amount>,
+}
+
+impl From<cdk::nuts::SupportedMethod> for SupportedMethod {
+    fn from(method: cdk::nuts::SupportedMethod) -> Self {
+        Self {
+            method: method.method,
+            fee: method.fee.map(Into::into),
+        }
+    }
+}
+
+impl From<SupportedMethod> for cdk::nuts::SupportedMethod {
+    fn from(method: SupportedMethod) -> Self {
+        Self {
+            method: method.method,
+            fee: method.fee.map(Into::into),
+        }
+    }
+}
+
 impl From<cdk::nuts::Transport> for Transport {
     fn from(t: cdk::nuts::Transport) -> Self {
         Self {
@@ -164,14 +191,14 @@ impl PaymentRequest {
         self.inner.mint_preferred
     }
 
-    /// Get the fee reserve for payments from non-preferred mints
-    pub fn fee_reserve(&self) -> Option<Amount> {
-        self.inner.fee_reserve.map(|a| a.into())
-    }
-
     /// Get the list of supported payment methods the mint must support
-    pub fn supported_methods(&self) -> Vec<String> {
-        self.inner.supported_methods.clone()
+    pub fn supported_methods(&self) -> Vec<SupportedMethod> {
+        self.inner
+            .supported_methods
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
     }
 
     /// Get the description

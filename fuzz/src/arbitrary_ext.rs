@@ -625,7 +625,6 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
             single_use,
             mints,
             mint_preferred,
-            fee_reserve: None,
             supported_methods: Vec::new(),
             description,
             transports: Vec::new(),
