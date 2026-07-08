@@ -1159,13 +1159,16 @@ Architecture checklist:
   into both router-owned upstream AlephBFT tasks, queues a real mint-quote
   operation on one member, exchanges SCALE AlephBFT network messages through the
   signed `/aleph-bft/messages` route, and proves both members finalize and apply
-  the same operation with matching finalized-item counters. Five-member
-  live-session coverage now proves one unavailable member leaves public
-  submission retryably pending without durable mint state mutation, then
-  finalizes the exact same operation after the member returns and retained
-  network messages are redelivered. Broader process-level coverage for delayed,
-  duplicated, and reordered messages, restart windows, durable redelivery, and
-  operator `cdk-mintd` startup remains open.
+  the same operation with matching finalized-item counters. The same router
+  transport harness can now inject delayed AlephBFT private REST network-message
+  posts plus bounded exact signed replay attempts, and a live-session regression
+  proves those transport faults still produce one finalized journal entry per
+  member. Five-member live-session coverage now proves one unavailable member
+  leaves public submission retryably pending without durable mint state mutation,
+  then finalizes the exact same operation after the member returns and retained
+  network messages are redelivered. Broader process-level coverage for opaque
+  message reordering, restart windows, durable redelivery, and operator
+  `cdk-mintd` startup remains open.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1564,11 +1567,16 @@ AlephBFT and consensus unit tests:
   them once the operation is durably decided. A five-member live-session
   regression now restarts the submitting member while one peer is unavailable
   and proves finality resumes without wallet resubmission when the peer returns.
+  A two-member router-started live-session fault regression now injects delayed
+  AlephBFT private REST network-message posts plus bounded exact signed replay
+  attempts and proves the operation still finalizes once, with one journal entry
+  per member and no duplicate durable application.
   Peer delivery is concurrent per message, the first live-session pump tick is
   delayed by one configured interval to avoid startup-router races, live-session
   shutdown now aborts upstream child tasks, and SQLite backup reads preserve
-  invalid UTF-8 bytes as blobs. Production duplicate, delay, post-upstream-backup
-  crash windows, and reorder handling remain open for the larger fault matrix.
+  invalid UTF-8 bytes as blobs. Deeper opaque AlephBFT message reorder,
+  post-upstream-backup crash windows, and larger duplicate/delay matrices remain
+  open for the broader fault suite.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload

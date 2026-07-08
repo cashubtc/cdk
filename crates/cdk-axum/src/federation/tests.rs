@@ -313,6 +313,13 @@ struct RouterFederationTransport {
 struct RouterFederationTransportRegistry {
     routers: Arc<Mutex<BTreeMap<String, Router>>>,
     missing_router_wait: Duration,
+    faults: Arc<Mutex<RouterFederationTransportFaults>>,
+}
+
+#[derive(Debug, Default)]
+struct RouterFederationTransportFaults {
+    aleph_bft_network_message_delays: VecDeque<Duration>,
+    aleph_bft_network_message_duplicate_replays: usize,
 }
 
 impl std::fmt::Debug for RouterFederationTransport {
@@ -333,6 +340,19 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
         f.debug_struct("RouterFederationTransportRegistry")
             .field("router_count", &router_count)
             .field("missing_router_wait", &self.missing_router_wait)
+            .field(
+                "faults",
+                &self
+                    .faults
+                    .lock()
+                    .map(|faults| {
+                        (
+                            faults.aleph_bft_network_message_delays.len(),
+                            faults.aleph_bft_network_message_duplicate_replays,
+                        )
+                    })
+                    .unwrap_or_default(),
+            )
             .finish()
     }
 }
@@ -353,6 +373,26 @@ impl RouterFederationTransportRegistry {
         }
     }
 
+    fn with_aleph_bft_network_message_delays<I>(self, delays: I) -> Self
+    where
+        I: IntoIterator<Item = Duration>,
+    {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_message_delays
+            .extend(delays);
+        self
+    }
+
+    fn with_aleph_bft_network_message_duplicate_replays(self, count: usize) -> Self {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_message_duplicate_replays = count;
+        self
+    }
+
     fn insert(&self, url: MintUrl, router: Router) {
         let endpoint = url::Url::parse(&url.to_string())
             .expect("federation api url")
@@ -362,6 +402,24 @@ impl RouterFederationTransportRegistry {
             .lock()
             .expect("router registry lock")
             .insert(endpoint, router);
+    }
+
+    fn pop_aleph_bft_network_message_delay(&self) -> Duration {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_message_delays
+            .pop_front()
+            .unwrap_or_default()
+    }
+
+    fn take_aleph_bft_network_message_duplicate_replay(&self) -> bool {
+        let mut faults = self.faults.lock().expect("router transport faults lock");
+        if faults.aleph_bft_network_message_duplicate_replays == 0 {
+            return false;
+        }
+        faults.aleph_bft_network_message_duplicate_replays -= 1;
+        true
     }
 }
 
@@ -874,6 +932,8 @@ impl Transport for RouterFederationTransportRegistry {
         R: DeserializeOwned,
     {
         let endpoint = url.origin().ascii_serialization();
+        let path = url.path().to_string();
+        let is_aleph_bft_network_message = path.ends_with("/federation/v1/aleph-bft/messages");
         let deadline = tokio::time::Instant::now() + self.missing_router_wait;
         let router = loop {
             if let Some(router) = self
@@ -892,28 +952,52 @@ impl Transport for RouterFederationTransportRegistry {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
-        let request = axum::http::Request::builder()
-            .method(axum::http::Method::POST)
-            .uri(url.path())
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from(serde_json::to_vec(payload)?))
-            .map_err(|err| HttpError::Other(err.to_string()))?;
-        let response = router
-            .oneshot(request)
-            .await
-            .map_err(|err| HttpError::Other(err.to_string()))?;
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .map_err(|err| HttpError::Other(err.to_string()))?;
-        if !status.is_success() {
-            return Err(HttpError::Status {
-                status: status.as_u16(),
-                message: String::from_utf8_lossy(&body).to_string(),
-            });
+
+        let payload_bytes = serde_json::to_vec(payload)?;
+        if is_aleph_bft_network_message {
+            let delay = self.pop_aleph_bft_network_message_delay();
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
         }
-        Ok(serde_json::from_slice(&body)?)
+
+        let response_body =
+            router_transport_post_once_bytes(&router, &path, payload_bytes.clone()).await?;
+        if is_aleph_bft_network_message && self.take_aleph_bft_network_message_duplicate_replay() {
+            let _ = router_transport_post_once_bytes(&router, &path, payload_bytes).await;
+        }
+
+        Ok(serde_json::from_slice(&response_body)?)
     }
+}
+
+async fn router_transport_post_once_bytes(
+    router: &Router,
+    path: &str,
+    payload_bytes: Vec<u8>,
+) -> Result<Vec<u8>, HttpError> {
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(path)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(payload_bytes))
+        .map_err(|err| HttpError::Other(err.to_string()))?;
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .map_err(|err| HttpError::Other(err.to_string()))?;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .map_err(|err| HttpError::Other(err.to_string()))?;
+    if !status.is_success() {
+        return Err(HttpError::Status {
+            status: status.as_u16(),
+            message: String::from_utf8_lossy(&body).to_string(),
+        });
+    }
+    Ok(body.to_vec())
 }
 
 fn json_response<T, R>(value: T) -> Result<R, HttpError>
@@ -8073,6 +8157,128 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
         .await
         .expect("second quote lookup")
         .is_some());
+}
+
+#[tokio::test]
+async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_rest_messages() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private,
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        second_private,
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default()
+        .with_aleph_bft_network_message_duplicate_replays(16)
+        .with_aleph_bft_network_message_delays([
+            Duration::from_millis(45),
+            Duration::ZERO,
+            Duration::from_millis(20),
+            Duration::ZERO,
+            Duration::from_millis(35),
+            Duration::ZERO,
+        ]);
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(2),
+        operation_submission_timeout: Duration::from_secs(10),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+
+    let _first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let _second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("live AlephBFT operation response under transport faults");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    for state in [&first_state, &second_state] {
+        wait_for_applied_operation(state, operation_id).await;
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status")
+                .finalized_item_count,
+            1
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal entries")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_some());
+    }
 }
 
 #[tokio::test]
