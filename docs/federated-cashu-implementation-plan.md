@@ -2483,7 +2483,9 @@ Tests and success criteria:
   member immediately after the repeated all-member operation batches return and
   before the explicit convergence wait, then requires the restarted member to
   recover status, convergence, quorum-backed session-outcome evidence, and a
-  post-restart all-member wallet-operation batch.
+  post-restart all-member wallet-operation batch. Post-crash batches now use a
+  generated seed-offset range that defaults after the initial standard range and
+  is validated to avoid deterministic smoke-wallet seed reuse.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
@@ -2601,8 +2603,8 @@ Tests and success criteria:
   `federation_smoke` and `federation_setup` test filters. The generated script
   also has a configurable process crash-window restart after repeated
   all-member batches and before convergence, then runs fresh all-member
-  operations through the recovered member. Covered by `federation_setup`
-  artifact assertions.
+  operations through the recovered member using a collision-free generated
+  seed-offset range. Covered by `federation_setup` artifact assertions.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.

@@ -1421,6 +1421,7 @@ SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
 STANDARD_OPERATION_BATCHES="${{STANDARD_OPERATION_BATCHES:-2}}"
+POST_CRASH_SEED_OFFSET="${{POST_CRASH_SEED_OFFSET:-$STANDARD_OPERATION_BATCHES}}"
 POST_CRASH_OPERATION_BATCHES="${{POST_CRASH_OPERATION_BATCHES:-1}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
@@ -2000,6 +2001,15 @@ require_positive_integer() {{
   fi
 }}
 
+require_nonnegative_integer() {{
+  local name="$1"
+  local value="$2"
+  if ! [[ "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    printf '%s must be a non-negative integer\n' "$name" >&2
+    return 1
+  fi
+}}
+
 validate_smoke_settings() {{
   require_positive_integer STATUS_RETRIES "$STATUS_RETRIES" || return 1
   require_positive_integer STATUS_SLEEP_SECONDS "$STATUS_SLEEP_SECONDS" || return 1
@@ -2007,14 +2017,19 @@ validate_smoke_settings() {{
   require_positive_integer SMOKE_QUOTE_SLEEP_MS "$SMOKE_QUOTE_SLEEP_MS" || return 1
   require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS "$SMOKE_OPERATION_TIMEOUT_SECONDS" || return 1
   require_positive_integer STANDARD_OPERATION_BATCHES "$STANDARD_OPERATION_BATCHES" || return 1
+  require_nonnegative_integer POST_CRASH_SEED_OFFSET "$POST_CRASH_SEED_OFFSET" || return 1
   require_positive_integer POST_CRASH_OPERATION_BATCHES "$POST_CRASH_OPERATION_BATCHES" || return 1
   require_positive_integer OFFLINE_OPERATION_BATCHES "$OFFLINE_OPERATION_BATCHES" || return 1
   if (( STANDARD_OPERATION_BATCHES > 255 )); then
     printf 'STANDARD_OPERATION_BATCHES must be 255 or lower\n' >&2
     return 1
   fi
-  if (( POST_CRASH_OPERATION_BATCHES > 223 )); then
-    printf 'POST_CRASH_OPERATION_BATCHES must be 223 or lower\n' >&2
+  if (( POST_CRASH_SEED_OFFSET < STANDARD_OPERATION_BATCHES )); then
+    printf 'POST_CRASH_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES to avoid standard smoke seed reuse\n' >&2
+    return 1
+  fi
+  if (( POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES > 256 )); then
+    printf 'POST_CRASH_SEED_OFFSET plus POST_CRASH_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
   if (( OFFLINE_OPERATION_BATCHES > 255 )); then
@@ -2070,7 +2085,7 @@ if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
   wait_for_session_outcome_quorum "$CRASH_WINDOW_MEMBER"
   run_smoke_operations \
     --scenario standard \
-    --seed-offset 33 \
+    --seed-offset "$POST_CRASH_SEED_OFFSET" \
     --operation-batches "$POST_CRASH_OPERATION_BATCHES"
   wait_for_converged
 else
