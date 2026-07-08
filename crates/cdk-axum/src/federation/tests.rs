@@ -1500,8 +1500,8 @@ async fn federation_route_state_for_private_with_db_and_backend(
         federation_aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(
             HashMap::new(),
         ))),
-        federation_aleph_bft_network_inbound: None,
-        federation_aleph_bft_live_session: None,
+        federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+        federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
     }
 }
 
@@ -8120,17 +8120,25 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
     .expect("start live session")
     .expect("live session handle");
 
-    assert!(state.federation_aleph_bft_network_inbound.is_some());
-    assert!(state.federation_aleph_bft_live_session.is_some());
-    assert!(state.federation_aleph_bft_network_inbound_active());
-    assert!(state.federation_aleph_bft_live_session_active());
-    assert!(Arc::ptr_eq(
-        &handle,
-        state
-            .federation_aleph_bft_live_session
-            .as_ref()
-            .expect("stored live session handle")
-    ));
+    assert!(state
+        .federation_aleph_bft_network_inbound
+        .read()
+        .await
+        .is_some());
+    assert!(state
+        .federation_aleph_bft_live_session
+        .read()
+        .await
+        .is_some());
+    assert!(state.federation_aleph_bft_network_inbound_active().await);
+    assert!(state.federation_aleph_bft_live_session_active().await);
+    let stored_handle = state
+        .federation_aleph_bft_live_session
+        .read()
+        .await
+        .clone()
+        .expect("stored live session handle");
+    assert!(Arc::ptr_eq(&handle, &stored_handle));
     assert_eq!(
         state
             .federation_aleph_bft_status()
@@ -8325,8 +8333,8 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
             .expect("persisted rotated active session"),
         Some(1)
     );
-    assert!(state.federation_aleph_bft_network_inbound_active());
-    assert!(state.federation_aleph_bft_live_session_active());
+    assert!(state.federation_aleph_bft_network_inbound_active().await);
+    assert!(state.federation_aleph_bft_live_session_active().await);
     assert_eq!(
         federation_aleph_bft_live_session_startup_decision(&state)
             .await
@@ -8454,8 +8462,8 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
         status.finality,
         FederationAlephBftFinalityMode::NetworkFinalityAvailable
     );
-    assert!(state.federation_aleph_bft_network_inbound_active());
-    assert!(state.federation_aleph_bft_live_session_active());
+    assert!(state.federation_aleph_bft_network_inbound_active().await);
+    assert!(state.federation_aleph_bft_live_session_active().await);
 
     drop(handle);
 }
@@ -8711,7 +8719,7 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
 }
 
 #[tokio::test]
-async fn aleph_bft_live_sessions_rotate_after_finality_and_continue_in_next_session() {
+async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
     let (public_config, first_private, second_private) =
@@ -8817,12 +8825,6 @@ async fn aleph_bft_live_sessions_rotate_after_finality_and_continue_in_next_sess
         .await
         .expect("rotate first live session")
         .expect("rotated first live session handle");
-    transport.insert(
-        first_url,
-        Router::new()
-            .nest("/federation/v1", create_federation_router())
-            .with_state(first_state.clone()),
-    );
     let rotated_second_handle =
         rotate_federation_aleph_bft_live_session_to_next_empty_with_transport(
             &mut second_state,
@@ -8833,12 +8835,6 @@ async fn aleph_bft_live_sessions_rotate_after_finality_and_continue_in_next_sess
         .await
         .expect("rotate second live session")
         .expect("rotated second live session handle");
-    transport.insert(
-        second_url,
-        Router::new()
-            .nest("/federation/v1", create_federation_router())
-            .with_state(second_state.clone()),
-    );
 
     assert!(!Arc::ptr_eq(&first_handle, &rotated_first_handle));
     assert!(!Arc::ptr_eq(&second_handle, &rotated_second_handle));
@@ -10363,8 +10359,8 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
         "this regression covers the restart window before upstream AlephBFT backup bytes exist"
     );
 
-    states[0].federation_aleph_bft_network_inbound = None;
-    states[0].federation_aleph_bft_live_session = None;
+    *states[0].federation_aleph_bft_network_inbound.write().await = None;
+    *states[0].federation_aleph_bft_live_session.write().await = None;
     live_session_handles.remove(0);
     transport.insert(
         federation_api_urls[0].clone(),
@@ -10577,8 +10573,11 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
         .await
         .is_empty());
 
-    first_state.federation_aleph_bft_network_inbound = None;
-    first_state.federation_aleph_bft_live_session = None;
+    *first_state
+        .federation_aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *first_state.federation_aleph_bft_live_session.write().await = None;
     drop(first_handle);
     transport.insert(
         first_url.clone(),
@@ -10756,8 +10755,11 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     wait_for_applied_operation(&second_state, first_operation_id).await;
     let backup_bytes = wait_for_aleph_bft_backup_bytes(&first_state, 0).await;
 
-    first_state.federation_aleph_bft_network_inbound = None;
-    first_state.federation_aleph_bft_live_session = None;
+    *first_state
+        .federation_aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *first_state.federation_aleph_bft_live_session.write().await = None;
     drop(first_handle);
     transport.insert(
         first_url.clone(),
@@ -10988,8 +10990,8 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     }
     let backup_before_restart = wait_for_aleph_bft_backup_bytes(&states[0], 0).await;
 
-    states[0].federation_aleph_bft_network_inbound = None;
-    states[0].federation_aleph_bft_live_session = None;
+    *states[0].federation_aleph_bft_network_inbound.write().await = None;
+    *states[0].federation_aleph_bft_live_session.write().await = None;
     let first_handle = live_session_handles.remove(0);
     drop(first_handle);
     transport.insert(
@@ -11375,8 +11377,11 @@ async fn aleph_bft_live_session_startup_reloads_network_retries_when_backup_exis
         !backup_before_restart.is_empty(),
         "retry reload requires durable upstream backup bytes"
     );
-    first_state.federation_aleph_bft_network_inbound = None;
-    first_state.federation_aleph_bft_live_session = None;
+    *first_state
+        .federation_aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *first_state.federation_aleph_bft_live_session.write().await = None;
     drop(first_handle);
     transport.insert(
         first_url.clone(),

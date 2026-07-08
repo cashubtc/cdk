@@ -74,6 +74,12 @@ type FederationAlephBftNetworkInboundHandle =
 #[cfg(feature = "federation")]
 type FederationAlephBftLiveSessionTaskHandle =
     Arc<self::federation::FederationAlephBftLiveSessionHandle>;
+#[cfg(feature = "federation")]
+type FederationAlephBftNetworkInboundState =
+    Arc<tokio::sync::RwLock<Option<FederationAlephBftNetworkInboundHandle>>>;
+#[cfg(feature = "federation")]
+type FederationAlephBftLiveSessionState =
+    Arc<tokio::sync::RwLock<Option<FederationAlephBftLiveSessionTaskHandle>>>;
 
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
@@ -1481,9 +1487,9 @@ pub struct MintState {
     #[cfg(feature = "federation")]
     federation_aleph_bft_pending_sequences: Option<FederationAlephBftPendingSequenceHandle>,
     #[cfg(feature = "federation")]
-    federation_aleph_bft_network_inbound: Option<FederationAlephBftNetworkInboundHandle>,
+    federation_aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     #[cfg(feature = "federation")]
-    federation_aleph_bft_live_session: Option<FederationAlephBftLiveSessionTaskHandle>,
+    federation_aleph_bft_live_session: FederationAlephBftLiveSessionState,
 }
 
 #[cfg(feature = "federation")]
@@ -1556,12 +1562,18 @@ impl MintState {
         consensus.lock().await.aleph_bft_status().ok()
     }
 
-    pub(crate) fn federation_aleph_bft_live_session_active(&self) -> bool {
-        self.federation_aleph_bft_live_session.is_some()
+    pub(crate) async fn federation_aleph_bft_live_session_active(&self) -> bool {
+        self.federation_aleph_bft_live_session
+            .read()
+            .await
+            .is_some()
     }
 
-    pub(crate) fn federation_aleph_bft_network_inbound_active(&self) -> bool {
-        self.federation_aleph_bft_network_inbound.is_some()
+    pub(crate) async fn federation_aleph_bft_network_inbound_active(&self) -> bool {
+        self.federation_aleph_bft_network_inbound
+            .read()
+            .await
+            .is_some()
     }
 
     pub(crate) async fn federation_invalid_operation_alert_summaries(
@@ -3787,9 +3799,9 @@ async fn create_mint_router_with_custom_cache_inner(
             .as_ref()
             .map(|_| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
         #[cfg(feature = "federation")]
-        federation_aleph_bft_network_inbound: None,
+        federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
         #[cfg(feature = "federation")]
-        federation_aleph_bft_live_session: None,
+        federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
     };
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();

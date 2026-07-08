@@ -90,7 +90,12 @@ pub(super) async fn post_aleph_bft_network_message(
             .into_response());
     }
 
-    let Some(inbound) = state.federation_aleph_bft_network_inbound.as_ref() else {
+    let inbound = state
+        .federation_aleph_bft_network_inbound
+        .read()
+        .await
+        .clone();
+    let Some(inbound) = inbound else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "AlephBFT network message receiver is not available",

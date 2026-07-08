@@ -1825,9 +1825,9 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_aleph_bft_pending_sequences: None,
             #[cfg(feature = "federation")]
-            federation_aleph_bft_network_inbound: None,
+            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
-            federation_aleph_bft_live_session: None,
+            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -2238,8 +2238,8 @@ mod tests {
             federation_aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 HashMap::new(),
             ))),
-            federation_aleph_bft_network_inbound: None,
-            federation_aleph_bft_live_session: None,
+            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -2421,9 +2421,9 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_aleph_bft_pending_sequences: None,
             #[cfg(feature = "federation")]
-            federation_aleph_bft_network_inbound: None,
+            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
-            federation_aleph_bft_live_session: None,
+            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -2966,8 +2966,8 @@ mod tests {
             }),
             federation_aleph_bft_pending_sequences: is_federated
                 .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
-            federation_aleph_bft_network_inbound: None,
-            federation_aleph_bft_live_session: None,
+            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 

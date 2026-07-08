@@ -263,9 +263,9 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_aleph_bft_pending_sequences: None,
             #[cfg(feature = "federation")]
-            federation_aleph_bft_network_inbound: None,
+            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
-            federation_aleph_bft_live_session: None,
+            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

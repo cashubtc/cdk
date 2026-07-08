@@ -70,8 +70,9 @@ pub(super) async fn post_local_status(
     let pending_mempool_items = state.federation_pending_mempool_len().await;
     let notification_stats = state.federation_operation_notification_stats();
     let aleph_bft_status = state.federation_aleph_bft_status().await;
-    let aleph_bft_live_session_active = state.federation_aleph_bft_live_session_active();
-    let aleph_bft_network_inbound_active = state.federation_aleph_bft_network_inbound_active();
+    let aleph_bft_live_session_active = state.federation_aleph_bft_live_session_active().await;
+    let aleph_bft_network_inbound_active =
+        state.federation_aleph_bft_network_inbound_active().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
         peer_status,

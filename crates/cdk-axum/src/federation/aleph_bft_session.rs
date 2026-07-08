@@ -66,8 +66,16 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
     if backend != FederationConsensusBackendKind::AlephBft {
         return Ok(FederationAlephBftLiveSessionStartupDecision::NonAlephBftBackend { backend });
     }
-    if state.federation_aleph_bft_live_session.is_some()
-        || state.federation_aleph_bft_network_inbound.is_some()
+    if state
+        .federation_aleph_bft_live_session
+        .read()
+        .await
+        .is_some()
+        || state
+            .federation_aleph_bft_network_inbound
+            .read()
+            .await
+            .is_some()
     {
         return Ok(FederationAlephBftLiveSessionStartupDecision::AlreadyStarted);
     }
@@ -257,7 +265,7 @@ where
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
     let inbound = CdkAlephBftNetworkInboundHandle::new(session_id, &network_handle);
-    state.federation_aleph_bft_network_inbound = Some(Arc::new(inbound));
+    *state.federation_aleph_bft_network_inbound.write().await = Some(Arc::new(inbound));
 
     let aleph_config = default_config(
         NodeCount(public_config.members.len()),
@@ -359,7 +367,7 @@ where
         network_pump_task,
         apply_task,
     });
-    state.federation_aleph_bft_live_session = Some(Arc::clone(&handle));
+    *state.federation_aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
 
     if state
         .federation_aleph_bft_status()
@@ -391,7 +399,12 @@ where
     })?;
     pump_config.validate()?;
 
-    if state.federation_aleph_bft_live_session.is_none() {
+    if state
+        .federation_aleph_bft_live_session
+        .read()
+        .await
+        .is_none()
+    {
         return Ok(None);
     }
 
@@ -421,10 +434,11 @@ where
         next_session
     };
 
-    if let Some(handle) = state.federation_aleph_bft_live_session.take() {
+    let previous_handle = state.federation_aleph_bft_live_session.write().await.take();
+    if let Some(handle) = previous_handle {
         handle.shutdown();
     }
-    state.federation_aleph_bft_network_inbound = None;
+    *state.federation_aleph_bft_network_inbound.write().await = None;
 
     {
         let mut consensus = consensus.lock().await;

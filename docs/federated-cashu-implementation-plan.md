@@ -114,12 +114,14 @@ Current confirmed shape:
   messages use the new session while the old pump stays stopped. Focused
   refusal coverage proves a non-empty pending mempool blocks rotation without
   changing the active session.
-- Latest AlephBFT post-finality rotation checkpoint: a two-member live
+- Latest AlephBFT shared live-session rotation checkpoint: a two-member live
   private-REST regression now finalizes an operation in session 0, rotates both
-  running members into session 1, refreshes their private routers with the new
-  inbound queues, verifies the durable active-session marker, then finalizes a
-  second operation in session 1 while preserving the two accepted operations in
-  order.
+  running members into session 1, verifies the durable active-session marker,
+  then finalizes a second operation in session 1 through the private routers
+  that were installed before rotation. The live-session handle and inbound
+  network queue are now shared across `MintState` clones, which makes router
+  clones observe rotation without route reinsertion and sets up automatic
+  session-completion rotation triggers.
 - Latest AlephBFT network-finality activation checkpoint: the Axum federation
   state now has a guarded method for the future live AlephBFT task to announce
   that network finality is available. The method validates that federation mode
@@ -1252,8 +1254,9 @@ Architecture checklist:
   the Axum live-session wrapper can now explicitly rotate a running empty
   session into the next live network pump while refusing non-empty pending
   mempools. Two-member live private-REST coverage now proves that rotation also
-  works after a session has finalized real traffic and that a later operation
-  finalizes in the rotated session.
+  works after a session has finalized real traffic, and the live-session and
+  inbound-network slots are shared across router state clones so the original
+  private REST routers observe the rotated session without route reinsertion.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1798,9 +1801,11 @@ AlephBFT and consensus unit tests:
   the next active session, restarting the pump, and refusing non-empty pending
   mempools; post-finality rotation coverage now proves two live members can
   finalize session-0 traffic, rotate into session 1, and finalize another
-  operation. Remaining crash-window coverage is still open for automatic
-  session-completion rotation triggers and longer process-level rotation
-  windows.
+  operation through the router clones that were installed before rotation. The
+  latest crates.io check reconfirmed upstream `aleph-bft = 0.45.4` as the
+  direct dependency. Remaining crash-window coverage is still open for
+  automatic session-completion rotation triggers and longer process-level
+  rotation windows.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
