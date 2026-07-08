@@ -9949,6 +9949,111 @@ async fn aleph_bft_live_session_startup_clears_orphan_network_retries_without_ba
     drop(handle);
 }
 
+#[tokio::test]
+async fn aleph_bft_live_session_startup_clears_recovered_session_orphan_network_retries_without_backup(
+) {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url, second_url);
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        first_private,
+        Arc::clone(&db),
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin active-session transaction");
+    tx.set_federation_aleph_bft_active_session(1)
+        .await
+        .expect("persist recovered active session");
+    tx.commit()
+        .await
+        .expect("commit recovered active-session marker");
+    let recovered_retry = FederationAlephBftNetworkRetryRecord {
+        retry_id: "recovered-session-orphan-retry".to_string(),
+        session_id: 1,
+        request: FederationAlephBftNetworkMessageRequest::new(1, vec![4, 5, 6]),
+        peer_member_ids: vec![second_private.member_id],
+    };
+    state
+        .mint
+        .localstore()
+        .add_federation_aleph_bft_network_retry(&recovered_retry)
+        .await
+        .expect("persist recovered-session orphan retry");
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_network_retries(1)
+            .await
+            .expect("recovered-session orphan retry before startup"),
+        vec![recovered_retry]
+    );
+    let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("recover active empty session runtime");
+    state.federation_consensus = consensus;
+    state.federation_sequences = sequences;
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("recovered AlephBFT status")
+            .session,
+        1
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_backup_bytes(1)
+        .await
+        .expect("recovered session backup lookup")
+        .unwrap_or_default()
+        .is_empty());
+
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_secs(60),
+        ..FederationPeerSyncConfig::default()
+    };
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        CdkAlephBftNetworkPumpConfig::default(),
+        RouterFederationTransportRegistry::default(),
+    )
+    .await
+    .expect("start recovered live session")
+    .expect("recovered live session handle");
+
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_active_session()
+            .await
+            .expect("active session after startup"),
+        Some(1)
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_network_retries(1)
+        .await
+        .expect("recovered-session orphan retry after startup")
+        .is_empty());
+    drop(handle);
+}
+
 async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
     assert!(
         operation_applied_within(state, operation_id, Duration::from_secs(15)).await,
