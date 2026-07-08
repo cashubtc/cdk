@@ -581,7 +581,7 @@ fn configure_federation(
 
     if !federation.consensus_backend.is_available() {
         bail!(
-            "federation consensus backend `{}` is not available in this build; supported backend: in_memory",
+            "federation consensus backend `{}` is not available in this build; supported backends: in_memory, aleph_bft",
             federation.consensus_backend
         );
     }
@@ -2307,7 +2307,7 @@ mod tests {
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
-    async fn configure_federation_loads_runtime_config() {
+    async fn configure_federation_loads_runtime_config_for_available_backends() {
         use std::collections::BTreeMap;
         use std::str::FromStr;
 
@@ -2371,36 +2371,41 @@ mod tests {
         )
         .expect("private config should be written");
 
-        let settings = config::Settings {
-            federation: Some(config::Federation {
-                enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
-                allow_development_payment_observation_policy: false,
-                public_config_path: Some(public_config_path.clone()),
-                private_config_path: Some(private_config_path.clone()),
-                peer_sync: config::FederationPeerSync::default(),
-            }),
-            ..Default::default()
-        };
-        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
-        let builder = MintBuilder::new(localstore);
-        let builder = configure_federation(&settings, builder).expect("federation config");
+        for consensus_backend in [
+            config::FederationConsensusBackend::InMemory,
+            config::FederationConsensusBackend::AlephBft,
+        ] {
+            let settings = config::Settings {
+                federation: Some(config::Federation {
+                    enabled: true,
+                    consensus_backend,
+                    allow_development_payment_observation_policy: false,
+                    public_config_path: Some(public_config_path.clone()),
+                    private_config_path: Some(private_config_path.clone()),
+                    peer_sync: config::FederationPeerSync::default(),
+                }),
+                ..Default::default()
+            };
+            let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+            let builder = MintBuilder::new(localstore);
+            let builder = configure_federation(&settings, builder).expect("federation config");
 
-        assert_eq!(builder.federation_mode(), FederationMode::Member);
-        assert_eq!(
-            builder
-                .federation_config()
-                .expect("runtime config")
-                .member_id(),
-            member_id
-        );
-        assert_eq!(
-            builder
-                .federation_config()
-                .expect("runtime config")
-                .consensus_backend(),
-            config::FederationConsensusBackend::InMemory
-        );
+            assert_eq!(builder.federation_mode(), FederationMode::Member);
+            assert_eq!(
+                builder
+                    .federation_config()
+                    .expect("runtime config")
+                    .member_id(),
+                member_id
+            );
+            assert_eq!(
+                builder
+                    .federation_config()
+                    .expect("runtime config")
+                    .consensus_backend(),
+                consensus_backend
+            );
+        }
 
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
@@ -2646,38 +2651,6 @@ mod tests {
         assert!(
             err.to_string().contains("public_config_path"),
             "error should mention missing public path: {err}"
-        );
-    }
-
-    #[cfg(all(feature = "federation", feature = "sqlite"))]
-    #[tokio::test]
-    async fn configure_federation_rejects_unavailable_consensus_backend() {
-        use cdk::mint::MintBuilder;
-        use cdk_sqlite::mint::memory;
-
-        let settings = config::Settings {
-            federation: Some(config::Federation {
-                enabled: true,
-                consensus_backend: config::FederationConsensusBackend::AlephBft,
-                allow_development_payment_observation_policy: false,
-                public_config_path: None,
-                private_config_path: None,
-                peer_sync: config::FederationPeerSync::default(),
-            }),
-            ..Default::default()
-        };
-        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
-        let builder = MintBuilder::new(localstore);
-        let err = configure_federation(&settings, builder)
-            .expect_err("unavailable consensus backend should fail startup");
-
-        assert!(
-            err.to_string().contains("aleph_bft"),
-            "error should name unavailable backend: {err}"
-        );
-        assert!(
-            err.to_string().contains("not available"),
-            "error should explain backend availability: {err}"
         );
     }
 

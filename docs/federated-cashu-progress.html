@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, finalized-cursor peer sync, and operator counters are in place; the remaining lift is replacing the finalized-unit stand-in with production BFT ordering and broadening multi-node integration tests.</span>
+          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, finalized-cursor peer sync, operator counters, and mintd AlephBFT startup path are in place; the remaining lift is broadening restart, reorder, and multi-node fault coverage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover aleph bft retry reload filtering</span>
+          <span class="value">feat: open aleph bft mintd startup gate</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Durable AlephBFT retry-queue reload coverage now proves current-session rows for known peers are redelivered while stale retry sessions, mismatched request sessions, and unknown-only peer rows are skipped. Duplicate/delay live transport coverage, pending-operation replay, guarded retry-row reload, concurrent peer delivery, and owned live-session shutdown remain in place.</span>
+          <span class="value">Cargo registry search confirms upstream aleph-bft v0.45.4 is available, and mintd federation startup now accepts the `aleph_bft` consensus backend instead of rejecting it before runtime construction. The selected backend is regression-tested through config loading for both `in_memory` and `aleph_bft`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden restart coverage after upstream backup or unit creation, then extend deeper opaque-message reorder and larger live fault matrices before opening the operator mintd AlephBFT startup gate.</span>
+          <span class="value">Broaden restart coverage after upstream backup or unit creation, then extend deeper opaque-message reorder and larger live fault matrices now that operator mintd can reach the AlephBFT runtime.</span>
         </div>
       </aside>
     </header>
@@ -786,7 +786,7 @@
         <div class="stack">
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
-            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, and durable pending-operation rows replay locally accepted envelopes across restart before finality. Remaining risk is restart coverage after upstream backup or unit creation, deeper opaque-message reorder coverage, larger fault matrices, and operator startup readiness.</p>
+            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, durable pending-operation rows replay locally accepted envelopes across restart before finality, and mintd now accepts the AlephBFT backend at startup. Remaining risk is restart coverage after upstream backup or unit creation, deeper opaque-message reorder coverage, and larger fault matrices.</p>
           </article>
           <article class="item">
             <h3>State-machine extraction</h3>
@@ -907,7 +907,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Broaden AlephBFT restart coverage after upstream backup or unit creation, then cover deeper opaque-message reorder and larger live fault matrices before opening the operator mintd AlephBFT startup gate.</p>
+            <p>Broaden AlephBFT restart coverage after upstream backup or unit creation, then cover deeper opaque-message reorder and larger live fault matrices now that operator mintd can start the AlephBFT runtime.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

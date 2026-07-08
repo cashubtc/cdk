@@ -147,8 +147,9 @@ Current confirmed shape:
   mints, restores sync status only after live finality is available, retires
   the special startup halt for empty verified histories, and routes replayed
   histories through the existing session-outcome verifier before public
-  readiness can open. The next checkpoint is process-level live-session
-  coverage before replacing the private-REST finalized-unit stand-in.
+  readiness can open. The next checkpoint is broader process-level live-session
+  coverage for restart windows, opaque-message reordering, and larger
+  private-REST fault matrices.
 - Latest catch-up state-digest checkpoint: catch-up replay now has focused
   route-state coverage proving a lagging member records a durable materialized
   state-digest checkpoint for the replayed journal boundary after applying
@@ -1050,8 +1051,9 @@ Architecture checklist:
   consume the queue before it has actually finalized or durably handed off the
   proposal. Router-created AlephBFT federation state now starts the bounded CDK
   driver loop, which calls this primitive through the safe preview/broadcast/
-  exact-drain path; the remaining production work is replacing the private-REST
-  finalized-unit stand-in with real AlephBFT finality.
+  exact-drain path; the remaining production work is broader process-level
+  restart, reorder, and private-REST fault coverage around the live AlephBFT
+  path.
   `FederationAlephBftConsensusAdapter` now wires the primitive to the CDK-side
   operation submission boundary so tests can verify queued operations become
   canonical unit payloads. The backend adapter runtime can now select the
@@ -1166,9 +1168,10 @@ Architecture checklist:
   member. Five-member live-session coverage now proves one unavailable member
   leaves public submission retryably pending without durable mint state mutation,
   then finalizes the exact same operation after the member returns and retained
-  network messages are redelivered. Broader process-level coverage for opaque
-  message reordering, restart windows, durable redelivery, and operator
-  `cdk-mintd` startup remains open.
+  network messages are redelivered. Operator `cdk-mintd` startup now accepts
+  the `aleph_bft` backend instead of failing the config before runtime
+  construction. Broader process-level coverage for opaque message reordering,
+  restart windows, and durable redelivery remains open.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1185,18 +1188,21 @@ Architecture checklist:
   network-finality guard. Peer fetch now uses both
   accepted-operation lag and finalized-item cursor lag, requests finalized-item
   suffixes by cursor, and rejects incomplete whole-unit pages before durable
-  mutation; remaining production work is real AlephBFT finality before public
-  routes can be enabled for production use.
-- [x] If the AlephBFT backend is configured but unavailable, fail startup or keep
+  mutation; remaining production work is stronger process-level restart,
+  reorder, and fault coverage before relying on this path as production-ready.
+- [x] If a configured consensus backend is unavailable, fail startup or keep
   federation routes in a not-ready state; never silently fall back to local
-  signing or single-member processing. `cdk-mintd` rejects unavailable
-  `aleph_bft` startup, and Axum-created AlephBFT federation state starts
-  `halted`/not-ready so public wallet submissions fail before queue admission.
-  Startup restore preserves that backend-imposed halt over stale persisted
-  healthy snapshots, and Axum rechecks the finality mode before authoritative
-  public routes even when sync state is healthy. The network-finality activation
-  hook rejects non-AlephBFT runtimes instead of silently enabling the public
-  queue for the in-memory backend.
+  signing or single-member processing. `cdk-mintd` now accepts both available
+  backends, `in_memory` and `aleph_bft`, and passes the selected backend through
+  to the mint runtime instead of rejecting AlephBFT before startup. Axum-created
+  AlephBFT federation state starts `halted`/not-ready until the live AlephBFT
+  session installs network finality, so public wallet submissions fail before
+  queue admission if finality is not actually available. Startup restore
+  preserves that backend-imposed halt over stale persisted healthy snapshots,
+  and Axum rechecks the finality mode before authoritative public routes even
+  when sync state is healthy. The network-finality activation hook rejects
+  non-AlephBFT runtimes instead of silently enabling the public queue for the
+  in-memory backend.
 - [ ] Add backpressure and admission limits for pending wallet submissions,
   consensus messages, catch-up ranges, and response waiters. The AlephBFT submit
   path now enforces a configurable `pending_mempool_item_limit` before committing

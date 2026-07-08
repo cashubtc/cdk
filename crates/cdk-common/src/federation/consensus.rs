@@ -2028,7 +2028,7 @@ pub enum FederationConsensusBackendKind {
     /// Deterministic local append-log backend for tests and local smoke.
     #[default]
     InMemory,
-    /// Future AlephBFT-backed production ordering backend.
+    /// AlephBFT-backed ordering backend.
     AlephBft,
 }
 
@@ -2045,7 +2045,7 @@ impl FederationConsensusBackendKind {
     /// Return true when this build can instantiate the backend.
     #[must_use]
     pub fn is_available(self) -> bool {
-        matches!(self, Self::InMemory)
+        true
     }
 }
 
