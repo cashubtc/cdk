@@ -2045,9 +2045,10 @@ run_smoke_operations
 wait_for_converged
 
 stop_member "$RESTART_MEMBER"
-for batch in $(seq 1 "$OFFLINE_OPERATION_BATCHES"); do
-  run_smoke_operations --scenario offline-member-operations --seed-offset "$batch"
-done
+run_smoke_operations \
+  --scenario offline-member-operations \
+  --seed-offset 1 \
+  --operation-batches "$OFFLINE_OPERATION_BATCHES"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 wait_for_converged

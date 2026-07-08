@@ -286,6 +286,9 @@ pub struct FederationSmokeOperationsArgs {
     /// Deterministic wallet seed offset for repeatable operation smoke batches.
     #[arg(long, default_value_t = 0)]
     pub seed_offset: u8,
+    /// Number of standard/offline operation smoke batches to run.
+    #[arg(long, default_value_t = 1)]
+    pub operation_batches: u8,
     /// Number of mint quote status attempts before failing.
     #[arg(long, default_value_t = 100)]
     pub quote_retries: u16,

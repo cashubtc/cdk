@@ -880,7 +880,11 @@ Tests and success criteria:
 - [x] Generated 4-member/threshold-3 local smoke artifacts cover the same
   member-generic convergence, offline, pending-melt, quarantine, key-rotation,
   Prometheus, and session-outcome checks as the larger matrix. Covered by
-  `trusted_dealer_smoke_script_supports_four_member_bft_matrix`.
+  `trusted_dealer_smoke_script_supports_four_member_bft_matrix`. Offline
+  operation partitions now use the smoke command's first-class
+  `--operation-batches` option instead of relying on a shell-only loop, with
+  validation that prevents zero batches, unsupported stateful scenarios, and
+  seed-offset wrapping.
 - [x] Each member's private identity key verifies against its public identity key.
 - [x] Each member's private share verifies against its public share.
 - [x] A config with mismatched thresholds is rejected.
@@ -2454,6 +2458,10 @@ Tests and success criteria:
 
 - [x] Member offline for 10 accepted operations catches up and reaches the same state digest.
 - [x] Long-partition tooling exists for extended offline/catch-up scenarios.
+  The generated process smoke now drives repeated offline wallet-operation
+  batches through `cdk-mintd federation smoke-operations --operation-batches`,
+  keeping seed progression and validation inside the command while the script
+  controls the offline member window.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
@@ -2565,7 +2573,9 @@ Tests and success criteria:
 - [x] Generated local smoke scripts have explicit 4-member/threshold-3 matrix
   coverage and exercise member-generic convergence, offline operation, pending
   paid/failed melt, quarantine, key-rotation, Prometheus, and session-outcome
-  gates. Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`.
+  gates. Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`;
+  repeated standard/offline operation batches are now a validated smoke command
+  option covered by the `federation_smoke` test filter.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
@@ -2751,7 +2761,7 @@ Implementation checklist:
 - [x] Audit generated example configs so fakewallet-backed development federation examples are clearly marked development-only and cannot be mistaken for production templates.
 - [x] Audit timeout constants, fallback behavior, and member retry policies introduced for smoke tests, and make production-relevant values configurable.
 - [x] Remove stale "scaffolding", "placeholder", and "MVP wiring" labels from production federation modules once the corresponding feature is implemented; keep such language only in explicit dev/test code.
-- [ ] Make fakewallet federation regtest and smoke tooling look and run more like existing CDK tests where practical, with `cargo test` coverage for core flows and `just` targets as convenience wrappers. Smoke-operation argument tests now cover zero mint amounts plus the wallet database and private config prerequisites for resumable, quarantine, and keyset-rotation scenarios before generated scripts reach networked member operations, and `just fed-regtest-check` runs the fast smoke/setup cargo-test gate without starting member processes.
+- [ ] Make fakewallet federation regtest and smoke tooling look and run more like existing CDK tests where practical, with `cargo test` coverage for core flows and `just` targets as convenience wrappers. Smoke-operation argument tests now cover zero mint amounts, zero operation batches, seed-offset/batch overflow, stateful-scenario batch rejection, and the wallet database and private config prerequisites for resumable, quarantine, and keyset-rotation scenarios before generated scripts reach networked member operations, and `just fed-regtest-check` runs the fast smoke/setup cargo-test gate without starting member processes.
 - [x] Remove or rewrite any comments, docs, metrics, or status labels that imply fakewallet is part of federation rather than a replaceable mint backend.
 - [x] Confirm standalone fakewallet mint behavior remains unchanged outside federation mode.
 

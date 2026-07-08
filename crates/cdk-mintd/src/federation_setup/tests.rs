@@ -356,9 +356,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("wait_for_quarantine_report()"));
     assert!(smoke_script.contains("validate_quarantine_members()"));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
-    assert!(smoke_script.contains(
-        "run_smoke_operations --scenario offline-member-operations --seed-offset \"$batch\""
-    ));
+    assert!(smoke_script.contains("--seed-offset 1"));
+    assert!(smoke_script.contains("--operation-batches \"$OFFLINE_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("--scenario pending-melt-start"));
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
@@ -797,7 +796,6 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
         std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
     assert!(smoke_script.contains("MEMBERS=(1 2 3 4)"));
     assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
-    assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
     assert!(smoke_script.contains("wait_for_converged"));
     assert!(smoke_script.contains("wait_for_session_outcome_quorum"));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
@@ -859,7 +857,6 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script
         .contains("SMOKE_OPERATION_TIMEOUT_SECONDS=\"${SMOKE_OPERATION_TIMEOUT_SECONDS:-300}\""));
     assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
-    assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
     assert!(smoke_script.contains("wait_for_converged"));
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
     assert!(smoke_script.contains("wait_for_session_outcome_quorum"));

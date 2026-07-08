@@ -11,6 +11,7 @@ fn smoke_args() -> FederationSmokeOperationsArgs {
         scenario: FederationSmokeScenario::Standard,
         wallet_db: None,
         seed_offset: 0,
+        operation_batches: 1,
         quote_retries: 100,
         quote_sleep_ms: 50,
         operation_timeout_seconds: Some(300),
@@ -69,6 +70,57 @@ fn smoke_operation_args_reject_zero_timeout() {
 }
 
 #[test]
+fn smoke_operation_args_reject_zero_operation_batches() {
+    let mut args = smoke_args();
+    args.operation_batches = 0;
+
+    let err = validate_smoke_operation_args(&args)
+        .expect_err("zero smoke operation batches should be rejected");
+
+    assert!(err.to_string().contains("--operation-batches"));
+}
+
+#[test]
+fn smoke_operation_args_reject_seed_offset_batch_overflow() {
+    let mut args = smoke_args();
+    args.seed_offset = 254;
+    args.operation_batches = 2;
+
+    validate_smoke_operation_args(&args).expect("last seed offset 255 validates");
+
+    args.operation_batches = 3;
+    let err = validate_smoke_operation_args(&args)
+        .expect_err("smoke operation batches should not wrap seed offsets");
+
+    assert!(err.to_string().contains("--seed-offset"));
+    assert!(err.to_string().contains("--operation-batches"));
+}
+
+#[test]
+fn smoke_operation_args_reject_batches_for_stateful_signed_scenarios() {
+    for scenario in [
+        FederationSmokeScenario::PendingMeltStart,
+        FederationSmokeScenario::PendingMeltFinish,
+        FederationSmokeScenario::PendingMeltFailStart,
+        FederationSmokeScenario::PendingMeltFailFinish,
+        FederationSmokeScenario::QuarantineMintConflict,
+        FederationSmokeScenario::KeysetRotation,
+        FederationSmokeScenario::OfflineMemberKeysetRotation,
+    ] {
+        let mut args = smoke_args();
+        args.scenario = scenario;
+        args.operation_batches = 2;
+        args.wallet_db = Some(PathBuf::from("wallet.sqlite"));
+        args.private_config = Some(PathBuf::from("member-1/federation-private.json"));
+
+        let err = validate_smoke_operation_args(&args)
+            .expect_err("stateful smoke scenario should reject operation batches");
+
+        assert!(err.to_string().contains("--operation-batches"));
+    }
+}
+
+#[test]
 fn smoke_operation_args_require_wallet_db_for_resumable_scenarios() {
     for scenario in [
         FederationSmokeScenario::PendingMeltStart,
@@ -121,6 +173,7 @@ fn smoke_operation_args_allow_standard_and_offline_without_optional_paths() {
     ] {
         let mut args = smoke_args();
         args.scenario = scenario;
+        args.operation_batches = 2;
 
         validate_smoke_operation_args(&args)
             .expect("plain smoke scenario should not require optional paths");
