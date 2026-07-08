@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+## [0.17.3](https://github.com/cashubtc/cdk/releases/tag/v0.17.3)
+
+### Added
+
+- cdk, cdk-nwc, cdk-ffi: NIP-47 wallet service support with an NWC service crate, wallet integration, FFI bindings, example usage, and E2E coverage ([asmo]).
+- cdk-ffi: Waitable async on-chain melt confirmation APIs and live async melt coverage ([thesimplekid]).
+- ci: macOS 26 static build support ([asmo]).
+
+### Changed
+
+- cdk: Payment event streams now terminate more explicitly after final payment states ([thesimplekid]).
+
+### Fixed
+
+- cashu: Accept unknown fields in NUT-30 on-chain quote responses ([thesimplekid]).
+- cashu: Decode NUT-17 notification payloads according to the subscription kind ([thesimplekid]).
+- cdk: Record recovered melt transactions during wallet saga recovery ([thesimplekid]).
+- cdk: Remove finalized swap sagas during mint recovery cleanup ([thesimplekid]).
+- cdk: Return null expiry values for no-expiry Bolt12 mint quotes ([thesimplekid]).
+- cdk-ffi: Preserve prepared melt metadata across FFI conversions ([thesimplekid]).
+
 ## [0.17.2](https://github.com/cashubtc/cdk/releases/tag/v0.17.2)
 
 ### Added
