@@ -315,12 +315,21 @@ struct RouterFederationTransportRegistry {
     routers: Arc<Mutex<BTreeMap<String, Router>>>,
     missing_router_wait: Duration,
     faults: Arc<Mutex<RouterFederationTransportFaults>>,
+    held_aleph_bft_network_message: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 #[derive(Debug, Default)]
 struct RouterFederationTransportFaults {
     aleph_bft_network_message_delays: VecDeque<Duration>,
     aleph_bft_network_message_duplicate_replays: usize,
+    aleph_bft_network_message_reorder_once: bool,
+    aleph_bft_network_message_reorders_completed: usize,
+}
+
+enum AlephBftNetworkMessageReorderDecision {
+    None,
+    Hold(tokio::sync::oneshot::Receiver<()>),
+    ReleaseAfterPost(tokio::sync::oneshot::Sender<()>),
 }
 
 impl std::fmt::Debug for RouterFederationTransport {
@@ -350,8 +359,18 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                         (
                             faults.aleph_bft_network_message_delays.len(),
                             faults.aleph_bft_network_message_duplicate_replays,
+                            faults.aleph_bft_network_message_reorder_once,
+                            faults.aleph_bft_network_message_reorders_completed,
                         )
                     })
+                    .unwrap_or_default(),
+            )
+            .field(
+                "held_aleph_bft_network_message",
+                &self
+                    .held_aleph_bft_network_message
+                    .lock()
+                    .map(|held| held.is_some())
                     .unwrap_or_default(),
             )
             .finish()
@@ -394,6 +413,21 @@ impl RouterFederationTransportRegistry {
         self
     }
 
+    fn with_aleph_bft_network_message_reorder_once(self) -> Self {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_message_reorder_once = true;
+        self
+    }
+
+    fn aleph_bft_network_message_reorders_completed(&self) -> usize {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_message_reorders_completed
+    }
+
     fn insert(&self, url: MintUrl, router: Router) {
         let endpoint = url::Url::parse(&url.to_string())
             .expect("federation api url")
@@ -421,6 +455,33 @@ impl RouterFederationTransportRegistry {
         }
         faults.aleph_bft_network_message_duplicate_replays -= 1;
         true
+    }
+
+    fn aleph_bft_network_message_reorder_decision(&self) -> AlephBftNetworkMessageReorderDecision {
+        let mut held = self
+            .held_aleph_bft_network_message
+            .lock()
+            .expect("router transport held-message lock");
+        if let Some(release) = held.take() {
+            return AlephBftNetworkMessageReorderDecision::ReleaseAfterPost(release);
+        }
+
+        let mut faults = self.faults.lock().expect("router transport faults lock");
+        if faults.aleph_bft_network_message_reorder_once {
+            faults.aleph_bft_network_message_reorder_once = false;
+            let (release, wait) = tokio::sync::oneshot::channel();
+            *held = Some(release);
+            return AlephBftNetworkMessageReorderDecision::Hold(wait);
+        }
+
+        AlephBftNetworkMessageReorderDecision::None
+    }
+
+    fn mark_aleph_bft_network_message_reorder_completed(&self) {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_message_reorders_completed += 1;
     }
 }
 
@@ -961,9 +1022,31 @@ impl Transport for RouterFederationTransportRegistry {
                 tokio::time::sleep(delay).await;
             }
         }
+        let reorder_decision = if is_aleph_bft_network_message {
+            self.aleph_bft_network_message_reorder_decision()
+        } else {
+            AlephBftNetworkMessageReorderDecision::None
+        };
+        let release_after_post = match reorder_decision {
+            AlephBftNetworkMessageReorderDecision::Hold(wait_for_overtaking_post) => {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(1), wait_for_overtaking_post).await;
+                None
+            }
+            AlephBftNetworkMessageReorderDecision::ReleaseAfterPost(release_held_post) => {
+                Some(release_held_post)
+            }
+            AlephBftNetworkMessageReorderDecision::None => None,
+        };
 
-        let response_body =
-            router_transport_post_once_bytes(&router, &path, payload_bytes.clone()).await?;
+        let response_body_result =
+            router_transport_post_once_bytes(&router, &path, payload_bytes.clone()).await;
+        if let Some(release_held_post) = release_after_post {
+            if release_held_post.send(()).is_ok() {
+                self.mark_aleph_bft_network_message_reorder_completed();
+            }
+        }
+        let response_body = response_body_result?;
         if is_aleph_bft_network_message && self.take_aleph_bft_network_message_duplicate_replay() {
             let _ = router_transport_post_once_bytes(&router, &path, payload_bytes).await;
         }
@@ -8252,6 +8335,121 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
         response.outcome.entry().status,
         FederationOperationStatus::Applied
     );
+    for state in [&first_state, &second_state] {
+        wait_for_applied_operation(state, operation_id).await;
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status")
+                .finalized_item_count,
+            1
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal entries")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_some());
+    }
+}
+
+#[tokio::test]
+async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private,
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        second_private,
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport =
+        RouterFederationTransportRegistry::default().with_aleph_bft_network_message_reorder_once();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(2),
+        operation_submission_timeout: Duration::from_secs(10),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+
+    let _first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let _second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("live AlephBFT operation response under reordered transport");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(transport.aleph_bft_network_message_reorders_completed(), 1);
     for state in [&first_state, &second_state] {
         wait_for_applied_operation(state, operation_id).await;
         assert_eq!(

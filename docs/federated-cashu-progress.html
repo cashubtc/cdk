@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover aleph bft pre-backup restart</span>
+          <span class="value">test: cover aleph bft message reorder</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The unfinalized live-session restart regression now covers the pre-backup window where pending operation rows and network retry rows exist before upstream AlephBFT backup bytes are flushed; restart still replays the pending operation, finalizes, and clears pending operation rows. Mintd federation startup also accepts the `aleph_bft` consensus backend instead of rejecting it before runtime construction.</span>
+          <span class="value">The live-session transport harness now deterministically holds one opaque AlephBFT `/messages` POST until another message overtakes it, records the reorder, and proves both members still finalize exactly one journal entry. The previous checkpoint also covers the pre-backup restart window and mintd `aleph_bft` startup.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add post-backup restart coverage, then extend deeper opaque-message reorder coverage and larger live private-REST fault matrices now that pre-backup restart and operator mintd startup are covered.</span>
+          <span class="value">Add post-backup restart coverage and larger live private-REST fault matrices now that deterministic reorder, pre-backup restart, and operator mintd startup are covered.</span>
         </div>
       </aside>
     </header>
@@ -786,7 +786,7 @@
         <div class="stack">
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
-            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, durable pending-operation rows replay locally accepted envelopes across restart before finality, the live restart regression now covers the pre-backup restart window, and mintd now accepts the AlephBFT backend at startup. Remaining risk is post-backup restart coverage, deeper opaque-message reorder coverage, and larger fault matrices.</p>
+            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, deterministic reorder coverage proves one held opaque message can be overtaken without duplicate application, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, durable pending-operation rows replay locally accepted envelopes across restart before finality, the live restart regression now covers the pre-backup restart window, and mintd now accepts the AlephBFT backend at startup. Remaining risk is post-backup restart coverage and larger fault matrices.</p>
           </article>
           <article class="item">
             <h3>State-machine extraction</h3>
@@ -816,10 +816,10 @@
         <p class="section-note">
           Current verification target: broaden AlephBFT restart recovery after
           upstream backup or unit creation on top of the persisted retry-row,
-          orphan-cleanup, pending-operation replay, and duplicate/delay transport-fault checkpoint, followed by deeper live-session opaque-message reorder assertions,
-          larger wallet-operation smoke
-          repetitions, storage-backed 4-member and 5-member partition windows,
-          and compile gates. The previous CPU issue is closed unless it
+          orphan-cleanup, pending-operation replay, duplicate/delay transport-fault,
+          and deterministic opaque-message reorder checkpoints, followed by
+          larger wallet-operation smoke repetitions, storage-backed 4-member
+          and 5-member partition windows, and compile gates. The previous CPU issue is closed unless it
           reappears.
         </p>
       </section>
@@ -907,7 +907,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Add post-backup restart coverage, then cover deeper opaque-message reorder and larger live private-REST fault matrices now that pre-backup restart and operator mintd startup are covered.</p>
+            <p>Add post-backup restart coverage and larger live private-REST fault matrices now that deterministic reorder, pre-backup restart, and operator mintd startup are covered.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

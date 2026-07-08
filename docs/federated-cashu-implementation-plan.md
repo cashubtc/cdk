@@ -148,8 +148,8 @@ Current confirmed shape:
   the special startup halt for empty verified histories, and routes replayed
   histories through the existing session-outcome verifier before public
   readiness can open. The next checkpoint is broader process-level live-session
-  coverage for restart windows, opaque-message reordering, and larger
-  private-REST fault matrices.
+  coverage for post-backup restart windows and larger private-REST fault
+  matrices.
 - Latest catch-up state-digest checkpoint: catch-up replay now has focused
   route-state coverage proving a lagging member records a durable materialized
   state-digest checkpoint for the replayed journal boundary after applying
@@ -1174,9 +1174,11 @@ Architecture checklist:
   bytes have been flushed; after restart, pending-operation replay still drives
   the member to finality and clears pending operation rows. Operator
   `cdk-mintd` startup now accepts the `aleph_bft` backend instead of failing the
-  config before runtime construction. Broader process-level coverage for
-  post-backup restarts, opaque message reordering, and larger
-  durable-redelivery fault matrices remains open.
+  config before runtime construction. A deterministic private-REST reorder
+  regression now holds one opaque AlephBFT `/messages` POST until a later
+  message overtakes it, then proves both members still finalize exactly one
+  journal entry. Broader process-level coverage for post-backup restarts and
+  larger durable-redelivery fault matrices remains open.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1587,9 +1589,9 @@ AlephBFT and consensus unit tests:
   Peer delivery is concurrent per message, the first live-session pump tick is
   delayed by one configured interval to avoid startup-router races, live-session
   shutdown now aborts upstream child tasks, and SQLite backup reads preserve
-  invalid UTF-8 bytes as blobs. Deeper opaque AlephBFT message reorder,
-  post-upstream-backup crash windows, and larger duplicate/delay matrices remain
-  open for the broader fault suite.
+  invalid UTF-8 bytes as blobs. Deterministic opaque AlephBFT message reordering
+  is now covered; post-upstream-backup crash windows and larger duplicate/delay
+  matrices remain open for the broader fault suite.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
