@@ -856,6 +856,12 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
     assert!(smoke_script.contains("--scenario offline-member-keyset-rotation"));
     assert!(smoke_script.contains("federation payment-observations"));
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
+    assert!(smoke_script
+        .contains("ALEPH_BFT_AUTO_ROTATION_MAX_ROUND=\"${ALEPH_BFT_AUTO_ROTATION_MAX_ROUND:-}\""));
+    assert!(smoke_script.contains(
+        "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND=\"$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND\""
+    ));
+    assert!(smoke_script.contains("wait_for_configured_aleph_bft_auto_rotation"));
 
     for (member_id, member_artifacts) in &artifacts.member_artifacts {
         assert!(smoke_script.contains(&format!("    {}) printf", member_id.get())));
@@ -917,6 +923,10 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("LONG_PARTITION_SEED_OFFSET=\"${LONG_PARTITION_SEED_OFFSET:-}\""));
     assert!(smoke_script
         .contains("LONG_PARTITION_OPERATION_BATCHES=\"${LONG_PARTITION_OPERATION_BATCHES:-4}\""));
+    assert!(smoke_script.contains(
+        "ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION=\"${ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION:-1}\""
+    ));
+    assert!(smoke_script.contains("ALEPH_BFT_AUTO_ROTATION_MAX_ROUND must be 65535 or lower"));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\""));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
     assert!(smoke_script
@@ -924,6 +934,8 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
     assert!(smoke_script.contains("wait_for_converged"));
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
+    assert!(smoke_script.contains("wait_for_aleph_bft_session_at_least"));
+    assert!(smoke_script.contains("wait_for_configured_aleph_bft_auto_rotation"));
     assert!(smoke_script.contains("wait_for_session_outcome_quorum"));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));

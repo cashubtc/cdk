@@ -130,6 +130,17 @@ Current confirmed shape:
   fast test-only round schedule, waits for session 0 to auto-rotate into
   session 1 through the pre-existing routers, verifies the durable active
   session marker, and then finalizes a real mint-quote operation in session 1.
+- Latest AlephBFT process-smoke auto-rotation gate checkpoint: the live
+  session round cap is now an optional validated mintd/Axum setting that
+  defaults to the production 3000-round cap but can be overridden for local
+  process smoke through
+  `CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND`. Generated local
+  smoke scripts now expose `ALEPH_BFT_AUTO_ROTATION_MAX_ROUND` and, when set,
+  start every member with the matching mintd environment variable, wait for all
+  members to report the target AlephBFT session, and reconverge before wallet
+  operation batches. This gives the long process smoke path a deterministic
+  opt-in way to exercise natural live-session rollover without changing normal
+  production defaults.
 - Latest AlephBFT network-finality activation checkpoint: the Axum federation
   state now has a guarded method for the future live AlephBFT task to announce
   that network finality is available. The method validates that federation mode
@@ -1268,6 +1279,10 @@ Architecture checklist:
   Live `run_session` completion now also supervises automatic rotation into the
   next session; a focused two-member regression proves the auto-rotated session
   stays live and can finalize a later operation through those original routers.
+  The process-smoke generator can now opt into a small live-session round cap
+  and wait for every member to report an auto-rotated AlephBFT session before
+  wallet operation batches; actually running the longer external partition
+  smoke with that gate remains open.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1816,8 +1831,9 @@ AlephBFT and consensus unit tests:
   automatic completion watcher now rotates a naturally completed `run_session`
   into the next live session and proves the next operation can finalize there.
   The latest crates.io check reconfirmed upstream `aleph-bft = 0.45.4` as the
-  direct dependency. Remaining crash-window coverage is still open for longer
-  process-level rotation windows.
+  direct dependency. Local smoke tooling can now force and verify a natural
+  auto-rotated session before operation batches; the longer external process
+  partition run using that gate remains open.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
@@ -2717,8 +2733,10 @@ Tests and success criteria:
   seed-offset range. The later long-partition operation window now has explicit
   generated member, seed-offset, and batch controls, and that collision-free
   seed range is validated against the standard and post-crash ranges before any
-  member processes are started. Covered by `federation_setup` artifact
-  assertions.
+  member processes are started. The generated script also exposes
+  `ALEPH_BFT_AUTO_ROTATION_MAX_ROUND` as an opt-in live-session round cap and
+  waits for every member to report the configured target session before running
+  wallet operation batches. Covered by `federation_setup` artifact assertions.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.

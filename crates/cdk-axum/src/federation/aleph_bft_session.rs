@@ -47,10 +47,25 @@ impl FederationAlephBftLiveSessionOptions {
         }
     }
 
-    #[cfg(test)]
+    pub(crate) fn from_sync_config(
+        pump_config: CdkAlephBftNetworkPumpConfig,
+        sync_config: FederationPeerSyncConfig,
+    ) -> Self {
+        let mut options = Self::new(pump_config);
+        if let Some(max_round) = sync_config.aleph_bft_live_session_max_round {
+            options = options.with_max_round(max_round);
+        }
+        options
+    }
+
     pub(crate) fn with_max_round(mut self, max_round: u16) -> Self {
         self.max_round = max_round;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_round(&self) -> u16 {
+        self.max_round
     }
 
     #[cfg(test)]
@@ -241,7 +256,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
-        FederationAlephBftLiveSessionOptions::new(pump_config),
+        FederationAlephBftLiveSessionOptions::from_sync_config(pump_config, sync_config),
         Async::default(),
     )
     .await
@@ -261,7 +276,7 @@ where
     start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
-        FederationAlephBftLiveSessionOptions::new(pump_config),
+        FederationAlephBftLiveSessionOptions::from_sync_config(pump_config, sync_config),
         transport,
     )
     .await
@@ -577,7 +592,7 @@ where
     rotate_federation_aleph_bft_live_session_to_next_empty_with_options_and_transport(
         state,
         sync_config,
-        FederationAlephBftLiveSessionOptions::new(pump_config),
+        FederationAlephBftLiveSessionOptions::from_sync_config(pump_config, sync_config),
         transport,
     )
     .await

@@ -708,6 +708,7 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
         pending_mempool_item_limit: peer_sync.pending_mempool_item_limit,
         response_waiter_limit: peer_sync.response_waiter_limit,
         response_cache_limit: peer_sync.response_cache_limit,
+        aleph_bft_live_session_max_round: peer_sync.aleph_bft_live_session_max_round,
     }
 }
 
@@ -2437,6 +2438,7 @@ mod tests {
                     pending_mempool_item_limit: 53,
                     response_waiter_limit: 59,
                     response_cache_limit: 61,
+                    aleph_bft_live_session_max_round: Some(67),
                 },
             }),
             ..Default::default()
@@ -2477,6 +2479,7 @@ mod tests {
         assert_eq!(sync_config.pending_mempool_item_limit, 53);
         assert_eq!(sync_config.response_waiter_limit, 59);
         assert_eq!(sync_config.response_cache_limit, 61);
+        assert_eq!(sync_config.aleph_bft_live_session_max_round, Some(67));
         sync_config.validate().expect("valid sync config");
     }
 

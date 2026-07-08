@@ -213,6 +213,10 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             response_cache_limit: 0,
             ..valid
         },
+        FederationPeerSyncConfig {
+            aleph_bft_live_session_max_round: Some(0),
+            ..valid
+        },
     ];
 
     for config in cases {
@@ -222,6 +226,23 @@ fn federation_peer_sync_config_rejects_invalid_values() {
         );
     }
     assert!(valid.validate().is_ok());
+}
+
+#[test]
+fn aleph_bft_live_session_options_use_configured_sync_round_cap() {
+    let pump_config = CdkAlephBftNetworkPumpConfig::default();
+    let default_options =
+        FederationAlephBftLiveSessionOptions::from_sync_config(pump_config, Default::default());
+    assert_eq!(default_options.max_round(), 3000);
+
+    let configured_options = FederationAlephBftLiveSessionOptions::from_sync_config(
+        pump_config,
+        FederationPeerSyncConfig {
+            aleph_bft_live_session_max_round: Some(9),
+            ..Default::default()
+        },
+    );
+    assert_eq!(configured_options.max_round(), 9);
 }
 
 #[tokio::test(start_paused = true)]

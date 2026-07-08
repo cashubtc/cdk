@@ -54,6 +54,8 @@ pub struct FederationPeerSyncConfig {
     pub response_waiter_limit: usize,
     /// Maximum number of accepted operation responses retained for idempotent local waiters.
     pub response_cache_limit: usize,
+    /// Optional AlephBFT live-session round cap used to force natural session rollover.
+    pub aleph_bft_live_session_max_round: Option<u16>,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -77,6 +79,7 @@ impl Default for FederationPeerSyncConfig {
             pending_mempool_item_limit: DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT,
             response_waiter_limit: DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT,
             response_cache_limit: DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT,
+            aleph_bft_live_session_max_round: None,
         }
     }
 }
@@ -144,6 +147,9 @@ impl FederationPeerSyncConfig {
         }
         if self.response_cache_limit == 0 {
             anyhow::bail!("federation response cache limit must be greater than zero");
+        }
+        if self.aleph_bft_live_session_max_round == Some(0) {
+            anyhow::bail!("federation AlephBFT live session max round must be greater than zero");
         }
 
         Ok(())

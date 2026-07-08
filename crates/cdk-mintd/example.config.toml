@@ -356,8 +356,7 @@ max_delay_time = 3
 # Set to true to run this mint as a federation member.
 # The public/private JSON files are produced by the trusted-dealer setup path.
 # enabled = false
-# Current supported value is "in_memory" for local development and regtest wiring.
-# Future production BFT backends such as "aleph_bft" must fail closed until implemented.
+# Supported values are "in_memory" and "aleph_bft".
 # consensus_backend = "in_memory"
 # Keep false for production. Set true only for local smoke/regtest configs
 # whose public federation config uses development_single_observation finality,
@@ -381,6 +380,10 @@ max_delay_time = 3
 # pending_mempool_item_limit = 1024
 # response_waiter_limit = 1024
 # response_cache_limit = 4096
+# Optional AlephBFT live-session round cap. Leave unset for the production
+# default; set a small value only in local smoke/regtest runs that deliberately
+# exercise automatic session rollover.
+# aleph_bft_live_session_max_round = 6
 
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]

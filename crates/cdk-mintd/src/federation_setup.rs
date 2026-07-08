@@ -1426,6 +1426,8 @@ POST_CRASH_SEED_OFFSET="${{POST_CRASH_SEED_OFFSET:-$STANDARD_OPERATION_BATCHES}}
 POST_CRASH_OPERATION_BATCHES="${{POST_CRASH_OPERATION_BATCHES:-1}}"
 LONG_PARTITION_SEED_OFFSET="${{LONG_PARTITION_SEED_OFFSET:-}}"
 LONG_PARTITION_OPERATION_BATCHES="${{LONG_PARTITION_OPERATION_BATCHES:-4}}"
+ALEPH_BFT_AUTO_ROTATION_MAX_ROUND="${{ALEPH_BFT_AUTO_ROTATION_MAX_ROUND:-}}"
+ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION="${{ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION:-1}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
 PIDS=()
@@ -1505,6 +1507,10 @@ start_member() {{
   fi
   if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
     mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
+    mintd_env_count=$((mintd_env_count + 1))
+  fi
+  if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
+    mintd_env+=(CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND="$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND")
     mintd_env_count=$((mintd_env_count + 1))
   fi
   if (( mintd_env_count == 0 )); then
@@ -1750,6 +1756,21 @@ status_field() {{
   return 1
 }}
 
+aleph_bft_status_field() {{
+  local line="$1"
+  local key="$2"
+  local field
+  for field in $line; do
+    case "$field" in
+      "$key":*)
+        printf '%s\n' "${{field#*:}}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}}
+
 run_smoke_operations() {{
   local has_private_config=0
   local timeout_args=(--operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS")
@@ -1874,6 +1895,38 @@ wait_for_converged() {{
   done
   compare_digests >&2 || true
   return 1
+}}
+
+wait_for_aleph_bft_session_at_least() {{
+  local member="$1"
+  local target_session="$2"
+  local work_dir
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    local line
+    local session
+    if line="$(member_status_line "$member" 2>/dev/null)" && session="$(aleph_bft_status_field "$line" session)"; then
+      if (( session >= target_session )); then
+        return 0
+      fi
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not advance to AlephBFT session %s\n' "$member" "$target_session" >&2
+  member_status_line "$member" >&2 || true
+  tail -n 80 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
+wait_for_configured_aleph_bft_auto_rotation() {{
+  if [[ -z "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
+    return 0
+  fi
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    wait_for_aleph_bft_session_at_least "$member" "$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION"
+  done
+  wait_for_converged
 }}
 
 wait_for_dkg_setup_records() {{
@@ -2060,6 +2113,14 @@ validate_smoke_settings() {{
     printf 'LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
+  if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
+    require_positive_integer ALEPH_BFT_AUTO_ROTATION_MAX_ROUND "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" || return 1
+    require_positive_integer ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION "$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION" || return 1
+    if (( ALEPH_BFT_AUTO_ROTATION_MAX_ROUND > 65535 )); then
+      printf 'ALEPH_BFT_AUTO_ROTATION_MAX_ROUND must be 65535 or lower\n' >&2
+      return 1
+    fi
+  fi
 }}
 
 trap cleanup EXIT INT TERM
@@ -2098,6 +2159,7 @@ done
 
 wait_for_converged
 wait_for_prometheus_metrics
+wait_for_configured_aleph_bft_auto_rotation
 run_smoke_operations \
   --scenario standard \
   --operation-batches "$STANDARD_OPERATION_BATCHES"

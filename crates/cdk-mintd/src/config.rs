@@ -1127,6 +1127,9 @@ pub struct FederationPeerSync {
     /// Maximum number of accepted operation responses retained locally.
     #[serde(default = "default_federation_response_cache_limit")]
     pub response_cache_limit: usize,
+    /// Optional AlephBFT live-session round cap used to force natural rollover.
+    #[serde(default)]
+    pub aleph_bft_live_session_max_round: Option<u16>,
 }
 
 #[cfg(feature = "federation")]
@@ -1154,6 +1157,7 @@ impl Default for FederationPeerSync {
             pending_mempool_item_limit: default_federation_pending_mempool_item_limit(),
             response_waiter_limit: default_federation_response_waiter_limit(),
             response_cache_limit: default_federation_response_cache_limit(),
+            aleph_bft_live_session_max_round: None,
         }
     }
 }

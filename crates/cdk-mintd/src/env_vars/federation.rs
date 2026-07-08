@@ -9,6 +9,8 @@ pub const ENV_FEDERATION_ENABLED: &str = "CDK_MINTD_FEDERATION_ENABLED";
 pub const ENV_FEDERATION_PUBLIC_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH";
 pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH";
 pub const ENV_FEDERATION_CONSENSUS_BACKEND: &str = "CDK_MINTD_FEDERATION_CONSENSUS_BACKEND";
+pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
+    "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND";
 
 impl Federation {
     pub fn from_env(mut self) -> Result<Self> {
@@ -28,6 +30,18 @@ impl Federation {
 
         if let Ok(path) = env::var(ENV_FEDERATION_PRIVATE_CONFIG_PATH) {
             self.private_config_path = Some(PathBuf::from(path));
+        }
+
+        if let Ok(max_round) = env::var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND) {
+            let max_round = max_round.parse::<u16>().map_err(|_| {
+                anyhow!("Federation AlephBFT live session max round must fit in u16")
+            })?;
+            if max_round == 0 {
+                return Err(anyhow!(
+                    "Federation AlephBFT live session max round must be greater than zero"
+                ));
+            }
+            self.peer_sync.aleph_bft_live_session_max_round = Some(max_round);
         }
 
         Ok(self)
@@ -51,6 +65,7 @@ mod tests {
         env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_CONSENSUS_BACKEND);
+        env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
     }
 
     #[test]
@@ -114,6 +129,39 @@ mod tests {
             err.to_string()
                 .contains("Unknown federation consensus backend"),
             "error should mention unknown backend: {err}"
+        );
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_overrides_aleph_bft_live_session_max_round() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND, "9");
+
+        let config = Federation::default()
+            .from_env()
+            .expect("federation env config");
+
+        assert_eq!(config.peer_sync.aleph_bft_live_session_max_round, Some(9));
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_rejects_invalid_aleph_bft_live_session_max_round() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND, "0");
+
+        let err = Federation::default()
+            .from_env()
+            .expect_err("zero max round should fail");
+
+        assert!(
+            err.to_string().contains("must be greater than zero"),
+            "error should explain invalid max round: {err}"
         );
 
         clear_federation_env();
