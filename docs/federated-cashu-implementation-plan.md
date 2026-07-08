@@ -889,11 +889,11 @@ Tests and success criteria:
 - [x] Generated 4-member/threshold-3 local smoke artifacts cover the same
   member-generic convergence, offline, pending-melt, quarantine, key-rotation,
   Prometheus, and session-outcome checks as the larger matrix. Covered by
-  `trusted_dealer_smoke_script_supports_four_member_bft_matrix`. Offline
-  operation partitions now use the smoke command's first-class
-  `--operation-batches` option instead of relying on a shell-only loop, with
-  validation that prevents zero batches, unsupported stateful scenarios, and
-  seed-offset wrapping.
+  `trusted_dealer_smoke_script_supports_four_member_bft_matrix`. Standard
+  and offline operation partitions now use the smoke command's
+  first-class `--operation-batches` option instead of relying on shell-only
+  loops, with validation that prevents zero batches, unsupported stateful
+  scenarios, and seed-offset wrapping.
 - [x] Each member's private identity key verifies against its public identity key.
 - [x] Each member's private share verifies against its public share.
 - [x] A config with mismatched thresholds is rejected.
@@ -2469,10 +2469,11 @@ Tests and success criteria:
 
 - [x] Member offline for 10 accepted operations catches up and reaches the same state digest.
 - [x] Long-partition tooling exists for extended offline/catch-up scenarios.
-  The generated process smoke now drives repeated offline wallet-operation
-  batches through `cdk-mintd federation smoke-operations --operation-batches`,
-  keeping seed progression and validation inside the command while the script
-  controls the offline member window.
+  The generated process smoke now drives repeated standard and offline
+  wallet-operation batches through
+  `cdk-mintd federation smoke-operations --operation-batches`, keeping seed
+  progression and validation inside the command while the script controls the
+  all-members and offline-member windows.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
@@ -2585,8 +2586,9 @@ Tests and success criteria:
   coverage and exercise member-generic convergence, offline operation, pending
   paid/failed melt, quarantine, key-rotation, Prometheus, and session-outcome
   gates. Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`;
-  repeated standard/offline operation batches are now a validated smoke command
-  option covered by the `federation_smoke` test filter.
+  repeated standard/offline operation batches are now generated-script knobs
+  backed by the validated smoke command option and covered by the
+  `federation_smoke` and `federation_setup` test filters.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
