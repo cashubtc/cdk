@@ -10636,6 +10636,19 @@ async fn aleph_bft_network_retry_queue_reloads_only_current_session_known_member
     let mut retry_queue = CdkAlephBftNetworkRetryQueue::from_db(&db, &keychain, 12)
         .await
         .expect("reload retry queue");
+    assert_eq!(retry_queue.len(), 2);
+    let mut persisted_retry_ids = db
+        .get_federation_aleph_bft_network_retries(12)
+        .await
+        .expect("session 12 retries after reload pruning")
+        .into_iter()
+        .map(|retry| retry.retry_id)
+        .collect::<Vec<_>>();
+    persisted_retry_ids.sort();
+    assert_eq!(
+        persisted_retry_ids,
+        vec!["mixed-known".to_string(), "valid".to_string()]
+    );
     let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
         FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 12),
     );
@@ -10653,7 +10666,7 @@ async fn aleph_bft_network_retry_queue_reloads_only_current_session_known_member
             ..CdkAlephBftNetworkPumpConfig::default()
         },
         &mut retry_queue,
-        None,
+        Some(&db),
     )
     .await
     .expect("drain reloaded retries");
@@ -10668,6 +10681,20 @@ async fn aleph_bft_network_retry_queue_reloads_only_current_session_known_member
     assert!(outcome.remote_failed_members.is_empty());
     assert!(outcome.remote_requeued_members.is_empty());
     assert_eq!(outcome.retry_queue_len, 0);
+    assert!(db
+        .get_federation_aleph_bft_network_retries(12)
+        .await
+        .expect("session 12 retries after successful redelivery")
+        .is_empty());
+    let stale_session_queue = CdkAlephBftNetworkRetryQueue::from_db(&db, &keychain, 13)
+        .await
+        .expect("reload stale retry session");
+    assert!(stale_session_queue.is_empty());
+    assert!(db
+        .get_federation_aleph_bft_network_retries(13)
+        .await
+        .expect("session 13 retries after pruning")
+        .is_empty());
     let mut receivers = transport
         .aleph_bft_network_message_requests()
         .iter()

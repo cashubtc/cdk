@@ -221,18 +221,24 @@ impl CdkAlephBftNetworkRetryQueue {
             .collect::<BTreeMap<_, _>>();
         let mut pending = VecDeque::new();
         for retry in retries {
-            retry
-                .request
-                .ensure_admissible_size()
-                .map_err(cdk::Error::from)?;
+            if let Err(err) = retry.request.ensure_admissible_size() {
+                tracing::warn!(
+                    retry_id = %retry.retry_id,
+                    error = %err,
+                    "Removing invalid AlephBFT network retry row"
+                );
+                remove_persisted_retry(Some(db), &retry.retry_id).await?;
+                continue;
+            }
             if retry.session_id != session_id || retry.request.session_id != session_id {
                 tracing::warn!(
                     retry_id = %retry.retry_id,
                     retry_session = retry.session_id,
                     request_session = retry.request.session_id,
                     expected_session = session_id,
-                    "Skipping AlephBFT network retry row for a different session"
+                    "Removing AlephBFT network retry row for a different session"
                 );
+                remove_persisted_retry(Some(db), &retry.retry_id).await?;
                 continue;
             }
             let peers = retry
@@ -243,8 +249,9 @@ impl CdkAlephBftNetworkRetryQueue {
             if peers.is_empty() {
                 tracing::warn!(
                     retry_id = %retry.retry_id,
-                    "Skipping AlephBFT network retry row with no current remote peers"
+                    "Removing AlephBFT network retry row with no current remote peers"
                 );
+                remove_persisted_retry(Some(db), &retry.retry_id).await?;
                 continue;
             }
             pending.push_back(CdkAlephBftNetworkRetryDelivery {
