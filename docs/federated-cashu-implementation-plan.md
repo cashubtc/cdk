@@ -1661,7 +1661,11 @@ AlephBFT and consensus unit tests:
   AlephBFT network message, rejects a second valid-but-different payload signed
   with the same sender sequence as stale, leaves the sender watermark unchanged,
   and proves the equivocated payload is not delivered to the inbound network
-  queue.
+  queue. Router-started live-session coverage now extends that stale-sequence
+  guard through the production private REST transport after real AlephBFT
+  finality, proving a same-sequence different-body network message is rejected
+  as stale without advancing the receiver watermark or adding journal/finalized
+  state.
   Adapter-boundary session-rotation coverage now blocks `begin_session` while a
   locally drained unit is still awaiting finality, proves the adapter remains on
   the old session until that unit finalizes, and verifies recovered local unit
@@ -1691,12 +1695,14 @@ AlephBFT and consensus unit tests:
   network-message route coverage also rejects bad SCALE payloads, valid SCALE
   messages with trailing bytes, session mismatches, and same-sequence
   different-payload equivocation before sender sequence persistence or inbound
-  queue delivery. Router-started live-session coverage
-  now sends a malformed but correctly signed AlephBFT network message through
-  the private REST route, proves the sender sequence is not consumed by the
-  rejection, and then proves later valid network traffic still finalizes and
-  applies the same operation across both members. Broader production AlephBFT
-  equivocation handling remains open.
+  queue delivery. Router-started live-session coverage now sends a malformed
+  but correctly signed AlephBFT network message through the private REST route,
+  proves the sender sequence is not consumed by the rejection, and then proves
+  later valid network traffic still finalizes and applies the same operation
+  across both members. It also now replays a different signed body with an
+  already accepted live sender sequence after real finality and proves the
+  receiver rejects it without watermark, journal, or finalized-item mutation.
+  Broader production AlephBFT equivocation handling remains open.
 - [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
   resumes when enough members return.
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast

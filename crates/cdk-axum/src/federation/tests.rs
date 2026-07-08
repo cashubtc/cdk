@@ -8778,6 +8778,183 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_message() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private.clone(),
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        second_private.clone(),
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+
+    let _first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let _second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url.clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("live AlephBFT operation response before equivocation");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    wait_for_applied_operation(&first_state, operation_id).await;
+    wait_for_applied_operation(&second_state, operation_id).await;
+    let accepted_request = wait_for_aleph_bft_network_message_request(
+        &transport,
+        first_private.member_id,
+        second_private.member_id,
+    )
+    .await;
+    accepted_request
+        .verify(&public_config, accepted_request.receiver)
+        .expect("captured network-message request verifies");
+    let sequence_before = second_state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences before equivocated network message")
+        .get(&first_private.member_id)
+        .copied()
+        .expect("sender sequence before equivocated network message");
+    assert!(
+        sequence_before >= accepted_request.sequence,
+        "receiver must have accepted the captured request before equivocation"
+    );
+
+    let mut equivocated_message = accepted_request
+        .payload
+        .message_bytes()
+        .expect("captured AlephBFT message bytes");
+    equivocated_message.push(0);
+    let equivocated_request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        second_private.member_id,
+        accepted_request.sequence,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        FederationAlephBftNetworkMessageRequest::new(0, equivocated_message),
+        &first_private,
+    )
+    .expect("signed equivocated AlephBFT network-message request");
+    assert_ne!(
+        equivocated_request.payload.encoded_message,
+        accepted_request.payload.encoded_message
+    );
+    let equivocated_url =
+        url::Url::parse(&format!("{second_url}/federation/v1/aleph-bft/messages"))
+            .expect("equivocated AlephBFT network-message URL");
+    let equivocated_result: Result<FederationAlephBftNetworkMessageResponse, HttpError> = transport
+        .http_post(equivocated_url, None, &equivocated_request)
+        .await;
+    let equivocated_error =
+        equivocated_result.expect_err("same-sequence equivocated network message must fail");
+    match equivocated_error {
+        HttpError::Status { status, message } => {
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST.as_u16());
+            assert!(
+                message.contains("stale sequence"),
+                "unexpected equivocation error: {message}"
+            );
+        }
+        err => panic!("unexpected equivocated network-message error: {err:?}"),
+    }
+    assert_eq!(
+        second_state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("sequences after equivocated network message")
+            .get(&first_private.member_id)
+            .copied(),
+        Some(sequence_before)
+    );
+    for state in [&first_state, &second_state] {
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal entries after equivocated network message")
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status after equivocated network message")
+                .finalized_item_count,
+            1
+        );
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
@@ -10503,6 +10680,27 @@ async fn wait_for_aleph_bft_network_retries(
     })
     .await
     .expect("AlephBFT network retries were not persisted")
+}
+
+async fn wait_for_aleph_bft_network_message_request(
+    transport: &RouterFederationTransportRegistry,
+    sender: MemberId,
+    receiver: MemberId,
+) -> FederationSignedRequest<FederationAlephBftNetworkMessageRequest> {
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = transport
+                .aleph_bft_network_message_requests()
+                .into_iter()
+                .find(|request| request.sender == sender && request.receiver == receiver)
+            {
+                return request;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("AlephBFT network message request was not captured")
 }
 
 async fn wait_for_aleph_bft_backup_bytes(state: &MintState, session_id: u64) -> Vec<u8> {
