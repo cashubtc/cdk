@@ -887,13 +887,16 @@ Tests and success criteria:
 - [x] Generated 5-member configs have identical federation ID and aggregate keyset IDs.
 - [x] Generated 5-member configs have identical roster hashes and complete partner identity public-key allowlists.
 - [x] Generated 4-member/threshold-3 local smoke artifacts cover the same
-  member-generic convergence, offline, pending-melt, quarantine, key-rotation,
-  Prometheus, and session-outcome checks as the larger matrix. Covered by
-  `trusted_dealer_smoke_script_supports_four_member_bft_matrix`. Standard
-  and offline operation partitions now use the smoke command's
+  member-generic convergence, long-partition, pending-melt, quarantine,
+  key-rotation, Prometheus, and session-outcome checks as the larger matrix.
+  Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`.
+  Standard and long-partition operation windows now use the smoke command's
   first-class `--operation-batches` option instead of relying on shell-only
   loops, with validation that prevents zero batches, unsupported stateful
-  scenarios, and seed-offset wrapping.
+  scenarios, and seed-offset wrapping. The generated process script also exposes
+  explicit `LONG_PARTITION_MEMBER`, `LONG_PARTITION_SEED_OFFSET`, and
+  `LONG_PARTITION_OPERATION_BATCHES` controls so longer member partitions can be
+  run without reusing deterministic wallet seeds.
 - [x] Each member's private identity key verifies against its public identity key.
 - [x] Each member's private share verifies against its public share.
 - [x] A config with mismatched thresholds is rejected.
@@ -1709,10 +1712,13 @@ AlephBFT and consensus unit tests:
   requires status, convergence, and quorum-backed session-outcome evidence from
   the restarted member. The same generated process smoke now also runs fresh
   all-member wallet-operation batches through the recovered member before the
-  later offline-partition window. Full crash-window coverage remains open for
-  restarts after upstream unit backup but before every finalized operation has
-  been applied, and for live session rotation beyond the adapter-boundary guard
-  and recovered finalized-session startup path.
+  later named long-partition window. That window now has explicit generated
+  controls for the partitioned member, deterministic seed range, and operation
+  batch count, then requires member status, convergence, and quorum-backed
+  session-outcome evidence after restart. Full crash-window coverage remains
+  open for restarts after upstream unit backup but before every finalized
+  operation has been applied, and for live session rotation beyond the
+  adapter-boundary guard and recovered finalized-session startup path.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
@@ -2603,16 +2609,17 @@ Tests and success criteria:
   coverage and exercise member-generic convergence, offline operation, pending
   paid/failed melt, quarantine, key-rotation, Prometheus, and session-outcome
   gates. Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`;
-  repeated standard/offline operation batches are now generated-script knobs
+  repeated standard/long-partition operation batches are now generated-script knobs
   backed by the validated smoke command option and covered by the
   `federation_smoke` and `federation_setup` test filters. The generated script
   also has a configurable process crash-window restart after repeated
   all-member batches and before convergence, then runs fresh all-member
   operations through the recovered member using a collision-free generated
-  seed-offset range. The later offline-member operation window now also has a
-  configurable collision-free seed-offset range that is validated against the
-  standard and post-crash ranges before any member processes are started.
-  Covered by `federation_setup` artifact assertions.
+  seed-offset range. The later long-partition operation window now has explicit
+  generated member, seed-offset, and batch controls, and that collision-free
+  seed range is validated against the standard and post-crash ranges before any
+  member processes are started. Covered by `federation_setup` artifact
+  assertions.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.

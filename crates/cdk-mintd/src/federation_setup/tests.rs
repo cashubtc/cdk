@@ -301,11 +301,16 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("RESTART_MEMBER"));
     assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
     assert!(smoke_script.contains("CRASH_WINDOW_MEMBER"));
+    assert!(smoke_script.contains("LONG_PARTITION_MEMBER"));
     assert!(smoke_script.contains("EXERCISE_CRASH_WINDOW"));
     assert!(smoke_script.contains("unknown RESTART_MEMBER"));
     assert!(smoke_script
         .contains("RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke"));
     assert!(smoke_script.contains("unknown CRASH_WINDOW_MEMBER"));
+    assert!(smoke_script.contains("unknown LONG_PARTITION_MEMBER"));
+    assert!(smoke_script.contains(
+        "LONG_PARTITION_MEMBER must differ from PRIMARY_MEMBER for long-partition operation smoke"
+    ));
     assert!(smoke_script.contains("PENDING_WALLET_DB"));
     assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
     assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
@@ -314,8 +319,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("STANDARD_OPERATION_BATCHES"));
     assert!(smoke_script.contains("POST_CRASH_SEED_OFFSET"));
     assert!(smoke_script.contains("POST_CRASH_OPERATION_BATCHES"));
-    assert!(smoke_script.contains("OFFLINE_SEED_OFFSET"));
-    assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("LONG_PARTITION_SEED_OFFSET"));
+    assert!(smoke_script.contains("LONG_PARTITION_OPERATION_BATCHES"));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
     assert!(smoke_script.contains("local mintd_env_count=0"));
@@ -343,20 +348,20 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("require_positive_integer POST_CRASH_OPERATION_BATCHES"));
     assert!(smoke_script
         .contains("POST_CRASH_SEED_OFFSET plus POST_CRASH_OPERATION_BATCHES must be 256 or lower"));
-    assert!(smoke_script.contains("if [[ -z \"$OFFLINE_SEED_OFFSET\" ]]; then"));
+    assert!(smoke_script.contains("if [[ -z \"$LONG_PARTITION_SEED_OFFSET\" ]]; then"));
     assert!(smoke_script.contains(
-        "OFFLINE_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))"
+        "LONG_PARTITION_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))"
     ));
-    assert!(smoke_script.contains("require_nonnegative_integer OFFLINE_SEED_OFFSET"));
-    assert!(
-        smoke_script.contains("OFFLINE_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES")
-    );
-    assert!(smoke_script.contains(
-        "OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must not overlap the post-crash seed range"
-    ));
-    assert!(smoke_script.contains("require_positive_integer OFFLINE_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("require_nonnegative_integer LONG_PARTITION_SEED_OFFSET"));
     assert!(smoke_script
-        .contains("OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must be 256 or lower"));
+        .contains("LONG_PARTITION_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES"));
+    assert!(smoke_script.contains(
+        "LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must not overlap the post-crash seed range"
+    ));
+    assert!(smoke_script.contains("require_positive_integer LONG_PARTITION_OPERATION_BATCHES"));
+    assert!(smoke_script.contains(
+        "LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must be 256 or lower"
+    ));
     assert!(smoke_script.contains("member_payment_report_lines()"));
     assert!(smoke_script.contains("--context mint-quote"));
     assert!(smoke_script.contains("member_prometheus_url()"));
@@ -384,7 +389,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
     assert!(smoke_script.contains("\"${timeout_args[@]}\""));
     assert!(smoke_script.contains("wait_for_quarantine_report()"));
-    assert!(smoke_script.contains("validate_quarantine_members()"));
+    assert!(smoke_script.contains("validate_smoke_members()"));
     assert!(smoke_script.contains("--scenario standard"));
     assert!(smoke_script.contains("--operation-batches \"$STANDARD_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("if [[ \"$EXERCISE_CRASH_WINDOW\" == \"1\" ]]; then"));
@@ -395,9 +400,13 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--seed-offset \"$POST_CRASH_SEED_OFFSET\""));
     assert!(smoke_script.contains("--operation-batches \"$POST_CRASH_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
-    assert!(smoke_script.contains("--seed-offset \"$OFFLINE_SEED_OFFSET\""));
+    assert!(smoke_script.contains("stop_member \"$LONG_PARTITION_MEMBER\""));
+    assert!(smoke_script.contains("--seed-offset \"$LONG_PARTITION_SEED_OFFSET\""));
     assert!(!smoke_script.contains("--seed-offset 1"));
-    assert!(smoke_script.contains("--operation-batches \"$OFFLINE_OPERATION_BATCHES\""));
+    assert!(smoke_script.contains("--operation-batches \"$LONG_PARTITION_OPERATION_BATCHES\""));
+    assert!(smoke_script.contains("start_member \"$LONG_PARTITION_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_status \"$LONG_PARTITION_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum \"$LONG_PARTITION_MEMBER\""));
     assert!(smoke_script.contains("--scenario pending-melt-start"));
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
@@ -894,6 +903,8 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(
         smoke_script.contains("CRASH_WINDOW_MEMBER=\"${CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}\"")
     );
+    assert!(smoke_script
+        .contains("LONG_PARTITION_MEMBER=\"${LONG_PARTITION_MEMBER:-$RESTART_MEMBER}\""));
     assert!(smoke_script.contains("EXERCISE_CRASH_WINDOW=\"${EXERCISE_CRASH_WINDOW:-1}\""));
     assert!(
         smoke_script.contains("STANDARD_OPERATION_BATCHES=\"${STANDARD_OPERATION_BATCHES:-2}\"")
@@ -903,8 +914,9 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     ));
     assert!(smoke_script
         .contains("POST_CRASH_OPERATION_BATCHES=\"${POST_CRASH_OPERATION_BATCHES:-1}\""));
-    assert!(smoke_script.contains("OFFLINE_SEED_OFFSET=\"${OFFLINE_SEED_OFFSET:-}\""));
-    assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES=\"${OFFLINE_OPERATION_BATCHES:-3}\""));
+    assert!(smoke_script.contains("LONG_PARTITION_SEED_OFFSET=\"${LONG_PARTITION_SEED_OFFSET:-}\""));
+    assert!(smoke_script
+        .contains("LONG_PARTITION_OPERATION_BATCHES=\"${LONG_PARTITION_OPERATION_BATCHES:-4}\""));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\""));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
     assert!(smoke_script

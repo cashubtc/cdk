@@ -1407,6 +1407,7 @@ PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
 RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 QUARANTINE_OFFLINE_MEMBER="${{QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}}"
 CRASH_WINDOW_MEMBER="${{CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}}"
+LONG_PARTITION_MEMBER="${{LONG_PARTITION_MEMBER:-$RESTART_MEMBER}}"
 EXERCISE_CRASH_WINDOW="${{EXERCISE_CRASH_WINDOW:-1}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
@@ -1423,8 +1424,8 @@ SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
 STANDARD_OPERATION_BATCHES="${{STANDARD_OPERATION_BATCHES:-2}}"
 POST_CRASH_SEED_OFFSET="${{POST_CRASH_SEED_OFFSET:-$STANDARD_OPERATION_BATCHES}}"
 POST_CRASH_OPERATION_BATCHES="${{POST_CRASH_OPERATION_BATCHES:-1}}"
-OFFLINE_SEED_OFFSET="${{OFFLINE_SEED_OFFSET:-}}"
-OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
+LONG_PARTITION_SEED_OFFSET="${{LONG_PARTITION_SEED_OFFSET:-}}"
+LONG_PARTITION_OPERATION_BATCHES="${{LONG_PARTITION_OPERATION_BATCHES:-4}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
 PIDS=()
@@ -1966,7 +1967,7 @@ wait_for_quarantine_report() {{
   return 1
 }}
 
-validate_quarantine_members() {{
+validate_smoke_members() {{
   member_config "$PRIMARY_MEMBER" >/dev/null || {{
     printf 'unknown PRIMARY_MEMBER %s\n' "$PRIMARY_MEMBER" >&2
     return 1
@@ -1991,6 +1992,14 @@ validate_quarantine_members() {{
     printf 'unknown CRASH_WINDOW_MEMBER %s\n' "$CRASH_WINDOW_MEMBER" >&2
     return 1
   }}
+  member_config "$LONG_PARTITION_MEMBER" >/dev/null || {{
+    printf 'unknown LONG_PARTITION_MEMBER %s\n' "$LONG_PARTITION_MEMBER" >&2
+    return 1
+  }}
+  if [[ "$PRIMARY_MEMBER" == "$LONG_PARTITION_MEMBER" ]]; then
+    printf 'LONG_PARTITION_MEMBER must differ from PRIMARY_MEMBER for long-partition operation smoke\n' >&2
+    return 1
+  fi
 }}
 
 require_positive_integer() {{
@@ -2020,7 +2029,7 @@ validate_smoke_settings() {{
   require_positive_integer STANDARD_OPERATION_BATCHES "$STANDARD_OPERATION_BATCHES" || return 1
   require_nonnegative_integer POST_CRASH_SEED_OFFSET "$POST_CRASH_SEED_OFFSET" || return 1
   require_positive_integer POST_CRASH_OPERATION_BATCHES "$POST_CRASH_OPERATION_BATCHES" || return 1
-  require_positive_integer OFFLINE_OPERATION_BATCHES "$OFFLINE_OPERATION_BATCHES" || return 1
+  require_positive_integer LONG_PARTITION_OPERATION_BATCHES "$LONG_PARTITION_OPERATION_BATCHES" || return 1
   if (( STANDARD_OPERATION_BATCHES > 255 )); then
     printf 'STANDARD_OPERATION_BATCHES must be 255 or lower\n' >&2
     return 1
@@ -2033,29 +2042,29 @@ validate_smoke_settings() {{
     printf 'POST_CRASH_SEED_OFFSET plus POST_CRASH_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
-  if [[ -z "$OFFLINE_SEED_OFFSET" ]]; then
-    OFFLINE_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))
+  if [[ -z "$LONG_PARTITION_SEED_OFFSET" ]]; then
+    LONG_PARTITION_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))
   fi
-  require_nonnegative_integer OFFLINE_SEED_OFFSET "$OFFLINE_SEED_OFFSET" || return 1
-  if (( OFFLINE_SEED_OFFSET < STANDARD_OPERATION_BATCHES )); then
-    printf 'OFFLINE_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES to avoid standard smoke seed reuse\n' >&2
+  require_nonnegative_integer LONG_PARTITION_SEED_OFFSET "$LONG_PARTITION_SEED_OFFSET" || return 1
+  if (( LONG_PARTITION_SEED_OFFSET < STANDARD_OPERATION_BATCHES )); then
+    printf 'LONG_PARTITION_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES to avoid standard smoke seed reuse\n' >&2
     return 1
   fi
   if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
-    if (( OFFLINE_SEED_OFFSET < POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES && OFFLINE_SEED_OFFSET + OFFLINE_OPERATION_BATCHES > POST_CRASH_SEED_OFFSET )); then
-      printf 'OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must not overlap the post-crash seed range\n' >&2
+    if (( LONG_PARTITION_SEED_OFFSET < POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES && LONG_PARTITION_SEED_OFFSET + LONG_PARTITION_OPERATION_BATCHES > POST_CRASH_SEED_OFFSET )); then
+      printf 'LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must not overlap the post-crash seed range\n' >&2
       return 1
     fi
   fi
-  if (( OFFLINE_SEED_OFFSET + OFFLINE_OPERATION_BATCHES > 256 )); then
-    printf 'OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must be 256 or lower\n' >&2
+  if (( LONG_PARTITION_SEED_OFFSET + LONG_PARTITION_OPERATION_BATCHES > 256 )); then
+    printf 'LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
 }}
 
 trap cleanup EXIT INT TERM
 
-validate_quarantine_members
+validate_smoke_members
 validate_smoke_settings
 reset_member_work_dirs
 
@@ -2107,15 +2116,15 @@ else
   wait_for_converged
 fi
 
-stop_member "$RESTART_MEMBER"
+stop_member "$LONG_PARTITION_MEMBER"
 run_smoke_operations \
   --scenario offline-member-operations \
-  --seed-offset "$OFFLINE_SEED_OFFSET" \
-  --operation-batches "$OFFLINE_OPERATION_BATCHES"
-start_member "$RESTART_MEMBER"
-wait_for_status "$RESTART_MEMBER"
+  --seed-offset "$LONG_PARTITION_SEED_OFFSET" \
+  --operation-batches "$LONG_PARTITION_OPERATION_BATCHES"
+start_member "$LONG_PARTITION_MEMBER"
+wait_for_status "$LONG_PARTITION_MEMBER"
 wait_for_converged
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
+wait_for_session_outcome_quorum "$LONG_PARTITION_MEMBER"
 
 run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
 wait_for_converged
