@@ -52,6 +52,7 @@ use super::aleph_bft_network::CdkAlephBftNetworkInboundHandle;
 use super::aleph_bft_network::{
     run_cdk_aleph_bft_network_pump_tick, run_cdk_aleph_bft_network_pump_tick_with_retry_queue,
     CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
+    CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT,
 };
 use super::aleph_bft_runtime::{CdkAlephBftKeychain, CdkAlephBftNetwork};
 use super::*;
@@ -10847,6 +10848,80 @@ async fn aleph_bft_network_retry_queue_redelivers_failed_members_after_recovery(
     assert_eq!(second.retry_queue_len, 0);
     assert!(retry_queue.is_empty());
     assert_eq!(transport.aleph_bft_network_message_requests().len(), 8);
+}
+
+#[tokio::test]
+async fn aleph_bft_network_retry_queue_eviction_prunes_persisted_retry_rows() {
+    let (public_config, local_private, _) = transport_config();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let db: DynMintDatabase = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
+    let message_count = CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT + 1;
+
+    for payload in 0..message_count as u64 {
+        network.send(payload, Recipient::Everyone);
+    }
+
+    let outcome = run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 13,
+            max_messages_per_tick: message_count,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+        &mut retry_queue,
+        Some(&db),
+    )
+    .await
+    .expect("overflowing network pump tick");
+
+    assert_eq!(outcome.messages_drained, message_count);
+    assert_eq!(outcome.retry_messages_drained, 0);
+    assert_eq!(outcome.remote_failed_members.len(), message_count);
+    assert!(outcome
+        .remote_failed_members
+        .iter()
+        .all(|failed_member_id| *failed_member_id == member_id(2)));
+    assert_eq!(outcome.remote_requeued_members.len(), message_count);
+    assert_eq!(
+        outcome.retry_queue_len,
+        CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT
+    );
+    assert_eq!(retry_queue.len(), CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT);
+
+    let persisted_retries = db
+        .get_federation_aleph_bft_network_retries(13)
+        .await
+        .expect("persisted retries after queue overflow");
+    assert_eq!(
+        persisted_retries.len(),
+        CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT
+    );
+    let mut persisted_payloads = persisted_retries
+        .iter()
+        .map(|retry| {
+            let bytes = retry.request.message_bytes().expect("retry payload bytes");
+            let mut input = bytes.as_slice();
+            u64::decode(&mut input).expect("retry payload")
+        })
+        .collect::<Vec<_>>();
+    persisted_payloads.sort_unstable();
+    assert_eq!(
+        persisted_payloads,
+        (1..message_count as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        transport.aleph_bft_network_message_requests().len(),
+        message_count
+    );
 }
 
 #[tokio::test]

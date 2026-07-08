@@ -20,7 +20,7 @@ use super::aleph_bft_runtime::{
 };
 use super::peer_client::FederationRestPeerClient;
 
-const CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT: usize = 4096;
+pub(crate) const CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT: usize = 4096;
 
 /// Cloneable sink for authenticated inbound AlephBFT network messages.
 #[cfg_attr(not(test), allow(dead_code))]
