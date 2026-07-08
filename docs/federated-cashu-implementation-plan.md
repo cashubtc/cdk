@@ -1596,8 +1596,12 @@ AlephBFT and consensus unit tests:
   delayed by one configured interval to avoid startup-router races, live-session
   shutdown now aborts upstream child tasks, and SQLite backup reads preserve
   invalid UTF-8 bytes as blobs. Deterministic opaque AlephBFT message reordering
-  and a five-member reorder/duplicate/delay matrix are now covered;
-  post-upstream-backup crash windows remain open for the broader fault suite.
+  and a five-member reorder/duplicate/delay matrix are now covered. A
+  five-member/threshold-three post-backup restart regression now waits for real
+  upstream AlephBFT backup bytes, restarts the submitting member, verifies the
+  recovered local unit index, appends new backup bytes after restart, and proves
+  two more operations converge in identical order across all members. Broader
+  session-rotation and long-partition fault coverage remain open.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
@@ -1632,9 +1636,11 @@ AlephBFT and consensus unit tests:
   before serving local status. Production AlephBFT startup now also replays
   durable pending-operation rows into the live data provider, so a member that
   restarts after returning a pending wallet response can still finalize the
-  operation when the missing quorum member returns. Full crash-window coverage
-  remains open for restarts after upstream backup/unit creation and before every
-  finalized operation has been applied.
+  operation when the missing quorum member returns. Post-upstream-backup restart
+  after applied finality is now covered in both two-member and
+  five-member/threshold-three live sessions. Full crash-window coverage remains
+  open for restarts after upstream unit backup but before every finalized
+  operation has been applied, and for future session rotation.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
