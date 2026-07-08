@@ -1423,6 +1423,7 @@ SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
 STANDARD_OPERATION_BATCHES="${{STANDARD_OPERATION_BATCHES:-2}}"
 POST_CRASH_SEED_OFFSET="${{POST_CRASH_SEED_OFFSET:-$STANDARD_OPERATION_BATCHES}}"
 POST_CRASH_OPERATION_BATCHES="${{POST_CRASH_OPERATION_BATCHES:-1}}"
+OFFLINE_SEED_OFFSET="${{OFFLINE_SEED_OFFSET:-}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
@@ -2032,8 +2033,22 @@ validate_smoke_settings() {{
     printf 'POST_CRASH_SEED_OFFSET plus POST_CRASH_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
-  if (( OFFLINE_OPERATION_BATCHES > 255 )); then
-    printf 'OFFLINE_OPERATION_BATCHES must be 255 or lower\n' >&2
+  if [[ -z "$OFFLINE_SEED_OFFSET" ]]; then
+    OFFLINE_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))
+  fi
+  require_nonnegative_integer OFFLINE_SEED_OFFSET "$OFFLINE_SEED_OFFSET" || return 1
+  if (( OFFLINE_SEED_OFFSET < STANDARD_OPERATION_BATCHES )); then
+    printf 'OFFLINE_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES to avoid standard smoke seed reuse\n' >&2
+    return 1
+  fi
+  if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
+    if (( OFFLINE_SEED_OFFSET < POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES && OFFLINE_SEED_OFFSET + OFFLINE_OPERATION_BATCHES > POST_CRASH_SEED_OFFSET )); then
+      printf 'OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must not overlap the post-crash seed range\n' >&2
+      return 1
+    fi
+  fi
+  if (( OFFLINE_SEED_OFFSET + OFFLINE_OPERATION_BATCHES > 256 )); then
+    printf 'OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
 }}
@@ -2095,7 +2110,7 @@ fi
 stop_member "$RESTART_MEMBER"
 run_smoke_operations \
   --scenario offline-member-operations \
-  --seed-offset 1 \
+  --seed-offset "$OFFLINE_SEED_OFFSET" \
   --operation-batches "$OFFLINE_OPERATION_BATCHES"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"

@@ -314,6 +314,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("STANDARD_OPERATION_BATCHES"));
     assert!(smoke_script.contains("POST_CRASH_SEED_OFFSET"));
     assert!(smoke_script.contains("POST_CRASH_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("OFFLINE_SEED_OFFSET"));
     assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
@@ -342,8 +343,20 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("require_positive_integer POST_CRASH_OPERATION_BATCHES"));
     assert!(smoke_script
         .contains("POST_CRASH_SEED_OFFSET plus POST_CRASH_OPERATION_BATCHES must be 256 or lower"));
+    assert!(smoke_script.contains("if [[ -z \"$OFFLINE_SEED_OFFSET\" ]]; then"));
+    assert!(smoke_script.contains(
+        "OFFLINE_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))"
+    ));
+    assert!(smoke_script.contains("require_nonnegative_integer OFFLINE_SEED_OFFSET"));
+    assert!(
+        smoke_script.contains("OFFLINE_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES")
+    );
+    assert!(smoke_script.contains(
+        "OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must not overlap the post-crash seed range"
+    ));
     assert!(smoke_script.contains("require_positive_integer OFFLINE_OPERATION_BATCHES"));
-    assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
+    assert!(smoke_script
+        .contains("OFFLINE_SEED_OFFSET plus OFFLINE_OPERATION_BATCHES must be 256 or lower"));
     assert!(smoke_script.contains("member_payment_report_lines()"));
     assert!(smoke_script.contains("--context mint-quote"));
     assert!(smoke_script.contains("member_prometheus_url()"));
@@ -382,7 +395,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--seed-offset \"$POST_CRASH_SEED_OFFSET\""));
     assert!(smoke_script.contains("--operation-batches \"$POST_CRASH_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
-    assert!(smoke_script.contains("--seed-offset 1"));
+    assert!(smoke_script.contains("--seed-offset \"$OFFLINE_SEED_OFFSET\""));
+    assert!(!smoke_script.contains("--seed-offset 1"));
     assert!(smoke_script.contains("--operation-batches \"$OFFLINE_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("--scenario pending-melt-start"));
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
@@ -889,6 +903,7 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     ));
     assert!(smoke_script
         .contains("POST_CRASH_OPERATION_BATCHES=\"${POST_CRASH_OPERATION_BATCHES:-1}\""));
+    assert!(smoke_script.contains("OFFLINE_SEED_OFFSET=\"${OFFLINE_SEED_OFFSET:-}\""));
     assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES=\"${OFFLINE_OPERATION_BATCHES:-3}\""));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\""));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));

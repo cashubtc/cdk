@@ -2607,7 +2607,10 @@ Tests and success criteria:
   also has a configurable process crash-window restart after repeated
   all-member batches and before convergence, then runs fresh all-member
   operations through the recovered member using a collision-free generated
-  seed-offset range. Covered by `federation_setup` artifact assertions.
+  seed-offset range. The later offline-member operation window now also has a
+  configurable collision-free seed-offset range that is validated against the
+  standard and post-crash ranges before any member processes are started.
+  Covered by `federation_setup` artifact assertions.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
