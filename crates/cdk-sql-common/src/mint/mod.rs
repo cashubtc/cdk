@@ -518,6 +518,12 @@ mod federation_migration_tests {
         let postgres_aleph_bft_network_retries = include_str!(
             "migrations/postgres/20260703171000_add_federation_aleph_bft_network_retries.sql"
         );
+        let sqlite_aleph_bft_pending_operations = include_str!(
+            "migrations/sqlite/20260703172000_add_federation_aleph_bft_pending_operations.sql"
+        );
+        let postgres_aleph_bft_pending_operations = include_str!(
+            "migrations/postgres/20260703172000_add_federation_aleph_bft_pending_operations.sql"
+        );
         let sqlite_outcomes =
             include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
         let postgres_outcomes =
@@ -646,6 +652,22 @@ mod federation_migration_tests {
                     "request_json",
                     "peer_member_ids_json",
                     "idx_federation_aleph_bft_network_retries_session",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_aleph_bft_pending_operations,
+            postgres_aleph_bft_pending_operations,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_aleph_bft_pending_operations",
+                    "operation_id",
+                    "session",
+                    "envelope_json",
+                    "idx_federation_aleph_bft_pending_operations_session",
                 ],
             );
         }

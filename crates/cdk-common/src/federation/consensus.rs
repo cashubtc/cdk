@@ -383,6 +383,18 @@ pub struct FederationAlephBftAdapterStatus {
     pub allowed_member_count: Option<u64>,
 }
 
+/// Persisted local AlephBFT operation that has been accepted into the pending
+/// mempool but not yet finalized.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationAlephBftPendingOperationRecord {
+    /// Operation identifier derived from the canonical operation envelope.
+    pub operation_id: FederationOperationId,
+    /// AlephBFT session this local operation is queued for.
+    pub session_id: u64,
+    /// Canonical operation envelope to replay into the local AlephBFT queue.
+    pub envelope: FederationOperationEnvelope,
+}
+
 /// One item that can enter the federation consensus pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]

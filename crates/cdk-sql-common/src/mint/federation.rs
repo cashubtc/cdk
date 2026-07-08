@@ -5,12 +5,13 @@ use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTra
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftNetworkRetryRecord, FederationConfigDigest, FederationConfigSnapshot,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationOperationConflictKey, FederationOperationId,
+    FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
+    FederationConfigDigest, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
+    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
     FederationOperationOutcomeHash, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigest,
@@ -410,6 +411,37 @@ fn sql_row_to_federation_aleph_bft_network_retry(
         session_id: column_as_number!(session),
         request,
         peer_member_ids,
+    })
+}
+
+fn sql_row_to_federation_aleph_bft_pending_operation(
+    row: Vec<Column>,
+) -> Result<FederationAlephBftPendingOperationRecord, Error> {
+    unpack_into!(let (operation_id, session, envelope_json) = row);
+
+    let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation operation ID: {e}")))?;
+    let envelope: FederationOperationEnvelope =
+        serde_json::from_str(&column_as_string!(&envelope_json)).map_err(|e| {
+            Error::Internal(format!(
+                "Invalid federation AlephBFT pending operation envelope JSON: {e}"
+            ))
+        })?;
+    let computed_operation_id = envelope.operation_id().map_err(|e| {
+        Error::Internal(format!(
+            "Invalid federation AlephBFT pending operation envelope: {e}"
+        ))
+    })?;
+    if computed_operation_id != operation_id {
+        return Err(Error::Internal(format!(
+            "Federation AlephBFT pending operation ID mismatch: stored {operation_id}, envelope {computed_operation_id}"
+        )));
+    }
+
+    Ok(FederationAlephBftPendingOperationRecord {
+        operation_id,
+        session_id: column_as_number!(session),
+        envelope,
     })
 }
 
@@ -939,6 +971,48 @@ where
         )?
         .bind("session", session as i64)
         .bind("backup_bytes", bytes)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn add_federation_aleph_bft_pending_operation(
+        &mut self,
+        operation: &FederationAlephBftPendingOperationRecord,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO federation_aleph_bft_pending_operations
+            (operation_id, session, envelope_json)
+            VALUES
+            (:operation_id, :session, :envelope_json)
+            ON CONFLICT (operation_id)
+            DO UPDATE SET
+                session = EXCLUDED.session,
+                envelope_json = EXCLUDED.envelope_json
+            "#,
+        )?
+        .bind("operation_id", operation.operation_id.to_string())
+        .bind("session", operation.session_id as i64)
+        .bind("envelope_json", serde_json::to_string(&operation.envelope)?)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn remove_federation_aleph_bft_pending_operation(
+        &mut self,
+        operation_id: FederationOperationId,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM federation_aleph_bft_pending_operations
+            WHERE operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
         .execute(&self.inner)
         .await?;
 
@@ -1594,6 +1668,34 @@ where
             Ok(column_as_binary!(&bytes))
         })
         .transpose()
+    }
+
+    async fn get_federation_aleph_bft_pending_operations(
+        &self,
+        session: u64,
+    ) -> Result<Vec<FederationAlephBftPendingOperationRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                operation_id,
+                session,
+                envelope_json
+            FROM federation_aleph_bft_pending_operations
+            WHERE session = :session
+            ORDER BY operation_id ASC
+            "#,
+        )?
+        .bind("session", session as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_aleph_bft_pending_operation)
+        .collect()
     }
 
     async fn add_federation_aleph_bft_network_retry(

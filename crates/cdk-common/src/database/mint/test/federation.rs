@@ -7,15 +7,15 @@ use std::sync::Arc;
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
     FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
-    FederationAlephBftNetworkRetryRecord, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusItem, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusItem, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -612,6 +612,91 @@ where
             .expect("session 8 backup bytes"),
         Some(b"other-session".to_vec())
     );
+}
+
+/// Assert AlephBFT pending operation rows persist per session and can be removed.
+pub async fn federation_aleph_bft_pending_operation_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let envelope = mint_quote_envelope("pending-a", 7);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let pending = FederationAlephBftPendingOperationRecord {
+        operation_id,
+        session_id: 3,
+        envelope,
+    };
+    let other_envelope = mint_quote_envelope("pending-b", 8);
+    let other_session = FederationAlephBftPendingOperationRecord {
+        operation_id: other_envelope.operation_id().expect("other operation id"),
+        session_id: 4,
+        envelope: other_envelope,
+    };
+
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(3)
+        .await
+        .expect("missing pending session")
+        .is_empty());
+
+    let mut tx = db.begin_transaction().await.expect("begin pending tx");
+    tx.add_federation_aleph_bft_pending_operation(&pending)
+        .await
+        .expect("persist pending operation");
+    tx.add_federation_aleph_bft_pending_operation(&other_session)
+        .await
+        .expect("persist other pending operation");
+    tx.commit().await.expect("commit pending tx");
+
+    let session_three = db
+        .get_federation_aleph_bft_pending_operations(3)
+        .await
+        .expect("session 3 pending operations");
+    assert_eq!(session_three.len(), 1);
+    assert_eq!(session_three[0].operation_id, pending.operation_id);
+    assert_eq!(session_three[0].session_id, pending.session_id);
+    assert_eq!(
+        session_three[0]
+            .envelope
+            .canonical_bytes()
+            .expect("session 3 envelope bytes"),
+        pending
+            .envelope
+            .canonical_bytes()
+            .expect("expected pending envelope bytes")
+    );
+    let session_four = db
+        .get_federation_aleph_bft_pending_operations(4)
+        .await
+        .expect("session 4 pending operations");
+    assert_eq!(session_four.len(), 1);
+    assert_eq!(session_four[0].operation_id, other_session.operation_id);
+    assert_eq!(session_four[0].session_id, other_session.session_id);
+    assert_eq!(
+        session_four[0]
+            .envelope
+            .canonical_bytes()
+            .expect("session 4 envelope bytes"),
+        other_session
+            .envelope
+            .canonical_bytes()
+            .expect("expected other pending envelope bytes")
+    );
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin remove pending tx");
+    tx.remove_federation_aleph_bft_pending_operation(pending.operation_id)
+        .await
+        .expect("remove pending operation");
+    tx.commit().await.expect("commit remove pending tx");
+
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(3)
+        .await
+        .expect("removed pending session")
+        .is_empty());
 }
 
 /// Assert AlephBFT network retry rows persist per session and can be removed.

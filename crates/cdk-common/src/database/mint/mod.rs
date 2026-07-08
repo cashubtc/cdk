@@ -13,7 +13,8 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftNetworkRetryRecord,
-    FederationConfigSnapshot, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationAlephBftPendingOperationRecord, FederationConfigSnapshot,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
     FederationMemberStatusSnapshot, FederationOperationId, FederationOperationStatus,
@@ -687,6 +688,18 @@ pub trait FederationJournalTransaction {
         bytes: &[u8],
     ) -> Result<(), Self::Err>;
 
+    /// Persist one local AlephBFT operation admitted to the pending mempool.
+    async fn add_federation_aleph_bft_pending_operation(
+        &mut self,
+        operation: &FederationAlephBftPendingOperationRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Remove one local AlephBFT pending operation after it is decided.
+    async fn remove_federation_aleph_bft_pending_operation(
+        &mut self,
+        operation_id: FederationOperationId,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one materialized state digest checkpoint.
     async fn add_federation_state_digest_checkpoint(
         &mut self,
@@ -827,6 +840,12 @@ pub trait FederationJournalDatabase {
         &self,
         session: u64,
     ) -> Result<Option<Vec<u8>>, Self::Err>;
+
+    /// Get local AlephBFT pending operations for one session.
+    async fn get_federation_aleph_bft_pending_operations(
+        &self,
+        session: u64,
+    ) -> Result<Vec<FederationAlephBftPendingOperationRecord>, Self::Err>;
 
     /// Persist one outbound AlephBFT network-message retry row.
     async fn add_federation_aleph_bft_network_retry(

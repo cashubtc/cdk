@@ -1557,12 +1557,18 @@ AlephBFT and consensus unit tests:
   recovered peers. SQL-backed retry rows now persist outbound network-message
   retry material, reload it only when the same session has durable AlephBFT
   backup bytes, and clear orphan retry rows that cannot safely reconstruct
-  uncheckpointed upstream state. Peer delivery is concurrent per message, the
-  first live-session pump tick is delayed by one configured interval to avoid
-  startup-router races, live-session shutdown now aborts upstream child tasks,
-  and SQLite backup reads preserve invalid UTF-8 bytes as blobs. Production
-  duplicate, delay, full unfinalized-unit restart replay, and reorder handling
-  remain open for the larger fault matrix.
+  uncheckpointed upstream state. Durable pending-operation rows now persist
+  locally accepted AlephBFT operation envelopes before wallet-facing pending
+  responses, production runtime startup replays those pending envelopes back
+  into the live AlephBFT data provider, and finalization or catch-up clears
+  them once the operation is durably decided. A five-member live-session
+  regression now restarts the submitting member while one peer is unavailable
+  and proves finality resumes without wallet resubmission when the peer returns.
+  Peer delivery is concurrent per message, the first live-session pump tick is
+  delayed by one configured interval to avoid startup-router races, live-session
+  shutdown now aborts upstream child tasks, and SQLite backup reads preserve
+  invalid UTF-8 bytes as blobs. Production duplicate, delay, post-upstream-backup
+  crash windows, and reorder handling remain open for the larger fault matrix.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
@@ -1594,8 +1600,12 @@ AlephBFT and consensus unit tests:
   retry recreate the same canonical unit bytes. Existing replay coverage also
   exercises accepted-but-unapplied journal replay and lost waiter/cache duplicate
   handling, and router startup now replays persisted finalized-item evidence
-  before serving local status; full production AlephBFT crash-window coverage
-  remains open until the live finality task owns durable delivery.
+  before serving local status. Production AlephBFT startup now also replays
+  durable pending-operation rows into the live data provider, so a member that
+  restarts after returning a pending wallet response can still finalize the
+  operation when the missing quorum member returns. Full crash-window coverage
+  remains open for restarts after upstream backup/unit creation and before every
+  finalized operation has been applied.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by

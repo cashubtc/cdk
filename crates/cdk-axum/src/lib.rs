@@ -18,18 +18,19 @@ use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationAlephBftAdapterStatus,
-    FederationAlephBftFinalityMode, FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload,
-    FederationConfig, FederationConfigSnapshot, FederationConsensusBackendKind,
-    FederationConsensusEngine, FederationConsensusItemAdmission, FederationConsensusRuntime,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationStateDigestCheckpoint,
-    FederationSubmitOperationResponse, MemberId, FEDERATION_REST_API_VERSION,
+    FederationAlephBftFinalityMode, FederationAlephBftFinalizedItem,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
+    FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
+    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
+    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -1788,7 +1789,7 @@ impl MintState {
 
         let queued_before = consensus.pending_mempool_len();
         let mut next_consensus = consensus.clone();
-        let admission = match next_consensus.submit_aleph_bft_envelope(envelope) {
+        let admission = match next_consensus.submit_aleph_bft_envelope(envelope.clone()) {
             Ok(admission) => admission,
             Err(err) => {
                 #[cfg(feature = "prometheus")]
@@ -1810,6 +1811,17 @@ impl MintState {
                 self.record_federation_rejected_operation_metric(&operation_label, "mempool_full");
                 return Err(cdk::Error::from(err));
             }
+        }
+        if matches!(admission, FederationConsensusItemAdmission::Accepted) {
+            let session_id = next_consensus.aleph_bft_status()?.session;
+            self.persist_federation_aleph_bft_pending_operation(
+                FederationAlephBftPendingOperationRecord {
+                    operation_id,
+                    session_id,
+                    envelope,
+                },
+            )
+            .await?;
         }
         if matches!(
             admission,
@@ -2939,6 +2951,18 @@ impl MintState {
         Ok(())
     }
 
+    async fn persist_federation_aleph_bft_pending_operation(
+        &self,
+        operation: FederationAlephBftPendingOperationRecord,
+    ) -> Result<(), cdk::Error> {
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_aleph_bft_pending_operation(&operation)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn persist_federation_aleph_bft_finalization_with_sequences(
         &self,
         finalized_items: &[FederationAlephBftFinalizedItem],
@@ -2949,6 +2973,10 @@ impl MintState {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_aleph_bft_finalized_items(finalized_items)
             .await?;
+        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
+            tx.remove_federation_aleph_bft_pending_operation(operation_id)
+                .await?;
+        }
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
@@ -2970,6 +2998,10 @@ impl MintState {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_aleph_bft_finalized_items(finalized_items)
             .await?;
+        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
+            tx.remove_federation_aleph_bft_pending_operation(operation_id)
+                .await?;
+        }
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
@@ -3879,7 +3911,7 @@ async fn create_federation_runtime_state(
         FederationConsensusBackendKind::AlephBft => {
             let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
             let member_ids = config.public_config().members.keys().copied();
-            let consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+            let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
                 config.federation_id(),
                 config.member_id(),
                 0,
@@ -3891,6 +3923,28 @@ async fn create_federation_runtime_state(
                 &persisted_entries,
                 consensus.journal().entries(),
             )?;
+            let session_id = consensus.aleph_bft_status()?.session;
+            for pending in db
+                .get_federation_aleph_bft_pending_operations(session_id)
+                .await?
+            {
+                let operation_id = pending.envelope.operation_id()?;
+                if operation_id != pending.operation_id {
+                    return Err(cdk::Error::Custom(format!(
+                        "AlephBFT pending operation ID mismatch: stored {}, envelope {}",
+                        pending.operation_id, operation_id
+                    ))
+                    .into());
+                }
+                if consensus
+                    .journal()
+                    .entry_by_operation_id(pending.operation_id)
+                    .is_some()
+                {
+                    continue;
+                }
+                consensus.submit_aleph_bft_envelope(pending.envelope)?;
+            }
             consensus
         }
     };
