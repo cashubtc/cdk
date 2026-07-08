@@ -849,6 +849,47 @@ async fn private_aleph_bft_network_message_route_rejects_bad_scale_before_sequen
 }
 
 #[tokio::test]
+async fn private_aleph_bft_network_message_route_rejects_trailing_scale_bytes_before_sequence() {
+    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    state.federation_aleph_bft_network_inbound =
+        Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
+    let mut message = 42u64.encode();
+    message.extend_from_slice(&[99]);
+    let request = signed_aleph_bft_network_message_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        0,
+        message,
+    );
+
+    let response = post_aleph_bft_network_message(State(state.clone()), Json(request))
+        .await
+        .expect_err("SCALE message with trailing bytes must fail");
+    let detail = response_error_detail(response).await;
+
+    assert!(
+        detail.contains("trailing bytes after SCALE network message"),
+        "unexpected detail: {detail}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences after rejection")
+        .is_empty());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), network.next_event())
+            .await
+            .is_err(),
+        "trailing-byte rejection must not deliver the decoded message"
+    );
+}
+
+#[tokio::test]
 async fn private_aleph_bft_network_message_route_rejects_session_mismatch_before_sequence() {
     let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
     let (_network, handle) = CdkAlephBftNetwork::<u64>::new_pair();

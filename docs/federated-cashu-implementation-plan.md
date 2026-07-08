@@ -1663,7 +1663,10 @@ AlephBFT and consensus unit tests:
   Private REST stand-in coverage now proves a signed finalized-unit payload
   with tampered derived operation IDs, tampered body hash, a mismatched body
   federation ID, or a future session is rejected before finalized-item, journal,
-  sequence, quote, or consensus-runtime mutation. Production AlephBFT
+  sequence, quote, or consensus-runtime mutation. Signed AlephBFT
+  network-message route coverage also rejects bad SCALE payloads, valid SCALE
+  messages with trailing bytes, and session mismatches before sender sequence
+  persistence or inbound queue delivery. Production AlephBFT
   equivocation/malformed network-unit handling remains open until router-started
   live-session process tests exercise the task across multiple members.
 - [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
