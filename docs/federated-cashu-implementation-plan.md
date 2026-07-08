@@ -1702,10 +1702,12 @@ AlephBFT and consensus unit tests:
   restarts a configurable member immediately after repeated all-member
   operation batches return and before the explicit convergence wait, then
   requires status, convergence, and quorum-backed session-outcome evidence from
-  the restarted member. Full crash-window coverage remains open for restarts
-  after upstream unit backup but before every finalized operation has been
-  applied, and for live session rotation beyond the adapter-boundary guard and
-  recovered finalized-session startup path.
+  the restarted member. The same generated process smoke now also runs fresh
+  all-member wallet-operation batches through the recovered member before the
+  later offline-partition window. Full crash-window coverage remains open for
+  restarts after upstream unit backup but before every finalized operation has
+  been applied, and for live session rotation beyond the adapter-boundary guard
+  and recovered finalized-session startup path.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
@@ -2480,7 +2482,8 @@ Tests and success criteria:
   all-members and offline-member windows. It also restarts a configurable
   member immediately after the repeated all-member operation batches return and
   before the explicit convergence wait, then requires the restarted member to
-  recover status, convergence, and quorum-backed session-outcome evidence.
+  recover status, convergence, quorum-backed session-outcome evidence, and a
+  post-restart all-member wallet-operation batch.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
@@ -2597,7 +2600,8 @@ Tests and success criteria:
   backed by the validated smoke command option and covered by the
   `federation_smoke` and `federation_setup` test filters. The generated script
   also has a configurable process crash-window restart after repeated
-  all-member batches and before convergence, covered by `federation_setup`
+  all-member batches and before convergence, then runs fresh all-member
+  operations through the recovered member. Covered by `federation_setup`
   artifact assertions.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.

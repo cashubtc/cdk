@@ -1421,6 +1421,7 @@ SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
 STANDARD_OPERATION_BATCHES="${{STANDARD_OPERATION_BATCHES:-2}}"
+POST_CRASH_OPERATION_BATCHES="${{POST_CRASH_OPERATION_BATCHES:-1}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
@@ -2006,9 +2007,14 @@ validate_smoke_settings() {{
   require_positive_integer SMOKE_QUOTE_SLEEP_MS "$SMOKE_QUOTE_SLEEP_MS" || return 1
   require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS "$SMOKE_OPERATION_TIMEOUT_SECONDS" || return 1
   require_positive_integer STANDARD_OPERATION_BATCHES "$STANDARD_OPERATION_BATCHES" || return 1
+  require_positive_integer POST_CRASH_OPERATION_BATCHES "$POST_CRASH_OPERATION_BATCHES" || return 1
   require_positive_integer OFFLINE_OPERATION_BATCHES "$OFFLINE_OPERATION_BATCHES" || return 1
   if (( STANDARD_OPERATION_BATCHES > 255 )); then
     printf 'STANDARD_OPERATION_BATCHES must be 255 or lower\n' >&2
+    return 1
+  fi
+  if (( POST_CRASH_OPERATION_BATCHES > 223 )); then
+    printf 'POST_CRASH_OPERATION_BATCHES must be 223 or lower\n' >&2
     return 1
   fi
   if (( OFFLINE_OPERATION_BATCHES > 255 )); then
@@ -2062,6 +2068,11 @@ if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
   wait_for_status "$CRASH_WINDOW_MEMBER"
   wait_for_converged
   wait_for_session_outcome_quorum "$CRASH_WINDOW_MEMBER"
+  run_smoke_operations \
+    --scenario standard \
+    --seed-offset 33 \
+    --operation-batches "$POST_CRASH_OPERATION_BATCHES"
+  wait_for_converged
 else
   wait_for_converged
 fi

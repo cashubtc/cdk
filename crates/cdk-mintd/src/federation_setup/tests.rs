@@ -312,6 +312,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("SMOKE_QUOTE_SLEEP_MS"));
     assert!(smoke_script.contains("SMOKE_OPERATION_TIMEOUT_SECONDS"));
     assert!(smoke_script.contains("STANDARD_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("POST_CRASH_OPERATION_BATCHES"));
     assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
@@ -331,6 +332,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS"));
     assert!(smoke_script.contains("require_positive_integer STANDARD_OPERATION_BATCHES"));
     assert!(smoke_script.contains("STANDARD_OPERATION_BATCHES must be 255 or lower"));
+    assert!(smoke_script.contains("require_positive_integer POST_CRASH_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("POST_CRASH_OPERATION_BATCHES must be 223 or lower"));
     assert!(smoke_script.contains("require_positive_integer OFFLINE_OPERATION_BATCHES"));
     assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
     assert!(smoke_script.contains("member_payment_report_lines()"));
@@ -368,6 +371,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("start_member \"$CRASH_WINDOW_MEMBER\""));
     assert!(smoke_script.contains("wait_for_status \"$CRASH_WINDOW_MEMBER\""));
     assert!(smoke_script.contains("wait_for_session_outcome_quorum \"$CRASH_WINDOW_MEMBER\""));
+    assert!(smoke_script.contains("--seed-offset 33"));
+    assert!(smoke_script.contains("--operation-batches \"$POST_CRASH_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--seed-offset 1"));
     assert!(smoke_script.contains("--operation-batches \"$OFFLINE_OPERATION_BATCHES\""));
@@ -871,6 +876,8 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(
         smoke_script.contains("STANDARD_OPERATION_BATCHES=\"${STANDARD_OPERATION_BATCHES:-2}\"")
     );
+    assert!(smoke_script
+        .contains("POST_CRASH_OPERATION_BATCHES=\"${POST_CRASH_OPERATION_BATCHES:-1}\""));
     assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES=\"${OFFLINE_OPERATION_BATCHES:-3}\""));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\""));
     assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
