@@ -1251,15 +1251,22 @@ impl Wallet {
 
         if !all_ys.is_empty() {
             let current = self.localstore.get_proofs_by_ys(all_ys).await?;
-            let ys_to_revert: Vec<_> = current
+            let mut proofs_to_revert: Vec<_> = current
                 .into_iter()
-                .filter(|proof| proof.state == State::Reserved)
-                .map(|proof| proof.y)
+                .filter(|proof| {
+                    proof.used_by_operation == Some(operation_id)
+                        && matches!(proof.state, State::Reserved | State::Pending)
+                })
                 .collect();
 
-            if !ys_to_revert.is_empty() {
+            for proof in proofs_to_revert.iter_mut() {
+                proof.state = State::Unspent;
+                proof.used_by_operation = None;
+            }
+
+            if !proofs_to_revert.is_empty() {
                 self.localstore
-                    .update_proofs_state(ys_to_revert, State::Unspent)
+                    .update_proofs(proofs_to_revert, vec![])
                     .await?;
             }
         }
@@ -1859,6 +1866,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cancel_prepared_melt_reverts_operation_pending_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = crate::wallet::test_utils::test_keyset_id();
+
+        let proof_info = test_proof_info(keyset_id, 1200, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap();
+        let operation_id = prepared.operation_id();
+
+        db.update_proofs_state(vec![proof_y], State::Pending)
+            .await
+            .unwrap();
+
+        wallet
+            .cancel_prepared_melt(
+                operation_id,
+                prepared.proofs().clone(),
+                prepared.proofs_to_swap().clone(),
+            )
+            .await
+            .unwrap();
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Unspent);
+        assert_eq!(stored[0].used_by_operation, None);
+        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_cancel_prepared_melt_rejects_melt_requested_saga() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -2336,7 +2386,7 @@ mod tests {
             }
             _ => panic!("expected melt saga"),
         }
-        stored_saga.update_state(stored_saga.state.clone());
+        stored_saga.update_state(stored_saga.state);
         assert!(db.update_saga(stored_saga).await.unwrap());
 
         let outcome = prepared
