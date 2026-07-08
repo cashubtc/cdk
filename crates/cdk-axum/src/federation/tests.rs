@@ -8532,7 +8532,7 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
 }
 
 #[tokio::test]
-async fn aleph_bft_live_session_reloads_backup_and_network_retries_after_restart() {
+async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_backup() {
     let federation_api_urls = vec![
         MintUrl::from_str("http://fed1.test").expect("first federation api url"),
         MintUrl::from_str("http://fed2.test").expect("second federation api url"),
@@ -8629,6 +8629,17 @@ async fn aleph_bft_live_session_reloads_backup_and_network_retries_after_restart
     assert!(!wait_for_aleph_bft_network_retries(&states[0], 0)
         .await
         .is_empty());
+    let backup_bytes = states[0]
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_backup_bytes(0)
+        .await
+        .expect("AlephBFT backup lookup before restart")
+        .unwrap_or_default();
+    assert!(
+        backup_bytes.is_empty(),
+        "this regression covers the restart window before upstream AlephBFT backup bytes exist"
+    );
 
     states[0].federation_aleph_bft_network_inbound = None;
     states[0].federation_aleph_bft_live_session = None;
@@ -8742,6 +8753,13 @@ async fn aleph_bft_live_session_reloads_backup_and_network_retries_after_restart
             .await
             .expect("quote lookup")
             .is_some());
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("pending operation lookup after restarted finality")
+            .is_empty());
     }
 }
 
@@ -8885,7 +8903,7 @@ async fn wait_for_aleph_bft_network_retries(
 }
 
 #[tokio::test]
-async fn aleph_bft_public_submit_is_not_ready_until_real_finality_backend_exists() {
+async fn aleph_bft_public_submit_is_not_ready_until_network_finality_is_installed() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -8900,9 +8918,10 @@ async fn aleph_bft_public_submit_is_not_ready_until_real_finality_backend_exists
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
 
-    let err = state.submit_federation_envelope(envelope).await.expect_err(
-        "AlephBFT public submit should be gated while production finality is unavailable",
-    );
+    let err = state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect_err("AlephBFT public submit should be gated until network finality is installed");
 
     assert!(
         err.to_string()
