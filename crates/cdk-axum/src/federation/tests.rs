@@ -318,6 +318,8 @@ struct RouterFederationTransportRegistry {
     missing_router_wait: Duration,
     faults: Arc<Mutex<RouterFederationTransportFaults>>,
     held_aleph_bft_network_message: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    aleph_bft_network_message_requests:
+        Arc<Mutex<Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -375,6 +377,14 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                     .map(|held| held.is_some())
                     .unwrap_or_default(),
             )
+            .field(
+                "aleph_bft_network_message_requests",
+                &self
+                    .aleph_bft_network_message_requests
+                    .lock()
+                    .map(|requests| requests.len())
+                    .unwrap_or_default(),
+            )
             .finish()
     }
 }
@@ -428,6 +438,15 @@ impl RouterFederationTransportRegistry {
             .lock()
             .expect("router transport faults lock")
             .aleph_bft_network_message_reorders_completed
+    }
+
+    fn aleph_bft_network_message_requests(
+        &self,
+    ) -> Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>> {
+        self.aleph_bft_network_message_requests
+            .lock()
+            .expect("router transport network-message requests lock")
+            .clone()
     }
 
     fn insert(&self, url: MintUrl, router: Router) {
@@ -1019,6 +1038,13 @@ impl Transport for RouterFederationTransportRegistry {
 
         let payload_bytes = serde_json::to_vec(payload)?;
         if is_aleph_bft_network_message {
+            let signed_request = serde_json::from_slice::<
+                FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
+            >(&payload_bytes)?;
+            self.aleph_bft_network_message_requests
+                .lock()
+                .expect("router transport network-message requests lock")
+                .push(signed_request);
             let delay = self.pop_aleph_bft_network_message_delay();
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
@@ -10216,6 +10242,190 @@ async fn aleph_bft_live_session_startup_clears_recovered_session_orphan_network_
         .expect("recovered-session orphan retry after startup")
         .is_empty());
     drop(handle);
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_startup_reloads_network_retries_when_backup_exists() {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_seed = Mnemonic::generate(12)
+        .expect("first mnemonic")
+        .to_seed_normalized("");
+    let second_seed = Mnemonic::generate(12)
+        .expect("second mnemonic")
+        .to_seed_normalized("");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private.clone(),
+        Arc::clone(&first_db),
+        &first_seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        second_private.clone(),
+        second_db,
+        &second_seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let transport = RouterFederationTransportRegistry::default();
+    let first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url.clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url.clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("first operation finality before retry reload test");
+    assert_eq!(response.operation_id, operation_id);
+    wait_for_applied_operation(&first_state, operation_id).await;
+    wait_for_applied_operation(&second_state, operation_id).await;
+    let captured_request = transport
+        .aleph_bft_network_message_requests()
+        .into_iter()
+        .find(|request| {
+            request.sender == first_private.member_id
+                && request.receiver == second_private.member_id
+        })
+        .expect("captured first-to-second AlephBFT network-message request");
+    captured_request
+        .verify(&public_config, captured_request.receiver)
+        .expect("captured network-message request verifies");
+    assert_eq!(captured_request.sender, first_private.member_id);
+    assert_eq!(captured_request.payload.session_id, 0);
+    let backup_before_restart = wait_for_aleph_bft_backup_bytes(&first_state, 0).await;
+    assert!(
+        !backup_before_restart.is_empty(),
+        "retry reload requires durable upstream backup bytes"
+    );
+    first_state.federation_aleph_bft_network_inbound = None;
+    first_state.federation_aleph_bft_live_session = None;
+    drop(first_handle);
+    transport.insert(
+        first_url.clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(second_state.clone()),
+    );
+
+    let retry = FederationAlephBftNetworkRetryRecord {
+        retry_id: "backup-backed-retry".to_string(),
+        session_id: 0,
+        request: captured_request.payload,
+        peer_member_ids: vec![second_private.member_id],
+    };
+    first_state
+        .mint
+        .localstore()
+        .add_federation_aleph_bft_network_retry(&retry)
+        .await
+        .expect("persist backup-backed retry");
+    assert_eq!(
+        first_state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_network_retries(0)
+            .await
+            .expect("backup-backed retry before restart"),
+        vec![retry]
+    );
+
+    let mut restarted_first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        first_private,
+        Arc::clone(&first_db),
+        &first_seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&restarted_first_state.mint)
+            .await
+            .expect("replay backup-backed retry runtime");
+    restarted_first_state.federation_consensus = replayed_consensus;
+    restarted_first_state.federation_sequences = replayed_sequences;
+    let restarted_first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut restarted_first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start restarted first live session")
+    .expect("restarted first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(restarted_first_state.clone()),
+    );
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            let retries = restarted_first_state
+                .mint
+                .localstore()
+                .get_federation_aleph_bft_network_retries(0)
+                .await
+                .expect("backup-backed retry lookup after restart");
+            if retries.is_empty() {
+                return;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("backup-backed retry redelivery cleared storage");
+
+    drop(restarted_first_handle);
+    drop(second_handle);
 }
 
 async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
