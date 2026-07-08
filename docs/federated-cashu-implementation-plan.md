@@ -1665,7 +1665,9 @@ AlephBFT and consensus unit tests:
   guard through the production private REST transport after real AlephBFT
   finality, proving a same-sequence different-body network message is rejected
   as stale without advancing the receiver watermark or adding journal/finalized
-  state.
+  state. Five-member/threshold-three live-session coverage now extends that
+  proof to a BFT-sized federation and verifies a later operation still finalizes
+  in identical order across all members after the rejected equivocation.
   Adapter-boundary session-rotation coverage now blocks `begin_session` while a
   locally drained unit is still awaiting finality, proves the adapter remains on
   the old session until that unit finalizes, and verifies recovered local unit
@@ -1702,7 +1704,10 @@ AlephBFT and consensus unit tests:
   across both members. It also now replays a different signed body with an
   already accepted live sender sequence after real finality and proves the
   receiver rejects it without watermark, journal, or finalized-item mutation.
-  Broader production AlephBFT equivocation handling remains open.
+  Five-member/threshold-three live-session coverage now applies the same
+  equivocation attempt in a BFT-sized federation and proves a subsequent honest
+  operation finalizes across every member without order divergence. Broader
+  production AlephBFT equivocation handling remains open.
 - [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
   resumes when enough members return.
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast

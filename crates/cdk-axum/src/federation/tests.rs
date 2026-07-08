@@ -9195,6 +9195,217 @@ async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and
 }
 
 #[tokio::test]
+async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_and_continue() {
+    let federation_api_urls = vec![
+        MintUrl::from_str("http://fed1.test").expect("first federation api url"),
+        MintUrl::from_str("http://fed2.test").expect("second federation api url"),
+        MintUrl::from_str("http://fed3.test").expect("third federation api url"),
+        MintUrl::from_str("http://fed4.test").expect("fourth federation api url"),
+        MintUrl::from_str("http://fed5.test").expect("fifth federation api url"),
+    ];
+    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+        federation_api_urls.clone(),
+    );
+    let mut states = Vec::new();
+    for private_config in private_configs.iter().cloned() {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        states.push(
+            federation_route_state_for_private_with_db_and_backend(
+                public_config.clone(),
+                private_config,
+                db,
+                &mnemonic.to_seed_normalized(""),
+                FederationConsensusBackendKind::AlephBft,
+            )
+            .await,
+        );
+    }
+    let transport = RouterFederationTransportRegistry::default()
+        .with_missing_router_wait(Duration::from_secs(1));
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(2),
+        operation_submission_timeout: Duration::from_secs(15),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let mut live_session_handles = Vec::new();
+    for index in 0..states.len() {
+        let handle = start_federation_aleph_bft_live_session_with_transport(
+            &mut states[index],
+            sync_config,
+            pump_config,
+            transport.clone(),
+        )
+        .await
+        .expect("start live session")
+        .expect("live session handle");
+        live_session_handles.push(handle);
+        transport.insert(
+            federation_api_urls[index].clone(),
+            Router::new()
+                .nest("/federation/v1", create_federation_router())
+                .with_state(states[index].clone()),
+        );
+    }
+    assert_eq!(live_session_handles.len(), 5);
+
+    let first_quote_id = QuoteId::new();
+    let first_envelope = mint_quote_envelope(&states[0], &first_quote_id);
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    let response = states[0]
+        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .await
+        .expect("first five-member AlephBFT operation response");
+
+    assert_eq!(response.operation_id, first_operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    for state in &states {
+        wait_for_applied_operation(state, first_operation_id).await;
+    }
+
+    let accepted_request = wait_for_aleph_bft_network_message_request(
+        &transport,
+        private_configs[0].member_id,
+        private_configs[1].member_id,
+    )
+    .await;
+    accepted_request
+        .verify(&public_config, accepted_request.receiver)
+        .expect("captured five-member network-message request verifies");
+    let receiver_sequence_before = states[1]
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("receiver sequences before equivocated network message")
+        .get(&private_configs[0].member_id)
+        .copied()
+        .expect("sender sequence before equivocated network message");
+    assert!(
+        receiver_sequence_before >= accepted_request.sequence,
+        "receiver must have accepted the captured request before equivocation"
+    );
+
+    let mut equivocated_message = accepted_request
+        .payload
+        .message_bytes()
+        .expect("captured AlephBFT message bytes");
+    equivocated_message.push(0);
+    let equivocated_request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        private_configs[1].member_id,
+        accepted_request.sequence,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        FederationAlephBftNetworkMessageRequest::new(0, equivocated_message),
+        &private_configs[0],
+    )
+    .expect("signed five-member equivocated AlephBFT network-message request");
+    assert_ne!(
+        equivocated_request.payload.encoded_message,
+        accepted_request.payload.encoded_message
+    );
+    let equivocated_url = url::Url::parse(&format!(
+        "{}/federation/v1/aleph-bft/messages",
+        federation_api_urls[1]
+    ))
+    .expect("equivocated AlephBFT network-message URL");
+    let equivocated_result: Result<FederationAlephBftNetworkMessageResponse, HttpError> = transport
+        .http_post(equivocated_url, None, &equivocated_request)
+        .await;
+    let equivocated_error = equivocated_result
+        .expect_err("five-member same-sequence equivocated network message must fail");
+    match equivocated_error {
+        HttpError::Status { status, message } => {
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST.as_u16());
+            assert!(
+                message.contains("stale sequence"),
+                "unexpected five-member equivocation error: {message}"
+            );
+        }
+        err => panic!("unexpected five-member equivocated network-message error: {err:?}"),
+    }
+    assert_eq!(
+        states[1]
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("receiver sequences after equivocated network message")
+            .get(&private_configs[0].member_id)
+            .copied(),
+        Some(receiver_sequence_before)
+    );
+    for state in &states {
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal entries after equivocated network message")
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status after equivocated network message")
+                .finalized_item_count,
+            1
+        );
+    }
+
+    let second_quote_id = QuoteId::new();
+    let second_envelope = mint_quote_envelope(&states[2], &second_quote_id);
+    let second_operation_id = second_envelope.operation_id().expect("second operation id");
+    let response = states[2]
+        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .await
+        .expect("second five-member AlephBFT operation response after equivocation");
+
+    assert_eq!(response.operation_id, second_operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    for state in &states {
+        wait_for_applied_operation(state, second_operation_id).await;
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal entries after second operation");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.operation_id)
+                .collect::<Vec<_>>(),
+            vec![first_operation_id, second_operation_id]
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status after second operation")
+                .finalized_item_count,
+            2
+        );
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_durable_mutation() {
     let federation_api_urls = vec![
         MintUrl::from_str("http://fed1.test").expect("first federation api url"),
