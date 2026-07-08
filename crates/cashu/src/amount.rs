@@ -8,7 +8,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use lightning::offers::offer::Offer;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::nuts::CurrencyUnit;
@@ -150,8 +150,41 @@ impl<'de> Deserialize<'de> for Amount<()> {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = u64::deserialize(deserializer)?;
-        Ok(Amount { value, unit: () })
+        struct AmountVisitor;
+
+        impl de::Visitor<'_> for AmountVisitor {
+            type Value = Amount<()>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an unsigned integer amount or a decimal amount string")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Amount { value, unit: () })
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                value
+                    .parse::<u64>()
+                    .map(|value| Amount { value, unit: () })
+                    .map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(AmountVisitor)
     }
 }
 
@@ -722,7 +755,40 @@ pub const MSAT_IN_SAT: u64 = 1000;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    #[test]
+    fn test_amount_deserializes_from_number_and_decimal_string() {
+        assert_eq!(
+            serde_json::from_str::<Amount>("42").expect("numeric amount"),
+            Amount::from(42)
+        );
+        assert_eq!(
+            serde_json::from_str::<Amount>("\"42\"").expect("string amount"),
+            Amount::from(42)
+        );
+        assert!(
+            serde_json::from_str::<Amount>("\"not-an-amount\"").is_err(),
+            "non-decimal amount strings must fail"
+        );
+    }
+
+    #[test]
+    fn test_amount_deserializes_from_json_map_keys() {
+        let decoded = serde_json::from_str::<BTreeMap<Amount, String>>(r#"{"1":"one","2":"two"}"#)
+            .expect("amount map keys");
+
+        assert_eq!(
+            decoded.get(&Amount::from(1)).map(String::as_str),
+            Some("one")
+        );
+        assert_eq!(
+            decoded.get(&Amount::from(2)).map(String::as_str),
+            Some("two")
+        );
+    }
 
     #[test]
     fn test_split_amount() {

@@ -409,6 +409,9 @@ where
     let Some(runtime_config) = state.mint.federation_config() else {
         return Ok(None);
     };
+    if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
+        return Ok(None);
+    }
     let Some(primary_member) = runtime_config.public_config().members.values().next() else {
         return Err(cdk::Error::Custom(
             "federation config has an empty member roster".to_string(),

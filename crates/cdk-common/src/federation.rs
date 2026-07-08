@@ -14,7 +14,7 @@ use bitcoin::base64::{alphabet, Engine as _};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 mod consensus;
@@ -1399,8 +1399,47 @@ impl<'de> Deserialize<'de> for MemberId {
     where
         D: Deserializer<'de>,
     {
-        let id = u16::deserialize(deserializer)?;
-        Self::new(id).map_err(serde::de::Error::custom)
+        struct MemberIdVisitor;
+
+        impl de::Visitor<'_> for MemberIdVisitor {
+            type Value = MemberId;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a non-zero u16 federation member id")
+            }
+
+            fn visit_u16<E>(self, value: u16) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                MemberId::new(value).map_err(E::custom)
+            }
+
+            fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let id = u16::try_from(value).map_err(E::custom)?;
+                MemberId::new(id).map_err(E::custom)
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let id = value.parse::<u16>().map_err(E::custom)?;
+                MemberId::new(id).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(MemberIdVisitor)
     }
 }
 
@@ -4572,6 +4611,18 @@ mod tests {
             serde_json::from_str::<MemberId>(&json).expect("member from json"),
             member_id(42)
         );
+    }
+
+    #[test]
+    fn member_id_deserializes_from_decimal_string_and_json_map_keys() {
+        assert_eq!(
+            serde_json::from_str::<MemberId>(r#""42""#).expect("member from string json"),
+            member_id(42)
+        );
+        let members = serde_json::from_str::<BTreeMap<MemberId, String>>(r#"{"42":"online"}"#)
+            .expect("member map from json");
+
+        assert_eq!(members.get(&member_id(42)), Some(&"online".to_string()));
     }
 
     #[test]

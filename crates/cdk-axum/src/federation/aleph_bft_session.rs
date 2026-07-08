@@ -13,8 +13,8 @@ use tokio::task::JoinHandle;
 use crate::MintState;
 
 use super::aleph_bft_network::{
-    run_cdk_aleph_bft_network_pump_tick_with_retry_queue, CdkAlephBftNetworkInboundHandle,
-    CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
+    run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound,
+    CdkAlephBftNetworkInboundHandle, CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
 };
 use super::aleph_bft_runtime::{
     CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData, CdkAlephBftSessionIo,
@@ -53,7 +53,9 @@ impl FederationAlephBftLiveSessionOptions {
     ) -> Self {
         let mut options = Self::new(pump_config);
         if let Some(max_round) = sync_config.aleph_bft_live_session_max_round {
-            options = options.with_max_round(max_round);
+            options = options
+                .with_max_round(max_round)
+                .with_automatic_rotation_limit(1);
         }
         options
     }
@@ -74,20 +76,27 @@ impl FederationAlephBftLiveSessionOptions {
         self
     }
 
-    #[cfg(test)]
     pub(crate) fn with_automatic_rotation_limit(mut self, limit: usize) -> Self {
         self.automatic_rotation_limit = Some(limit);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn automatic_rotation_limit(&self) -> Option<usize> {
+        self.automatic_rotation_limit
     }
 
     fn automatic_rotation_enabled(&self) -> bool {
         self.automatic_rotation_limit != Some(0)
     }
 
-    fn after_automatic_rotation(&self) -> Self {
+    pub(crate) fn after_automatic_rotation(&self) -> Self {
         let mut next = self.clone();
         if let Some(limit) = next.automatic_rotation_limit.as_mut() {
             *limit = limit.saturating_sub(1);
+            if *limit == 0 {
+                next.max_round = CDK_ALEPH_BFT_MAX_ROUND;
+            }
         }
         next
     }
@@ -421,7 +430,6 @@ where
     let pump_keychain = keychain.clone();
     let network_pump_task = tokio::spawn(async move {
         let mut interval = federation_peer_sync_interval(sync_config);
-        interval.tick().await;
         let mut retry_queue = if reload_persisted_network_retries {
             match CdkAlephBftNetworkRetryQueue::from_db(&retry_store, &pump_keychain, session_id)
                 .await
@@ -436,14 +444,24 @@ where
             CdkAlephBftNetworkRetryQueue::default()
         };
         loop {
-            interval.tick().await;
-            match run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
+            let first_outbound = tokio::select! {
+                outbound = network_handle.next_outgoing() => match outbound {
+                    Some(outbound) => Some(outbound),
+                    None => {
+                        tracing::warn!("AlephBFT network outbound bridge is closed");
+                        break;
+                    }
+                },
+                _ = interval.tick() => None,
+            };
+            match run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound(
                 &mut network_handle,
                 &pump_keychain,
                 &client,
                 pump_config,
                 &mut retry_queue,
                 Some(&retry_store),
+                first_outbound,
             )
             .await
             {
