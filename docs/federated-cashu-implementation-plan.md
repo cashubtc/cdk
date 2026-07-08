@@ -1560,13 +1560,16 @@ AlephBFT and consensus unit tests:
   recovered peers. SQL-backed retry rows now persist outbound network-message
   retry material, reload it only when the same session has durable AlephBFT
   backup bytes, and clear orphan retry rows that cannot safely reconstruct
-  uncheckpointed upstream state. Durable pending-operation rows now persist
-  locally accepted AlephBFT operation envelopes before wallet-facing pending
-  responses, production runtime startup replays those pending envelopes back
-  into the live AlephBFT data provider, and finalization or catch-up clears
-  them once the operation is durably decided. A five-member live-session
-  regression now restarts the submitting member while one peer is unavailable
-  and proves finality resumes without wallet resubmission when the peer returns.
+  uncheckpointed upstream state. Durable retry-queue reload coverage now proves
+  current-session rows for known peers are redelivered while stale retry
+  sessions, mismatched request sessions, and unknown-only peer rows are skipped.
+  Durable pending-operation rows now persist locally accepted AlephBFT operation
+  envelopes before wallet-facing pending responses, production runtime startup
+  replays those pending envelopes back into the live AlephBFT data provider, and
+  finalization or catch-up clears them once the operation is durably decided. A
+  five-member live-session regression now restarts the submitting member while
+  one peer is unavailable and proves finality resumes without wallet resubmission
+  when the peer returns.
   A two-member router-started live-session fault regression now injects delayed
   AlephBFT private REST network-message posts plus bounded exact signed replay
   attempts and proves the operation still finalizes once, with one journal entry

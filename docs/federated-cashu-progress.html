@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover aleph bft transport faults</span>
+          <span class="value">test: cover aleph bft retry reload filtering</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Router-started AlephBFT live-session tests now inject delayed private REST network-message posts and bounded exact signed replay attempts, proving the operation still finalizes once with one journal entry per member. Pending-operation replay, guarded retry-row reload, concurrent peer delivery, and owned live-session shutdown remain in place.</span>
+          <span class="value">Durable AlephBFT retry-queue reload coverage now proves current-session rows for known peers are redelivered while stale retry sessions, mismatched request sessions, and unknown-only peer rows are skipped. Duplicate/delay live transport coverage, pending-operation replay, guarded retry-row reload, concurrent peer delivery, and owned live-session shutdown remain in place.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -786,7 +786,7 @@
         <div class="stack">
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
-            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, and durable pending-operation rows replay locally accepted envelopes across restart before finality. Remaining risk is restart coverage after upstream backup or unit creation, deeper opaque-message reorder coverage, larger fault matrices, and operator startup readiness.</p>
+            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, and durable pending-operation rows replay locally accepted envelopes across restart before finality. Remaining risk is restart coverage after upstream backup or unit creation, deeper opaque-message reorder coverage, larger fault matrices, and operator startup readiness.</p>
           </article>
           <article class="item">
             <h3>State-machine extraction</h3>

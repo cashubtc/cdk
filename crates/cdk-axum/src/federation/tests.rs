@@ -37,6 +37,7 @@ use cdk::nuts::{
 };
 use cdk::types::FeeReserve;
 use cdk::Amount;
+use cdk_common::database::DynMintDatabase;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use cdk_http_client::HttpError;
 use parity_scale_codec::{Decode, Encode};
@@ -9391,6 +9392,102 @@ async fn aleph_bft_network_retry_queue_redelivers_failed_members_after_recovery(
     assert_eq!(second.retry_queue_len, 0);
     assert!(retry_queue.is_empty());
     assert_eq!(transport.aleph_bft_network_message_requests().len(), 8);
+}
+
+#[tokio::test]
+async fn aleph_bft_network_retry_queue_reloads_only_current_session_known_members_from_db() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let db: DynMintDatabase = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let valid_request = FederationAlephBftNetworkMessageRequest::new(12, 700u64.encode());
+    let mixed_known_request = FederationAlephBftNetworkMessageRequest::new(12, 701u64.encode());
+    let stale_retry_session_request =
+        FederationAlephBftNetworkMessageRequest::new(12, 702u64.encode());
+    let stale_request_session = FederationAlephBftNetworkMessageRequest::new(99, 703u64.encode());
+    let unknown_member_request = FederationAlephBftNetworkMessageRequest::new(12, 704u64.encode());
+    for retry in [
+        FederationAlephBftNetworkRetryRecord {
+            retry_id: "valid".to_string(),
+            session_id: 12,
+            request: valid_request,
+            peer_member_ids: vec![member_id(2), member_id(3)],
+        },
+        FederationAlephBftNetworkRetryRecord {
+            retry_id: "mixed-known".to_string(),
+            session_id: 12,
+            request: mixed_known_request,
+            peer_member_ids: vec![member_id(4), member_id(99)],
+        },
+        FederationAlephBftNetworkRetryRecord {
+            retry_id: "stale-retry-session".to_string(),
+            session_id: 13,
+            request: stale_retry_session_request,
+            peer_member_ids: vec![member_id(2)],
+        },
+        FederationAlephBftNetworkRetryRecord {
+            retry_id: "stale-request-session".to_string(),
+            session_id: 12,
+            request: stale_request_session,
+            peer_member_ids: vec![member_id(2)],
+        },
+        FederationAlephBftNetworkRetryRecord {
+            retry_id: "unknown-member".to_string(),
+            session_id: 12,
+            request: unknown_member_request,
+            peer_member_ids: vec![member_id(99)],
+        },
+    ] {
+        db.add_federation_aleph_bft_network_retry(&retry)
+            .await
+            .expect("persist retry");
+    }
+
+    let mut retry_queue = CdkAlephBftNetworkRetryQueue::from_db(&db, &keychain, 12)
+        .await
+        .expect("reload retry queue");
+    let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
+        FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 12),
+    );
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let (_network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    let outcome = run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
+        &mut handle,
+        &keychain,
+        &client,
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 12,
+            max_messages_per_tick: 8,
+            ..CdkAlephBftNetworkPumpConfig::default()
+        },
+        &mut retry_queue,
+        None,
+    )
+    .await
+    .expect("drain reloaded retries");
+
+    assert_eq!(outcome.retry_messages_drained, 2);
+    let mut accepted_members = outcome.remote_accepted_members.clone();
+    accepted_members.sort();
+    assert_eq!(
+        accepted_members,
+        vec![member_id(2), member_id(3), member_id(4)]
+    );
+    assert!(outcome.remote_failed_members.is_empty());
+    assert!(outcome.remote_requeued_members.is_empty());
+    assert_eq!(outcome.retry_queue_len, 0);
+    let mut receivers = transport
+        .aleph_bft_network_message_requests()
+        .iter()
+        .map(|request| request.receiver)
+        .collect::<Vec<_>>();
+    receivers.sort();
+    assert_eq!(receivers, vec![member_id(2), member_id(3), member_id(4)]);
 }
 
 #[tokio::test]
