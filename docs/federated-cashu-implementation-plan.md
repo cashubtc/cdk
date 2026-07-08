@@ -99,6 +99,13 @@ Current confirmed shape:
   restarts the member, proves `run_session` replay applies the backed-up
   finalized operation, and then finalizes a later operation without reusing the
   old local unit index.
+- Latest AlephBFT apply-without-response restart checkpoint: SQLite-backed
+  route-state coverage now lets a public AlephBFT submit time out, finalizes
+  and applies the queued operation after the waiter is gone, restarts from the
+  database with no in-memory waiters or response cache, rebuilds the runtime
+  from durable finalized items and journal rows, and proves an exact duplicate
+  submit returns the durable journal duplicate without queuing or signing a
+  second operation.
 - Latest AlephBFT network-finality activation checkpoint: the Axum federation
   state now has a guarded method for the future live AlephBFT task to announce
   that network finality is available. The method validates that federation mode
@@ -1764,9 +1771,12 @@ AlephBFT and consensus unit tests:
   database with no CDK finalized-item, journal, or quote rows, proves the live
   session replays and applies the backed-up finalized operation, advances the
   local data-provider unit index past the replayed local unit, and then
-  finalizes a later operation. Remaining crash-window coverage is still open
-  for apply-before-response persistence and for live session rotation beyond
-  the adapter-boundary guard and recovered finalized-session startup path.
+  finalizes a later operation. SQLite-backed apply-without-response coverage
+  now also proves a timed-out submit can be finalized and applied after its
+  waiter is gone, survive restart with no response cache, and return the
+  durable duplicate response without requeueing. Remaining crash-window
+  coverage is still open for live session rotation beyond the adapter-boundary
+  guard and recovered finalized-session startup path.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by

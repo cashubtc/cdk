@@ -12873,6 +12873,145 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
 }
 
 #[tokio::test]
+async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_after_apply_without_response(
+) {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db_file = TempMintDbFile::new("cdk-axum-aleph-bft-applied-no-response-restart");
+    let db = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+            .await
+            .expect("mint db"),
+    );
+    let seed = Mnemonic::generate(12)
+        .expect("mnemonic")
+        .to_seed_normalized("");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::clone(&db),
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        ..FederationPeerSyncConfig::default()
+    });
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let err = state
+        .submit_federation_envelope_with_sequence(envelope.clone(), None)
+        .await
+        .expect_err("unfinalized submit should time out before response delivery");
+    assert_pending_finalization_error(&err, operation_id, 10);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+
+    let unit = wait_for_local_aleph_bft_unit(&state).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(state.federation_response_cache_entry_count(), 1);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after no-waiter apply")
+        .is_some());
+    drop(state);
+    drop(db);
+
+    let restarted_db = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+            .await
+            .expect("restarted mint db"),
+    );
+    let mut restarted_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private,
+        restarted_db,
+        &seed,
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&restarted_state.mint)
+            .await
+            .expect("replay restarted AlephBFT runtime");
+    restarted_state.federation_consensus = replayed_consensus;
+    restarted_state.federation_sequences = replayed_sequences;
+
+    assert_eq!(
+        restarted_state.federation_pending_response_waiter_count(),
+        0
+    );
+    assert_eq!(restarted_state.federation_response_cache_entry_count(), 0);
+    assert!(restarted_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after restart replay")
+        .is_some());
+
+    let duplicate_response = restarted_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("duplicate submit after SQLite restart");
+    assert_eq!(duplicate_response.operation_id, operation_id);
+    assert!(matches!(
+        duplicate_response.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(
+        restarted_state.federation_pending_response_waiter_count(),
+        0
+    );
+    assert_eq!(restarted_state.federation_response_cache_entry_count(), 0);
+    let consensus = restarted_state
+        .federation_consensus
+        .as_ref()
+        .expect("restarted consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus
+            .journal()
+            .entry_by_operation_id(operation_id)
+            .expect("operation remains durable")
+            .operation_id,
+        operation_id
+    );
+    assert!(restarted_state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(0)
+        .await
+        .expect("pending operations after duplicate restart")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
