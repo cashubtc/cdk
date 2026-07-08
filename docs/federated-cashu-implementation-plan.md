@@ -147,8 +147,10 @@ Current confirmed shape:
   mints, restores sync status only after live finality is available, retires
   the special startup halt for empty verified histories, and routes replayed
   histories through the existing session-outcome verifier before public
-  readiness can open. The next checkpoint is broader process-level live-session
-  coverage for post-backup restart windows.
+  readiness can open. The post-backup restart checkpoint now proves a member
+  can persist real upstream AlephBFT backup bytes after finality, restart from
+  the same DB and seed, recover its local CDK unit index from finalized-item
+  evidence, and continue network finality with a second operation.
 - Latest catch-up state-digest checkpoint: catch-up replay now has focused
   route-state coverage proving a lagging member records a durable materialized
   state-digest checkpoint for the replayed journal boundary after applying
@@ -1179,8 +1181,10 @@ Architecture checklist:
   journal entry. A five-member/threshold-three live-session matrix now combines
   reorder, duplicate signed replay, and delayed private-REST network-message
   faults while proving every member finalizes exactly one journal entry and
-  clears pending operation rows. Broader process-level coverage for post-backup
-  restarts remains open.
+  clears pending operation rows. A post-backup restart regression now waits for
+  real persisted upstream AlephBFT backup bytes, restarts one member from the
+  same DB and seed, and proves the restarted member finalizes a second
+  operation without reusing its local CDK unit index.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state

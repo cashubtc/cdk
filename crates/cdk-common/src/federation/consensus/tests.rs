@@ -1986,6 +1986,57 @@ fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
 }
 
 #[test]
+fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_from_finalized_items() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter =
+        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+            .expect("adapter");
+
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-local-before-restart",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .expect("submit first local operation");
+    let first_unit = adapter
+        .next_unit_payload()
+        .expect("next first local unit")
+        .expect("first local unit present");
+    assert_eq!(first_unit.submitting_member, members[0]);
+    assert_eq!(first_unit.unit_index, 0);
+    adapter
+        .finalize_unit(first_unit)
+        .expect("finalize first local unit");
+
+    let mut recovered =
+        FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+            federation_id,
+            members[0],
+            0,
+            members,
+            adapter.finalized_items().to_vec(),
+        )
+        .expect("recovered adapter");
+    assert_eq!(recovered.next_unit_index(), 1);
+
+    recovered
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-local-after-restart",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        ))
+        .expect("submit second local operation");
+    let second_unit = recovered
+        .next_unit_payload()
+        .expect("next second local unit")
+        .expect("second local unit present");
+    assert_eq!(second_unit.submitting_member, members[0]);
+    assert_eq!(second_unit.unit_index, 1);
+}
+
+#[test]
 fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let federation_id = federation_id(13);
     let envelope = mint_envelope(

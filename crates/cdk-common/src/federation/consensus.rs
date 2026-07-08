@@ -918,6 +918,11 @@ impl FederationAlephBftUnitDataProvider {
         self.next_unit_index = 0;
     }
 
+    fn with_next_unit_index(mut self, next_unit_index: u64) -> Self {
+        self.next_unit_index = next_unit_index;
+        self
+    }
+
     /// Queue a consensus item for the next unit payload.
     pub fn submit_item(
         &mut self,
@@ -1579,7 +1584,12 @@ impl FederationAlephBftConsensusAdapter {
                 federation_id,
                 local_member,
                 session,
-            ),
+            )
+            .with_next_unit_index(next_local_unit_index_after_recovery(
+                local_member,
+                session,
+                &finalized_items,
+            )),
             finalization_handler,
             finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal,
@@ -1885,6 +1895,19 @@ impl FederationAlephBftConsensusAdapter {
             }
         }
     }
+}
+
+fn next_local_unit_index_after_recovery(
+    local_member: MemberId,
+    session: u64,
+    finalized_items: &[FederationAlephBftFinalizedItem],
+) -> u64 {
+    finalized_items
+        .iter()
+        .filter(|item| item.session == session && item.unit_submitting_member == local_member)
+        .map(|item| item.unit_index.saturating_add(1))
+        .max()
+        .unwrap_or(0)
 }
 
 fn pending_finalization_item_matches_decision(
