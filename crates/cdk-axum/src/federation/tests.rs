@@ -8127,6 +8127,139 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+
+    let initial_quote_id = QuoteId::new();
+    let initial_envelope = mint_quote_envelope(&state, &initial_quote_id);
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        local_private.member_id,
+        1,
+        public_config.members.keys().copied(),
+    )
+    .expect("session one AlephBFT adapter");
+    let recovered_session_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        1,
+        0,
+        vec![FederationConsensusItem::operation(initial_envelope)],
+    )
+    .expect("session one finalized unit");
+    adapter
+        .finalize_unit(recovered_session_unit)
+        .expect("finalize recovered session unit");
+    let entry = adapter.journal().entries()[0].clone();
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin session recovery transaction");
+    tx.add_federation_aleph_bft_finalized_items(adapter.finalized_items())
+        .await
+        .expect("persist session one finalized items");
+    tx.add_federation_journal_entry(&entry)
+        .await
+        .expect("persist session one journal entry");
+    tx.commit().await.expect("commit session recovery state");
+
+    let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("recover session one runtime");
+    state.federation_consensus = consensus;
+    state.federation_sequences = sequences;
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("recovered AlephBFT status")
+            .session,
+        1
+    );
+    assert_eq!(
+        federation_aleph_bft_live_session_startup_decision(&state)
+            .await
+            .expect("session one startup decision"),
+        FederationAlephBftLiveSessionStartupDecision::Spawn {
+            local_member: local_private.member_id,
+            peer_count: 1,
+            session_id: 1,
+        }
+    );
+
+    let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
+        FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 1),
+    );
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let stale_pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        stale_pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start recovered session live session")
+    .expect("live session handle");
+
+    let next_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .submit_aleph_bft_envelope(next_envelope)
+        .expect("queue session one operation");
+    let requests = time::timeout(Duration::from_secs(5), async {
+        loop {
+            let requests = transport.aleph_bft_network_message_requests();
+            if !requests.is_empty() {
+                return requests;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("session one network-message request");
+
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.payload.session_id == 1),
+        "live network pump must derive session from recovered consensus status"
+    );
+    for request in requests {
+        request
+            .verify(&public_config, request.receiver)
+            .expect("session one network-message request verifies");
+        assert_eq!(request.sender, local_private.member_id);
+    }
+    drop(handle);
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");

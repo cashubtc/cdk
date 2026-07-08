@@ -3910,11 +3910,12 @@ async fn create_federation_runtime_state(
         }
         FederationConsensusBackendKind::AlephBft => {
             let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
+            let recovered_session = latest_aleph_bft_finalized_session(&finalized_items);
             let member_ids = config.public_config().members.keys().copied();
             let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
                 config.federation_id(),
                 config.member_id(),
-                0,
+                recovered_session,
                 member_ids,
                 config.public_config().threshold_params.consensus_threshold,
                 finalized_items,
@@ -3959,6 +3960,15 @@ async fn create_federation_runtime_state(
         Some(Arc::new(tokio::sync::Mutex::new(consensus))),
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
     ))
+}
+
+#[cfg(feature = "federation")]
+fn latest_aleph_bft_finalized_session(finalized_items: &[FederationAlephBftFinalizedItem]) -> u64 {
+    finalized_items
+        .iter()
+        .map(|item| item.session)
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(feature = "federation")]

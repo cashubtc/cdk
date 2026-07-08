@@ -174,6 +174,10 @@ where
     let FederationAlephBftLiveSessionStartupDecision::Spawn { session_id, .. } = decision else {
         return Ok(None);
     };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id,
+        ..pump_config
+    };
 
     let config =
         state.mint.federation_config().cloned().ok_or_else(|| {

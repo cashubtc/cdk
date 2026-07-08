@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, finalized-cursor peer sync, operator counters, mintd AlephBFT startup path, five-member pre-/post-backup restart continuation coverage, and adapter-level session-rotation guard are in place; the remaining lift is live session rollover, long-partition, and larger process-smoke coverage.</span>
+          <span class="value">Milestone 4A is hardening AlephBFT-backed federation submission, catch-up, and finality semantics so wallet-facing mint, swap, and melt routes only answer from consensus-accepted state. The private REST scaffolding, queue-and-wait path, fail-closed public routes, duplicate/rejected outcome handling, whole-unit catch-up evidence replay, finalized-cursor peer sync, operator counters, mintd AlephBFT startup path, five-member pre-/post-backup restart continuation coverage, adapter-level session-rotation guard, and recovered-session live startup wiring are in place; the remaining lift is empty-session live rollover, long-partition, and larger process-smoke coverage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: guard aleph bft session rotation</span>
+          <span class="value">fix: recover aleph bft live session id</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The AlephBFT adapter now refuses session rotation while a locally drained unit is still awaiting finality, stays on the old session until that unit finalizes, and recovers local unit numbering correctly after a rotated session.</span>
+          <span class="value">AlephBFT runtime startup now recovers the active session from persisted finalized-item evidence, and live-session network pumps derive private REST network-message session IDs from that recovered consensus session instead of stale injected pump config.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden process-level AlephBFT coverage toward live session rollover, longer partitions, and larger process smoke now that deterministic reorder, five-member faults, restart continuation, and adapter-level rotation invariants are covered.</span>
+          <span class="value">Broaden process-level AlephBFT coverage toward empty-session live rollover, longer partitions, and larger process smoke now that deterministic reorder, five-member faults, restart continuation, adapter-level rotation invariants, and recovered-session startup are covered.</span>
         </div>
       </aside>
     </header>
@@ -786,7 +786,7 @@
         <div class="stack">
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
-            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, deterministic reorder coverage proves one held opaque message can be overtaken without duplicate application, a five-member/threshold-three fault matrix now combines reorder, duplicate signed replay, and delayed network-message delivery, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, durable pending-operation rows replay locally accepted envelopes across restart before finality, live restart regressions cover pre-backup replay plus five-member post-backup multi-operation continuation, adapter-boundary session rotation now fails closed until drained local units finalize, and mintd now accepts the AlephBFT backend at startup. Remaining risk is live session rollover, deeper crash-window, long-partition, and larger process-smoke coverage.</p>
+            <p>Cargo registry checks confirm upstream aleph-bft v0.45.4 and Fedimint's fork are available, and the current federation feature graph compiles through upstream aleph-bft v0.45.4. A focused two-member in-process live-session test proves real private REST network-message finality, a duplicate/delay fault regression proves exact signed replays and delayed private REST network-message posts do not duplicate durable application, deterministic reorder coverage proves one held opaque message can be overtaken without duplicate application, a five-member/threshold-three fault matrix now combines reorder, duplicate signed replay, and delayed network-message delivery, five-member live-session regressions prove unavailable-member pending/finalize behavior, SQL-backed retry rows now survive only when valid AlephBFT backup state can reload them, durable retry reload filters stale sessions and unknown peers, durable pending-operation rows replay locally accepted envelopes across restart before finality, live restart regressions cover pre-backup replay plus five-member post-backup multi-operation continuation, adapter-boundary session rotation now fails closed until drained local units finalize, recovered finalized-session startup now feeds the live network pump with the correct session ID, and mintd now accepts the AlephBFT backend at startup. Remaining risk is empty-session live rollover, deeper crash-window, long-partition, and larger process-smoke coverage.</p>
           </article>
           <article class="item">
             <h3>State-machine extraction</h3>
@@ -818,7 +818,7 @@
           upstream backup or unit creation on top of the persisted retry-row,
           orphan-cleanup, pending-operation replay, duplicate/delay transport-fault,
           deterministic opaque-message reorder, five-member fault-matrix,
-          and adapter-level session-rotation
+          adapter-level session-rotation, and recovered-session live startup
           checkpoints, followed by larger wallet-operation smoke repetitions, storage-backed 4-member
           and 5-member partition windows, and compile gates. The previous CPU issue is closed unless it
           reappears.
@@ -908,7 +908,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Broaden process-level AlephBFT coverage toward session rotation, longer partitions, and larger process smoke now that deterministic reorder, five-member fault-matrix, pre-backup restart, five-member post-backup restart continuation, and operator mintd startup are covered.</p>
+            <p>Broaden process-level AlephBFT coverage toward empty-session live rollover, longer partitions, and larger process smoke now that deterministic reorder, five-member fault-matrix, pre-backup restart, five-member post-backup restart continuation, recovered finalized-session startup, and operator mintd startup are covered.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
