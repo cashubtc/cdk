@@ -669,7 +669,8 @@ impl MintMetadataCache {
 
         // Start with current cache to preserve data from other sources
         let mut new_metadata = (*self.metadata.load().clone()).clone();
-        let mut keysets_to_fetch = Vec::new();
+        let mut regular_keysets_to_fetch = Vec::new();
+        let mut auth_keysets_to_fetch = Vec::new();
 
         // Fetch regular mint data
         if let Some(client) = client.as_ref() {
@@ -679,7 +680,7 @@ impl MintMetadataCache {
             })?;
 
             // Get list of keysets
-            keysets_to_fetch.extend(
+            regular_keysets_to_fetch.extend(
                 client
                     .get_mint_keysets()
                     .await
@@ -692,8 +693,13 @@ impl MintMetadataCache {
 
         // Fetch auth keysets if auth client provided
         if let Some(auth_client) = auth_client.as_ref() {
-            keysets_to_fetch.extend(auth_client.get_mint_blind_auth_keysets().await?.keysets);
+            auth_keysets_to_fetch.extend(auth_client.get_mint_blind_auth_keysets().await?.keysets);
         }
+
+        let keysets_to_fetch = regular_keysets_to_fetch
+            .into_iter()
+            .chain(auth_keysets_to_fetch.into_iter())
+            .collect::<Vec<_>>();
 
         tracing::debug!(
             "Fetched {} keysets for {}",
@@ -701,18 +707,24 @@ impl MintMetadataCache {
             self.mint_url
         );
 
+        if client.is_some() {
+            new_metadata
+                .keysets
+                .retain(|_, keyset| keyset.unit == CurrencyUnit::Auth);
+        }
+
+        if auth_client.is_some() {
+            new_metadata
+                .keysets
+                .retain(|_, keyset| keyset.unit != CurrencyUnit::Auth);
+        }
+
         // Fetch keys for each keyset
-        new_metadata.active_keysets.clear();
         for keyset_info in keysets_to_fetch {
             let keyset_arc = Arc::new(keyset_info.clone());
             new_metadata
                 .keysets
                 .insert(keyset_info.id, keyset_arc.clone());
-
-            // Track active keysets separately for quick access
-            if keyset_info.active {
-                new_metadata.active_keysets.push(keyset_arc);
-            }
 
             // Only fetch keys if we don't already have them cached
             if let std::collections::hash_map::Entry::Vacant(e) =
@@ -738,6 +750,16 @@ impl MintMetadataCache {
                 e.insert(Arc::new(keyset.keys));
             }
         }
+
+        new_metadata
+            .keys
+            .retain(|keyset_id, _| new_metadata.keysets.contains_key(keyset_id));
+        new_metadata.active_keysets = new_metadata
+            .keysets
+            .values()
+            .filter(|keyset| keyset.active)
+            .cloned()
+            .collect();
 
         // Update freshness status based on what was fetched
         if client.is_some() {

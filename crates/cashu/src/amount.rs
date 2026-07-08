@@ -166,6 +166,14 @@ impl<'de> Deserialize<'de> for Amount<()> {
                 Ok(Amount { value, unit: () })
             }
 
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let value = u64::try_from(value).map_err(E::custom)?;
+                Ok(Amount { value, unit: () })
+            }
+
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
                 E: de::Error,

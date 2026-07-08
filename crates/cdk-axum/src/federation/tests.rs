@@ -3035,6 +3035,105 @@ async fn non_primary_submit_rejects_invalid_quote_admission_before_forwarding() 
 }
 
 #[tokio::test]
+async fn admission_validation_uses_effective_config_after_keyset_rotation() {
+    let threshold_params = ThresholdParams::new(2, 2, 2).expect("threshold params");
+    let inactive_rotation = TrustedDealerKeysetSpec::new(
+        CurrencyUnit::Sat,
+        false,
+        0,
+        None,
+        BTreeMap::from([(
+            Amount::from(1),
+            vec![
+                BlsSecretKey::from_reduced_bytes(&[51; 32]),
+                BlsSecretKey::from_reduced_bytes(&[52; 32]),
+            ],
+        )]),
+    );
+    let (public_config, private_configs) =
+        transport_config_with_member_federation_api_urls_and_keysets(
+            threshold_params,
+            vec![
+                MintUrl::from_str("https://fed1.example.com/api").expect("federation api url"),
+                MintUrl::from_str("https://fed2.example.com/api").expect("federation api url"),
+            ],
+            vec![
+                TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    BTreeMap::from([(
+                        Amount::from(1),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[11; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[12; 32]),
+                        ],
+                    )]),
+                ),
+                inactive_rotation,
+            ],
+        );
+    let state = federation_route_state_for_private(
+        public_config.clone(),
+        private_configs
+            .first()
+            .expect("local private config")
+            .clone(),
+    )
+    .await;
+    let mut rotated_keyset = public_config
+        .keysets
+        .iter()
+        .find(|keyset| !keyset.active)
+        .expect("inactive rotation keyset")
+        .clone();
+    rotated_keyset.active = true;
+    let rotation = FederationOperationEnvelope::new(
+        public_config.federation_id,
+        FederationOperation::KeysetRotation(FederationKeysetRotationOperation {
+            keyset: rotated_keyset.clone(),
+        }),
+    );
+    state
+        .submit_federation_envelope(rotation)
+        .await
+        .expect("submit keyset rotation");
+
+    let output = BlindedMessage::new(
+        Amount::from(1),
+        rotated_keyset.id,
+        PublicKey::from(BlsG1PublicKey::hash_to_curve(b"rotated admission output")),
+    );
+    let swap = FederationOperationEnvelope::new(
+        public_config.federation_id,
+        FederationOperation::Swap(cdk::federation::FederationSwapOperation {
+            request: cdk::nuts::SwapRequest::new(
+                vec![proof_for_amount(&state, 1, "rotated-admission-input")],
+                vec![output],
+            ),
+        }),
+    );
+
+    let static_err = state
+        .mint
+        .federation_config()
+        .expect("static federation config")
+        .validate_federated_operation_submission(&swap.operation)
+        .expect_err("startup config should still see the rotation keyset as inactive");
+    assert!(matches!(
+        static_err,
+        cdk::Error::Federation(FederationError::InactiveFederatedKeyset { keyset_id })
+            if keyset_id == rotated_keyset.id
+    ));
+
+    state
+        .validate_federation_envelope_admission(&swap)
+        .await
+        .expect("effective admission should accept rotated keyset outputs");
+}
+
+#[tokio::test]
 async fn rest_peer_client_rejects_oversized_operation_before_broadcast() {
     let (public_config, local_private, _) = transport_config();
     let member = public_config.member(member_id(2)).expect("peer member");
@@ -14309,6 +14408,7 @@ async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
     let operation_id = envelope.operation_id().expect("operation id");
     state
         .validate_federation_envelope_admission(&envelope)
+        .await
         .expect("operation admitted before competing acceptance");
 
     let competing_state = state.clone();
@@ -16297,6 +16397,7 @@ async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_subm
 
     state
         .validate_federation_envelope_admission(&envelope)
+        .await
         .expect("operation admitted before race");
 
     let accepted = state

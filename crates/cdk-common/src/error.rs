@@ -649,6 +649,21 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[test]
+    fn federation_inactive_keyset_maps_to_keyset_inactive() {
+        let keyset_id = Id::from_bytes(&[0, 1, 2, 3, 4, 5, 6, 7]).expect("valid keyset id");
+        let err = Error::Federation(
+            crate::federation::FederationError::InactiveFederatedKeyset { keyset_id },
+        );
+
+        assert!(err.is_definitive_failure());
+        let response = ErrorResponse::from(err);
+
+        assert_eq!(response.code, ErrorCode::KeysetInactive);
+        assert!(matches!(Error::from(response), Error::InactiveKeyset));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn federation_rejected_operation_is_definitive() {
         let operation_id = crate::federation::FederationOperationId::from_bytes([43; 32]);
         let err = Error::Federation(crate::federation::FederationError::RejectedOperation {
@@ -774,7 +789,10 @@ impl Error {
             | Self::OnchainFeeIndexNotFound { .. } => true,
 
             #[cfg(feature = "federation")]
-            Self::Federation(crate::federation::FederationError::RejectedOperation { .. }) => true,
+            Self::Federation(
+                crate::federation::FederationError::InactiveFederatedKeyset { .. }
+                | crate::federation::FederationError::RejectedOperation { .. },
+            ) => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {
@@ -1056,6 +1074,15 @@ impl From<Error> for ErrorResponse {
             Error::InactiveKeyset => ErrorResponse {
                 code: ErrorCode::KeysetInactive,
                 detail: err.to_string(),
+            },
+            #[cfg(feature = "federation")]
+            Error::Federation(
+                federation_error @ crate::federation::FederationError::InactiveFederatedKeyset {
+                    ..
+                },
+            ) => ErrorResponse {
+                code: ErrorCode::KeysetInactive,
+                detail: federation_error.to_string(),
             },
             Error::ExpiredKeyset => ErrorResponse {
                 code: ErrorCode::KeysetExpired,

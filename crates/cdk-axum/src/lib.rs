@@ -1622,7 +1622,8 @@ impl MintState {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
-        self.validate_federation_envelope_admission(&envelope)?;
+        self.validate_federation_envelope_admission(&envelope)
+            .await?;
         self.ensure_federation_can_forward_public_submit().await?;
         let operation_id = envelope.operation_id()?;
 
@@ -1648,7 +1649,8 @@ impl MintState {
         envelope: FederationOperationEnvelope,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
-        self.validate_federation_envelope_admission(&envelope)?;
+        self.validate_federation_envelope_admission(&envelope)
+            .await?;
         let operation_id = envelope.operation_id()?;
         if self.federation_consensus_backend().await? == FederationConsensusBackendKind::AlephBft {
             let response = self
@@ -1727,11 +1729,11 @@ impl MintState {
         Ok(response)
     }
 
-    pub(crate) fn validate_federation_envelope_admission(
+    pub(crate) async fn validate_federation_envelope_admission(
         &self,
         envelope: &FederationOperationEnvelope,
     ) -> Result<(), cdk::Error> {
-        let Some(config) = self.mint.federation_config() else {
+        let Some(config) = self.mint.effective_federation_config().await? else {
             return Ok(());
         };
         config.validate_federated_operation_submission(&envelope.operation)

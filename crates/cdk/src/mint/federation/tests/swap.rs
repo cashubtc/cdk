@@ -325,6 +325,10 @@ async fn apply_federation_swap_persists_accepted_materialization_rows() {
     assert_eq!(completed_operation.total_issued(), Amount::from(1));
     assert_eq!(completed_operation.total_redeemed(), Amount::from(1));
     assert_eq!(completed_operation.fee_collected(), Amount::ZERO);
+    assert_eq!(
+        completed_operation.completed_at(),
+        &Some(super::super::federation_accepted_logical_time(&swap_entry))
+    );
     assert_eq!(completed_operation.payment_method(), None);
 
     assert_eq!(

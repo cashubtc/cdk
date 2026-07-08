@@ -1282,6 +1282,17 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
             .expect("proof states"),
         vec![Some(State::Spent), Some(State::Spent)]
     );
+    let completed_operation = localstore
+        .get_completed_operation(&super::super::federation_operation_uuid(
+            melt_entry.operation_id,
+        ))
+        .await
+        .expect("internal settlement completed operation lookup")
+        .expect("internal settlement completed operation");
+    assert_eq!(
+        completed_operation.completed_at(),
+        &Some(super::super::federation_accepted_logical_time(&melt_entry))
+    );
     assert!(
         localstore
             .get_federation_payment_observations(
@@ -1609,6 +1620,17 @@ async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment()
         .clone()
         .expect("catch-up paid change signature");
     assert_eq!(change.amount, Amount::from(1));
+    let completed_operation = localstore
+        .get_completed_operation(&super::super::federation_operation_uuid(
+            melt_entry.operation_id,
+        ))
+        .await
+        .expect("catch-up paid completed operation lookup")
+        .expect("catch-up paid completed operation");
+    assert_eq!(
+        completed_operation.completed_at(),
+        &Some(super::super::federation_accepted_logical_time(&melt_entry))
+    );
 
     let duplicate = mint
         .melt_federation(&request, melt_entry.operation_id)

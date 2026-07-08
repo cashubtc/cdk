@@ -467,6 +467,12 @@ pub struct MockMintConnector {
     pub post_mint_quote_delay: Mutex<Option<Duration>>,
     /// Response for get_mint_quote_status calls
     pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
+    /// Queue of responses for successive get_mint_quote_status calls.
+    ///
+    /// When non-empty, each `get_mint_quote_status` call pops the front entry.
+    /// Takes precedence over `mint_quote_status_response`.
+    pub mint_quote_status_responses:
+        Mutex<std::collections::VecDeque<Result<MintQuoteBolt11Response<String>, Error>>>,
     /// Optional delay used by tests to simulate a slow mint quote status member.
     pub mint_quote_status_delay: Mutex<Option<Duration>>,
     /// Response for post_batch_check_mint_quote_status calls
@@ -558,6 +564,7 @@ impl MockMintConnector {
             post_mint_quote_response: Mutex::new(None),
             post_mint_quote_delay: Mutex::new(None),
             mint_quote_status_response: Mutex::new(None),
+            mint_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             mint_quote_status_delay: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
             post_melt_quote_response: Mutex::new(None),
@@ -676,6 +683,20 @@ impl MockMintConnector {
         response: Result<MintQuoteBolt11Response<String>, Error>,
     ) {
         *self.mint_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `get_mint_quote_status` call.
+    ///
+    /// Queued responses are consumed in FIFO order and take precedence over
+    /// any value set via [`set_mint_quote_status_response`](Self::set_mint_quote_status_response).
+    pub fn push_mint_quote_status_response(
+        &self,
+        response: Result<MintQuoteBolt11Response<String>, Error>,
+    ) {
+        self.mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
     }
 
     pub fn set_mint_quote_status_delay(&self, delay: Duration) {
@@ -918,14 +939,17 @@ impl MintConnector for MockMintConnector {
             tokio::time::sleep(delay).await;
         }
 
-        let response = self
-            .mint_quote_status_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect(
-                "MockMintConnector: get_mint_quote_status called without configured response",
-            )?;
+        let response = match self.mint_quote_status_responses.lock().unwrap().pop_front() {
+            Some(response) => response,
+            None => self
+                .mint_quote_status_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect(
+                    "MockMintConnector: get_mint_quote_status called without configured response",
+                ),
+        }?;
         Ok(MintQuoteResponse::Bolt11(response))
     }
 

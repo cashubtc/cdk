@@ -421,7 +421,9 @@ where
         return Ok(None);
     }
 
-    state.validate_federation_envelope_admission(&envelope)?;
+    state
+        .validate_federation_envelope_admission(&envelope)
+        .await?;
     let request = FederationSubmitOperationRequest::new(envelope);
     request
         .ensure_admissible_size()

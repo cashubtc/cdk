@@ -134,11 +134,11 @@ impl Wallet {
                                 .map(|k| k.id)
                         });
 
-                if new_active.is_some() && new_active != old_active {
+                if new_active.is_some() {
                     tracing::info!(
-                        "Active keyset changed from {:?} to {:?}, retrying operation",
-                        old_active,
-                        new_active
+                        "Active keyset after refresh is {:?} (previously {:?}), retrying operation",
+                        new_active,
+                        old_active
                     );
                     f().await
                 } else {
@@ -415,10 +415,12 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
-    /// When the active keyset does NOT change after refresh,
-    /// retry_on_inactive_keyset should not retry.
+    /// Even when the active keyset ID looks unchanged after refresh,
+    /// retry_on_inactive_keyset should make one refreshed attempt. This keeps
+    /// rotation races recoverable when stale cache state cannot be detected by
+    /// comparing only active keyset IDs.
     #[tokio::test]
-    async fn retry_on_inactive_keyset_no_retry_when_keyset_unchanged() {
+    async fn retry_on_inactive_keyset_retries_once_when_keyset_unchanged() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         db.add_mint(mint_url.clone(), None).await.unwrap();
@@ -443,8 +445,7 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(Error::InactiveKeyset)));
-        // Should only be called once — no retry since keyset didn't change
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
     /// When the operation succeeds on the first try, no retry logic runs.
@@ -510,5 +511,36 @@ mod tests {
             refreshed[0].input_fee_ppk, 999,
             "expected fresh data from mint, got stale cache/db data"
         );
+    }
+
+    /// A forced refresh should replace the mint's advertised regular keysets,
+    /// not merge stale active keysets from the previous cache snapshot.
+    #[tokio::test]
+    async fn refresh_replaces_stale_active_keysets() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+
+        let initial = wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+        let old_keyset_id = initial[0].id;
+
+        let mut rotated = make_inactive_keyset();
+        rotated.active = Some(true);
+        let rotated_keyset_id = rotated.id;
+        mock.set_mint_keys_response(Ok(vec![rotated]));
+
+        let refreshed = wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].id, rotated_keyset_id);
+        assert!(!refreshed.iter().any(|keyset| keyset.id == old_keyset_id));
+
+        let cached_active = wallet
+            .active_keyset_with_policy(KeysetLoadPolicy::CacheOnly)
+            .await
+            .unwrap();
+        assert_eq!(cached_active.id, rotated_keyset_id);
     }
 }

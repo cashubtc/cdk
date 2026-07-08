@@ -64,6 +64,10 @@ pub struct FederatedMintConnectorConfig {
     pub quote_status_member_timeout: Duration,
     /// Maximum number of concurrent member calls started by fanout collectors.
     pub fanout_concurrency: usize,
+    /// Number of attempts to wait for a newly-created mint quote to become threshold-visible.
+    pub mint_quote_visibility_attempts: u16,
+    /// Delay between mint quote threshold-visibility attempts.
+    pub mint_quote_visibility_retry_delay: Duration,
 }
 
 impl Default for FederatedMintConnectorConfig {
@@ -74,6 +78,8 @@ impl Default for FederatedMintConnectorConfig {
             member_request_max_retries: 0,
             quote_status_member_timeout: Duration::from_secs(10),
             fanout_concurrency: usize::MAX,
+            mint_quote_visibility_attempts: 100,
+            mint_quote_visibility_retry_delay: Duration::from_millis(50),
         }
     }
 }
@@ -99,6 +105,17 @@ impl FederatedMintConnectorConfig {
         if self.fanout_concurrency == 0 {
             return Err(Error::InvalidMintResponse(
                 "federation fanout concurrency must be greater than zero".to_string(),
+            ));
+        }
+        if self.mint_quote_visibility_attempts == 0 {
+            return Err(Error::InvalidMintResponse(
+                "federation mint quote visibility attempts must be greater than zero".to_string(),
+            ));
+        }
+        if self.mint_quote_visibility_retry_delay.is_zero() {
+            return Err(Error::InvalidMintResponse(
+                "federation mint quote visibility retry delay must be greater than zero"
+                    .to_string(),
             ));
         }
 
@@ -334,7 +351,7 @@ impl FederatedMintConnector {
         max_member_retries: u16,
         timeout_operation: &'static str,
         stop_after: Stop,
-    ) -> (Vec<(MemberId, R)>, Vec<String>)
+    ) -> (Vec<(MemberId, R)>, Vec<String>, usize)
     where
         F: FnMut(MemberId, Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<R, Error>>,
@@ -359,7 +376,7 @@ impl FederatedMintConnector {
         max_member_retries: u16,
         timeout_operation: &'static str,
         mut stop_after: Stop,
-    ) -> (Vec<(MemberId, R)>, Vec<String>)
+    ) -> (Vec<(MemberId, R)>, Vec<String>, usize)
     where
         F: FnMut(MemberId, Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<R, Error>>,
@@ -367,6 +384,7 @@ impl FederatedMintConnector {
     {
         let mut responses = Vec::new();
         let mut failures = Vec::new();
+        let mut inactive_keyset_failures = 0usize;
         let mut members = member_connectors.iter();
         let mut pending = FuturesUnordered::new();
         let concurrency = self
@@ -416,6 +434,9 @@ impl FederatedMintConnector {
                         }
                     }
 
+                    if is_inactive_keyset_error(&err) {
+                        inactive_keyset_failures = inactive_keyset_failures.saturating_add(1);
+                    }
                     failures.push(format!(
                         "member {} failed after {}/{} attempts: {}",
                         member_id,
@@ -427,7 +448,7 @@ impl FederatedMintConnector {
             }
 
             if stop_after(&responses) {
-                return (responses, failures);
+                return (responses, failures, inactive_keyset_failures);
             }
 
             while pending.len() < concurrency {
@@ -442,7 +463,7 @@ impl FederatedMintConnector {
             }
         }
 
-        (responses, failures)
+        (responses, failures, inactive_keyset_failures)
     }
 
     fn active_aggregate_keysets(&self) -> Vec<KeySet> {
@@ -585,19 +606,23 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MintResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, inactive_keyset_failures) = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "mint request",
-                |_responses| false,
+                |responses| responses.len() >= threshold,
             )
             .await;
 
         if responses.len() >= threshold {
             return Ok(responses);
+        }
+
+        if inactive_keyset_failures >= threshold {
+            return Err(Error::InactiveKeyset);
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -618,19 +643,23 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MeltQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, inactive_keyset_failures) = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "melt request",
-                |_responses| false,
+                |responses| responses.len() >= threshold,
             )
             .await;
 
         if responses.len() >= threshold {
             return Ok(responses);
+        }
+
+        if inactive_keyset_failures >= threshold {
+            return Err(Error::InactiveKeyset);
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -651,14 +680,14 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<RestoreResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, _) = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "restore request",
-                |_responses| false,
+                |responses| responses.len() >= threshold,
             )
             .await;
 
@@ -683,7 +712,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MeltQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, _) = self
             .collect_member_results(
                 |_member_id, connector| call_member(connector),
                 Some(self.config.quote_status_member_timeout),
@@ -722,7 +751,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MintQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, _) = self
             .collect_member_results(
                 |_member_id, connector| call_member(connector),
                 Some(self.config.quote_status_member_timeout),
@@ -762,7 +791,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<Vec<MintQuoteResponse<String>>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, _) = self
             .collect_member_results(
                 |_member_id, connector| call_member(connector),
                 Some(self.config.quote_status_member_timeout),
@@ -801,14 +830,14 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<CheckStateResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures) = self
+        let (responses, failures, _) = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "check-state request",
-                |_responses| false,
+                |responses| responses.len() >= threshold,
             )
             .await;
 
@@ -825,6 +854,32 @@ impl FederatedMintConnector {
     }
 
     async fn verify_mint_quote_visible_to_threshold(
+        &self,
+        response: &MintQuoteResponse<String>,
+    ) -> Result<(), Error> {
+        let mut last_error = None;
+        for attempt in 1..=self.config.mint_quote_visibility_attempts {
+            match self.mint_quote_visibility_check(response).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt < self.config.mint_quote_visibility_attempts {
+                        tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
+                    }
+                }
+            }
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "federation mint quote was not threshold-visible after {} attempts: {}",
+            self.config.mint_quote_visibility_attempts,
+            last_error
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "no status response".to_string())
+        )))
+    }
+
+    async fn mint_quote_visibility_check(
         &self,
         response: &MintQuoteResponse<String>,
     ) -> Result<(), Error> {
@@ -1531,7 +1586,8 @@ impl MintConnector for FederatedMintConnector {
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
         self.public_config
-            .validate_blinded_outputs(&request.outputs)?;
+            .validate_blinded_outputs(&request.outputs)
+            .map_err(map_federation_validation_error)?;
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
@@ -1580,7 +1636,8 @@ impl MintConnector for FederatedMintConnector {
         request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
         self.public_config
-            .validate_blinded_outputs(&request.outputs)?;
+            .validate_blinded_outputs(&request.outputs)
+            .map_err(map_federation_validation_error)?;
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
@@ -1656,7 +1713,8 @@ impl MintConnector for FederatedMintConnector {
         let outputs = request.outputs().clone();
         if let Some(outputs) = &outputs {
             self.public_config
-                .validate_blinded_change_outputs(outputs)?;
+                .validate_blinded_change_outputs(outputs)
+                .map_err(map_federation_validation_error)?;
         }
         let member_connectors = self.validate_member_active_keysets().await?;
 
@@ -1677,7 +1735,8 @@ impl MintConnector for FederatedMintConnector {
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
         self.public_config
-            .validate_blinded_outputs(request.outputs())?;
+            .validate_blinded_outputs(request.outputs())
+            .map_err(map_federation_validation_error)?;
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
@@ -1737,7 +1796,8 @@ impl MintConnector for FederatedMintConnector {
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         self.public_config
-            .validate_blinded_restore_outputs(&request.outputs)?;
+            .validate_blinded_restore_outputs(&request.outputs)
+            .map_err(map_federation_validation_error)?;
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
@@ -1784,6 +1844,21 @@ impl MintConnector for FederatedMintConnector {
             }
         }))
         .await;
+    }
+}
+
+fn is_inactive_keyset_error(err: &Error) -> bool {
+    matches!(err, Error::InactiveKeyset)
+        || matches!(
+            err,
+            Error::Federation(FederationError::InactiveFederatedKeyset { .. })
+        )
+}
+
+fn map_federation_validation_error(err: FederationError) -> Error {
+    match err {
+        FederationError::InactiveFederatedKeyset { .. } => Error::InactiveKeyset,
+        err => Error::Federation(err),
     }
 }
 

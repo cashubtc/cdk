@@ -1423,6 +1423,14 @@ impl<'de> Deserialize<'de> for MemberId {
                 MemberId::new(id).map_err(E::custom)
             }
 
+            fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let id = u16::try_from(value).map_err(E::custom)?;
+                MemberId::new(id).map_err(E::custom)
+            }
+
             fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
             where
                 E: de::Error,

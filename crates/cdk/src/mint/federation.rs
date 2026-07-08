@@ -1527,7 +1527,7 @@ impl Mint {
                 outputs_amount.clone().into(),
                 Amount::ZERO,
                 Amount::ZERO,
-                None,
+                Some(federation_accepted_logical_time(entry)),
                 Some(payment_method.clone()),
             )
         } else {
@@ -1537,7 +1537,7 @@ impl Mint {
                 outputs_amount.clone().into(),
                 Amount::ZERO,
                 Amount::ZERO,
-                None,
+                Some(federation_accepted_logical_time(entry)),
                 Some(payment_method.clone()),
             )
         };
@@ -1638,7 +1638,7 @@ impl Mint {
             output_verification.amount.clone().into(),
             input_verification.amount.clone().into(),
             fee_breakdown.total,
-            None,
+            Some(federation_accepted_logical_time(entry)),
             None,
         );
 

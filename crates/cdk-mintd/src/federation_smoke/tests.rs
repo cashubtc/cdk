@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use cdk::mint_url::MintUrl;
+use cdk_common::wallet::{MeltOperationData, OperationData};
+
 use super::*;
 
 fn smoke_args() -> FederationSmokeOperationsArgs {
@@ -80,6 +83,11 @@ fn smoke_connector_config_uses_operation_timeout_for_member_calls() {
     assert_eq!(config.member_fallback_timeout, Duration::from_secs(42));
     assert_eq!(config.member_request_timeout, Duration::from_secs(42));
     assert_eq!(config.quote_status_member_timeout, Duration::from_secs(42));
+    assert_eq!(config.mint_quote_visibility_attempts, args.quote_retries);
+    assert_eq!(
+        config.mint_quote_visibility_retry_delay,
+        Duration::from_millis(args.quote_sleep_ms)
+    );
 }
 
 #[test]
@@ -191,4 +199,102 @@ fn smoke_operation_args_allow_standard_and_offline_without_optional_paths() {
         validate_smoke_operation_args(&args)
             .expect("plain smoke scenario should not require optional paths");
     }
+}
+
+#[test]
+fn pending_melt_finish_selects_recoverable_melt_saga() {
+    let mint_url = "http://127.0.0.1:1234"
+        .parse::<MintUrl>()
+        .expect("valid mint URL");
+    let unit = CurrencyUnit::Sat;
+    let saga = pending_melt_saga(
+        "00000000-0000-0000-0000-000000000001",
+        "expired-but-recoverable",
+        MeltSagaState::MeltRequested,
+        mint_url.clone(),
+        unit.clone(),
+        10,
+    );
+
+    let selected = select_recoverable_pending_melt_quote_id(&[saga], &mint_url, &unit);
+
+    assert_eq!(selected.as_deref(), Some("expired-but-recoverable"));
+}
+
+#[test]
+fn pending_melt_finish_ignores_unsubmitted_melt_saga() {
+    let mint_url = "http://127.0.0.1:1234"
+        .parse::<MintUrl>()
+        .expect("valid mint URL");
+    let unit = CurrencyUnit::Sat;
+    let saga = pending_melt_saga(
+        "00000000-0000-0000-0000-000000000002",
+        "proofs-reserved-only",
+        MeltSagaState::ProofsReserved,
+        mint_url.clone(),
+        unit.clone(),
+        10,
+    );
+
+    let selected = select_recoverable_pending_melt_quote_id(&[saga], &mint_url, &unit);
+
+    assert!(selected.is_none());
+}
+
+#[test]
+fn pending_melt_finish_selects_oldest_recoverable_melt_saga() {
+    let mint_url = "http://127.0.0.1:1234"
+        .parse::<MintUrl>()
+        .expect("valid mint URL");
+    let unit = CurrencyUnit::Sat;
+    let newer = pending_melt_saga(
+        "00000000-0000-0000-0000-000000000003",
+        "newer",
+        MeltSagaState::PaymentPending,
+        mint_url.clone(),
+        unit.clone(),
+        20,
+    );
+    let older = pending_melt_saga(
+        "00000000-0000-0000-0000-000000000004",
+        "older",
+        MeltSagaState::MeltRequested,
+        mint_url.clone(),
+        unit.clone(),
+        10,
+    );
+
+    let selected = select_recoverable_pending_melt_quote_id(&[newer, older], &mint_url, &unit);
+
+    assert_eq!(selected.as_deref(), Some("older"));
+}
+
+fn pending_melt_saga(
+    operation_id: &str,
+    quote_id: &str,
+    state: MeltSagaState,
+    mint_url: MintUrl,
+    unit: CurrencyUnit,
+    created_at: u64,
+) -> WalletSaga {
+    let operation_id = operation_id.parse().expect("valid operation id");
+    let mut saga = WalletSaga::new(
+        operation_id,
+        WalletSagaState::Melt(state),
+        Amount::from(1),
+        mint_url,
+        unit,
+        OperationData::Melt(MeltOperationData {
+            quote_id: quote_id.to_string(),
+            amount: Amount::from(1),
+            fee_reserve: Amount::from(1),
+            counter_start: None,
+            counter_end: None,
+            change_amount: None,
+            change_blinded_messages: None,
+        }),
+    );
+    saga.created_at = created_at;
+    saga.updated_at = created_at;
+    saga
 }

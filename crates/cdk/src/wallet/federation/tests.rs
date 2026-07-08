@@ -31,16 +31,17 @@ use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 use super::{FederatedMintConnector, FederatedMintConnectorConfig, FederationWalletConnector};
 use crate::dhke::verify_bls_blind_signature;
 use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
-use crate::nuts::nut00::{KnownMethod, PaymentMethod};
+use crate::nuts::nut00::{KnownMethod, PaymentMethod, ProofsMethods};
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
     KeysetResponse, MeltQuoteState, MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteState,
-    MintRequest, ProofState, RestoreRequest, RestoreResponse, State, SwapRequest, SwapResponse,
+    MintRequest, PreMintSecrets, ProofState, RestoreRequest, RestoreResponse, State, SwapRequest,
+    SwapResponse,
 };
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::test_utils::MockMintConnector;
-use crate::wallet::{AuthWallet, MintConnector};
+use crate::wallet::{AuthWallet, MintConnector, WalletBuilder};
 
 fn member_id(id: u16) -> MemberId {
     MemberId::new(id).expect("member id")
@@ -974,6 +975,18 @@ fn set_mint_quote_status_from_response(
     }
 }
 
+fn push_mint_quote_status_from_response(
+    connector: &MockMintConnector,
+    response: &MintQuoteResponse<String>,
+) {
+    match response {
+        MintQuoteResponse::Bolt11(response) => {
+            connector.push_mint_quote_status_response(Ok(response.clone()));
+        }
+        _ => panic!("expected bolt11 mint quote response"),
+    }
+}
+
 async fn persist_paid_mint_quote_to_federation(
     mints: &[Arc<Mint>],
     config: &FederationRuntimeConfig,
@@ -1286,6 +1299,14 @@ fn federated_mint_connector_rejects_invalid_member_call_policy() {
         },
         FederatedMintConnectorConfig {
             fanout_concurrency: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+        FederatedMintConnectorConfig {
+            mint_quote_visibility_attempts: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+        FederatedMintConnectorConfig {
+            mint_quote_visibility_retry_delay: Duration::ZERO,
             ..FederatedMintConnectorConfig::default()
         },
     ] {
@@ -2030,6 +2051,128 @@ async fn federated_mint_connector_aggregates_rotated_fake_wallet_member_shares()
 }
 
 #[tokio::test]
+async fn federated_mint_connector_maps_rotated_stale_outputs_to_inactive_keyset() {
+    let bundle = threshold_rotation_bundle();
+    let old_keyset = active_keyset(&bundle);
+    let stale_outputs = vec![blinded_output_for_keyset_amount(
+        &old_keyset,
+        4,
+        b"rotated stale wallet output",
+    )];
+    let connector = FederatedMintConnector::new(
+        rotated_public_config(&bundle),
+        member_connectors_with_only_keysets(&bundle),
+    )
+    .expect("rotated federated mint connector");
+
+    let result = connector
+        .post_swap(SwapRequest::new(
+            vec![proof_for_amount(&bundle, 4, "rotated-stale-swap")],
+            stale_outputs,
+        ))
+        .await;
+
+    assert!(
+        matches!(result, Err(crate::Error::InactiveKeyset)),
+        "stale rotated swap outputs should retry through InactiveKeyset, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn federated_wallet_swaps_restored_old_keyset_proofs_after_rotation() {
+    let bundle = threshold_rotation_bundle();
+    let old_keyset = active_keyset(&bundle);
+    let next_keyset = activated_rotation_keyset(&bundle);
+    let seed = [42u8; 64];
+    let restore_secrets =
+        PreMintSecrets::restore_batch(old_keyset.id, &seed, 0, 1).expect("restore secrets");
+    let restore_output = restore_secrets
+        .blinded_messages()
+        .into_iter()
+        .next()
+        .expect("restore output");
+    let mut old_mint_output = restore_output.clone();
+    old_mint_output.amount = Amount::from(4);
+    let old_mint_quote_id = QuoteId::new();
+    let new_mint_quote_id = QuoteId::new();
+    let melt_quote_id = QuoteId::new();
+    let melt_invoice = create_fake_invoice(1000, "".to_string());
+    let connector = Arc::new(
+        FederatedMintConnector::new(
+            rotated_public_config(&bundle),
+            rotated_fake_wallet_member_connectors_with_state(
+                &bundle,
+                &old_mint_quote_id,
+                &new_mint_quote_id,
+                &old_mint_output,
+                &melt_quote_id,
+                &melt_invoice,
+                1,
+            )
+            .await,
+        )
+        .expect("rotated federated mint connector"),
+    );
+    let primary_member = bundle
+        .public_config
+        .members
+        .values()
+        .next()
+        .expect("primary member");
+    let localstore = Arc::new(
+        cdk_sqlite::wallet::memory::empty()
+            .await
+            .expect("wallet db"),
+    );
+    let wallet = WalletBuilder::new()
+        .mint_url(primary_member.public_mint_url.clone())
+        .unit(CurrencyUnit::Sat)
+        .localstore(localstore)
+        .seed(seed)
+        .shared_client(connector)
+        .build()
+        .expect("wallet");
+
+    let restored = wallet
+        .restore_with_opts(crate::wallet::NUT13Options::new(1, 1).expect("restore opts"))
+        .await
+        .expect("restore old-keyset proof");
+    assert_eq!(restored.unspent, Amount::from(4));
+    assert_eq!(
+        wallet
+            .active_keyset()
+            .await
+            .expect("active keyset after rotation")
+            .id,
+        next_keyset.id
+    );
+    let old_proofs = wallet.get_unspent_proofs().await.expect("old proofs");
+    assert_eq!(
+        old_proofs.total_amount().expect("old proof amount"),
+        Amount::from(4)
+    );
+
+    wallet
+        .swap(
+            None,
+            crate::amount::SplitTarget::default(),
+            old_proofs.clone(),
+            None,
+            false,
+            false,
+        )
+        .await
+        .expect("swap restored old-keyset proofs");
+    let spent_states = wallet
+        .check_proofs_spent(old_proofs)
+        .await
+        .expect("spent states");
+    assert!(spent_states
+        .iter()
+        .all(|proof_state| proof_state.state == State::Spent));
+}
+
+#[tokio::test]
 async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
     let bundle = threshold_rotation_bundle();
     let old_keyset = active_keyset(&bundle);
@@ -2152,6 +2295,35 @@ async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
         &MintResponse {
             signatures: restore_response.signatures,
         },
+    );
+}
+
+#[tokio::test]
+async fn federated_mint_connector_preserves_threshold_inactive_keyset_rejections() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let outputs = blinded_outputs(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.set_post_swap_response(Err(crate::Error::InactiveKeyset));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let result = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs))
+        .await;
+
+    assert!(
+        matches!(result, Err(crate::Error::InactiveKeyset)),
+        "threshold inactive-keyset member rejections should remain retryable, got {result:?}"
     );
 }
 
@@ -2530,8 +2702,15 @@ async fn federated_mint_connector_requires_threshold_quote_visibility_after_crea
         );
     }
 
-    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
-        .expect("federated mint connector");
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            mint_quote_visibility_attempts: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
     let err = connector
         .post_mint_quote(bolt11_quote_request(3))
         .await
@@ -2544,24 +2723,84 @@ async fn federated_mint_connector_requires_threshold_quote_visibility_after_crea
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn federated_mint_connector_applies_configured_member_request_timeout() {
+#[tokio::test]
+async fn federated_mint_connector_retries_mint_quote_visibility_after_creation() {
     let bundle = threshold_bundle();
-    let outputs = blinded_outputs(&bundle);
     let advertised = advertised_keyset(&bundle);
-    let request_timeout = Duration::from_secs(2);
+    let quote_id = QuoteId::new();
+    let expected = bolt11_quote_response(&quote_id, 3);
+    let mut connectors = BTreeMap::new();
+
+    let primary_member = MockMintConnector::new();
+    primary_member.set_active_keyset(advertised.clone());
+    primary_member.set_post_mint_quote_response(Ok(expected.clone()));
+    push_mint_quote_status_from_response(&primary_member, &expected);
+    push_mint_quote_status_from_response(&primary_member, &expected);
+    connectors.insert(
+        member_id(1),
+        Arc::new(primary_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let catching_up_member = MockMintConnector::new();
+    catching_up_member.set_active_keyset(advertised.clone());
+    catching_up_member.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
+    push_mint_quote_status_from_response(&catching_up_member, &expected);
+    connectors.insert(
+        member_id(2),
+        Arc::new(catching_up_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let unavailable_member = MockMintConnector::new();
+    unavailable_member.set_active_keyset(advertised);
+    unavailable_member.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
+    unavailable_member.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
+    connectors.insert(
+        member_id(3),
+        Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            mint_quote_visibility_attempts: 2,
+            mint_quote_visibility_retry_delay: Duration::from_millis(1),
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let response = connector
+        .post_mint_quote(bolt11_quote_request(3))
+        .await
+        .expect("mint quote should become threshold visible");
+
+    assert_eq!(response.quote(), expected.quote());
+    assert_eq!(response.request(), expected.request());
+}
+
+#[tokio::test]
+async fn federated_mint_connector_returns_after_threshold_mint_responses() {
+    let bundle = threshold_four_bundle();
+    let keyset = active_keyset(&bundle);
+    let outputs = vec![blinded_output_for_keyset_amount(
+        &keyset,
+        1,
+        b"threshold mint liveness",
+    )];
+    let advertised = advertised_keyset(&bundle);
+    let request_timeout = Duration::from_secs(30);
     let mut connectors = BTreeMap::new();
 
     let slow_member = MockMintConnector::new();
     set_member_advertisement_with_keyset(&slow_member, &bundle, member_id(1), advertised.clone());
-    slow_member.set_post_mint_delay(request_timeout + Duration::from_secs(60));
+    slow_member.set_post_mint_delay(Duration::from_secs(30));
     slow_member.set_post_mint_response(Ok(share_response(&bundle, member_id(1), &outputs)));
     connectors.insert(
         member_id(1),
         Arc::new(slow_member) as Arc<dyn MintConnector + Send + Sync>,
     );
 
-    for member_id in [member_id(2), member_id(3)] {
+    for member_id in [member_id(2), member_id(3), member_id(4)] {
         let connector = MockMintConnector::new();
         set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
         connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
@@ -2591,11 +2830,11 @@ async fn federated_mint_connector_applies_configured_member_request_timeout() {
             .await
     });
 
-    tokio::task::yield_now().await;
-    assert!(!mint.is_finished());
-    tokio::time::advance(request_timeout).await;
-
-    let response = mint.await.expect("mint task").expect("mint response");
+    let response = tokio::time::timeout(Duration::from_millis(250), mint)
+        .await
+        .expect("mint should not wait for slow non-threshold member")
+        .expect("mint task")
+        .expect("mint response");
     assert_aggregate_response_valid(&bundle, &outputs, &response);
 }
 

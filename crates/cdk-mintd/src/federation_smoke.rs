@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error as DatabaseError, WalletDatabase};
 use cdk::mint::{FederationRuntimeConfig, MintQuoteRequest, MintQuoteResponse};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
     CurrencyUnit, Id, MeltQuoteState, MintQuoteBolt11Request, MintQuoteBolt11Response,
@@ -26,9 +27,13 @@ use cdk_common::federation::{
     FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
     FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
 };
+use cdk_common::wallet::{
+    MeltQuote as WalletMeltQuote, MeltSagaState, WalletSaga, WalletSagaState,
+};
 use cdk_common::QuoteId;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_http_client::{Async, Transport};
+use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 use crate::federation_status::{query_local_statuses_prevalidated, FederationLocalStatusResponse};
@@ -311,6 +316,8 @@ fn smoke_connector_config(args: &FederationSmokeOperationsArgs) -> FederatedMint
         config.member_request_timeout = timeout;
         config.quote_status_member_timeout = timeout;
     }
+    config.mint_quote_visibility_attempts = args.quote_retries;
+    config.mint_quote_visibility_retry_delay = Duration::from_millis(args.quote_sleep_ms);
     config
 }
 
@@ -538,21 +545,16 @@ async fn run_keyset_rotation_smoke(
     let runtime_config =
         FederationRuntimeConfig::new(public_config.clone(), private_config.clone())
             .context("private federation config does not match public federation config")?;
-    let target_member = public_config
-        .member(private_config.member_id)
-        .context("private federation member is missing from the public federation config")?;
     let rotation = FederationKeysetRotationOperation {
         keyset: next_keyset.clone(),
     };
     let envelope =
         runtime_config.operation_envelope(FederationOperation::KeysetRotation(rotation.clone()));
-    let rotation_response = submit_smoke_operation(
-        &Async::default(),
+    let rotation_response = submit_smoke_operation_to_expected_members(
         public_config,
         private_config,
-        target_member,
-        initial_smoke_sequence().saturating_add(1),
         envelope,
+        member_expectation,
     )
     .await?;
     let rotated_public_config = public_config
@@ -783,14 +785,20 @@ async fn run_pending_melt_start(
         }
     }
 
-    let active_quotes = wallet
-        .get_active_melt_quotes()
+    let stored_saga = wallet
+        .localstore
+        .get_saga(&operation_id)
         .await
-        .context("load active melt quotes")?;
-    if !active_quotes.iter().any(|quote| quote.id == melt_quote.id) {
+        .context("load persisted pending melt saga")?;
+    if stored_saga
+        .as_ref()
+        .and_then(|saga| saga.quote_id.as_deref())
+        != Some(melt_quote.id.as_str())
+    {
         bail!(
-            "pending federation melt quote {} was not active in wallet db",
-            melt_quote.id
+            "pending federation melt quote {} was not recoverable from wallet saga {}",
+            melt_quote.id,
+            operation_id
         );
     }
 
@@ -814,20 +822,16 @@ async fn run_pending_melt_finish(
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
-    let active_quotes = wallet
-        .get_active_melt_quotes()
+    let quote = recoverable_pending_melt_quote(&wallet)
         .await
-        .context("load active melt quotes before recovery")?;
-    let quote_id = active_quotes
-        .first()
-        .map(|quote| quote.id.clone())
-        .context("pending melt finish found no active melt quotes in wallet db")?;
+        .context("pending melt finish found no recoverable melt quote in wallet db")?;
+    let quote_id = quote.id.clone();
 
     submit_terminal_melt_payment_observation(
         args,
         public_config,
         member_connectors,
-        &quote_id,
+        &quote,
         terminal_state,
         member_expectation,
     )
@@ -906,6 +910,47 @@ async fn run_pending_melt_finish(
     Ok(())
 }
 
+async fn recoverable_pending_melt_quote(wallet: &Wallet) -> Result<WalletMeltQuote> {
+    let sagas = wallet
+        .localstore
+        .get_incomplete_sagas()
+        .await
+        .context("load incomplete wallet sagas")?;
+    let quote_id = select_recoverable_pending_melt_quote_id(&sagas, &wallet.mint_url, &wallet.unit)
+        .context("no incomplete melt saga references a pending melt quote")?;
+    let quote = wallet
+        .localstore
+        .get_melt_quote(&quote_id)
+        .await
+        .context("load recoverable pending melt quote")?
+        .with_context(|| {
+            format!("recoverable pending melt saga referenced missing quote {quote_id}")
+        })?;
+
+    Ok(quote)
+}
+
+fn select_recoverable_pending_melt_quote_id(
+    sagas: &[WalletSaga],
+    wallet_mint_url: &MintUrl,
+    unit: &CurrencyUnit,
+) -> Option<String> {
+    sagas
+        .iter()
+        .filter(|saga| {
+            &saga.mint_url == wallet_mint_url
+                && &saga.unit == unit
+                && matches!(
+                    saga.state,
+                    WalletSagaState::Melt(
+                        MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                    )
+                )
+        })
+        .min_by_key(|saga| (saga.created_at, saga.updated_at, saga.id.to_string()))
+        .and_then(|saga| saga.quote_id.clone())
+}
+
 async fn wait_for_pending_melt_finalization(
     wallet: &Wallet,
     quote_id: &str,
@@ -942,7 +987,7 @@ async fn submit_terminal_melt_payment_observation(
     args: &FederationSmokeOperationsArgs,
     public_config: &FederationConfig,
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
-    quote_id: &str,
+    quote: &WalletMeltQuote,
     terminal_state: MeltQuoteState,
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
@@ -957,21 +1002,14 @@ async fn submit_terminal_melt_payment_observation(
     let target_member = public_config
         .member(private_config.member_id)
         .context("private federation member is missing from the public federation config")?;
-    let quote = member_connectors
-        .values()
-        .next()
-        .context("pending melt finish needs at least one federation member")?
-        .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
-        .await
-        .context("load pending melt quote status before terminal observation")?;
     let envelope = runtime_config.melt_quote_payment_observation(
-        quote_id,
-        quote.method(),
+        &quote.id,
+        quote.payment_method.clone(),
         terminal_state,
-        quote.amount(),
-        quote.fee_reserve(),
+        quote.amount,
+        quote.fee_reserve,
         match terminal_state {
-            MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{quote_id}")),
+            MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{}", quote.id)),
             _ => None,
         },
         match terminal_state {
@@ -992,7 +1030,7 @@ async fn submit_terminal_melt_payment_observation(
     wait_for_melt_quote_state(
         member_connectors,
         public_config,
-        quote_id,
+        &quote.id,
         member_melt_quote_state_for_terminal(terminal_state),
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
@@ -1294,6 +1332,78 @@ where
     );
 
     Ok(response)
+}
+
+async fn submit_smoke_operation_to_expected_members(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    envelope: FederationOperationEnvelope,
+    member_expectation: SmokeMemberExpectation,
+) -> Result<FederationSubmitOperationResponse> {
+    let operation_id = envelope.operation_id()?;
+    let required = required_member_observations(public_config, member_expectation);
+    let sequence_base = initial_smoke_sequence().saturating_add(1);
+    let transport = Async::default();
+    let mut submissions = FuturesUnordered::new();
+    for (index, member) in public_config.members.values().enumerate() {
+        let sequence_offset =
+            u64::try_from(index).context("federation member index does not fit in u64")?;
+        let sequence = sequence_base.saturating_add(sequence_offset);
+        let transport = &transport;
+        let member = member.clone();
+        let envelope = envelope.clone();
+        submissions.push(async move {
+            (
+                member.member_id,
+                submit_smoke_operation(
+                    transport,
+                    public_config,
+                    private_config,
+                    &member,
+                    sequence,
+                    envelope,
+                )
+                .await,
+            )
+        });
+    }
+
+    let mut successful = Vec::new();
+    let mut failures = Vec::new();
+    let mut remaining = public_config.members.len();
+    while let Some((member_id, result)) = submissions.next().await {
+        remaining = remaining.saturating_sub(1);
+        match result {
+            Ok(response) => {
+                successful.push(response);
+                if successful.len() >= required {
+                    return successful
+                        .into_iter()
+                        .next()
+                        .context("successful member submissions disappeared");
+                }
+            }
+            Err(err) => failures.push(format!("member {member_id}: {err}")),
+        }
+
+        if successful.len().saturating_add(remaining) < required {
+            bail!(
+                "federation smoke operation {} reached {} successful member submissions, required {}; failures: {}",
+                operation_id,
+                successful.len(),
+                required,
+                failures.join("; ")
+            );
+        }
+    }
+
+    bail!(
+        "federation smoke operation {} reached {} successful member submissions, required {}; failures: {}",
+        operation_id,
+        successful.len(),
+        required,
+        failures.join("; ")
+    )
 }
 
 fn initial_smoke_sequence() -> u64 {

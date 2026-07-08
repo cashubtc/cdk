@@ -417,6 +417,10 @@ impl FederationSignatureShareProvenance {
             consensus_evidence,
         }
     }
+
+    pub(crate) fn completed_operation_time(self) -> u64 {
+        self.accepted_operation_index.saturating_add(1)
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -1115,7 +1119,7 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
         Amount::ZERO,
         melt_request_info.inputs_amount.clone().into(),
         fee_breakdown.total,
-        None,
+        Some(payment_time),
         Some(locked_quote.payment_method.clone()),
     );
     operation.add_change(change_amount);
@@ -1286,12 +1290,23 @@ async fn finalize_melt_quote_inner(
         None
     };
 
+    #[cfg(feature = "federation")]
+    let signature_share_provenance = match federation_operation_id {
+        Some(federation_operation_id) => Some(
+            federation_signature_share_provenance_for_operation(db, federation_operation_id)
+                .await?,
+        ),
+        None => None,
+    };
+
+    #[cfg(feature = "federation")]
+    let federation_completed_at = signature_share_provenance
+        .map(FederationSignatureShareProvenance::completed_operation_time);
+
     // Process change (if needed) - opens new transaction.
     #[cfg(feature = "federation")]
     let (change_sigs, mut tx) = if let Some(federation_operation_id) = federation_operation_id {
-        let signature_share_provenance =
-            federation_signature_share_provenance_for_operation(db, federation_operation_id)
-                .await?;
+        let signature_share_provenance = signature_share_provenance.ok_or(Error::Internal)?;
         process_federation_melt_change(
             mint,
             db,
@@ -1381,6 +1396,9 @@ async fn finalize_melt_quote_inner(
             Amount::ZERO,
             melt_request_info.inputs_amount.clone().into(),
             fee_breakdown.total,
+            #[cfg(feature = "federation")]
+            federation_completed_at,
+            #[cfg(not(feature = "federation"))]
             None,
             Some(quote.payment_method.clone()),
         );

@@ -431,9 +431,9 @@ mod tests {
     }
 
     /// When the mint returns InactiveKeyset but the active keyset hasn't
-    /// changed, the wallet should NOT retry and return the error immediately.
+    /// changed, the wallet should still make one refreshed retry.
     #[tokio::test]
-    async fn swap_does_not_retry_when_keyset_unchanged() {
+    async fn swap_retries_once_when_keyset_unchanged() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         db.add_mint(mint_url.clone(), None).await.unwrap();
@@ -458,7 +458,9 @@ mod tests {
             ProofInfo::new(proof2.clone(), mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
         db.update_proofs(vec![pi1, pi2], vec![]).await.unwrap();
 
-        // Don't rotate keysets — mock still returns keyset A as active
+        // Don't rotate keysets: the refreshed active keyset is unchanged,
+        // but a stale metadata cache can still need one rebuilt request.
+        mock.push_post_swap_response(Err(Error::InactiveKeyset));
         mock.push_post_swap_response(Err(Error::InactiveKeyset));
 
         let result = wallet
@@ -480,8 +482,8 @@ mod tests {
         let requests = mock.captured_swap_requests();
         assert_eq!(
             requests.len(),
-            1,
-            "post_swap should be called only once (no retry)"
+            2,
+            "post_swap should be called once and retried once after refresh"
         );
     }
 }

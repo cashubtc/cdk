@@ -239,7 +239,7 @@ async fn submit_federation_mint_quote_payment_observation(
     let payment_metadata = stored_quote.as_ref().and_then(|quote| {
         quote.payments.last().map(|payment| {
             (
-                cdk::cdk_payment::PaymentIdentifier::CustomId(payment.payment_id.clone()),
+                federation_payment_identifier_from_stored_label(&payment.payment_id),
                 payment.time,
             )
         })
@@ -248,6 +248,9 @@ async fn submit_federation_mint_quote_payment_observation(
         .as_ref()
         .map(|(payment_id, _)| payment_id.clone());
     observation.observed_time = payment_metadata.map(|(_, observed_time)| observed_time);
+    if has_satisfied_mint_payment_observation_quorum(config, &recorded_observations, &observation) {
+        return Ok(false);
+    }
 
     let envelope = config.mint_quote_payment_observation_with_metadata(
         observation.quote.clone(),
@@ -391,6 +394,9 @@ async fn submit_federation_melt_quote_payment_observation(
         .as_ref()
         .and_then(|quote| quote.request_lookup_id.clone());
     observation.observed_time = stored_quote.as_ref().and_then(|quote| quote.paid_time);
+    if has_satisfied_melt_payment_observation_quorum(config, &recorded_observations, &observation) {
+        return Ok(());
+    }
 
     let envelope = config.melt_quote_payment_observation_with_metadata(
         observation.quote.clone(),
@@ -435,6 +441,79 @@ async fn federation_unpaid_melt_quote_had_accepted_attempt(
     }
 
     Ok(false)
+}
+
+#[cfg(feature = "federation")]
+fn federation_payment_identifier_from_stored_label(
+    payment_id: &str,
+) -> cdk::cdk_payment::PaymentIdentifier {
+    match payment_id.split_once(':') {
+        Some((kind, identifier)) => cdk::cdk_payment::PaymentIdentifier::new(kind, identifier)
+            .unwrap_or_else(|_| {
+                cdk::cdk_payment::PaymentIdentifier::CustomId(payment_id.to_string())
+            }),
+        None => cdk::cdk_payment::PaymentIdentifier::CustomId(payment_id.to_string()),
+    }
+}
+
+#[cfg(feature = "federation")]
+fn has_satisfied_mint_payment_observation_quorum(
+    config: &cdk::mint::FederationRuntimeConfig,
+    records: &[cdk::federation::FederationPaymentObservationRecord],
+    candidate: &cdk::federation::FederationMintQuotePaymentObservation,
+) -> bool {
+    let observations = records
+        .iter()
+        .filter_map(|record| match &record.observation {
+            cdk::federation::FederationPaymentObservation::MintQuote(observation) => {
+                Some(observation)
+            }
+            cdk::federation::FederationPaymentObservation::MeltQuote(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let Some(base) = observations
+        .iter()
+        .copied()
+        .find(|observation| candidate.matches_payment_evidence(observation))
+    else {
+        return false;
+    };
+    let policy = *config.public_config().payment_verification_policy(
+        cdk::federation::FederationPaymentObservationContext::MintQuote,
+    );
+    let quorum = base.quorum(observations, policy.required_matching_observations());
+
+    policy.evaluate_quorum(&quorum).is_ok()
+}
+
+#[cfg(feature = "federation")]
+fn has_satisfied_melt_payment_observation_quorum(
+    config: &cdk::mint::FederationRuntimeConfig,
+    records: &[cdk::federation::FederationPaymentObservationRecord],
+    candidate: &cdk::federation::FederationMeltQuotePaymentObservation,
+) -> bool {
+    let observations = records
+        .iter()
+        .filter_map(|record| match &record.observation {
+            cdk::federation::FederationPaymentObservation::MintQuote(_) => None,
+            cdk::federation::FederationPaymentObservation::MeltQuote(observation) => {
+                Some(observation)
+            }
+        })
+        .collect::<Vec<_>>();
+    let Some(base) = observations
+        .iter()
+        .copied()
+        .find(|observation| candidate.matches_payment_evidence(observation))
+    else {
+        return false;
+    };
+    let policy = *config.public_config().payment_verification_policy(
+        cdk::federation::FederationPaymentObservationContext::MeltQuote,
+    );
+    let quorum = base.quorum(observations, policy.required_matching_observations());
+
+    policy.evaluate_quorum(&quorum).is_ok()
 }
 
 #[cfg(feature = "federation")]
@@ -1517,6 +1596,135 @@ mod tests {
         );
         assert!(melt_observation.contains("method: response.method()"));
         assert!(melt_observation.contains(".submit_federation_payment_observation_envelope("));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_payment_identifier_from_stored_label_normalizes_canonical_labels() {
+        assert_eq!(
+            federation_payment_identifier_from_stored_label("custom:payment-1"),
+            PaymentIdentifier::CustomId("payment-1".to_string())
+        );
+        assert_eq!(
+            federation_payment_identifier_from_stored_label("payment-1"),
+            PaymentIdentifier::CustomId("payment-1".to_string())
+        );
+
+        let raw_with_unknown_prefix = "backend:opaque";
+        assert_eq!(
+            federation_payment_identifier_from_stored_label(raw_with_unknown_prefix),
+            PaymentIdentifier::CustomId(raw_with_unknown_prefix.to_string())
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn mint_payment_observer_skips_submission_when_matching_quorum_exists() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let candidate = cdk::federation::FederationMintQuotePaymentObservation {
+            quote: "quote-a".to_string(),
+            observer: threshold_member_id(2),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(4),
+            amount_issued: Amount::ZERO,
+            payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
+            payment_proof: None,
+            observed_time: Some(100),
+        };
+        let matching_record = payment_observation_record(
+            1,
+            cdk::federation::FederationPaymentObservation::MintQuote(
+                cdk::federation::FederationMintQuotePaymentObservation {
+                    observer: threshold_member_id(1),
+                    ..candidate.clone()
+                },
+            ),
+        );
+        let conflicting_record = payment_observation_record(
+            2,
+            cdk::federation::FederationPaymentObservation::MintQuote(
+                cdk::federation::FederationMintQuotePaymentObservation {
+                    observer: threshold_member_id(3),
+                    payment_id: Some(PaymentIdentifier::CustomId("payment-b".to_string())),
+                    ..candidate.clone()
+                },
+            ),
+        );
+
+        assert!(has_satisfied_mint_payment_observation_quorum(
+            config,
+            std::slice::from_ref(&matching_record),
+            &candidate
+        ));
+        assert!(!has_satisfied_mint_payment_observation_quorum(
+            config,
+            &[matching_record, conflicting_record],
+            &candidate
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn melt_payment_observer_skips_submission_when_matching_quorum_exists() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let candidate = FederationMeltQuotePaymentObservation {
+            quote: "quote-a".to_string(),
+            observer: threshold_member_id(2),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            state: MeltQuoteState::Paid,
+            amount: Amount::from(4),
+            fee_reserve: Amount::ZERO,
+            payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
+            payment_proof: Some("preimage-a".to_string()),
+            failure_reason: None,
+            observed_time: Some(100),
+        };
+        let matching_record = payment_observation_record(
+            1,
+            cdk::federation::FederationPaymentObservation::MeltQuote(
+                FederationMeltQuotePaymentObservation {
+                    observer: threshold_member_id(1),
+                    ..candidate.clone()
+                },
+            ),
+        );
+        let conflicting_record = payment_observation_record(
+            2,
+            cdk::federation::FederationPaymentObservation::MeltQuote(
+                FederationMeltQuotePaymentObservation {
+                    observer: threshold_member_id(3),
+                    payment_proof: Some("preimage-b".to_string()),
+                    ..candidate.clone()
+                },
+            ),
+        );
+
+        assert!(has_satisfied_melt_payment_observation_quorum(
+            config,
+            std::slice::from_ref(&matching_record),
+            &candidate
+        ));
+        assert!(!has_satisfied_melt_payment_observation_quorum(
+            config,
+            &[matching_record, conflicting_record],
+            &candidate
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    fn payment_observation_record(
+        operation_index: u64,
+        observation: cdk::federation::FederationPaymentObservation,
+    ) -> cdk::federation::FederationPaymentObservationRecord {
+        let operation_id_byte = u8::try_from(operation_index).expect("test index fits in u8");
+        cdk::federation::FederationPaymentObservationRecord {
+            operation_id: FederationOperationId::from_bytes([operation_id_byte; 32]),
+            operation_index,
+            observation,
+        }
     }
 
     #[cfg(feature = "federation")]

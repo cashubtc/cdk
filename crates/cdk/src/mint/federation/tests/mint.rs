@@ -694,6 +694,10 @@ async fn apply_federation_mint_persists_accepted_materialization_rows() {
     assert_eq!(completed_operation.total_redeemed(), Amount::ZERO);
     assert_eq!(completed_operation.fee_collected(), Amount::ZERO);
     assert_eq!(
+        completed_operation.completed_at(),
+        &Some(super::super::federation_accepted_logical_time(&mint_entry))
+    );
+    assert_eq!(
         completed_operation.payment_method(),
         Some(PaymentMethod::Known(KnownMethod::Bolt11))
     );
