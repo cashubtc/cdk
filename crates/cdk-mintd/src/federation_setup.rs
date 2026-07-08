@@ -1414,6 +1414,8 @@ STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 CHECK_PROMETHEUS_METRICS="${{CHECK_PROMETHEUS_METRICS:-1}}"
 PROBE_DKG_SETUP_ROUTES="${{PROBE_DKG_SETUP_ROUTES:-0}}"
 DKG_ROUTE_PROBE_ONLY="${{DKG_ROUTE_PROBE_ONLY:-0}}"
+FEDERATION_CONSENSUS_BACKEND="${{FEDERATION_CONSENSUS_BACKEND:-}}"
+FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${{FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-}}"
 if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
   PROBE_DKG_SETUP_ROUTES=1
   PUBLIC_CONFIG="$DKG_SETUP_PUBLIC_CONFIG"
@@ -1421,16 +1423,32 @@ fi
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
+STANDARD_SEED_OFFSET="${{STANDARD_SEED_OFFSET:-}}"
 STANDARD_OPERATION_BATCHES="${{STANDARD_OPERATION_BATCHES:-2}}"
-POST_CRASH_SEED_OFFSET="${{POST_CRASH_SEED_OFFSET:-$STANDARD_OPERATION_BATCHES}}"
+POST_CRASH_SEED_OFFSET="${{POST_CRASH_SEED_OFFSET:-}}"
 POST_CRASH_OPERATION_BATCHES="${{POST_CRASH_OPERATION_BATCHES:-1}}"
 LONG_PARTITION_SEED_OFFSET="${{LONG_PARTITION_SEED_OFFSET:-}}"
 LONG_PARTITION_OPERATION_BATCHES="${{LONG_PARTITION_OPERATION_BATCHES:-4}}"
 ALEPH_BFT_AUTO_ROTATION_MAX_ROUND="${{ALEPH_BFT_AUTO_ROTATION_MAX_ROUND:-}}"
 ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION="${{ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION:-1}}"
+ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES="${{ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES:-1}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
 PIDS=()
+
+if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" && -z "$FEDERATION_CONSENSUS_BACKEND" ]]; then
+  FEDERATION_CONSENSUS_BACKEND="aleph_bft"
+fi
+if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" && -z "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" ]]; then
+  FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$SMOKE_OPERATION_TIMEOUT_SECONDS"
+fi
+if [[ -z "$STANDARD_SEED_OFFSET" ]]; then
+  if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
+    STANDARD_SEED_OFFSET="$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES"
+  else
+    STANDARD_SEED_OFFSET=0
+  fi
+fi
 
 member_config() {{
   if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
@@ -1507,6 +1525,14 @@ start_member() {{
   fi
   if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
     mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
+    mintd_env_count=$((mintd_env_count + 1))
+  fi
+  if [[ -n "$FEDERATION_CONSENSUS_BACKEND" ]]; then
+    mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="$FEDERATION_CONSENSUS_BACKEND")
+    mintd_env_count=$((mintd_env_count + 1))
+  fi
+  if [[ -n "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" ]]; then
+    mintd_env+=(CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS")
     mintd_env_count=$((mintd_env_count + 1))
   fi
   if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
@@ -1929,6 +1955,17 @@ wait_for_configured_aleph_bft_auto_rotation() {{
   wait_for_converged
 }}
 
+run_configured_aleph_bft_auto_rotation_warmup() {{
+  if [[ -z "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
+    return 0
+  fi
+  run_smoke_operations \
+    --scenario standard \
+    --seed-offset 0 \
+    --operation-batches "$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES"
+  wait_for_configured_aleph_bft_auto_rotation
+}}
+
 wait_for_dkg_setup_records() {{
   if [[ "$PROBE_DKG_SETUP_ROUTES" != "1" ]]; then
     return 0
@@ -2079,16 +2116,24 @@ validate_smoke_settings() {{
   require_positive_integer SMOKE_QUOTE_RETRIES "$SMOKE_QUOTE_RETRIES" || return 1
   require_positive_integer SMOKE_QUOTE_SLEEP_MS "$SMOKE_QUOTE_SLEEP_MS" || return 1
   require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS "$SMOKE_OPERATION_TIMEOUT_SECONDS" || return 1
+  require_nonnegative_integer STANDARD_SEED_OFFSET "$STANDARD_SEED_OFFSET" || return 1
   require_positive_integer STANDARD_OPERATION_BATCHES "$STANDARD_OPERATION_BATCHES" || return 1
-  require_nonnegative_integer POST_CRASH_SEED_OFFSET "$POST_CRASH_SEED_OFFSET" || return 1
   require_positive_integer POST_CRASH_OPERATION_BATCHES "$POST_CRASH_OPERATION_BATCHES" || return 1
   require_positive_integer LONG_PARTITION_OPERATION_BATCHES "$LONG_PARTITION_OPERATION_BATCHES" || return 1
-  if (( STANDARD_OPERATION_BATCHES > 255 )); then
-    printf 'STANDARD_OPERATION_BATCHES must be 255 or lower\n' >&2
+  if (( STANDARD_SEED_OFFSET > 255 )); then
+    printf 'STANDARD_SEED_OFFSET must be 255 or lower\n' >&2
     return 1
   fi
-  if (( POST_CRASH_SEED_OFFSET < STANDARD_OPERATION_BATCHES )); then
-    printf 'POST_CRASH_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES to avoid standard smoke seed reuse\n' >&2
+  if (( STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES > 256 )); then
+    printf 'STANDARD_SEED_OFFSET plus STANDARD_OPERATION_BATCHES must be 256 or lower\n' >&2
+    return 1
+  fi
+  if [[ -z "$POST_CRASH_SEED_OFFSET" ]]; then
+    POST_CRASH_SEED_OFFSET=$((STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES))
+  fi
+  require_nonnegative_integer POST_CRASH_SEED_OFFSET "$POST_CRASH_SEED_OFFSET" || return 1
+  if (( POST_CRASH_SEED_OFFSET < STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES )); then
+    printf 'POST_CRASH_SEED_OFFSET must be after the standard smoke seed range\n' >&2
     return 1
   fi
   if (( POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES > 256 )); then
@@ -2099,8 +2144,8 @@ validate_smoke_settings() {{
     LONG_PARTITION_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))
   fi
   require_nonnegative_integer LONG_PARTITION_SEED_OFFSET "$LONG_PARTITION_SEED_OFFSET" || return 1
-  if (( LONG_PARTITION_SEED_OFFSET < STANDARD_OPERATION_BATCHES )); then
-    printf 'LONG_PARTITION_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES to avoid standard smoke seed reuse\n' >&2
+  if (( LONG_PARTITION_SEED_OFFSET < STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES )); then
+    printf 'LONG_PARTITION_SEED_OFFSET must be after the standard smoke seed range\n' >&2
     return 1
   fi
   if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
@@ -2113,9 +2158,29 @@ validate_smoke_settings() {{
     printf 'LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must be 256 or lower\n' >&2
     return 1
   fi
+  if [[ -n "$FEDERATION_CONSENSUS_BACKEND" && "$FEDERATION_CONSENSUS_BACKEND" != "in_memory" && "$FEDERATION_CONSENSUS_BACKEND" != "aleph_bft" ]]; then
+    printf 'FEDERATION_CONSENSUS_BACKEND must be in_memory or aleph_bft\n' >&2
+    return 1
+  fi
+  if [[ -n "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" ]]; then
+    require_positive_integer FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" || return 1
+  fi
   if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
     require_positive_integer ALEPH_BFT_AUTO_ROTATION_MAX_ROUND "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" || return 1
     require_positive_integer ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION "$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION" || return 1
+    require_positive_integer ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES "$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES" || return 1
+    if [[ "$FEDERATION_CONSENSUS_BACKEND" != "aleph_bft" ]]; then
+      printf 'ALEPH_BFT_AUTO_ROTATION_MAX_ROUND requires FEDERATION_CONSENSUS_BACKEND=aleph_bft\n' >&2
+      return 1
+    fi
+    if (( ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES > 255 )); then
+      printf 'ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES must be 255 or lower\n' >&2
+      return 1
+    fi
+    if (( STANDARD_SEED_OFFSET < ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES )); then
+      printf 'STANDARD_SEED_OFFSET must be after the AlephBFT auto-rotation warm-up seed range\n' >&2
+      return 1
+    fi
     if (( ALEPH_BFT_AUTO_ROTATION_MAX_ROUND > 65535 )); then
       printf 'ALEPH_BFT_AUTO_ROTATION_MAX_ROUND must be 65535 or lower\n' >&2
       return 1
@@ -2159,9 +2224,10 @@ done
 
 wait_for_converged
 wait_for_prometheus_metrics
-wait_for_configured_aleph_bft_auto_rotation
+run_configured_aleph_bft_auto_rotation_warmup
 run_smoke_operations \
   --scenario standard \
+  --seed-offset "$STANDARD_SEED_OFFSET" \
   --operation-batches "$STANDARD_OPERATION_BATCHES"
 if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
   stop_member "$CRASH_WINDOW_MEMBER"

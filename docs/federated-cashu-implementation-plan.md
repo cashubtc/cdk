@@ -1791,6 +1791,41 @@ AlephBFT and consensus unit tests:
   durable AlephBFT backup/session replay can reconstruct unfinalized units;
   orphan network retry rows without that backup are now deleted at startup
   instead of being replayed unsafely.
+- [ ] Add a live private-REST AlephBFT regression for the exact
+  self-partitioned proposer case: keep the submitting member's public/client
+  route usable while its federation transport to the other members is
+  unavailable, submit a valid wallet operation to that isolated member, assert
+  the operation is durably queued/pending with no quote, journal, finalized
+  item, proof-state, signature-share, or payment side effect on any member,
+  heal the federation transport, and prove the exact same operation ID
+  finalizes exactly once across every member with pending rows cleared and
+  accepted order plus state digest converged.
+- [ ] Add live private-REST AlephBFT below-quorum-offline coverage for a
+  federation size/threshold where the number of offline members remains within
+  the tolerated fault budget. Submit mint, swap, melt, restore/check-state, and
+  payment-observation operations through still-connected members, prove they
+  finalize with the available quorum, then reconnect the offline members and
+  prove catch-up replays finalized AlephBFT items, journal entries,
+  materialized mint state, payment observations, completed-operation rows,
+  signature-share provenance, accepted-order digests, and state digests without
+  duplicate signing or duplicate outgoing payment attempts.
+- [ ] Add live private-REST AlephBFT above-quorum-offline coverage where too
+  many members are disconnected for consensus finality. Submit valid operations
+  to reachable members and to an isolated proposer, prove every request fails
+  closed or returns retryable pending-finalization, durable pending-operation
+  rows are retained, no member applies pre-finality state, no shares or outgoing
+  payment side effects leak, and after enough members reconnect the exact
+  queued operations either finalize once in deterministic order or are safely
+  rejected by consensus-visible conflict rules with all honest members
+  converging to the same journal/state digest.
+- [ ] Extend the partition matrix above with restart/catch-up variants: restart
+  the self-partitioned proposer before reconnect, restart at least one
+  non-proposer member while below quorum is offline, and restart one lagging
+  member after finality but before catch-up completes. Each variant must prove
+  public signing/read routes fail closed until catch-up evidence is verified,
+  AlephBFT backup/finalized-item cursors replay safely, pending-operation rows
+  are neither lost nor duplicated, and all honest members converge after
+  reconnect.
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.
@@ -1831,9 +1866,17 @@ AlephBFT and consensus unit tests:
   automatic completion watcher now rotates a naturally completed `run_session`
   into the next live session and proves the next operation can finalize there.
   The latest crates.io check reconfirmed upstream `aleph-bft = 0.45.4` as the
-  direct dependency. Local smoke tooling can now force and verify a natural
-  auto-rotated session before operation batches; the longer external process
-  partition run using that gate remains open.
+  direct dependency. Local smoke tooling can now force the generated smoke
+  harness onto the `aleph_bft` backend, reserve an isolated warm-up operation
+  batch to drive natural session completion, align wallet-member and mint-side
+  operation timeouts, shift later deterministic smoke-wallet seed windows past
+  that warm-up range, and expose the flow through `just
+  fed-regtest-aleph-rotation`. A small live process run now reaches AlephBFT
+  startup and initial collection without the previous short timeout, but still
+  exposes a process-level finality progression gap: the warm-up operation can
+  remain pending with zero finalized items across members. Repairing generated
+  process-level AlephBFT network-message finality is the next prerequisite
+  before the longer external process partition run can pass with that gate.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
@@ -2611,7 +2654,21 @@ Tests and success criteria:
   recover status, convergence, quorum-backed session-outcome evidence, and a
   post-restart all-member wallet-operation batch. Post-crash batches now use a
   generated seed-offset range that defaults after the initial standard range and
-  is validated to avoid deterministic smoke-wallet seed reuse.
+  is validated to avoid deterministic smoke-wallet seed reuse. The AlephBFT
+  auto-rotation variant now defaults to the `aleph_bft` backend, runs an
+  isolated warm-up batch before waiting for the target session, aligns generated
+  member operation-submission timeouts with the smoke operation timeout, and
+  exposes the path through `just fed-regtest-aleph-rotation`; the live process
+  finality stall found by that target remains open until the network-message
+  pump/finality progression issue is fixed.
+- [ ] Add AlephBFT live private-REST catch-up certification tests for
+  self-partitioned proposers, below-quorum-offline operation windows, and
+  above-quorum-offline stall windows. These tests must verify reconnect
+  catch-up through finalized-item cursors and signed session-outcome evidence,
+  state-digest equality across all honest members, lagging-member fail-closed
+  behavior before certification, no duplicate signing, no duplicate outgoing
+  payment attempts, and deterministic handling of any queued operations that
+  were accepted locally while connectivity was unavailable.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.

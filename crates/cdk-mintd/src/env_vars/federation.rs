@@ -9,6 +9,8 @@ pub const ENV_FEDERATION_ENABLED: &str = "CDK_MINTD_FEDERATION_ENABLED";
 pub const ENV_FEDERATION_PUBLIC_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH";
 pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH";
 pub const ENV_FEDERATION_CONSENSUS_BACKEND: &str = "CDK_MINTD_FEDERATION_CONSENSUS_BACKEND";
+pub const ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS: &str =
+    "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
     "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND";
 
@@ -30,6 +32,18 @@ impl Federation {
 
         if let Ok(path) = env::var(ENV_FEDERATION_PRIVATE_CONFIG_PATH) {
             self.private_config_path = Some(PathBuf::from(path));
+        }
+
+        if let Ok(timeout) = env::var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS) {
+            let timeout = timeout.parse::<u64>().map_err(|_| {
+                anyhow!("Federation operation submission timeout must fit in u64 seconds")
+            })?;
+            if timeout == 0 {
+                return Err(anyhow!(
+                    "Federation operation submission timeout must be greater than zero"
+                ));
+            }
+            self.peer_sync.operation_submission_timeout_secs = timeout;
         }
 
         if let Ok(max_round) = env::var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND) {
@@ -65,6 +79,7 @@ mod tests {
         env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_CONSENSUS_BACKEND);
+        env::remove_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
     }
 
@@ -145,6 +160,39 @@ mod tests {
             .expect("federation env config");
 
         assert_eq!(config.peer_sync.aleph_bft_live_session_max_round, Some(9));
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_overrides_operation_submission_timeout() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS, "42");
+
+        let config = Federation::default()
+            .from_env()
+            .expect("federation env config");
+
+        assert_eq!(config.peer_sync.operation_submission_timeout_secs, 42);
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_rejects_invalid_operation_submission_timeout() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS, "0");
+
+        let err = Federation::default()
+            .from_env()
+            .expect_err("zero operation timeout should fail");
+
+        assert!(
+            err.to_string().contains("must be greater than zero"),
+            "error should explain invalid operation timeout: {err}"
+        );
 
         clear_federation_env();
     }

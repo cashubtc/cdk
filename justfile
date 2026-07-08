@@ -629,6 +629,21 @@ fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   OFFLINE_OPERATION_BATCHES="{{offline_batches}}" CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
+# Run generated local federation smoke with AlephBFT auto-rotation enabled
+fed-regtest-aleph-rotation dir="target/cdk-fed-regtest-aleph-rotation" members="5" threshold="3" port_start="27885" offline_batches="8" max_round="6" target_session="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  FEDERATION_CONSENSUS_BACKEND=aleph_bft \
+    ALEPH_BFT_AUTO_ROTATION_MAX_ROUND="{{max_round}}" \
+    ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION="{{target_session}}" \
+    OFFLINE_OPERATION_BATCHES="{{offline_batches}}" \
+    CDK_MINTD_BIN=target/debug/cdk-mintd \
+    bash "{{dir}}/smoke-local-federation.sh"
+
 # Run the generated setup-only DKG route-probe and restart activation smoke
 fed-regtest-dkg-setup dir="target/cdk-fed-regtest-dkg" members="5" threshold="3" port_start="23885":
   #!/usr/bin/env bash

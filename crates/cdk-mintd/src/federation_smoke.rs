@@ -15,8 +15,8 @@ use cdk::nuts::{
     MintQuoteState, PaymentMethod, State,
 };
 use cdk::wallet::{
-    FederatedMintConnector, HttpClient, MeltOutcome, MintConnector, NUT13Options, Wallet,
-    WalletBuilder,
+    FederatedMintConnector, FederatedMintConnectorConfig, HttpClient, MeltOutcome, MintConnector,
+    NUT13Options, Wallet, WalletBuilder,
 };
 use cdk::{Amount, Error};
 use cdk_common::federation::{
@@ -68,9 +68,12 @@ pub(crate) async fn run_smoke_operations_command(
     let unit = CurrencyUnit::from_str(&args.unit)
         .with_context(|| format!("invalid federation smoke unit {}", args.unit))?;
     let member_connectors = member_connectors(&public_config);
-    let federation_connector =
-        FederatedMintConnector::new(public_config.clone(), member_connectors.clone())
-            .context("federated wallet connector")?;
+    let federation_connector = FederatedMintConnector::new_with_config(
+        public_config.clone(),
+        member_connectors.clone(),
+        smoke_connector_config(args),
+    )
+    .context("federated wallet connector")?;
     let connector = Arc::new(federation_connector);
 
     for batch_index in 0..args.operation_batches {
@@ -298,6 +301,17 @@ fn validate_smoke_operation_args(args: &FederationSmokeOperationsArgs) -> Result
     }
 
     Ok(())
+}
+
+fn smoke_connector_config(args: &FederationSmokeOperationsArgs) -> FederatedMintConnectorConfig {
+    let mut config = FederatedMintConnectorConfig::default();
+    if let Some(timeout_seconds) = args.operation_timeout_seconds {
+        let timeout = Duration::from_secs(timeout_seconds);
+        config.member_fallback_timeout = timeout;
+        config.member_request_timeout = timeout;
+        config.quote_status_member_timeout = timeout;
+    }
+    config
 }
 
 fn scenario_supports_operation_batches(scenario: FederationSmokeScenario) -> bool {
@@ -557,8 +571,12 @@ async fn run_keyset_rotation_smoke(
     .await?;
 
     let rotated_connector = Arc::new(
-        FederatedMintConnector::new(rotated_public_config.clone(), member_connectors.clone())
-            .context("rotated federated wallet connector")?,
+        FederatedMintConnector::new_with_config(
+            rotated_public_config.clone(),
+            member_connectors.clone(),
+            smoke_connector_config(args),
+        )
+        .context("rotated federated wallet connector")?,
     );
     let restored_wallet = smoke_wallet(
         &rotated_public_config,

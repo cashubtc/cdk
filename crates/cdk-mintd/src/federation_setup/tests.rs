@@ -858,10 +858,24 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
     assert!(smoke_script
         .contains("ALEPH_BFT_AUTO_ROTATION_MAX_ROUND=\"${ALEPH_BFT_AUTO_ROTATION_MAX_ROUND:-}\""));
+    assert!(
+        smoke_script.contains("FEDERATION_CONSENSUS_BACKEND=\"${FEDERATION_CONSENSUS_BACKEND:-}\"")
+    );
+    assert!(smoke_script.contains(
+        "FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=\"${FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-}\""
+    ));
+    assert!(smoke_script
+        .contains("CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=\"$FEDERATION_CONSENSUS_BACKEND\""));
+    assert!(smoke_script.contains(
+        "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=\"$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS\""
+    ));
     assert!(smoke_script.contains(
         "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND=\"$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND\""
     ));
     assert!(smoke_script.contains("wait_for_configured_aleph_bft_auto_rotation"));
+    assert!(smoke_script.contains("run_configured_aleph_bft_auto_rotation_warmup"));
+    assert!(smoke_script
+        .contains("--operation-batches \"$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES\""));
 
     for (member_id, member_artifacts) in &artifacts.member_artifacts {
         assert!(smoke_script.contains(&format!("    {}) printf", member_id.get())));
@@ -912,12 +926,11 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script
         .contains("LONG_PARTITION_MEMBER=\"${LONG_PARTITION_MEMBER:-$RESTART_MEMBER}\""));
     assert!(smoke_script.contains("EXERCISE_CRASH_WINDOW=\"${EXERCISE_CRASH_WINDOW:-1}\""));
+    assert!(smoke_script.contains("STANDARD_SEED_OFFSET=\"${STANDARD_SEED_OFFSET:-}\""));
     assert!(
         smoke_script.contains("STANDARD_OPERATION_BATCHES=\"${STANDARD_OPERATION_BATCHES:-2}\"")
     );
-    assert!(smoke_script.contains(
-        "POST_CRASH_SEED_OFFSET=\"${POST_CRASH_SEED_OFFSET:-$STANDARD_OPERATION_BATCHES}\""
-    ));
+    assert!(smoke_script.contains("POST_CRASH_SEED_OFFSET=\"${POST_CRASH_SEED_OFFSET:-}\""));
     assert!(smoke_script
         .contains("POST_CRASH_OPERATION_BATCHES=\"${POST_CRASH_OPERATION_BATCHES:-1}\""));
     assert!(smoke_script.contains("LONG_PARTITION_SEED_OFFSET=\"${LONG_PARTITION_SEED_OFFSET:-}\""));
@@ -925,6 +938,21 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
         .contains("LONG_PARTITION_OPERATION_BATCHES=\"${LONG_PARTITION_OPERATION_BATCHES:-4}\""));
     assert!(smoke_script.contains(
         "ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION=\"${ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION:-1}\""
+    ));
+    assert!(smoke_script.contains(
+        "ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES=\"${ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES:-1}\""
+    ));
+    assert!(smoke_script.contains("FEDERATION_CONSENSUS_BACKEND=\"aleph_bft\""));
+    assert!(smoke_script.contains(
+        "FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=\"$SMOKE_OPERATION_TIMEOUT_SECONDS\""
+    ));
+    assert!(smoke_script
+        .contains("require_positive_integer FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS"));
+    assert!(smoke_script.contains(
+        "ALEPH_BFT_AUTO_ROTATION_MAX_ROUND requires FEDERATION_CONSENSUS_BACKEND=aleph_bft"
+    ));
+    assert!(smoke_script.contains(
+        "STANDARD_SEED_OFFSET must be after the AlephBFT auto-rotation warm-up seed range"
     ));
     assert!(smoke_script.contains("ALEPH_BFT_AUTO_ROTATION_MAX_ROUND must be 65535 or lower"));
     assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\""));
@@ -936,7 +964,9 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
     assert!(smoke_script.contains("wait_for_aleph_bft_session_at_least"));
     assert!(smoke_script.contains("wait_for_configured_aleph_bft_auto_rotation"));
+    assert!(smoke_script.contains("run_configured_aleph_bft_auto_rotation_warmup"));
     assert!(smoke_script.contains("wait_for_session_outcome_quorum"));
+    assert!(smoke_script.contains("--seed-offset \"$STANDARD_SEED_OFFSET\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
     assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
