@@ -8481,6 +8481,131 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
 }
 
 #[tokio::test]
+async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and_delay_faults() {
+    let federation_api_urls = vec![
+        MintUrl::from_str("http://fed1.test").expect("first federation api url"),
+        MintUrl::from_str("http://fed2.test").expect("second federation api url"),
+        MintUrl::from_str("http://fed3.test").expect("third federation api url"),
+        MintUrl::from_str("http://fed4.test").expect("fourth federation api url"),
+        MintUrl::from_str("http://fed5.test").expect("fifth federation api url"),
+    ];
+    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+        federation_api_urls.clone(),
+    );
+    let mut states = Vec::new();
+    for private_config in private_configs {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        states.push(
+            federation_route_state_for_private_with_db_and_backend(
+                public_config.clone(),
+                private_config,
+                db,
+                &mnemonic.to_seed_normalized(""),
+                FederationConsensusBackendKind::AlephBft,
+            )
+            .await,
+        );
+    }
+    let transport = RouterFederationTransportRegistry::default()
+        .with_missing_router_wait(Duration::from_secs(1))
+        .with_aleph_bft_network_message_reorder_once()
+        .with_aleph_bft_network_message_duplicate_replays(32)
+        .with_aleph_bft_network_message_delays([
+            Duration::from_millis(45),
+            Duration::ZERO,
+            Duration::from_millis(25),
+            Duration::from_millis(10),
+            Duration::ZERO,
+            Duration::from_millis(35),
+            Duration::ZERO,
+            Duration::from_millis(15),
+        ]);
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(2),
+        operation_submission_timeout: Duration::from_secs(15),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let mut live_session_handles = Vec::new();
+    for index in 0..states.len() {
+        let handle = start_federation_aleph_bft_live_session_with_transport(
+            &mut states[index],
+            sync_config,
+            pump_config,
+            transport.clone(),
+        )
+        .await
+        .expect("start live session")
+        .expect("live session handle");
+        live_session_handles.push(handle);
+        transport.insert(
+            federation_api_urls[index].clone(),
+            Router::new()
+                .nest("/federation/v1", create_federation_router())
+                .with_state(states[index].clone()),
+        );
+    }
+    assert_eq!(live_session_handles.len(), 5);
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&states[0], &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = states[0]
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("five-member AlephBFT operation response under combined transport faults");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(transport.aleph_bft_network_message_reorders_completed(), 1);
+    for state in &states {
+        wait_for_applied_operation(state, operation_id).await;
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status")
+                .finalized_item_count,
+            1
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal entries")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_some());
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("pending operation lookup after combined faults")
+            .is_empty());
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_durable_mutation() {
     let federation_api_urls = vec![
         MintUrl::from_str("http://fed1.test").expect("first federation api url"),
