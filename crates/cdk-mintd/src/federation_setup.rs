@@ -1406,6 +1406,8 @@ MEMBERS=({members})
 PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
 RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 QUARANTINE_OFFLINE_MEMBER="${{QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}}"
+CRASH_WINDOW_MEMBER="${{CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}}"
+EXERCISE_CRASH_WINDOW="${{EXERCISE_CRASH_WINDOW:-1}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 CHECK_PROMETHEUS_METRICS="${{CHECK_PROMETHEUS_METRICS:-1}}"
@@ -1982,6 +1984,10 @@ validate_quarantine_members() {{
     printf 'QUARANTINE_OFFLINE_MEMBER must differ from PRIMARY_MEMBER for offline catch-up smoke\n' >&2
     return 1
   fi
+  member_config "$CRASH_WINDOW_MEMBER" >/dev/null || {{
+    printf 'unknown CRASH_WINDOW_MEMBER %s\n' "$CRASH_WINDOW_MEMBER" >&2
+    return 1
+  }}
 }}
 
 require_positive_integer() {{
@@ -2050,7 +2056,15 @@ wait_for_prometheus_metrics
 run_smoke_operations \
   --scenario standard \
   --operation-batches "$STANDARD_OPERATION_BATCHES"
-wait_for_converged
+if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
+  stop_member "$CRASH_WINDOW_MEMBER"
+  start_member "$CRASH_WINDOW_MEMBER"
+  wait_for_status "$CRASH_WINDOW_MEMBER"
+  wait_for_converged
+  wait_for_session_outcome_quorum "$CRASH_WINDOW_MEMBER"
+else
+  wait_for_converged
+fi
 
 stop_member "$RESTART_MEMBER"
 run_smoke_operations \

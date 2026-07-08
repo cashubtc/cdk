@@ -1698,10 +1698,14 @@ AlephBFT and consensus unit tests:
   restarts after returning a pending wallet response can still finalize the
   operation when the missing quorum member returns. Post-upstream-backup restart
   after applied finality is now covered in both two-member and
-  five-member/threshold-three live sessions. Full crash-window coverage remains
-  open for restarts after upstream unit backup but before every finalized
-  operation has been applied, and for live session rotation beyond the
-  adapter-boundary guard and recovered finalized-session startup path.
+  five-member/threshold-three live sessions. Generated process smoke now also
+  restarts a configurable member immediately after repeated all-member
+  operation batches return and before the explicit convergence wait, then
+  requires status, convergence, and quorum-backed session-outcome evidence from
+  the restarted member. Full crash-window coverage remains open for restarts
+  after upstream unit backup but before every finalized operation has been
+  applied, and for live session rotation beyond the adapter-boundary guard and
+  recovered finalized-session startup path.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
@@ -2473,7 +2477,10 @@ Tests and success criteria:
   wallet-operation batches through
   `cdk-mintd federation smoke-operations --operation-batches`, keeping seed
   progression and validation inside the command while the script controls the
-  all-members and offline-member windows.
+  all-members and offline-member windows. It also restarts a configurable
+  member immediately after the repeated all-member operation batches return and
+  before the explicit convergence wait, then requires the restarted member to
+  recover status, convergence, and quorum-backed session-outcome evidence.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
@@ -2588,7 +2595,10 @@ Tests and success criteria:
   gates. Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`;
   repeated standard/offline operation batches are now generated-script knobs
   backed by the validated smoke command option and covered by the
-  `federation_smoke` and `federation_setup` test filters.
+  `federation_smoke` and `federation_setup` test filters. The generated script
+  also has a configurable process crash-window restart after repeated
+  all-member batches and before convergence, covered by `federation_setup`
+  artifact assertions.
 - [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.

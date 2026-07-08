@@ -300,9 +300,12 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("PRIMARY_MEMBER"));
     assert!(smoke_script.contains("RESTART_MEMBER"));
     assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
+    assert!(smoke_script.contains("CRASH_WINDOW_MEMBER"));
+    assert!(smoke_script.contains("EXERCISE_CRASH_WINDOW"));
     assert!(smoke_script.contains("unknown RESTART_MEMBER"));
     assert!(smoke_script
         .contains("RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke"));
+    assert!(smoke_script.contains("unknown CRASH_WINDOW_MEMBER"));
     assert!(smoke_script.contains("PENDING_WALLET_DB"));
     assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
     assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
@@ -360,6 +363,11 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("validate_quarantine_members()"));
     assert!(smoke_script.contains("--scenario standard"));
     assert!(smoke_script.contains("--operation-batches \"$STANDARD_OPERATION_BATCHES\""));
+    assert!(smoke_script.contains("if [[ \"$EXERCISE_CRASH_WINDOW\" == \"1\" ]]; then"));
+    assert!(smoke_script.contains("stop_member \"$CRASH_WINDOW_MEMBER\""));
+    assert!(smoke_script.contains("start_member \"$CRASH_WINDOW_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_status \"$CRASH_WINDOW_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum \"$CRASH_WINDOW_MEMBER\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--seed-offset 1"));
     assert!(smoke_script.contains("--operation-batches \"$OFFLINE_OPERATION_BATCHES\""));
@@ -856,6 +864,10 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("RESTART_MEMBER=\"${RESTART_MEMBER:-2}\""));
     assert!(smoke_script
         .contains("QUARANTINE_OFFLINE_MEMBER=\"${QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}\""));
+    assert!(
+        smoke_script.contains("CRASH_WINDOW_MEMBER=\"${CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}\"")
+    );
+    assert!(smoke_script.contains("EXERCISE_CRASH_WINDOW=\"${EXERCISE_CRASH_WINDOW:-1}\""));
     assert!(
         smoke_script.contains("STANDARD_OPERATION_BATCHES=\"${STANDARD_OPERATION_BATCHES:-2}\"")
     );
