@@ -1186,7 +1186,10 @@ Architecture checklist:
   clears pending operation rows. A post-backup restart regression now waits for
   real persisted upstream AlephBFT backup bytes, restarts one member from the
   same DB and seed, and proves the restarted member finalizes a second
-  operation without reusing its local CDK unit index.
+  operation without reusing its local CDK unit index. The runtime and
+  backend-adapter runtime now expose a guarded empty-session rollover API with
+  focused tests for successful rotation, in-memory rejection, and pending-local
+  finality rejection.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1558,6 +1561,14 @@ AlephBFT and consensus unit tests:
   `aleph_bft_consensus_adapter_finalizes_five_member_sessions_with_silent_member`,
   which advances from session 0 to session 1, leaves member three silent, and
   proves the other adapters converge.
+- [x] Runtime-level AlephBFT session rollover has focused unit coverage.
+  `consensus_runtime_begin_aleph_bft_session_rotates_empty_session`,
+  `consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality`,
+  `consensus_runtime_begin_aleph_bft_session_rejects_in_memory_backend`,
+  `backend_adapter_runtime_begin_aleph_bft_session_rotates_empty_session`, and
+  `backend_adapter_runtime_rejects_begin_aleph_bft_session_for_in_memory_backend`
+  pass under
+  `cargo test -p cdk-common --features federation begin_aleph_bft_session -- --test-threads 1`.
 - [x] Duplicate proposals from multiple members produce at most one applied
   operation outcome and identical idempotent responses. Covered by the
   4-member and 5-member adapter finalization regressions, which include
@@ -1610,8 +1621,11 @@ AlephBFT and consensus unit tests:
   AlephBFT session from persisted finalized-item evidence instead of hardcoding
   session zero, and live-session network pumps override stale injected pump
   configs with the recovered consensus session before signing private REST
-  network-message envelopes. Full live-session rollover for empty newly-rotated
-  sessions and long-partition fault coverage remain open.
+  network-message envelopes. Runtime-level AlephBFT wrappers now expose a
+  guarded `begin_aleph_bft_session` API that can rotate to an empty later
+  session, rejects in-memory runtimes, and refuses rotation while drained local
+  units still await finality. Durable live-session rollover for empty
+  newly-rotated sessions and long-partition fault coverage remain open.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload

@@ -2203,6 +2203,20 @@ impl FederationConsensusRuntime {
             .saturating_add(self.pending_finalization_len())
     }
 
+    /// Begin a later AlephBFT session for this runtime.
+    pub fn begin_aleph_bft_session(&mut self, session: u64) -> Result<()> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.begin_session(session),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
     /// Queue one operation for AlephBFT unit construction.
     pub fn submit_aleph_bft_envelope(
         &mut self,
@@ -2961,6 +2975,22 @@ impl FederationConsensusBackendAdapterRuntime {
                 local_member,
                 0,
             ),
+        }
+    }
+
+    /// Begin a later AlephBFT session for the selected backend.
+    pub fn begin_aleph_bft_session(&mut self, session: u64) -> Result<()> {
+        match &mut self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                adapter.begin_session(session)
+            }
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
         }
     }
 
