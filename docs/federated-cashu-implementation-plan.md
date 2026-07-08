@@ -114,6 +114,12 @@ Current confirmed shape:
   messages use the new session while the old pump stays stopped. Focused
   refusal coverage proves a non-empty pending mempool blocks rotation without
   changing the active session.
+- Latest AlephBFT post-finality rotation checkpoint: a two-member live
+  private-REST regression now finalizes an operation in session 0, rotates both
+  running members into session 1, refreshes their private routers with the new
+  inbound queues, verifies the durable active-session marker, then finalizes a
+  second operation in session 1 while preserving the two accepted operations in
+  order.
 - Latest AlephBFT network-finality activation checkpoint: the Axum federation
   state now has a guarded method for the future live AlephBFT task to announce
   that network finality is available. The method validates that federation mode
@@ -1245,7 +1251,9 @@ Architecture checklist:
   rotated empty session survives restart before any finalized item exists, and
   the Axum live-session wrapper can now explicitly rotate a running empty
   session into the next live network pump while refusing non-empty pending
-  mempools.
+  mempools. Two-member live private-REST coverage now proves that rotation also
+  works after a session has finalized real traffic and that a later operation
+  finalizes in the rotated session.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1788,8 +1796,11 @@ AlephBFT and consensus unit tests:
   durable duplicate response without requeueing. Live empty-session rotation
   now has Axum wrapper coverage for shutting down the old task set, persisting
   the next active session, restarting the pump, and refusing non-empty pending
-  mempools. Remaining crash-window coverage is still open for automatic
-  session-completion rotation and longer process-level rotation windows.
+  mempools; post-finality rotation coverage now proves two live members can
+  finalize session-0 traffic, rotate into session 1, and finalize another
+  operation. Remaining crash-window coverage is still open for automatic
+  session-completion rotation triggers and longer process-level rotation
+  windows.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
