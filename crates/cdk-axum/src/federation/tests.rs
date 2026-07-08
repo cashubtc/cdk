@@ -22,8 +22,9 @@ use cdk::federation::{
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationReportAction, FederationPaymentTrustModel,
-    FederationRestoreOperation, InMemoryFederationConsensus, MemberConfigPrivate, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
+    InMemoryFederationConsensus, MemberConfigPrivate, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -8585,6 +8586,168 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
             .expect("quote lookup")
             .is_some());
     }
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without_consuming_sequence(
+) {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private.clone(),
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        second_private.clone(),
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+
+    let _first_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut first_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start first live session")
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let _second_handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut second_state,
+        sync_config,
+        pump_config,
+        transport.clone(),
+    )
+    .await
+    .expect("start second live session")
+    .expect("second live session handle");
+    transport.insert(
+        second_url.clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    let malformed_request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        second_private.member_id,
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessage,
+        FederationAlephBftNetworkMessageRequest::new(0, vec![1, 2, 3]),
+        &first_private,
+    )
+    .expect("signed malformed AlephBFT network-message request");
+    let malformed_url = url::Url::parse(&format!("{second_url}/federation/v1/aleph-bft/messages"))
+        .expect("malformed AlephBFT network-message URL");
+    let malformed_result: Result<FederationAlephBftNetworkMessageResponse, HttpError> = transport
+        .http_post(malformed_url, None, &malformed_request)
+        .await;
+    let malformed_error = malformed_result.expect_err("malformed network message must fail");
+    match malformed_error {
+        HttpError::Status { status, message } => {
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST.as_u16());
+            assert!(
+                message.contains("Invalid federation AlephBFT network message"),
+                "unexpected malformed-message error: {message}"
+            );
+        }
+        err => panic!("unexpected malformed network-message error: {err:?}"),
+    }
+    assert_eq!(
+        second_state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("sequences after malformed network message")
+            .get(&first_private.member_id),
+        None,
+        "a rejected malformed network message must not consume the sender sequence"
+    );
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let response = first_state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("live AlephBFT operation response after malformed message");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    for state in [&first_state, &second_state] {
+        wait_for_applied_operation(state, operation_id).await;
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("AlephBFT status")
+                .finalized_item_count,
+            1
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal entries")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_some());
+    }
+    assert!(
+        second_state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("sequences after valid finality")
+            .get(&first_private.member_id)
+            .is_some(),
+        "valid post-rejection network traffic should still advance the sender sequence"
+    );
 }
 
 #[tokio::test]
