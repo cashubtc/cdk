@@ -48,6 +48,9 @@ use tower::ServiceExt;
 
 use crate::auth::AuthHeader;
 
+use super::aleph_bft_latency::{
+    CdkAlephBftLatencyEvent, CdkAlephBftLatencyRecorder, CdkAlephBftLatencyStage,
+};
 use super::aleph_bft_network::CdkAlephBftNetworkInboundHandle;
 use super::aleph_bft_network::{
     run_cdk_aleph_bft_network_pump_tick, run_cdk_aleph_bft_network_pump_tick_with_retry_queue,
@@ -9208,123 +9211,79 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_records_end_to_end_stage_order() {
-    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
-    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
-    let (public_config, first_private, second_private) =
-        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
-    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
-    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
-    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
-    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
-        public_config.clone(),
-        first_private.clone(),
-        first_db,
-        &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
-    )
-    .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
-        public_config.clone(),
-        second_private.clone(),
-        second_db,
-        &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
-    )
-    .await;
-    let transport = RouterFederationTransportRegistry::default();
-    let sync_config = FederationPeerSyncConfig {
-        peer_sync_interval: Duration::from_millis(10),
-        peer_request_timeout: Duration::from_secs(1),
-        operation_submission_timeout: Duration::from_secs(5),
-        ..FederationPeerSyncConfig::default()
-    };
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 128,
         max_peer_deliveries_per_message: 128,
     };
-    let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
-
-    let _first_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut first_state,
-        sync_config,
-        live_options.clone(),
-        transport.clone(),
-    )
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        pump_config,
+        500,
+    ))
     .await
-    .expect("start first live session")
-    .expect("first live session handle");
-    transport.insert(
-        first_url,
-        Router::new()
-            .nest("/federation/v1", create_federation_router())
-            .with_state(first_state.clone()),
-    );
-    let _second_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut second_state,
-        sync_config,
-        live_options,
-        transport.clone(),
-    )
-    .await
-    .expect("start second live session")
-    .expect("second live session handle");
-    transport.insert(
-        second_url,
-        Router::new()
-            .nest("/federation/v1", create_federation_router())
-            .with_state(second_state.clone()),
-    );
+    .expect("start live session");
 
-    let latency = crate::federation::aleph_bft_latency::CdkAlephBftLatencyRecorder::install();
-    let quote_id = QuoteId::new();
-    let envelope = mint_quote_envelope(&first_state, &quote_id);
-    let operation_id = envelope.operation_id().expect("operation id");
-    let submit_state = first_state.clone();
-    let submit = tokio::spawn(async move {
-        submit_state
-            .submit_federation_envelope_with_sequence(envelope, None)
-            .await
-    });
-
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+    let operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
     wait_for_latency_stage(
         &latency,
         operation_id,
-        crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::NetworkMessageDelivered,
+        CdkAlephBftLatencyStage::NetworkMessageDelivered,
     )
     .await;
-    let response = submit
-        .await
-        .expect("submit task")
-        .expect("live AlephBFT operation response");
-
-    assert_eq!(response.operation_id, operation_id);
-    assert_eq!(
-        response.outcome.entry().status,
-        FederationOperationStatus::Applied
-    );
-    wait_for_applied_operation(&first_state, operation_id).await;
-    wait_for_applied_operation(&second_state, operation_id).await;
+    wait_for_applied_operation(&session.first_state, operation_id).await;
+    wait_for_applied_operation(&session.second_state, operation_id).await;
 
     let operation_events = latency.events_for_operation(operation_id);
-    assert_latency_stage_order(
-        &operation_events,
-        &[
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::DataProviderYielded,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::NetworkMessageDelivered,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::FinalizedDataReceived,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyLoopReceived,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::OperationNotified,
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::WaiterReturned,
-        ],
-    );
+    assert_latency_stage_order(&operation_events, LATENCY_EXPECTED_STAGES);
     eprintln!(
         "AlephBFT latency probe for {operation_id}: {}",
         format_latency_events(&operation_events)
     );
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_latency_probe_records_three_serial_operations() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        pump_config,
+        500,
+    ))
+    .await
+    .expect("start live session");
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+
+    let mut operation_ids = Vec::new();
+    for _ in 0..3 {
+        let operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
+        wait_for_applied_operation(&session.first_state, operation_id).await;
+        wait_for_applied_operation(&session.second_state, operation_id).await;
+        operation_ids.push(operation_id);
+    }
+
+    for operation_id in operation_ids {
+        let operation_events = latency.events_for_operation(operation_id);
+        assert_latency_stage_order(&operation_events, LATENCY_EXPECTED_STAGES);
+        let end_to_end = latency_stage_delta(
+            &operation_events,
+            CdkAlephBftLatencyStage::SubmitQueued,
+            CdkAlephBftLatencyStage::WaiterReturned,
+        )
+        .expect("submit-to-waiter latency");
+        assert!(
+            end_to_end < Duration::from_secs(5),
+            "serial operation {operation_id} took {end_to_end:?}: {}",
+            format_latency_events(&operation_events)
+        );
+        eprintln!(
+            "AlephBFT serial latency probe for {operation_id}: {}",
+            format_latency_events(&operation_events)
+        );
+    }
 }
 
 #[tokio::test]
@@ -12721,10 +12680,123 @@ async fn wait_for_applied_operation(state: &MintState, operation_id: FederationO
     );
 }
 
+const LATENCY_EXPECTED_STAGES: &[CdkAlephBftLatencyStage] = &[
+    CdkAlephBftLatencyStage::SubmitQueued,
+    CdkAlephBftLatencyStage::DataProviderYielded,
+    CdkAlephBftLatencyStage::NetworkMessageDelivered,
+    CdkAlephBftLatencyStage::FinalizedDataReceived,
+    CdkAlephBftLatencyStage::ApplyLoopReceived,
+    CdkAlephBftLatencyStage::ApplyCompleted,
+    CdkAlephBftLatencyStage::OperationNotified,
+    CdkAlephBftLatencyStage::WaiterReturned,
+];
+
+struct TwoMemberAlephBftLiveSession {
+    first_state: MintState,
+    second_state: MintState,
+    _first_handle: Arc<FederationAlephBftLiveSessionHandle>,
+    _second_handle: Arc<FederationAlephBftLiveSessionHandle>,
+}
+
+async fn start_two_member_aleph_bft_live_session(
+    live_options: FederationAlephBftLiveSessionOptions,
+) -> Result<TwoMemberAlephBftLiveSession, cdk::Error> {
+    let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
+    let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
+    let (public_config, first_private, second_private) =
+        transport_config_with_federation_api_urls(first_url.clone(), second_url.clone());
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private,
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        second_private,
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(1),
+        operation_submission_timeout: Duration::from_secs(5),
+        ..FederationPeerSyncConfig::default()
+    };
+
+    let first_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut first_state,
+        sync_config,
+        live_options.clone(),
+        transport.clone(),
+    )
+    .await?
+    .expect("first live session handle");
+    transport.insert(
+        first_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(first_state.clone()),
+    );
+    let second_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut second_state,
+        sync_config,
+        live_options,
+        transport.clone(),
+    )
+    .await?
+    .expect("second live session handle");
+    transport.insert(
+        second_url,
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+
+    Ok(TwoMemberAlephBftLiveSession {
+        first_state,
+        second_state,
+        _first_handle: first_handle,
+        _second_handle: second_handle,
+    })
+}
+
+async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperationId {
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let submit_state = state.clone();
+    let response = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await
+    })
+    .await
+    .expect("submit task")
+    .expect("live AlephBFT operation response");
+
+    assert_eq!(response.operation_id, operation_id);
+    assert_eq!(
+        response.outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+
+    operation_id
+}
+
 async fn wait_for_latency_stage(
-    recorder: &crate::federation::aleph_bft_latency::CdkAlephBftLatencyRecorder,
+    recorder: &CdkAlephBftLatencyRecorder,
     operation_id: FederationOperationId,
-    stage: crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage,
+    stage: CdkAlephBftLatencyStage,
 ) {
     time::timeout(Duration::from_secs(5), async {
         loop {
@@ -12743,8 +12815,8 @@ async fn wait_for_latency_stage(
 }
 
 fn assert_latency_stage_order(
-    events: &[crate::federation::aleph_bft_latency::CdkAlephBftLatencyEvent],
-    expected: &[crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage],
+    events: &[CdkAlephBftLatencyEvent],
+    expected: &[CdkAlephBftLatencyStage],
 ) {
     let mut cursor = 0usize;
     for event in events {
@@ -12763,9 +12835,24 @@ fn assert_latency_stage_order(
     );
 }
 
-fn format_latency_events(
-    events: &[crate::federation::aleph_bft_latency::CdkAlephBftLatencyEvent],
-) -> String {
+fn latency_stage_delta(
+    events: &[CdkAlephBftLatencyEvent],
+    start: CdkAlephBftLatencyStage,
+    end: CdkAlephBftLatencyStage,
+) -> Option<Duration> {
+    let start_elapsed = events
+        .iter()
+        .find(|event| event.stage == start)
+        .map(|event| event.elapsed)?;
+    let end_elapsed = events
+        .iter()
+        .find(|event| event.stage == end)
+        .map(|event| event.elapsed)?;
+
+    end_elapsed.checked_sub(start_elapsed)
+}
+
+fn format_latency_events(events: &[CdkAlephBftLatencyEvent]) -> String {
     events
         .iter()
         .map(|event| format!("{:?}@{}ms", event.stage, event.elapsed.as_millis()))

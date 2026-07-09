@@ -1,7 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cdk::federation::FederationOperationId;
+use tokio::sync::OwnedMutexGuard;
 
 /// Test-only stage marker for AlephBFT latency probes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,16 +44,22 @@ struct CdkAlephBftLatencyRecorderState {
 
 static ACTIVE_RECORDER: Mutex<Option<Arc<Mutex<CdkAlephBftLatencyRecorderState>>>> =
     Mutex::new(None);
+static INSTALL_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
 
 /// Scoped test-only recorder for AlephBFT latency events.
 #[derive(Debug)]
 pub(crate) struct CdkAlephBftLatencyRecorder {
     inner: Arc<Mutex<CdkAlephBftLatencyRecorderState>>,
+    _install_guard: OwnedMutexGuard<()>,
 }
 
 impl CdkAlephBftLatencyRecorder {
     /// Install a recorder until this guard is dropped.
-    pub(crate) fn install() -> Self {
+    pub(crate) async fn install() -> Self {
+        let install_lock = INSTALL_LOCK
+            .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let install_guard = install_lock.lock_owned().await;
         let inner = Arc::new(Mutex::new(CdkAlephBftLatencyRecorderState {
             started_at: Instant::now(),
             events: Vec::new(),
@@ -61,7 +68,10 @@ impl CdkAlephBftLatencyRecorder {
             .lock()
             .expect("AlephBFT latency recorder mutex poisoned") = Some(Arc::clone(&inner));
 
-        Self { inner }
+        Self {
+            inner,
+            _install_guard: install_guard,
+        }
     }
 
     /// Return all recorded events.

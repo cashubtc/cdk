@@ -338,7 +338,7 @@ Test plan:
   active tail delays, local pending clearing after finalization drains, inbound
   private REST gossip carrying consensus data waking the hint, idle inbound
   messages not waking the hint, and a live private-REST AlephBFT finality smoke.
-- Done for the first non-production AlephBFT latency harness: a focused
+- Done for the first non-production AlephBFT latency harness: focused
   two-member live-session test records operation-specific stage timing for real
   upstream `run_session` over private REST. With fast in-process test delays,
   one mint-quote operation recorded:
@@ -349,8 +349,11 @@ Test plan:
   second live member applying the same operation. This is not a full process
   fakewallet timing number; it proves the local apply and waiter-notification
   path is not the 12-14s dominant delay under fast consensus options.
+  A follow-up three-operation serial probe recorded submit-to-waiter deltas in
+  the roughly 50-70ms range for three consecutive mint-quote operations under
+  the same fast in-process options.
 - Still needed: extend the non-production benchmark harness for AlephBFT operation latency:
-  - three sequential operations
+  - idle-tail first-operation versus active-tail follow-on runs
   - duplicate fanout submissions
   - 5-member and 7-member federations
 - Record proposal submitted, proposal broadcast, finalized, applied, and waiter notified timestamps.
@@ -459,8 +462,9 @@ This totals about 6-8s in the fakewallet happy path. If the protocol remains at 
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
 2. Add AlephBFT latency instrumentation in a non-production benchmark harness.
-   Current checkpoint: single-operation live-session stage timing is implemented
-   and proves fast in-process finality/apply/waiter completion around 70ms.
+   Current checkpoint: single-operation and three-operation live-session stage
+   timing are implemented and prove fast in-process finality/apply/waiter
+   completion around 50-80ms per operation.
 3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
    checkpoint: selective pending-work-aware tail cadence is implemented,
    behavior-tested, and process-verified for idle cooling; cold mints are still
