@@ -186,6 +186,18 @@ Current blocking bugs:
   materialized-state verification retains its intentional full history read.
   On the same databases, members fell to 3.85-3.95% CPU. A post-fix forced swap
   completed in 5.45s and strict status converged all members on 18 entries.
+- Slow-backend CLI value-operation follow-up: the five-member, threshold-four
+  process smoke now gives member 5 a deterministic 30-second incoming-payment
+  delay and uses that member as the second wallet's quote primary. The delayed
+  mint completed in 37.60s wall / 2.27s user / 0.03s system, proving the delay
+  was exercised without fallback quote churn. While that member remained live,
+  a forced P2PK swap completed in 3.55s / 0.93s / 0.01s and a forced-change
+  melt completed in 6.74s / 1.21s / 0.02s, paid 10 sat plus the 1 sat reserve,
+  and left 5 sat. The durable sequence was exactly `mint_quote ->
+  mint_quote_payment -> mint -> swap -> mint_quote -> mint_quote_payment ->
+  mint -> melt_quote -> swap -> melt`; all five members converged on those 10
+  operations with identical order/state digests, no pending work, no duplicate
+  submissions, and no alerts.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -3405,7 +3417,7 @@ Implementation checklist:
   A second focused receive test now proves a token whose mint URL is an imported
   member public URL reaches federation wallet resolution rather than the
   untrusted-mint gate, without needing live member HTTP.
-- [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path now tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests now cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction. `just fed-regtest-cli-smoke-mismatched-member` now covers a live reachable member advertising mismatched federation metadata/keysets while the threshold-valid member set still mints successfully. `just fed-regtest-cli-smoke-insufficient-valid-advertisements` covers too many reachable wrong-metadata members causing `mint-info` to fail before spendable proofs exist. `just fed-regtest-cli-smoke-missing-metadata` covers reachable standalone members that omit federation mint-info metadata, requires the CLI to fail with insufficient valid advertisements, and verifies no local proofs exist. `just fed-regtest-cli-smoke-all-members-unreachable` imports a generated federation without starting any members, requires `mint-info` to fail with insufficient keyset advertisements, and verifies no local proofs exist. `just fed-regtest-cli-smoke-slow-member` now covers a reachable slow fakewallet member outside the fast threshold path, mints through the primary member, verifies spendable proofs, and asserts the CLI did not create fallback duplicate quotes; non-v3 request-output command coverage remains open.
+- [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path now tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests now cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction. `just fed-regtest-cli-smoke-mismatched-member` now covers a live reachable member advertising mismatched federation metadata/keysets while the threshold-valid member set still mints successfully. `just fed-regtest-cli-smoke-insufficient-valid-advertisements` covers too many reachable wrong-metadata members causing `mint-info` to fail before spendable proofs exist. `just fed-regtest-cli-smoke-missing-metadata` covers reachable standalone members that omit federation mint-info metadata, requires the CLI to fail with insufficient valid advertisements, and verifies no local proofs exist. `just fed-regtest-cli-smoke-all-members-unreachable` imports a generated federation without starting any members, requires `mint-info` to fail with insufficient keyset advertisements, and verifies no local proofs exist. `just fed-regtest-cli-smoke-slow-member` now behaviorally exercises a 30-second fakewallet payment delay through the slow member as quote primary, completes threshold mint/swap/change-melt flows, and proves there was no fallback quote churn by requiring the exact 10-operation journal; non-v3 request-output command coverage remains open.
 - [x] Document how to use `cdk-cli` against a locally generated federation from
   the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
 
@@ -3489,11 +3501,15 @@ Latest checkpoint:
   --features federation federation -- --test-threads 1` with 18 focused tests.
   The slow-member CLI smoke target now starts a five-member threshold-four
   AlephBFT fakewallet federation with member 5 configured for a 30-second
-  fakewallet delay, imports the federation with member 1 as the primary,
-  mints 12 sat using the fast threshold path, checks the minted proofs are
-  unspent, and asserts that exactly one bolt11 mint quote was created so the
-  previous short-timeout duplicate-quote churn does not regress. A live run of
-  `just fed-regtest-cli-smoke-slow-member` passed on 2026-07-09.
+  fakewallet incoming-payment delay. A fast-primary wallet mints and forces a
+  P2PK swap; a second wallet uses slow member 5 as quote primary, proves the
+  configured delay behaviorally, consumes its four 1 sat proofs offline, and
+  melts 10 sat plus the 1 sat reserve so change signing is mandatory. A live
+  run on 2026-07-10 measured the P2PK swap at 3.55s, the delayed-primary mint at
+  37.60s, and the forced-change melt at 6.74s. All five members converged on the
+  exact 10-operation sequence with matching digests, zero duplicate
+  submissions, and no alerts, so fallback quote churn is excluded without
+  depending on log text.
   A direct value-operation benchmark on 2026-07-09 then forced a P2PK swap and
   a melt with real change output rather than relying on denomination luck. The
   all-members-live swap took 4.71s and the change melt took 8.06s; the same
@@ -3501,8 +3517,8 @@ Latest checkpoint:
   was exactly `melt_quote -> swap -> melt`, the returned member caught up to
   the same 17-entry order/state digests, and a post-optimization swap took
   5.45s before all members converged on entry 18. The remaining CLI value-path
-  work is the slow-member swap/melt matrix plus invalid-share, non-v3 request
-  output, and mismatched restore/check-state process failures.
+  work is invalid-share, non-v3 request-output, and mismatched
+  restore/check-state process failures.
 
 Scripted local CLI smoke command:
 
@@ -3608,7 +3624,7 @@ Tests and success criteria:
   spent-token check-state, generated fake-invoice melt, copied-seed restore, and
   final signed convergence status.
 - [x] Repeat the fakewallet CLI smoke with one member stopped when the configured member count and thresholds can still make progress. `just fed-regtest-cli-smoke-offline` now stops one member during CLI mint, check-state, send/receive, spent-token check-state, melt, balance, and copied-seed restore, then restarts it and requires final signed convergence.
-- [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable. Current process smoke proves the one-offline-member path, including restart/catch-up. `just fed-regtest-cli-smoke-slow-member` now proves a reachable slow fakewallet member outside the fast threshold path does not prevent minting and does not cause duplicate fallback quotes. Invalid-share CLI process coverage remains open.
+- [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable. Current process smoke proves the one-offline-member path, including restart/catch-up. `just fed-regtest-cli-smoke-slow-member` now proves a member with a behaviorally observed 30-second incoming-payment delay can serve as quote primary while threshold mint, forced swap, and forced-change melt complete without duplicate quotes; the exact 10-operation journal and final all-member convergence are required. Invalid-share CLI process coverage remains open.
 - [x] CLI tests prove insufficient threshold fails before wallet fanout can produce spendable proofs. `just fed-regtest-cli-smoke-insufficient-threshold` stops two members, expects CLI mint quote creation to fail, rejects any output claiming minted or received positive value, and verifies `check-state` finds no local proofs.
 - [ ] CLI tests prove missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs. Current focused unit coverage proves non-v3/BLS public configs are rejected during CLI import/registry validation. The `fed-regtest-cli-smoke-mismatched-member` process target now covers a live reachable member with mismatched federation metadata/keysets being excluded while the threshold-valid set still produces spendable proofs, `fed-regtest-cli-smoke-insufficient-valid-advertisements` covers the matching live failure path when too few valid member advertisements remain, `fed-regtest-cli-smoke-missing-metadata` covers reachable standalone members that omit federation mint-info metadata, and `fed-regtest-cli-smoke-all-members-unreachable` covers an imported federation whose members are all down. Non-v3 request-output command coverage remains open.
 - [x] First-test success criterion: a developer can run generated fakewallet

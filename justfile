@@ -703,7 +703,7 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
 fed-regtest-cli-smoke-offline dir="target/cdk-fed-regtest-cli-offline" wallet_dir="target/cdk-fed-regtest-cli-offline-wallet" members="5" threshold="3" port_start="64885" offline_member="5":
   just fed-regtest-cli-smoke "{{dir}}" "{{wallet_dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{offline_member}}"
 
-# Run the CLI federation smoke with one reachable slow fakewallet member outside the fast threshold path
+# Run CLI mint/swap/melt while one reachable member has a slow fakewallet payment backend
 fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_dir="target/cdk-fed-regtest-cli-slow-wallet" members="5" threshold="4" port_start="58885" slow_member="5" slow_delay_secs="30":
   #!/usr/bin/env bash
   set -euo pipefail
@@ -741,6 +741,33 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
       --public-config "{{dir}}/federation-public.json" \
       --private-config "{{dir}}/member-1/federation-private.json" \
       "${status_args[@]}" || true
+    return 1
+  }
+  wait_for_all_value_operations() {
+    local attempt
+    local status_output
+    local expected_lines
+    for attempt in $(seq 1 120); do
+      if status_output="$(target/debug/cdk-mintd federation status \
+        --public-config "{{dir}}/federation-public.json" \
+        --private-config "{{dir}}/member-1/federation-private.json" \
+        --require-ready \
+        --require-converged \
+        --require-session-outcome-quorum \
+        --require-no-digest-alerts \
+        --require-no-invalid-operation-alerts 2>/dev/null)"; then
+        expected_lines="$(grep -Ec 'operations=10 latest_index=9 ' <<<"$status_output" || true)"
+        if [[ "$expected_lines" == "{{members}}" ]]; then
+          printf '%s\n' "$status_output" | tee "{{dir}}/slow-member-final-status.out"
+          return 0
+        fi
+      fi
+      sleep 1
+    done
+    printf 'all federation members did not converge on the ten expected value operations\n' >&2
+    target/debug/cdk-mintd federation status \
+      --public-config "{{dir}}/federation-public.json" \
+      --private-config "{{dir}}/member-1/federation-private.json" || true
     return 1
   }
   wait_for_member_info() {
@@ -784,12 +811,9 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
     wait_for_member_info "$member"
   done
   wait_for_fast_status
-  if ! grep -Fq "min_delay_time: {{slow_delay_secs}}" "{{dir}}/member-{{slow_member}}/work/logs"/cdk-mintd.log.*; then
-    printf 'slow member did not log the expected fakewallet delay configuration\n' >&2
-    exit 1
-  fi
-  rm -rf -- "{{wallet_dir}}"
+  rm -rf -- "{{wallet_dir}}" "{{wallet_dir}}-change"
   mint_url="http://127.0.0.1:{{port_start}}"
+  slow_mint_url="http://127.0.0.1:$(({{port_start}} + {{slow_member}} - 1))"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
     --primary-member-id 1 \
@@ -802,16 +826,70 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
     mint "$mint_url" 12 --wait-duration 90
+  receiver_pubkey="$(target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    generate-public-key --mint-url "$mint_url" | awk '/^public key: / {print $3}' | tail -n 1)"
+  if [[ -z "$receiver_pubkey" ]]; then
+    printf 'could not generate the receiver public key for the forced swap\n' >&2
+    exit 1
+  fi
+  swap_token="$(/usr/bin/time -p target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    send --mint-url "$mint_url" --amount 3 --pubkey "$receiver_pubkey" \
+    2>"{{wallet_dir}}/forced-swap.time" | tail -n 1)"
+  if [[ "$swap_token" != cashu* ]]; then
+    printf 'forced P2PK send did not return a Cashu token\n' >&2
+    exit 1
+  fi
+  printf 'forced P2PK swap timing:\n'
+  cat "{{wallet_dir}}/forced-swap.time"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
     check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-slow-member.out"
   grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' "{{wallet_dir}}/check-slow-member.out"
-  new_quote_count="$(grep -Rh 'New bolt11 mint quote' "{{dir}}"/member-*/work/logs/cdk-mintd.log.* | wc -l | tr -d ' ')"
-  if [[ "$new_quote_count" != "1" ]]; then
-    printf 'expected exactly one quote creation, found %s\n' "$new_quote_count" >&2
+
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --primary-member-id "{{slow_member}}" \
+    --member-request-timeout-secs 90 \
+    --member-fallback-timeout-secs 90 \
+    --quote-status-member-timeout-secs 90 \
+    --mint-quote-visibility-attempts 20 \
+    --mint-quote-visibility-retry-delay-ms 250 \
+    --fanout-concurrency "{{members}}"
+  slow_mint_started="$(date +%s)"
+  /usr/bin/time -p target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
+    mint "$slow_mint_url" 20 --wait-duration 120 \
+    2>"{{wallet_dir}}/slow-primary-mint.time"
+  slow_mint_elapsed="$(( $(date +%s) - slow_mint_started ))"
+  if (( slow_mint_elapsed < {{slow_delay_secs}} - 2 )); then
+    printf 'slow-member mint completed in %s seconds, below the configured %s second backend delay\n' \
+      "$slow_mint_elapsed" "{{slow_delay_secs}}" >&2
     exit 1
   fi
+  printf 'slow-member primary mint elapsed_seconds=%s\n' "$slow_mint_elapsed"
+  cat "{{wallet_dir}}/slow-primary-mint.time"
+  for _ in $(seq 1 4); do
+    offline_token="$(target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
+      send --mint-url "$slow_mint_url" --amount 1 --offline | tail -n 1)"
+    if [[ "$offline_token" != cashu* ]]; then
+      printf 'offline 1 sat send did not return a Cashu token\n' >&2
+      exit 1
+    fi
+  done
+  invoice="$(target/debug/cdk-mintd federation fake-invoice --amount-msat 10000)"
+  /usr/bin/time -p target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
+    melt --mint-url "$slow_mint_url" --method bolt11 --invoice "$invoice" \
+    2>"{{wallet_dir}}/forced-change-melt.time"
+  printf 'forced change melt timing:\n'
+  cat "{{wallet_dir}}/forced-change-melt.time"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
+    balance | tee "{{wallet_dir}}/change-balance.out"
+  grep -Eq '(^|[[:space:]])5 sat$' "{{wallet_dir}}/change-balance.out"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
+    check-state --mint-url "$slow_mint_url" | tee "{{wallet_dir}}/check-change-melt.out"
+  grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' "{{wallet_dir}}/check-change-melt.out"
+
   wait_for_fast_status
-  printf 'cdk-cli slow-member smoke passed\n'
+  wait_for_all_value_operations
+  printf 'cdk-cli slow-member mint/swap/change-melt smoke passed\n'
 
 # Run the CLI federation smoke until threshold is unavailable and require mint failure without proofs
 fed-regtest-cli-smoke-insufficient-threshold dir="target/cdk-fed-regtest-cli-insufficient" wallet_dir="target/cdk-fed-regtest-cli-insufficient-wallet" members="5" threshold="3" port_start="63885" offline_members="4 5":

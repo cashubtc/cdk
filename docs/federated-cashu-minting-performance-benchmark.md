@@ -927,6 +927,39 @@ This leaves a normal warm receive target around 3-4s and confirms the hard
 target below 10s. Further improvement should focus first on CLI activation and
 connector setup, then on eliminating the one already-scheduled cold idle wait.
 
+## Slow-Member CLI Value Matrix
+
+On 2026-07-10, `just fed-regtest-cli-smoke-slow-member` ran a fresh
+five-member, threshold-four AlephBFT federation with member 5 configured for a
+deterministic 30-second fakewallet incoming-payment delay. The test uses two
+wallets so denomination selection cannot hide either value operation: the
+first creates a P2PK-locked send that requires a swap, while the second removes
+all four 1 sat proofs before paying a 10 sat invoice plus 1 sat reserve, forcing
+a 1 sat change output through another swap.
+
+| Operation | Wall | User CPU | System CPU | Result |
+| --- | ---: | ---: | ---: | --- |
+| forced P2PK swap while slow member is live | 3.55s | 0.93s | 0.01s | threshold token returned |
+| mint with delayed member 5 as quote primary | 37.60s | 2.27s | 0.03s | 20 sat issued after configured delay |
+| forced-change melt through member 5 URL | 6.74s | 1.21s | 0.02s | 10 sat + 1 sat fee paid; 5 sat remains |
+
+The final durable journal contained exactly:
+
+```text
+mint_quote -> mint_quote_payment -> mint -> swap ->
+mint_quote -> mint_quote_payment -> mint ->
+melt_quote -> swap -> melt
+```
+
+All five members reported 10 operations through index 9, identical order and
+state digests, zero pending mempool items/waiters, zero duplicate submissions,
+and zero payment, digest, or invalid-operation alerts. Exact journal cardinality
+replaces the older log-text quote-count assertion: any fallback-created quote
+would append another `mint_quote` lifecycle and fail the 10-operation gate.
+The 37.60-second mint is intentional evidence of the configured 30-second
+backend delay; it is not an AlephBFT performance regression. The swap and melt
+remain below the 10-second value-operation target while that member is live.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

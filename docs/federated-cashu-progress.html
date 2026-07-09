@@ -431,19 +431,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, slow and unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Forced direct swaps complete in about 4.7-5.5s and change melts in about 8.1-8.5s with all members live or one offline. Active work uses a 100ms cadence, while an inactive data provider waits instead of creating empty units; trace-enabled post-work members remain around 4% CPU without continued DAG growth.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, a behaviorally verified slow payment member, unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Forced direct swaps complete in 3.55-5.45s and change melts in 6.74-8.45s across live, offline, and slow-backend matrices. Active work uses a 100ms cadence, while an inactive data provider waits instead of creating empty units; trace-enabled post-work members remain around 4% CPU without continued DAG growth.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: make peer order status constant time</span>
+          <span class="value">test: extend slow-member federation CLI smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Direct value-path measurement now proves one forced P2PK swap takes 4.71s and a real change melt takes 8.06s; with one member offline they take 4.90s and 8.45s. The melt serializes exactly <code>melt_quote -&gt; swap -&gt; melt</code>, and the restarted member catches up to identical digests. A same-history CPU sample then found peer sync repeatedly deserializing every durable BLS operation for order-only status. The new scalar journal-tip query reduced trace-enabled member CPU from 15.45-17.05% to 3.85-3.95%; a post-fix swap passed in 5.45s and all members converged on 18 operations.</span>
+          <span class="value">The slow-member CLI smoke now exercises the full value path against a five-member threshold-four federation. Member 5 has a behaviorally verified 30-second payment delay and serves as quote primary: its mint completes in 37.60s without fallback quote churn, while a forced P2PK swap completes in 3.55s and a forced-change melt in 6.74s. The journal is exactly <code>mint_quote -&gt; mint_quote_payment -&gt; mint -&gt; swap -&gt; mint_quote -&gt; mint_quote_payment -&gt; mint -&gt; melt_quote -&gt; swap -&gt; melt</code>; all five members converge on matching digests with no pending work, duplicate submissions, or alerts.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend the completed direct swap/melt benchmark to the slow-member matrix, then add the remaining CLI invalid-share, non-v3 request-output, and mismatched restore/check-state process failures while preserving the passing CPU, restart, catch-up, and convergence gates.</span>
+          <span class="value">Add the remaining CLI invalid-share, non-v3 request-output, and mismatched restore/check-state process failures while preserving the passing slow/offline value paths, CPU, restart, catch-up, and convergence gates.</span>
         </div>
       </aside>
     </header>
@@ -700,7 +700,7 @@
             <div>
               <h3>Milestone 25: CLI wallet federation support</h3>
               <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
-              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, invite-code import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, detached local member daemon startup, one-offline-member CLI smoke with restart catch-up, slow-member CLI smoke without duplicate quote churn, insufficient-threshold mint failure without proofs, all-members-unreachable mint-info failure without proofs, no-change and change-output melt CLI smoke coverage, one reachable mismatched-metadata member tolerated by a threshold-valid set, insufficient-valid-advertisement failure before proofs, missing federation mint-info metadata failure before proofs, CLI registry/public-config malformed, stale-version, mismatched-roster, inactive-keyset, and non-v3/BLS rejection tests, repository activation tests for local/member federation URLs plus standalone fallback, missing-federation-metadata receive error coverage, imported member-URL receive resolution, explicit <code>--primary-member-id</code> request-policy coverage, and standalone CLI compatibility are passing; bad-share and non-v3 request-output CLI smokes remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, invite-code import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, detached local member daemon startup, one-offline-member CLI smoke with restart catch-up, behaviorally verified 30-second slow-primary mint plus forced P2PK swap and forced-change melt with exact-journal no-duplicate proof, insufficient-threshold mint failure without proofs, all-members-unreachable mint-info failure without proofs, no-change and change-output melt CLI smoke coverage, one reachable mismatched-metadata member tolerated by a threshold-valid set, insufficient-valid-advertisement failure before proofs, missing federation mint-info metadata failure before proofs, CLI registry/public-config malformed, stale-version, mismatched-roster, inactive-keyset, and non-v3/BLS rejection tests, repository activation tests for local/member federation URLs plus standalone fallback, missing-federation-metadata receive error coverage, imported member-URL receive resolution, explicit <code>--primary-member-id</code> request-policy coverage, and standalone CLI compatibility are passing; bad-share and non-v3 request-output CLI smokes remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -864,7 +864,8 @@
           federated <code>mint-info</code> is no longer CPU-bound by repeated full
           config validation. Opt-in process lifecycle traces cover queue,
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
-          forced direct swap and change melt pass with all members live and one member offline.
+          forced direct swap and change melt pass with all members live, one member offline, and a
+          behaviorally verified 30-second payment delay member.
         </p>
       </section>
 
@@ -951,7 +952,7 @@
           </article>
           <article class="item">
             <h3>Receiver and value-operation latency</h3>
-            <p>Receiver-side receive/swap passes at 7.92s with exactly one accepted swap. Forced direct swap now passes in 4.71s with all members live and 4.90s with one offline; real change melt passes in 8.06s and 8.45s respectively, followed by deterministic restart catch-up. Extend this evidence to the slow-member matrix while retaining the passing CPU, restart, catch-up, and convergence gates.</p>
+            <p>Receiver-side receive/swap passes at 7.92s with exactly one accepted swap. Forced direct swap passes in 4.71s with all members live, 4.90s with one offline, and 3.55s with a delayed payment member live; real change melt passes in 8.06s, 8.45s, and 6.74s respectively. The slow-primary mint behaviorally observes its configured 30-second delay and completes in 37.60s without duplicate quotes.</p>
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
