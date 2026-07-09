@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live five-member threshold-three AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, and insufficient-threshold mint failure without proofs; remaining CLI work is broader command coverage, invite ergonomics, slow or bad-member matrices, and metadata/keyset failure cases.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live five-member threshold-three AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, and insufficient-threshold mint failure without proofs; focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, and non-v3/BLS metadata rejection at the CLI import/registry boundary. Remaining CLI work is broader command coverage, invite ergonomics, slow or bad-member matrices, and live member-advertisement/keyset failure cases.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add cli insufficient-threshold smoke</span>
+          <span class="value">test: harden cli federation metadata rejection</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value"><code>just fed-regtest-cli-smoke-insufficient-threshold</code> now stops two members in a five-member threshold-three AlephBFT federation, verifies real <code>cdk-cli</code> minting fails while threshold is unavailable, and checks that no local proofs were produced.</span>
+          <span class="value"><code>cargo test -p cdk-cli --features federation federation -- --test-threads 1</code> now proves the CLI rejects malformed registry/config JSON, stale registry/config protocol versions, mismatched rosters, inactive keysets, and non-v3/BLS federation keysets before constructing a federated wallet connector.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add CLI failure matrices for slow members, bad shares, mismatched keysets, and mismatched restore/check-state member views.</span>
+          <span class="value">Add CLI failure matrices for slow members, bad shares, live member-advertised mismatched keysets, and mismatched restore/check-state member views.</span>
         </div>
       </aside>
     </header>
@@ -699,7 +699,7 @@
             <div>
               <h3>Milestone 25: CLI wallet federation support</h3>
               <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
-              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, one-offline-member CLI smoke with restart catch-up, insufficient-threshold mint failure without proofs, and standalone CLI compatibility are passing; slow-member, bad-share, and metadata/keyset CLI smokes remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, one-offline-member CLI smoke with restart catch-up, insufficient-threshold mint failure without proofs, CLI registry/public-config malformed, stale-version, mismatched-roster, inactive-keyset, and non-v3/BLS rejection tests, and standalone CLI compatibility are passing; slow-member, bad-share, and live metadata/keyset CLI smokes remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -929,7 +929,7 @@
         <div class="stack">
           <article class="item">
             <h3>CLI federation coverage</h3>
-            <p>Add failure matrices for slow, bad-share, mismatched-keyset, and mismatched restore/check-state member views now that happy-path, one-offline-member, and insufficient-threshold CLI smokes are scripted.</p>
+            <p>Add failure matrices for slow, bad-share, live member-advertised mismatched-keyset, and mismatched restore/check-state member views now that happy-path, one-offline-member, insufficient-threshold, and static metadata-rejection CLI coverage are scripted.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

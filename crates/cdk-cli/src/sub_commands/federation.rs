@@ -421,6 +421,7 @@ mod tests {
     use std::str::FromStr;
 
     use cdk::nuts::nut01::BlsSecretKey;
+    use cdk::nuts::nut02::Id;
     use cdk::Amount;
     use cdk_common::federation::{
         generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
@@ -479,6 +480,19 @@ mod tests {
         .public_config
     }
 
+    fn make_first_keyset_non_v3(public_config: &mut FederationConfig) {
+        let keyset = public_config
+            .keysets
+            .first_mut()
+            .expect("valid config has a keyset");
+        keyset.id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+    }
+
     fn temp_work_dir() -> PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -522,6 +536,46 @@ mod tests {
     }
 
     #[test]
+    fn registry_load_rejects_malformed_json() {
+        let work_dir = temp_work_dir();
+        fs::write(registry_path(&work_dir), "{not-json").expect("write malformed registry");
+
+        let err =
+            FederationWalletRegistry::load(&work_dir).expect_err("malformed registry rejected");
+
+        assert!(!err.to_string().is_empty());
+        fs::remove_dir_all(work_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn public_config_loader_rejects_malformed_json() {
+        let work_dir = temp_work_dir();
+        let public_config_path = work_dir.join("federation-public.json");
+        fs::write(&public_config_path, "{not-json").expect("write malformed config");
+
+        let err = load_public_config(&public_config_path).expect_err("malformed config rejected");
+
+        assert!(!err.to_string().is_empty());
+        fs::remove_dir_all(work_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn registry_rejects_stale_registry_version() {
+        let registry = FederationWalletRegistry {
+            version: FEDERATION_REGISTRY_VERSION + 1,
+            wallets: Vec::new(),
+        };
+
+        let err = registry
+            .validate()
+            .expect_err("stale registry version rejected");
+
+        assert!(err
+            .to_string()
+            .contains("Unsupported federation registry version"));
+    }
+
+    #[test]
     fn registry_rejects_inactive_federation_wallet() {
         let mut public_config = valid_public_config();
         for keyset in &mut public_config.keysets {
@@ -541,6 +595,61 @@ mod tests {
         assert!(err
             .to_string()
             .contains("does not advertise an active keyset"));
+    }
+
+    #[test]
+    fn registry_rejects_non_v3_federation_keyset_before_connector() {
+        let mut public_config = valid_public_config();
+        make_first_keyset_non_v3(&mut public_config);
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let mut registry = FederationWalletRegistry::default();
+
+        let err = registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect_err("non-v3 federation keyset rejected");
+
+        assert!(err.to_string().contains("must use Cashu keyset v3"));
+    }
+
+    #[test]
+    fn registry_rejects_stale_public_config_protocol_version() {
+        let mut public_config = valid_public_config();
+        public_config.protocol_versions.operation += 1;
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let mut registry = FederationWalletRegistry::default();
+
+        let err = registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect_err("stale public config version rejected");
+
+        assert!(err.to_string().contains("protocol version mismatch"));
+    }
+
+    #[test]
+    fn registry_rejects_mismatched_roster_metadata() {
+        let mut public_config = valid_public_config();
+        public_config.threshold_params =
+            ThresholdParams::with_bft_consensus(4, 3).expect("mismatched params");
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let mut registry = FederationWalletRegistry::default();
+
+        let err = registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect_err("mismatched roster metadata rejected");
+
+        assert!(err.to_string().contains("member count mismatch"));
     }
 
     #[test]
