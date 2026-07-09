@@ -66,6 +66,9 @@ pub enum FederationCommand {
     DkgStatus(FederationDkgStatusArgs),
     /// Inspect federation config material without printing member secrets.
     Inspect(FederationInspectArgs),
+    /// Generate a fake BOLT11 invoice for local fakewallet smokes.
+    #[cfg(feature = "fakewallet")]
+    FakeInvoice(FederationFakeInvoiceArgs),
     /// List redacted payment-observation reports from signed member status.
     PaymentObservations(FederationPaymentObservationsArgs),
     /// Propose a payment-observation quarantine operation over signed private REST.
@@ -177,6 +180,41 @@ pub struct FederationQuarantinePaymentObservationArgs {
     /// Member ID to submit to. Repeat to submit to multiple members. Defaults to every member.
     #[arg(long = "member")]
     pub members: Vec<u16>,
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationFakeInvoiceArgs {
+    /// Invoice amount in millisatoshis.
+    #[arg(long)]
+    pub amount_msat: u64,
+    /// Plain invoice description for the default paid fakewallet path.
+    #[arg(long, default_value = "federation cli smoke melt")]
+    pub description: String,
+    /// Fakewallet payment state encoded into the invoice description.
+    #[arg(long, value_enum, default_value_t = FederationFakeInvoiceStateArg::Paid)]
+    pub state: FederationFakeInvoiceStateArg,
+    /// Make the fakewallet pay_invoice call return an error.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub pay_error: bool,
+    /// Make the fakewallet check_outgoing_payment call return an error.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub check_error: bool,
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FederationFakeInvoiceStateArg {
+    /// Fakewallet reports the outgoing payment as paid.
+    Paid,
+    /// Fakewallet reports the outgoing payment as pending.
+    Pending,
+    /// Fakewallet reports the outgoing payment as unpaid.
+    Unpaid,
+    /// Fakewallet reports the outgoing payment as failed.
+    Failed,
+    /// Fakewallet reports the outgoing payment as unknown.
+    Unknown,
 }
 
 #[cfg(feature = "federation")]
@@ -405,6 +443,32 @@ mod tests {
             vec![PathBuf::from("member-1/dkg-transcript-signature.json")]
         );
         assert!(status.require_ready);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn parses_federation_fake_invoice_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "fake-invoice",
+            "--amount-msat",
+            "10000",
+            "--state",
+            "failed",
+            "--pay-error",
+        ])
+        .expect("fake invoice command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::FakeInvoice(fake_invoice) = federation.command else {
+            panic!("expected federation fake-invoice command");
+        };
+        assert_eq!(fake_invoice.amount_msat, 10000);
+        assert_eq!(fake_invoice.state, FederationFakeInvoiceStateArg::Failed);
+        assert!(fake_invoice.pay_error);
     }
 
     #[test]

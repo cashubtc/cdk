@@ -111,6 +111,10 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 cli::FederationCommand::Inspect(inspect) => {
                     federation_inspect::run_inspect_command(args, inspect)?;
                 }
+                #[cfg(feature = "fakewallet")]
+                cli::FederationCommand::FakeInvoice(fake_invoice) => {
+                    run_fake_invoice_command(fake_invoice)?;
+                }
                 cli::FederationCommand::PaymentObservations(observations) => {
                     federation_payment_observations::run_payment_observations_command(
                         args,
@@ -141,6 +145,36 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn run_fake_invoice_command(args: &cli::FederationFakeInvoiceArgs) -> Result<()> {
+    let state = match args.state {
+        cli::FederationFakeInvoiceStateArg::Paid => cdk::nuts::MeltQuoteState::Paid,
+        cli::FederationFakeInvoiceStateArg::Pending => cdk::nuts::MeltQuoteState::Pending,
+        cli::FederationFakeInvoiceStateArg::Unpaid => cdk::nuts::MeltQuoteState::Unpaid,
+        cli::FederationFakeInvoiceStateArg::Failed => cdk::nuts::MeltQuoteState::Failed,
+        cli::FederationFakeInvoiceStateArg::Unknown => cdk::nuts::MeltQuoteState::Unknown,
+    };
+
+    let description =
+        if state == cdk::nuts::MeltQuoteState::Paid && !args.pay_error && !args.check_error {
+            args.description.clone()
+        } else {
+            serde_json::to_string(&cdk_fake_wallet::FakeInvoiceDescription {
+                pay_invoice_state: state,
+                check_payment_state: state,
+                pay_err: args.pay_error,
+                check_err: args.check_error,
+            })?
+        };
+
+    println!(
+        "{}",
+        cdk_fake_wallet::create_fake_invoice(args.amount_msat, description)
+    );
+
+    Ok(())
 }
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {

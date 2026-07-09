@@ -3097,9 +3097,10 @@ Implementation checklist:
   federation mode is active. The first path now covers startup activation,
   balance, mint, send/swap, receive, melt, restore-style wallet lookup, keyset
   helper commands that use `get_or_create_wallet`, mint-pending wallet
-  recovery, and `mint-info` through the imported federation connector. Remaining
-  direct HTTP or auth-related commands need an explicit federation-aware route
-  or a documented standalone behavior.
+  recovery, `mint-info` through the imported federation connector, and explicit
+  `check-state` for local wallet proofs or token proofs. Remaining direct HTTP
+  or auth-related commands need an explicit federation-aware route or a
+  documented standalone behavior.
 - [ ] Add all CLI options for wallet-side federation request policy. The first
   path now exposes member fallback timeout, member request timeout, quote-status
   timeout, retry count, fanout concurrency, and mint-quote visibility controls;
@@ -3131,9 +3132,19 @@ Latest checkpoint:
   state digest. A follow-up CLI routing checkpoint now resolves imported
   federations by any member public mint URL, uses the federation connector for
   `mint-info`, and treats imported member URLs as trusted federation metadata
-  during receive.
+  during receive. The smoke is now scripted as `just fed-regtest-cli-smoke` and
+  adds CLI `check-state`, generated fake invoices, copied-seed restore into a
+  fresh CLI database, final balance verification, and final signed convergence
+  status. A five-member threshold-three AlephBFT run passed with 6 accepted
+  operations, matching order digest, and matching state digest.
 
-First local CLI smoke command shape:
+Scripted local CLI smoke command:
+
+```bash
+just fed-regtest-cli-smoke
+```
+
+Manual local CLI smoke command shape:
 
 ```bash
 CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=aleph_bft \
@@ -3156,7 +3167,16 @@ target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactiv
   receive <token-from-send>
 
 target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive --unit sat \
-  melt --mint-url http://127.0.0.1:62705 --method bolt11 --invoice <valid-10-sat-bolt11>
+  check-state --token <token-from-send>
+
+target/debug/cdk-mintd federation fake-invoice --amount-msat 10000
+
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive --unit sat \
+  melt --mint-url http://127.0.0.1:62705 --method bolt11 --invoice <generated-fake-invoice>
+
+cp target/cdk-cli-fed-smoke-wallet/seed target/cdk-cli-fed-smoke-wallet-restore/seed
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet-restore --non-interactive --unit sat \
+  restore http://127.0.0.1:62705
 ```
 
 Tests and success criteria:
@@ -3186,6 +3206,9 @@ Tests and success criteria:
   aggregate-verifiable change proofs. Current live smoke proves the
   change-output path.
 - [ ] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists.
+  Current scripted smoke proves happy-path local proof check-state, spent-token
+  check-state after receive, and copied-seed restore through the federation
+  connector; mismatched/no-threshold member-state CLI coverage remains open.
 - [ ] CLI receive tests prove received tokens resolve to imported federation
   metadata, and missing federation metadata produces a clear error instead of
   silently treating the token as a standalone mint token. Current live smoke
@@ -3195,7 +3218,10 @@ Tests and success criteria:
 - [x] Add a fakewallet federation CLI smoke test that starts N local federation
   members, imports `federation-public.json` into `cdk-cli`, mints with fake paid
   quotes, performs send/swap, melts through the fake successful backend, and
-  verifies balances and aggregate-verifiable proofs.
+  verifies balances and aggregate-verifiable proofs. The smoke is available as
+  `just fed-regtest-cli-smoke` and now also asserts local proof check-state,
+  spent-token check-state, generated fake-invoice melt, copied-seed restore, and
+  final signed convergence status.
 - [ ] Repeat the fakewallet CLI smoke with one member stopped when the configured member count and thresholds can still make progress.
 - [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable.
 - [ ] CLI tests prove insufficient threshold, missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs.

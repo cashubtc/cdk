@@ -4,6 +4,7 @@ pub mod cat_device_login;
 pub mod cat_login;
 pub mod check_pending;
 pub mod check_requests;
+pub mod check_state;
 pub mod create_request;
 pub mod decode_request;
 pub mod decode_token;

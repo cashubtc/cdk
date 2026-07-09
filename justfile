@@ -620,6 +620,66 @@ fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="2
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
+# Run a real cdk-cli wallet smoke against generated fake-wallet federation members
+fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fed-regtest-cli-wallet" members="5" threshold="3" port_start="62885":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
+  export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
+  wait_for_cli_smoke_status() {
+    local attempt
+    for attempt in $(seq 1 60); do
+      if just fed-regtest-status "{{dir}}" "1"; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'federation did not become ready for CLI smoke\n' >&2
+    return 1
+  }
+  cargo build -p cdk-cli --features federation
+  just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
+  just fed-regtest-start "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  trap 'just fed-regtest-stop "{{dir}}"' EXIT
+  wait_for_cli_smoke_status
+  rm -rf -- "{{wallet_dir}}" "{{wallet_dir}}-restore"
+  mint_url="http://127.0.0.1:{{port_start}}"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --member-request-timeout-secs 60 \
+    --member-fallback-timeout-secs 60 \
+    --quote-status-member-timeout-secs 60
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    mint "$mint_url" 20 --wait-duration 90
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-local.out"
+  grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' "{{wallet_dir}}/check-local.out"
+  token="$(target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat send --mint-url "$mint_url" --amount 7 | tail -n 1)"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat receive "$token"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    check-state --token "$token" | tee "{{wallet_dir}}/check-token.out"
+  grep -Eq 'Token proof states: total=[0-9]+ .*spent=[1-9][0-9]*' "{{wallet_dir}}/check-token.out"
+  invoice="$(target/debug/cdk-mintd federation fake-invoice --amount-msat 10000)"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    melt --mint-url "$mint_url" --method bolt11 --invoice "$invoice"
+  mkdir -p "{{wallet_dir}}-restore"
+  cp "{{wallet_dir}}/seed" "{{wallet_dir}}-restore/seed"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-restore" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --member-request-timeout-secs 60 \
+    --member-fallback-timeout-secs 60 \
+    --quote-status-member-timeout-secs 60
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-restore" --non-interactive --unit sat \
+    restore "$mint_url" | tee "{{wallet_dir}}/restore.out"
+  grep -Eq 'Restored: [1-9][0-9]*' "{{wallet_dir}}/restore.out"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat balance
+  wait_for_cli_smoke_status
+  printf 'cdk-cli federation smoke passed\n'
+
 # Run generated local federation smoke with a longer offline operation window
 fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="5" threshold="3" port_start="25885" offline_batches="8":
   #!/usr/bin/env bash

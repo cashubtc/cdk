@@ -99,6 +99,8 @@ enum Commands {
     Transfer(sub_commands::transfer::TransferSubCommand),
     /// Reclaim pending proofs that are no longer pending
     CheckPending,
+    /// Check local or token proof state with the mint
+    CheckState(sub_commands::check_state::CheckStateSubCommand),
     /// Check incoming payments for stored payment requests.
     CheckRequests,
     /// View mint info
@@ -314,6 +316,14 @@ async fn main() -> Result<()> {
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&wallet_repository).await
         }
+        Commands::CheckState(sub_command_args) => {
+            sub_commands::check_state::check_state(
+                &wallet_repository,
+                sub_command_args,
+                &default_unit,
+            )
+            .await
+        }
         Commands::CheckRequests => {
             sub_commands::check_requests::check_requests(&wallet_repository).await
         }
@@ -470,6 +480,16 @@ mod tests {
             Commands::Federation(sub_commands::federation::FederationCommand {
                 command: sub_commands::federation::FederationSubCommand::Add(_)
             })
+        ));
+    }
+
+    #[test]
+    fn parses_check_state_token_command() {
+        let cli = Cli::parse_from(["cdk-cli", "check-state", "--token", "cashuAexample"]);
+
+        assert!(matches!(
+            cli.command,
+            Commands::CheckState(sub_commands::check_state::CheckStateSubCommand { .. })
         ));
     }
 }
