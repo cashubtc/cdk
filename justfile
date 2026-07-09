@@ -648,7 +648,7 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
   if [[ "{{offline_member}}" != "0" ]]; then
     just fed-regtest-stop-member "{{offline_member}}" "{{dir}}"
   fi
-  rm -rf -- "{{wallet_dir}}" "{{wallet_dir}}-restore"
+  rm -rf -- "{{wallet_dir}}" "{{wallet_dir}}-restore" "{{wallet_dir}}-no-change"
   mint_url="http://127.0.0.1:{{port_start}}"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
@@ -669,6 +669,19 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
   invoice="$(target/debug/cdk-mintd federation fake-invoice --amount-msat 10000)"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
     melt --mint-url "$mint_url" --method bolt11 --invoice "$invoice"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-no-change" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --member-request-timeout-secs 60 \
+    --member-fallback-timeout-secs 60 \
+    --quote-status-member-timeout-secs 60
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-no-change" --non-interactive --unit sat \
+    mint "$mint_url" 11 --wait-duration 90
+  no_change_invoice="$(target/debug/cdk-mintd federation fake-invoice --amount-msat 10000)"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-no-change" --non-interactive --unit sat \
+    melt --mint-url "$mint_url" --method bolt11 --invoice "$no_change_invoice"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}-no-change" --non-interactive --unit sat \
+    check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-no-change-melt.out"
+  grep -Fq 'No local proofs found' "{{wallet_dir}}/check-no-change-melt.out"
   mkdir -p "{{wallet_dir}}-restore"
   cp "{{wallet_dir}}/seed" "{{wallet_dir}}-restore/seed"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}-restore" --non-interactive \
@@ -898,7 +911,7 @@ fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" thr
       continue
     fi
     mkdir -p "$work_dir"
-    target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+    nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started member ${member} with pid $(cat "$pid_file")"
   done
@@ -971,7 +984,7 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
       continue
     fi
     mkdir -p "$work_dir"
-    target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+    nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started member ${member} with pid $(cat "$pid_file")"
   done
@@ -999,7 +1012,7 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest" build="1":
   if [[ "{{build}}" == "1" ]]; then
     cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
   fi
-  target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
   echo "$!" > "$pid_file"
   echo "started member {{member}} with pid $(cat "$pid_file")"
   mint_url="$(awk -F' = ' '/^url = / { gsub("\"", "", $2); print $2; exit }' "$config")"

@@ -3147,6 +3147,13 @@ Latest checkpoint:
   fresh CLI database, final balance verification, and final signed convergence
   status. A five-member threshold-three AlephBFT run passed with 6 accepted
   operations, matching order digest, and matching state digest. The follow-up
+  no-change melt checkpoint extends `just fed-regtest-cli-smoke` with a
+  separate exact-input wallet that imports the federation config, mints 11 sat,
+  melts a 10 sat fake BOLT11 invoice with the 1 sat fakewallet fee reserve, and
+  verifies `check-state` reports no remaining local proofs after the melt.
+  The local federation start helpers now also launch member daemons with `nohup`
+  and closed stdin so the short-lived recipe shell cannot terminate member
+  processes before the CLI smoke reaches readiness polling. The follow-up
   `just fed-regtest-cli-smoke-offline` target now repeats the same CLI flow
   while member 5 is offline, restarts that member without rebuilding mintd,
   waits until the member's public API is reachable, and requires catch-up to the
@@ -3255,10 +3262,11 @@ Tests and success criteria:
   existing federated proofs and cannot aggregate shares for a conflicting or
   sliding-window output set. Current live smoke proves the happy-path online
   send/swap.
-- [ ] CLI integration or command-level tests prove `cdk-cli` can melt through a
+- [x] CLI integration or command-level tests prove `cdk-cli` can melt through a
   local federation, including the no-change case and a change-output case with
   aggregate-verifiable change proofs. Current live smoke proves the
-  change-output path.
+  change-output path on the main wallet and the no-change exact-input path on a
+  separate wallet in `just fed-regtest-cli-smoke`.
 - [ ] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists.
   Current scripted smoke proves happy-path local proof check-state, spent-token
   check-state after receive, and copied-seed restore through the federation
