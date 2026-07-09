@@ -595,5 +595,9 @@ application.
    12-14s because they need three serialized consensus operations and can wait
    on the 2s idle tail before the first active proposal.
 4. Cache validated federation configs and aggregate keysets in the wallet/CLI.
+   Current checkpoint: startup activation now builds one federated connector per
+   imported federation and reuses it across all active units in that command
+   process. Remaining work is cross-process validated-config/digest caching if
+   later measurements still show CLI registry validation as meaningful.
 5. Re-benchmark two full mints and one receiver-side receive/swap after every change.
 6. Only after the above, evaluate whether `mint_quote_payment` and `mint` can be safely merged or linked into a fewer-round design.

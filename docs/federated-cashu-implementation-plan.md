@@ -3246,6 +3246,12 @@ Implementation checklist:
 - [x] Persist enough federation metadata in the CLI wallet state to reopen the
   same wallet without repeatedly passing the full config, without storing member
   private configs or mint-side private material.
+- [x] CLI federation wallet activation reuses one constructed federated wallet
+  connector across all active units in an imported federation during a single
+  command process. This avoids rebuilding the same member connector set for
+  multi-unit federations during startup activation while keeping the persisted
+  registry JSON unchanged. Focused coverage proves `Sat` and `Usd` wallets
+  activated from one imported federation share the same connector `Arc`.
 - [ ] Wire every `cdk-cli` command through the federation connector when
   federation mode is active. The first path now covers startup activation,
   balance, mint, send/swap, receive, melt, restore-style wallet lookup, keyset
