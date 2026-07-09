@@ -2683,8 +2683,12 @@ Tests and success criteria:
   DB-plus-file completion-record recovery stay covered without starting member
   processes. Dry-run checks prove both new full smoke targets wire the DKG
   probes into the generated script with the expected SQLite and Postgres
-  command paths; a live full-process execution remains a future verification
-  target.
+  command paths. Live five-member threshold-three AlephBFT full-process DKG
+  route-probe smokes now pass on both SQLite and Postgres with standard
+  mint/swap/melt/restore, member restart, one-member-offline wallet batches,
+  paid and failed pending melts, payment-observation quarantine, offline keyset
+  rotation, old-proof restore, post-rotation mint, melt, final restore, and
+  returned-member catch-up.
 - [ ] Add AlephBFT live private-REST catch-up certification tests for
   self-partitioned proposers, below-quorum-offline operation windows, and
   above-quorum-offline stall windows. These tests must verify reconnect
