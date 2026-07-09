@@ -651,6 +651,11 @@ impl MintPayment for FakeWallet {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        if self.payment_delay > 0 {
+            let duration = time::Duration::from_secs(self.payment_delay);
+            time::sleep(duration).await;
+        }
+
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
@@ -1063,12 +1068,13 @@ fn fake_secret_key(seed: &str) -> SecretKey {
 #[cfg(test)]
 mod tests {
     use cdk_common::payment::{
-        CustomIncomingPaymentOptions, IncomingPaymentOptions, MintPayment, PaymentIdentifier,
+        CustomIncomingPaymentOptions, IncomingPaymentOptions, MintPayment,
+        OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
     };
 
     use super::*;
 
-    fn test_wallet() -> FakeWallet {
+    fn test_wallet_with_delay(payment_delay: u64) -> FakeWallet {
         FakeWallet::new(
             FeeReserve {
                 min_fee_reserve: 0.into(),
@@ -1076,9 +1082,13 @@ mod tests {
             },
             HashMap::new(),
             HashSet::new(),
-            0,
+            payment_delay,
             CurrencyUnit::Sat,
         )
+    }
+
+    fn test_wallet() -> FakeWallet {
+        test_wallet_with_delay(0)
     }
 
     #[tokio::test]
@@ -1123,5 +1133,46 @@ mod tests {
             response.request_lookup_id,
             PaymentIdentifier::CustomId(_)
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn configured_delay_is_applied_to_outgoing_onchain_payment() {
+        let wallet = test_wallet_with_delay(2);
+        let quote_id = cdk_common::QuoteId::new();
+
+        let options = OutgoingPaymentOptions::Onchain(Box::new(OnchainOutgoingPaymentOptions {
+            address: "bcrt1qfakeaddress".to_string(),
+            amount: Amount::new(100, CurrencyUnit::Sat),
+            max_fee_amount: None,
+            quote_id: quote_id.clone(),
+            fee_index: None,
+            metadata: None,
+        }));
+
+        let payment = wallet.make_payment(&CurrencyUnit::Sat, options);
+        tokio::pin!(payment);
+
+        let early_result = tokio::time::timeout(time::Duration::from_secs(1), &mut payment).await;
+        assert!(
+            early_result.is_err(),
+            "outgoing fake payment completed before configured delay elapsed"
+        );
+
+        let pending_status = wallet
+            .check_outgoing_payment(&PaymentIdentifier::QuoteId(quote_id.clone()))
+            .await
+            .expect("checking pending fake onchain payment should succeed");
+        assert_eq!(pending_status.status, MeltQuoteState::Unknown);
+
+        time::advance(time::Duration::from_secs(1)).await;
+
+        let response = payment
+            .await
+            .expect("fake onchain payment should complete after configured delay");
+        assert_eq!(
+            response.payment_lookup_id,
+            PaymentIdentifier::QuoteId(quote_id)
+        );
+        assert_eq!(response.status, MeltQuoteState::Paid);
     }
 }
