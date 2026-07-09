@@ -9340,6 +9340,51 @@ async fn aleph_bft_live_session_latency_probe_duplicate_fanout_joins_one_operati
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_latency_probe_records_five_member_bft_operation() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let session = start_five_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        pump_config,
+        500,
+    ))
+    .await
+    .expect("start five-member live session");
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+
+    let operation_id = submit_latency_probe_mint_quote(
+        session
+            .states
+            .first()
+            .expect("five-member latency probe has local state"),
+    )
+    .await;
+    for state in &session.states {
+        wait_for_applied_operation(state, operation_id).await;
+    }
+
+    let operation_events = latency.events_for_operation(operation_id);
+    assert_latency_stage_order(&operation_events, LATENCY_EXPECTED_STAGES);
+    let end_to_end = latency_stage_delta(
+        &operation_events,
+        CdkAlephBftLatencyStage::SubmitQueued,
+        CdkAlephBftLatencyStage::WaiterReturned,
+    )
+    .expect("submit-to-waiter latency");
+    assert!(
+        end_to_end < Duration::from_secs(5),
+        "five-member operation {operation_id} took {end_to_end:?}: {}",
+        format_latency_events(&operation_events)
+    );
+    eprintln!(
+        "AlephBFT five-member latency probe for {operation_id}: {}",
+        format_latency_events(&operation_events)
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
@@ -12751,6 +12796,11 @@ struct TwoMemberAlephBftLiveSession {
     _second_handle: Arc<FederationAlephBftLiveSessionHandle>,
 }
 
+struct MultiMemberAlephBftLiveSession {
+    states: Vec<MintState>,
+    _handles: Vec<Arc<FederationAlephBftLiveSessionHandle>>,
+}
+
 async fn start_two_member_aleph_bft_live_session(
     live_options: FederationAlephBftLiveSessionOptions,
 ) -> Result<TwoMemberAlephBftLiveSession, cdk::Error> {
@@ -12820,6 +12870,65 @@ async fn start_two_member_aleph_bft_live_session(
         second_state,
         _first_handle: first_handle,
         _second_handle: second_handle,
+    })
+}
+
+async fn start_five_member_aleph_bft_live_session(
+    live_options: FederationAlephBftLiveSessionOptions,
+) -> Result<MultiMemberAlephBftLiveSession, cdk::Error> {
+    let federation_api_urls = (1..=5)
+        .map(|value| {
+            MintUrl::from_str(&format!("http://fed{value}.test")).expect("federation api url")
+        })
+        .collect::<Vec<_>>();
+    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+        federation_api_urls.clone(),
+    );
+    let mut states = Vec::new();
+    for private_config in private_configs {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        states.push(
+            federation_route_state_for_private_with_db_and_backend(
+                public_config.clone(),
+                private_config,
+                db,
+                &mnemonic.to_seed_normalized(""),
+                FederationConsensusBackendKind::AlephBft,
+            )
+            .await,
+        );
+    }
+    let transport = RouterFederationTransportRegistry::default();
+    let sync_config = FederationPeerSyncConfig {
+        peer_sync_interval: Duration::from_millis(10),
+        peer_request_timeout: Duration::from_secs(2),
+        operation_submission_timeout: Duration::from_secs(10),
+        ..FederationPeerSyncConfig::default()
+    };
+    let mut handles = Vec::new();
+    for (index, state) in states.iter_mut().enumerate() {
+        let handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+            state,
+            sync_config,
+            live_options.clone(),
+            transport.clone(),
+        )
+        .await?
+        .expect("live session handle");
+        handles.push(handle);
+        transport.insert(
+            federation_api_urls[index].clone(),
+            Router::new()
+                .nest("/federation/v1", create_federation_router())
+                .with_state(state.clone()),
+        );
+    }
+
+    Ok(MultiMemberAlephBftLiveSession {
+        states,
+        _handles: handles,
     })
 }
 

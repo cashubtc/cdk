@@ -356,9 +356,13 @@ Test plan:
   concurrently and verifies one `SubmitQueued`, one `DataProviderYielded`, two
   `WaiterReturned` events, and one duplicate-pending waiter join. In the focused
   run both waiters returned around 70ms from recorder installation.
+  A five-member threshold-three BFT-sized probe records the same stage sequence
+  across all five live members; focused runs returned the local waiter around
+  1.0-1.3s after recorder installation and then confirmed all members applied
+  the operation.
 - Still needed: extend the non-production benchmark harness for AlephBFT operation latency:
   - idle-tail first-operation versus active-tail follow-on runs
-  - 5-member and 7-member federations
+  - 7-member federations
 - Record proposal submitted, proposal broadcast, finalized, applied, and waiter notified timestamps.
 - Compare default timing with tuned intervals.
 - Confirm no CPU spin and no lost catch-up behavior.
@@ -465,9 +469,11 @@ This totals about 6-8s in the fakewallet happy path. If the protocol remains at 
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
 2. Add AlephBFT latency instrumentation in a non-production benchmark harness.
-   Current checkpoint: single-operation, three-operation, and duplicate-fanout
-   live-session stage timing are implemented and prove fast in-process
-   finality/apply/waiter completion around 50-80ms per operation.
+   Current checkpoint: single-operation, three-operation, duplicate-fanout, and
+   five-member live-session stage timing are implemented. Fast in-process
+   two-member finality/apply/waiter completion is around 50-80ms per operation;
+   the five-member threshold-three probe returned the local waiter around
+   1.0-1.3s.
 3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
    checkpoint: selective pending-work-aware tail cadence is implemented,
    behavior-tested, and process-verified for idle cooling; cold mints are still
