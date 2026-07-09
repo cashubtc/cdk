@@ -3113,7 +3113,7 @@ Implementation checklist:
 - [x] Validate federation mint-info metadata and v3/BLS aggregate keysets before
   CLI mint/swap/melt/restore fanout by using the wallet-library
   `FederatedMintConnector` validation path.
-- [ ] Make received-token handling resolve federation metadata from the token
+- [x] Make received-token handling resolve federation metadata from the token
   mint/federation identity, or return a clear actionable error when the CLI has
   not imported the corresponding federation config. The first path resolves
   tokens whose mint URL matches the imported local federation URL or any member
@@ -3121,6 +3121,9 @@ Implementation checklist:
   proves an unimported token mint URL fails before receive/network work with an
   error that tells the user to run `cdk-cli federation add --public-config
   <path>` for federated tokens or `--allow-untrusted` for standalone mints.
+  A second focused receive test now proves a token whose mint URL is an imported
+  member public URL reaches federation wallet resolution rather than the
+  untrusted-mint gate, without needing live member HTTP.
 - [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path now tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests now cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction; broader live member-advertisement failures still need command-level coverage.
 - [x] Document how to use `cdk-cli` against a locally generated federation from
   the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
@@ -3168,7 +3171,11 @@ Latest checkpoint:
   the federation roster. Focused tests passed with `cargo test -p cdk --features
   federation federated_mint_connector_uses_configured_primary_for_quote_creation
   -- --test-threads 1` and `cargo test -p cdk-cli --features federation
-  federation -- --test-threads 1`.
+  federation -- --test-threads 1`. The next CLI receive checkpoint proves
+  imported member public mint URLs resolve to the imported federation metadata
+  path before wallet construction: `cargo test -p cdk-cli --features federation
+  receive_token -- --test-threads 1` passed both the unimported actionable-error
+  test and the imported-member URL resolution test.
 
 Scripted local CLI smoke command:
 
@@ -3249,7 +3256,7 @@ Tests and success criteria:
   Current scripted smoke proves happy-path local proof check-state, spent-token
   check-state after receive, and copied-seed restore through the federation
   connector; mismatched/no-threshold member-state CLI coverage remains open.
-- [ ] CLI receive tests prove received tokens resolve to imported federation
+- [x] CLI receive tests prove received tokens resolve to imported federation
   metadata, and missing federation metadata produces a clear error instead of
   silently treating the token as a standalone mint token. Current live smoke
   proves receive when the token mint URL matches the imported federation URL,
@@ -3257,8 +3264,8 @@ Tests and success criteria:
   the same federation metadata before wallet construction. Focused receive
   coverage now proves a token from an unimported mint URL fails with an explicit
   `cdk-cli federation add --public-config <path>` hint before network receive
-  work starts; command-level receive coverage for imported member URL tokens
-  remains open.
+  work starts, and a token from an imported member public URL reaches federation
+  wallet resolution instead of the untrusted-mint gate.
 - [x] Add a fakewallet federation CLI smoke test that starts N local federation
   members, imports `federation-public.json` into `cdk-cli`, mints with fake paid
   quotes, performs send/swap, melts through the fake successful backend, and

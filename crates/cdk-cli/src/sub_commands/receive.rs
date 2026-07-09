@@ -237,17 +237,32 @@ async fn nostr_receive(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "federation")]
+    use std::collections::BTreeMap;
     use std::str::FromStr;
     use std::sync::Arc;
 
     use cdk::cdk_database::{self, WalletDatabase};
     use cdk::mint_url::MintUrl;
+    #[cfg(feature = "federation")]
+    use cdk::nuts::nut01::BlsSecretKey;
     use cdk::nuts::{Id, Proof};
     use cdk::secret::Secret;
     use cdk::wallet::{WalletRepository, WalletRepositoryBuilder};
     use cdk::Amount;
+    #[cfg(feature = "federation")]
+    use cdk_common::federation::{
+        generate_trusted_dealer_configs, FederationConfig, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
+    };
+    #[cfg(feature = "federation")]
+    use cdk_common::SecretKey;
 
     use super::*;
+    #[cfg(feature = "federation")]
+    use crate::sub_commands::federation::{
+        FederationWalletRegistry, StoredFederationConnectorPolicy,
+    };
 
     async fn test_repository() -> WalletRepository {
         let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> = Arc::new(
@@ -261,6 +276,60 @@ mod tests {
             .build()
             .await
             .expect("wallet repository")
+    }
+
+    #[cfg(feature = "federation")]
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("valid member id")
+    }
+
+    #[cfg(feature = "federation")]
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    #[cfg(feature = "federation")]
+    fn member(member_id: MemberId) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    #[cfg(feature = "federation")]
+    fn valid_public_config() -> FederationConfig {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (Amount::from(1), vec![bls_key(1), bls_key(2)]),
+                    (Amount::from(2), vec![bls_key(3), bls_key(4)]),
+                ]),
+            )],
+        )
+        .expect("trusted dealer configs")
+        .public_config
     }
 
     fn token_for_mint(mint_url: MintUrl) -> String {
@@ -290,5 +359,43 @@ mod tests {
         assert!(err.contains("not trusted or imported as a federation member"));
         assert!(err.contains("cdk-cli federation add --public-config"));
         assert!(err.contains("--allow-untrusted"));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn receive_token_resolves_imported_member_url_as_federation_metadata() {
+        let repository = test_repository().await;
+        let public_config = valid_public_config();
+        let local_mint_url = public_config
+            .members
+            .get(&member_id(1))
+            .expect("member one")
+            .public_mint_url
+            .clone();
+        let member_two_url = public_config
+            .members
+            .get(&member_id(2))
+            .expect("member two")
+            .public_mint_url
+            .clone();
+        let mut registry = FederationWalletRegistry::default();
+        registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect("upsert federation registry");
+        crate::utils::set_federation_registry(registry).expect("set federation registry");
+
+        let token = token_for_mint(member_two_url);
+        let err = receive_token(&repository, &token, &[], &[], false, &CurrencyUnit::Usd)
+            .await
+            .expect_err("unsupported federation unit rejected after member-url resolution");
+
+        let err = err.to_string();
+        assert!(!err.contains("not trusted or imported as a federation member"));
+        assert!(err.contains("does not advertise an active"));
+        assert!(err.contains("keyset"));
     }
 }
