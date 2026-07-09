@@ -17,10 +17,10 @@ use crate::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
-    FederationMemberStatusSnapshot, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigestCheckpoint,
-    MemberId,
+    FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
+    FederationStateDigestCheckpoint, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -797,6 +797,9 @@ pub trait FederationJournalDatabase {
     async fn get_federation_journal_entries(
         &self,
     ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
+
+    /// Get scalar metadata for the latest accepted federation journal entry.
+    async fn get_federation_journal_tip(&self) -> Result<Option<FederationJournalTip>, Self::Err>;
 
     /// Get one accepted federation journal entry by operation ID.
     async fn get_federation_journal_entry_by_operation_id(

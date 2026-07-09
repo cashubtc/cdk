@@ -23,11 +23,14 @@ The measurements below are development-environment measurements. Absolute values
 - Wallet: fresh `cdk-cli` work directory
 - Operation tested: two full federated mints after adding the federation registry
 - Receiver-side token receive/swap benchmark: completed at 7.92s wall
-- Instrumentation policy: targeted timing/log instrumentation is allowed when
-  it is useful to isolate delays. It must not change protocol behavior, signing
-  semantics, payment semantics, consensus ordering, or wallet fanout behavior.
-  Temporary instrumentation should be removed before finishing unless it is
-  intentionally kept as normal low-noise diagnostics.
+- Instrumentation policy: capture an untouched command/log baseline first.
+  After that baseline, targeted timing, tracing, counters, or profiling hooks
+  may be added directly around production code paths when useful to isolate a
+  delay. Instrumentation must not change protocol behavior, signing semantics,
+  payment semantics, consensus ordering, retry policy, or wallet fanout
+  behavior. Remove temporary instrumentation before finishing the checkpoint;
+  retain it only when it has focused tests and is intentionally useful as
+  normal low-noise production diagnostics.
 - Process lifecycle traces are available without changing normal log volume by
   setting
   `RUST_LOG=info,cdk_axum::federation::aleph_bft_latency=trace` and
@@ -732,6 +735,87 @@ Test plan:
 - Record proposal submitted, proposal broadcast, finalized, applied, and waiter notified timestamps.
 - Compare default timing with tuned intervals.
 - Confirm no CPU spin and no lost catch-up behavior.
+
+## Direct Swap, Change Melt, Offline Member, and Peer-Sync CPU
+
+Status: completed on a fresh five-member, threshold-three fakewallet AlephBFT
+federation with trace-level operation lifecycle diagnostics.
+
+An ordinary exact-value send can select existing proofs without contacting the
+mint. To guarantee a real swap, the benchmark sent P2PK-locked outputs. To
+guarantee real melt change, a separate 20 sat wallet first moved all four 1 sat
+proofs into offline tokens, leaving only 2 and 4 sat proofs. Paying a 10 sat
+invoice with a 1 sat fee reserve then required selecting 12 sat and returning
+change.
+
+Measured command results:
+
+| Scenario | Accepted operations | Wall | User | System |
+| --- | --- | ---: | ---: | ---: |
+| forced P2PK send, all members live | `swap` | 4.71s | 1.05s | 0.02s |
+| forced change melt, all members live | `melt_quote -> swap -> melt` | 8.06s | 1.25s | 0.03s |
+| forced P2PK send, member 5 offline | `swap` | 4.90s | 1.03s | 0.02s |
+| forced change melt, member 5 offline | `melt_quote -> swap -> melt` | 8.45s | 1.19s | 0.02s |
+| forced P2PK send after peer-status fix | `swap` | 5.45s | 1.18s | 0.01s |
+
+The all-live swap reached the mint about 4.3 seconds after CLI start. Once
+submitted, its data-provider yield was immediate, finality arrived in about
+429ms, durable apply completed in about 607ms, and the waiter returned in about
+610ms. The dominant swap delay was therefore CLI/wallet setup, not consensus,
+private REST, apply, share return, or aggregation.
+
+The all-live change melt spent about 3.85 seconds before the mint received the
+quote operation. Its consensus stages were:
+
+| Operation | Submit to waiter return |
+| --- | ---: |
+| `melt_quote` | about 590ms |
+| preparatory `swap` | about 762ms |
+| terminal `melt` | about 786ms |
+
+The wallet finished with 5 sat, including a newly returned 1 sat change proof.
+The one-offline-member timings remained within 0.4 seconds of the all-live
+commands, confirming that wallet aggregation and AlephBFT finality did not wait
+for all five members. After member 5 restarted under the AlephBFT backend, it
+applied the missed suffix; all five members reported 17 operations, latest
+index 16, identical order and state digests, zero pending work, and zero digest
+or invalid-operation alerts.
+
+The post-catch-up CPU gate revealed an independent O(history) status cost. With
+the DAG fixed and no pending operations, trace-enabled members used
+15.45-17.05% CPU. A three-second stack sample placed the active work in the
+five-second peer-sync loop:
+
+`sync_once_from_member -> local_peer_order_status -> durable_federation_journal -> get_federation_journal_entries`
+
+That path deserialized every historical operation repeatedly, and compressed
+BLS point decoding was the hottest sampled arithmetic. Order-only status needs
+only the latest durable index, order digest, and consensus-visible state
+digest. The storage trait and SQL implementation now expose exactly that scalar
+journal tip; full history loading remains in materialized-state status and
+diagnostic paths that actually inspect operation contents.
+
+Holding the same 17-entry databases, federation size, debug build, and trace
+filter constant, the 20-second CPU sample changed as follows:
+
+| Member | Before | After |
+| --- | ---: | ---: |
+| 1 | 17.05% | 3.95% |
+| 2 | 15.55% | 3.85% |
+| 3 | 15.45% | 3.85% |
+| 4 | 15.65% | 3.95% |
+| 5 | 15.80% | 3.90% |
+
+A new forced swap after the change completed in 5.45 seconds. Strict status
+then converged all five members on 18 operations, latest index 17, identical
+order/state digests, no pending work, and no alerts. Focused verification:
+
+- `cargo test -p cdk-sqlite --features federation federation_journal_persistence -- --nocapture`
+- `cargo test -p cdk-axum --features federation peer_sync_ -- --nocapture`
+- `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,prometheus`
+
+No temporary instrumentation was added for this fix; the existing opt-in trace
+target and an external process sample provided the required evidence.
 
 ### 3. Consider Combining Quote Payment Observation With Mint Signing When Safe
 

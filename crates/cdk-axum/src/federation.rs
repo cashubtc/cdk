@@ -497,7 +497,44 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
 }
 
 async fn local_peer_order_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
-    let (status, _) = local_peer_status_and_entries(state).await?;
+    let runtime_config = state
+        .mint
+        .federation_config()
+        .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
+    let tip = state.mint.localstore().get_federation_journal_tip().await?;
+    let mut status = match tip {
+        Some(tip) => {
+            let operation_count = tip
+                .index
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("federation journal index overflow"))?;
+            FederationPeerStatus::new_with_state_digest(
+                runtime_config.federation_id(),
+                runtime_config.member_id(),
+                operation_count,
+                Some(tip.index),
+                tip.order_digest,
+                tip.state_digest,
+            )
+        }
+        None => FederationPeerStatus::new_with_state_digest(
+            runtime_config.federation_id(),
+            runtime_config.member_id(),
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+            FederationStateDigest::genesis(),
+        ),
+    }
+    .with_consensus_backend(runtime_config.consensus_backend());
+    if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
+        let next_item_index = state
+            .federation_aleph_bft_status()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("AlephBFT consensus status is unavailable"))?
+            .next_item_index;
+        status = status.with_aleph_bft_next_item_index(next_item_index);
+    }
     Ok(status)
 }
 

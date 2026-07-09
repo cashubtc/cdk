@@ -43,7 +43,7 @@ pub use self::consensus::{
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateRow,
+    FederationJournalEntry, FederationJournalTip, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
     FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationOutcomeHash,
     FederationOperationStatus, FederationStateDigest, FederationStateDigestCheckpoint,

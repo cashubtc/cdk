@@ -167,6 +167,25 @@ Current blocking bugs:
   full mints completed in 8.20s and 5.45s across a persisted restart. The final
   strict gate converged all five members on six operations with identical
   order/state digests and no pending work or alerts.
+- Direct value-operation follow-up: a forced P2PK send added exactly one
+  accepted `swap` and completed in 4.71s wall / 1.05s user / 0.02s system.
+  Only about 610ms elapsed from swap submission through waiter return; roughly
+  4.3s was CLI/wallet setup before the mint handler received the request. A
+  deliberately forced change melt completed in 8.06s wall / 1.25s user /
+  0.03s system and added exactly `melt_quote -> swap -> melt`; the three
+  consensus waits were about 590ms, 762ms, and 786ms. With member 5 offline,
+  the corresponding swap and change melt completed in 4.90s and 8.45s. The
+  restarted member applied the missed suffix and all five converged on 17
+  entries with identical order/state digests and no pending work or alerts.
+- The same long-history run exposed a second periodic CPU source distinct from
+  the closed empty-unit issue. With 17 accepted operations, every peer-sync
+  round repeatedly loaded and deserialized the entire durable journal merely
+  to derive order status; BLS point decoding was the sampled hot stack and
+  trace-enabled members used 15.45-17.05% CPU. Durable storage now exposes an
+  O(1) scalar journal-tip query, and order-only peer status reads that tip while
+  materialized-state verification retains its intentional full history read.
+  On the same databases, members fell to 3.85-3.95% CPU. A post-fix forced swap
+  completed in 5.45s and strict status converged all members on 18 entries.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -2068,6 +2087,15 @@ AlephBFT and consensus unit tests:
   every two seconds; corrected fresh idle members use about 0.9%, post-work
   debug members use about 4-5%, and the DAG stops growing. The CPU-spin issue is
   closed and needs no further work unless it is observed again.
+- [x] Order-only peer status is constant-time in accepted history. Process
+  sampling found the five-second peer-sync loop repeatedly deserializing every
+  durable operation, including BLS points, through
+  `local_peer_order_status`. SQL storage now reads only the latest durable
+  operation index, order digest, and consensus-visible state digest. Empty and
+  populated tip persistence is covered, all 13 focused peer-sync tests pass,
+  and the same 17-entry trace-enabled process set dropped from 15.45-17.05% to
+  3.85-3.95% CPU without changing protocol behavior or materialized-state
+  diagnostics.
 - [x] Federated CLI startup and read-only mint-info paths avoid repeating full
   BLS aggregate-key validation after a federation registry entry has already
   been validated. Profiling showed the slow path was CPU time in repeated
@@ -3466,6 +3494,15 @@ Latest checkpoint:
   unspent, and asserts that exactly one bolt11 mint quote was created so the
   previous short-timeout duplicate-quote churn does not regress. A live run of
   `just fed-regtest-cli-smoke-slow-member` passed on 2026-07-09.
+  A direct value-operation benchmark on 2026-07-09 then forced a P2PK swap and
+  a melt with real change output rather than relying on denomination luck. The
+  all-members-live swap took 4.71s and the change melt took 8.06s; the same
+  paths with one member offline took 4.90s and 8.45s. The melt journal sequence
+  was exactly `melt_quote -> swap -> melt`, the returned member caught up to
+  the same 17-entry order/state digests, and a post-optimization swap took
+  5.45s before all members converged on entry 18. The remaining CLI value-path
+  work is the slow-member swap/melt matrix plus invalid-share, non-v3 request
+  output, and mismatched restore/check-state process failures.
 
 Scripted local CLI smoke command:
 

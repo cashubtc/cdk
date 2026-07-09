@@ -431,19 +431,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, slow and unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Active work uses a 100ms cadence, while an inactive data provider waits instead of creating empty units. Corrected full mints complete in about 5-8s, receiver-side token redemption completes in 7.92s, fresh idle members use about 0.9% CPU, and post-work debug members remain around 4-5% without continued DAG growth.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, slow and unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Forced direct swaps complete in about 4.7-5.5s and change melts in about 8.1-8.5s with all members live or one offline. Active work uses a 100ms cadence, while an inactive data provider waits instead of creating empty units; trace-enabled post-work members remain around 4% CPU without continued DAG growth.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: stop idle federation CPU work</span>
+          <span class="value">fix: make peer order status constant time</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A 30s CPU-time measurement found that short samples had missed 27-32% periodic idle work: each member still created an empty unit every two seconds. The data provider now sleeps while inactive, wakes for local or new peer operation data, and keeps a one-second post-finality propagation tail. A stack sample also removed peer status's O(history) finalized-item scan. Fresh idle CPU is about 0.9%, post-work debug CPU is 3.9-4.8%, corrected mints took 8.20s and 5.45s across restart, and all five members converged on six operations with no pending work or alerts. A fresh receiver redeemed 30 sat through exactly one swap in 7.92s.</span>
+          <span class="value">Direct value-path measurement now proves one forced P2PK swap takes 4.71s and a real change melt takes 8.06s; with one member offline they take 4.90s and 8.45s. The melt serializes exactly <code>melt_quote -&gt; swap -&gt; melt</code>, and the restarted member catches up to identical digests. A same-history CPU sample then found peer sync repeatedly deserializing every durable BLS operation for order-only status. The new scalar journal-tip query reduced trace-enabled member CPU from 15.45-17.05% to 3.85-3.95%; a post-fix swap passed in 5.45s and all members converged on 18 operations.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Measure direct federated swap and melt lifecycle stages under warm, cold, slow-member, and one-member-offline conditions, then add the remaining CLI bad-share and non-v3 request-output process failures while preserving the passing idle CPU, restart, catch-up, and convergence gates.</span>
+          <span class="value">Extend the completed direct swap/melt benchmark to the slow-member matrix, then add the remaining CLI invalid-share, non-v3 request-output, and mismatched restore/check-state process failures while preserving the passing CPU, restart, catch-up, and convergence gates.</span>
         </div>
       </aside>
     </header>
@@ -791,7 +791,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known blocking-call issues and the post-work CPU spin path are fixed. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; inactive data providers wait instead of creating empty units; and locally finalized peer data retains a one-second propagation tail. Fresh idle members use about 0.9% CPU and post-work debug members about 4-5%, without continued DAG growth. Cheap peer order status reads the maintained AlephBFT cursor instead of loading the full finalized-item history. Operation admission is bounded, catching-up members fail closed before value mutations and resume when healthy, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
+            <p>Known blocking-call issues and the post-work CPU spin path are fixed. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; inactive data providers wait instead of creating empty units; and locally finalized peer data retains a one-second propagation tail. Fresh idle members use about 0.9% CPU and trace-enabled post-work members about 4%, without continued DAG growth. Cheap peer order status reads the maintained AlephBFT cursor instead of loading finalized-item history, and private peer sync reads an O(1) durable journal tip instead of deserializing the full accepted BLS operation history. Operation admission is bounded, catching-up members fail closed before value mutations and resume when healthy, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -857,12 +857,14 @@
           and 5-member partition windows, and compile gates. The previous CPU issue is fixed: replayed
           consensus-data gossip no longer refreshes activity, inactive data providers stop empty-unit
           creation, and the peer-status hot path no longer reparses the finalized-item history merely
-          to count it. Fresh idle members use about 0.9% CPU and post-work debug members about 4-5%.
+          to count it. Order-only peer sync also uses an O(1) durable journal-tip query instead of
+          deserializing every accepted BLS operation; on the same 17-entry traced databases this cut
+          CPU from 15.45-17.05% to 3.85-3.95%.
           The latest wallet-startup performance check confirms
           federated <code>mint-info</code> is no longer CPU-bound by repeated full
           config validation. Opt-in process lifecycle traces cover queue,
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
-          direct swap and melt fault conditions are next.
+          forced direct swap and change melt pass with all members live and one member offline.
         </p>
       </section>
 
@@ -949,7 +951,7 @@
           </article>
           <article class="item">
             <h3>Receiver and value-operation latency</h3>
-            <p>Receiver-side receive/swap now passes at 7.92s with exactly one accepted swap. Benchmark direct swap and melt under warm, cold, slow-member, and one-member-offline conditions, using the accepted wakeable 100ms active cadence and retaining the passing idle CPU, restart, catch-up, and convergence gates.</p>
+            <p>Receiver-side receive/swap passes at 7.92s with exactly one accepted swap. Forced direct swap now passes in 4.71s with all members live and 4.90s with one offline; real change melt passes in 8.06s and 8.45s respectively, followed by deterministic restart catch-up. Extend this evidence to the slow-member matrix while retaining the passing CPU, restart, catch-up, and convergence gates.</p>
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>

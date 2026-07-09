@@ -591,6 +591,20 @@ pub struct FederationJournalEntry {
     pub status: FederationOperationStatus,
 }
 
+/// Scalar metadata for the latest durable federation journal entry.
+///
+/// Storage backends expose this separately so peer order checks do not need to
+/// load and deserialize the full accepted operation history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FederationJournalTip {
+    /// Zero-based index of the latest accepted operation.
+    pub index: u64,
+    /// Accepted-order digest after the latest operation.
+    pub order_digest: FederationJournalDigest,
+    /// Consensus-visible state digest after the latest operation.
+    pub state_digest: FederationStateDigest,
+}
+
 impl FederationJournalEntry {
     /// Return the expected accepted-operation outcome hash for this entry.
     #[must_use]

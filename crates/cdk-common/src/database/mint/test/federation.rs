@@ -309,6 +309,12 @@ pub async fn federation_journal_persistence<DB>(db: DB)
 where
     DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
 {
+    assert!(db
+        .get_federation_journal_tip()
+        .await
+        .expect("empty journal tip")
+        .is_none());
+
     let mut journal = InMemoryFederationJournal::new();
     let member_one = MemberId::new(1).expect("member one");
     let member_two = MemberId::new(2).expect("member two");
@@ -402,6 +408,15 @@ where
         second.operation_outcome_hash
     );
     assert_eq!(entries[1].state_digest, second.state_digest);
+
+    let tip = db
+        .get_federation_journal_tip()
+        .await
+        .expect("journal tip")
+        .expect("persisted journal tip");
+    assert_eq!(tip.index, second.index);
+    assert_eq!(tip.order_digest, second.order_digest);
+    assert_eq!(tip.state_digest, second.state_digest.expect("state digest"));
 
     let first_by_operation_id = db
         .get_federation_journal_entry_by_operation_id(first.operation_id)

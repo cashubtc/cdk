@@ -10,12 +10,12 @@ use cdk_common::federation::{
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
-    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationOutcomeHash, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigest,
-    FederationStateDigestCheckpoint, MemberId,
+    FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationConflictKey,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationOutcomeHash,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
+    FederationStateDigest, FederationStateDigestCheckpoint, MemberId,
 };
 use cdk_common::PublicKey;
 
@@ -182,6 +182,22 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         state_digest,
         consensus_evidence,
         status,
+    })
+}
+
+fn sql_row_to_federation_journal_tip(row: Vec<Column>) -> Result<FederationJournalTip, Error> {
+    unpack_into!(let (operation_index, order_digest, state_digest) = row);
+
+    let index: u64 = column_as_number!(operation_index);
+    let order_digest = FederationJournalDigest::from_hex(column_as_string!(&order_digest))
+        .map_err(|e| Error::Internal(format!("Invalid federation order digest: {e}")))?;
+    let state_digest = FederationStateDigest::from_hex(column_as_string!(&state_digest))
+        .map_err(|e| Error::Internal(format!("Invalid federation state digest: {e}")))?;
+
+    Ok(FederationJournalTip {
+        index,
+        order_digest,
+        state_digest,
     })
 }
 
@@ -1481,6 +1497,26 @@ where
         .into_iter()
         .map(sql_row_to_federation_journal_entry)
         .collect()
+    }
+
+    async fn get_federation_journal_tip(&self) -> Result<Option<FederationJournalTip>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT operation_index, order_digest, state_digest
+            FROM federation_journal_entries
+            ORDER BY operation_index DESC
+            LIMIT 1
+            "#,
+        )?
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_journal_tip)
+        .transpose()
     }
 
     async fn get_federation_journal_entry_by_operation_id(
