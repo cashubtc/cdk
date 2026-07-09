@@ -518,7 +518,6 @@ impl DataProvider for CdkAlephBftDataProvider {
 
         match payload {
             Some(payload) => {
-                #[cfg(test)]
                 crate::federation::aleph_bft_latency::record(
                     crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::DataProviderYielded,
                     payload.operation_ids.iter().copied(),
@@ -558,7 +557,6 @@ impl CdkAlephBftFinalizationHandler {
 
 impl FinalizationHandler<CdkAlephBftData> for CdkAlephBftFinalizationHandler {
     fn data_finalized(&mut self, data: CdkAlephBftData) {
-        #[cfg(test)]
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::FinalizedDataReceived,
             data.payload().operation_ids.iter().copied(),

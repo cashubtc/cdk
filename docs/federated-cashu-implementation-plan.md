@@ -102,6 +102,14 @@ Current blocking bugs:
   fakewallet process mint delay is driven by default AlephBFT cadence across
   three serialized operations, not by the local apply, duplicate-waiter, or
   waiter-notification path alone.
+- Opt-in process diagnostics now emit the same operation-specific lifecycle
+  stages at `trace` through the dedicated
+  `cdk_axum::federation::aleph_bft_latency` target. Normal logging stays quiet,
+  opaque network messages are decoded for operation IDs only when that trace
+  target is enabled, and the in-memory recorder remains test-only. This allows
+  a real five-process mint benchmark to distinguish creator cadence, private
+  REST delivery, finality, durable apply, notification, and waiter return
+  without changing protocol behavior.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -109,6 +117,8 @@ Current blocking bugs:
   `cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`,
   and
   `cargo test -p cdk-axum --features federation aleph_bft_live_session_latency_probe_records_ -- --test-threads 1 --nocapture`.
+  The process-diagnostics checkpoint also passed
+  `cargo check -p cdk-axum --features federation`.
 
 ## Sources reviewed
 

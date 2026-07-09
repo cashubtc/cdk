@@ -431,19 +431,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, one slow fakewallet member outside the fast threshold path, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, reachable standalone members missing federation mint-info metadata failing before proofs exist, and generated configs whose members are all unreachable. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation with multi-unit connector reuse, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, explicit primary-member request policy, read-only startup behavior, immediate mint payment observations at the CLI/mint boundary, selective pending-work-aware AlephBFT tail pacing, and single-operation, three-operation, duplicate-fanout, five-member, seven-member, plus default-cadence cold/warm test-only live AlephBFT latency probes. The latest performance pass found that federated minting is dominated by three serialized AlephBFT operations; the observer gap is fixed, federated <code>mint-info</code> no longer reproduces the old 36s CPU burn, and fresh fakewallet mints are currently about 13-16s.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, one slow fakewallet member outside the fast threshold path, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, reachable standalone members missing federation mint-info metadata failing before proofs exist, and generated configs whose members are all unreachable. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation with multi-unit connector reuse, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, explicit primary-member request policy, read-only startup behavior, immediate mint payment observations at the CLI/mint boundary, selective pending-work-aware AlephBFT tail pacing, and single-operation, three-operation, duplicate-fanout, five-member, seven-member, plus default-cadence cold/warm live AlephBFT latency probes. The same lifecycle stages are now available as opt-in process traces without changing normal log volume. The latest performance pass found that federated minting is dominated by three serialized AlephBFT operations; the observer gap is fixed, federated <code>mint-info</code> no longer reproduces the old 36s CPU burn, and fresh fakewallet mints are currently about 13-16s.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record federated mint benchmark</span>
+          <span class="value">feat: trace AlephBFT operation lifecycle</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A fresh five-member threshold-three fakewallet AlephBFT benchmark confirmed every mint still requires <code>mint_quote</code>, <code>mint_quote_payment</code>, and <code>mint</code>. The current run measured <code>curl /v1/info</code> at 0.88s, non-federated <code>mint-info</code> at 2.70s, federated <code>mint-info</code> at 1.53s, and two full federated mints at 15.99s and 12.70s. The next clean fix candidate is low-noise AlephBFT lifecycle timing diagnostics followed by cadence tuning, with an idle-after-work CPU check before calling the old CPU issue fully closed.</span>
+          <span class="value">AlephBFT now exposes opt-in per-operation process traces for queue admission, data-provider yield, private REST delivery, finality, apply-loop receipt, durable apply, notification, and waiter return. The existing five live-session latency probes still pass, the non-test federation feature build passes, and normal logging avoids opaque-message decoding unless the dedicated trace target is enabled.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add targeted timing diagnostics where useful, re-benchmark two full mints plus receiver-side receive/swap, then choose the smallest production-safe latency improvement: cadence tuning, operation batching, or safely linking payment observation with mint signing, with CPU and catch-up checks before committing behavior changes.</span>
+          <span class="value">Run the five-process benchmark with lifecycle traces, compare CDK's 500ms active cadence against a Fedimint-inspired 100ms active cadence while retaining the 2s idle cooling path, and accept a timing change only if mint latency improves without reviving idle CPU, catch-up, or convergence problems.</span>
         </div>
       </aside>
     </header>
@@ -857,8 +857,9 @@
           and 5-member partition windows, and compile gates. The previous CPU issue is improved but
           not fully closed until an idle-after-work CPU check passes. The latest wallet-startup performance check confirms
           federated <code>mint-info</code> is no longer CPU-bound by repeated full
-          config validation; remaining mint latency work should focus on
-          AlephBFT finality cadence and lifecycle timing diagnostics.
+          config validation. Opt-in process lifecycle traces now cover queue,
+          network, finality, apply, and waiter stages; remaining mint latency
+          work should use them to verify active-cadence tuning.
         </p>
       </section>
 
@@ -945,7 +946,7 @@
           </article>
           <article class="item">
             <h3>Mint-side latency profiling</h3>
-            <p>Use the completed non-production AlephBFT latency probes and fresh process measurements to choose between cadence tuning, operation batching, or safely linking payment observation with mint signing, then verify CPU and catch-up behavior before committing production changes.</p>
+            <p>Use the completed live-session probes and opt-in process lifecycle traces to compare the current 500ms active cadence with a 100ms active cadence that preserves 2s idle cooling, then verify mint latency, idle CPU, convergence, and catch-up before retaining the change.</p>
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>

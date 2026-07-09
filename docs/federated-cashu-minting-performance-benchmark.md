@@ -28,6 +28,14 @@ The measurements below are development-environment measurements. Absolute values
   semantics, payment semantics, consensus ordering, or wallet fanout behavior.
   Temporary instrumentation should be removed before finishing unless it is
   intentionally kept as normal low-noise diagnostics.
+- Process lifecycle traces are available without changing normal log volume by
+  enabling only
+  `cdk_axum::federation::aleph_bft_latency=trace`. The trace emits
+  `submit_queued`, `data_provider_yielded`, `network_message_delivered`,
+  `finalized_data_received`, `apply_loop_received`, `apply_completed`,
+  `operation_notified`, and `waiter_returned`, keyed by operation ID. Opaque
+  AlephBFT network messages are decoded for operation IDs only while this exact
+  trace target is enabled.
 - Mint operation sequence confirmed in the journal:
   - `mint_quote`
   - `mint_quote_payment`

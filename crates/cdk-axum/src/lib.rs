@@ -1869,7 +1869,6 @@ impl MintState {
         drop(consensus);
         if accepted_admission {
             self.mark_aleph_bft_consensus_activity().await;
-            #[cfg(test)]
             crate::federation::aleph_bft_latency::record(
                 crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
                 [operation_id],
@@ -1900,7 +1899,6 @@ impl MintState {
                     timeout_ms: duration_millis_u64_saturating(wait_timeout),
                 })
             })?;
-        #[cfg(test)]
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::WaiterReturned,
             [operation_id],
@@ -2037,7 +2035,6 @@ impl MintState {
 
     async fn notify_federation_operation(&self, response: FederationSubmitOperationResponse) {
         if let Some(notifications) = &self.federation_notifications {
-            #[cfg(test)]
             crate::federation::aleph_bft_latency::record(
                 crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::OperationNotified,
                 [response.operation_id],
@@ -2301,7 +2298,6 @@ impl MintState {
             .federation_submit_responses_with_current_status(&responses)
             .await;
         self.record_federation_sequences(&sequences).await;
-        #[cfg(test)]
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
             responses.iter().map(|response| response.operation_id),
@@ -2366,7 +2362,6 @@ impl MintState {
             .federation_submit_responses_with_current_status(&responses)
             .await;
         self.record_federation_sequences(&sequences).await;
-        #[cfg(test)]
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
             responses.iter().map(|response| response.operation_id),

@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 
 use aleph_bft::Recipient;
-#[cfg(test)]
 use cdk::federation::FederationOperationId;
 use cdk::federation::{
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkRetryRecord,
@@ -690,6 +689,16 @@ where
     for (peer, result) in join_all(attempts).await {
         match result {
             Ok(_) => {
+                #[cfg(not(test))]
+                if tracing::enabled!(
+                    target: "cdk_axum::federation::aleph_bft_latency",
+                    tracing::Level::TRACE
+                ) {
+                    crate::federation::aleph_bft_latency::record(
+                        crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::NetworkMessageDelivered,
+                        aleph_bft_network_request_operation_ids(request),
+                    );
+                }
                 #[cfg(test)]
                 crate::federation::aleph_bft_latency::record(
                     crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::NetworkMessageDelivered,
@@ -804,7 +813,6 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
-#[cfg(test)]
 fn aleph_bft_network_request_operation_ids(
     request: &FederationAlephBftNetworkMessageRequest,
 ) -> Vec<FederationOperationId> {

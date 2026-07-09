@@ -1,10 +1,13 @@
+#[cfg(test)]
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
 use cdk::federation::FederationOperationId;
+#[cfg(test)]
 use tokio::sync::OwnedMutexGuard;
 
-/// Test-only stage marker for AlephBFT latency probes.
+/// Stage marker for opt-in AlephBFT operation lifecycle diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CdkAlephBftLatencyStage {
     /// A public or private operation was admitted into the AlephBFT mempool.
@@ -25,7 +28,23 @@ pub(crate) enum CdkAlephBftLatencyStage {
     WaiterReturned,
 }
 
+impl CdkAlephBftLatencyStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SubmitQueued => "submit_queued",
+            Self::DataProviderYielded => "data_provider_yielded",
+            Self::NetworkMessageDelivered => "network_message_delivered",
+            Self::FinalizedDataReceived => "finalized_data_received",
+            Self::ApplyLoopReceived => "apply_loop_received",
+            Self::ApplyCompleted => "apply_completed",
+            Self::OperationNotified => "operation_notified",
+            Self::WaiterReturned => "waiter_returned",
+        }
+    }
+}
+
 /// One test-only AlephBFT latency event.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct CdkAlephBftLatencyEvent {
     /// Stage that occurred.
@@ -36,23 +55,28 @@ pub(crate) struct CdkAlephBftLatencyEvent {
     pub(crate) elapsed: Duration,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct CdkAlephBftLatencyRecorderState {
     started_at: Instant,
     events: Vec<CdkAlephBftLatencyEvent>,
 }
 
+#[cfg(test)]
 static ACTIVE_RECORDER: Mutex<Option<Arc<Mutex<CdkAlephBftLatencyRecorderState>>>> =
     Mutex::new(None);
+#[cfg(test)]
 static INSTALL_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
 
 /// Scoped test-only recorder for AlephBFT latency events.
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct CdkAlephBftLatencyRecorder {
     inner: Arc<Mutex<CdkAlephBftLatencyRecorderState>>,
     _install_guard: OwnedMutexGuard<()>,
 }
 
+#[cfg(test)]
 impl CdkAlephBftLatencyRecorder {
     /// Install a recorder until this guard is dropped.
     pub(crate) async fn install() -> Self {
@@ -95,6 +119,7 @@ impl CdkAlephBftLatencyRecorder {
     }
 }
 
+#[cfg(test)]
 impl Drop for CdkAlephBftLatencyRecorder {
     fn drop(&mut self) {
         let mut active = ACTIVE_RECORDER
@@ -110,11 +135,38 @@ impl Drop for CdkAlephBftLatencyRecorder {
     }
 }
 
-/// Record a test-only latency stage if a scoped recorder is installed.
+/// Trace an operation lifecycle stage and record it when a test probe is installed.
 pub(crate) fn record(
     stage: CdkAlephBftLatencyStage,
     operation_ids: impl IntoIterator<Item = FederationOperationId>,
 ) {
+    #[cfg(not(test))]
+    for operation_id in operation_ids {
+        tracing::trace!(
+            target: "cdk_axum::federation::aleph_bft_latency",
+            operation_id = %operation_id,
+            stage = stage.as_str(),
+            "AlephBFT operation lifecycle stage"
+        );
+    }
+
+    #[cfg(test)]
+    {
+        let operation_ids = operation_ids.into_iter().collect::<Vec<_>>();
+        for operation_id in &operation_ids {
+            tracing::trace!(
+                target: "cdk_axum::federation::aleph_bft_latency",
+                operation_id = %operation_id,
+                stage = stage.as_str(),
+                "AlephBFT operation lifecycle stage"
+            );
+        }
+        record_for_test(stage, operation_ids);
+    }
+}
+
+#[cfg(test)]
+fn record_for_test(stage: CdkAlephBftLatencyStage, operation_ids: Vec<FederationOperationId>) {
     let Some(inner) = ACTIVE_RECORDER
         .lock()
         .expect("AlephBFT latency recorder mutex poisoned")
@@ -128,7 +180,7 @@ pub(crate) fn record(
     let elapsed = state.started_at.elapsed();
     state.events.push(CdkAlephBftLatencyEvent {
         stage,
-        operation_ids: operation_ids.into_iter().collect(),
+        operation_ids,
         elapsed,
     });
 }
