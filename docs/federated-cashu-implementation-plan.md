@@ -2884,6 +2884,7 @@ Implementation checklist:
 - [x] Derive public shares and aggregate public keys deterministically.
 - [x] Persist DKG transcript for audit and recovery.
 - [x] Persist the final roster hash and DKG transcript hash in each member config.
+- [x] Database-backed DKG status merges persisted completion records with file-supplied recovery records idempotently, so reusing the same keyset-share or transcript-signature record during migration does not inflate readiness counts.
 - [x] Support key rotation through consensus as a federation operation.
 - [ ] Make trusted-dealer mode test-only once production DKG is complete.
 
@@ -2894,6 +2895,7 @@ Tests and success criteria:
 - [x] DKG rejects a transcript where a BLS public share is reassigned to another member ID.
 - [x] DKG transcript signatures verify for every member identity public key.
 - [x] Private REST DKG setup conflicts for commitments, reveals, secret shares, and transcript signatures fail before advancing the sender sequence or replacing the accepted setup record.
+- [x] Partial database-backed DKG setup status reports visible commitment, reveal, and secret-share progress without marking finalization ready or leaking secret material.
 - [x] Invalid share is detected and setup fails.
 - [x] Restart during setup can resume or safely restart.
 - [x] Key rotation creates a new aggregate keyset accepted by all members.

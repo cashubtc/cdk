@@ -351,6 +351,77 @@ fn merge_dkg_records_appends_database_records_to_file_records() {
     assert!(report.text.contains("finalized_ready=true"));
 }
 
+#[test]
+fn merge_dkg_records_deduplicates_database_records_already_supplied_from_files() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let mut keyset_shares = vec![fixture.keyset_share.clone()];
+    let mut transcript_signatures = fixture.transcript_signatures.clone();
+
+    merge_dkg_records(
+        &mut keyset_shares,
+        &mut transcript_signatures,
+        DkgCompletionRecords {
+            keyset_shares: vec![fixture.keyset_share.clone()],
+            transcript_signatures: fixture.transcript_signatures.clone(),
+            ..DkgCompletionRecords::default()
+        },
+    );
+
+    assert_eq!(keyset_shares, vec![fixture.keyset_share.clone()]);
+    assert_eq!(transcript_signatures, fixture.transcript_signatures);
+    let report = dkg_status_report(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        &keyset_shares,
+        &transcript_signatures,
+    );
+    assert!(report.ready);
+    assert!(report.text.contains("keyset_share_records=1"));
+    assert!(report.text.contains("transcript_signature_records=3"));
+}
+
+#[test]
+fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let setup_summary = DkgSetupRecordSummary {
+        commitments: 2,
+        reveals: 1,
+        secret_share_contributions: 1,
+        commitment_members: BTreeSet::from([member_id(1), member_id(2)]),
+        reveal_members: BTreeSet::from([member_id(1)]),
+        secret_share_senders: BTreeSet::from([member_id(1)]),
+        secret_share_receivers: BTreeSet::from([member_id(2)]),
+    };
+
+    let report = dkg_status_report_with_setup_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        &[],
+        &[],
+        &setup_summary,
+    );
+
+    assert!(!report.ready);
+    assert!(report
+        .text
+        .contains("setup_records commitments=2 reveals=1"));
+    assert!(report.text.contains("secret_share_contributions=1"));
+    assert!(report.text.contains("commitment_members=1,2"));
+    assert!(report.text.contains("reveal_members=1"));
+    assert!(report.text.contains("secret_share_senders=1"));
+    assert!(report.text.contains("secret_share_receivers=2"));
+    assert!(report.text.contains("finalized_ready=false"));
+    assert!(report.text.contains("missing DKG keyset shares"));
+    for private_fragment in [
+        "secret_shares",
+        "BlsSecretKeyShare",
+        "coefficient_commitments",
+        "commitment_hash",
+    ] {
+        assert!(!report.text.contains(private_fragment));
+    }
+}
+
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn read_database_records_loads_persisted_dkg_completion_records() {

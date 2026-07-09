@@ -158,8 +158,19 @@ fn merge_dkg_records(
     transcript_signatures: &mut Vec<FederationDkgTranscriptSignatureRequest>,
     records: DkgCompletionRecords,
 ) {
-    keyset_shares.extend(records.keyset_shares);
-    transcript_signatures.extend(records.transcript_signatures);
+    extend_unique(keyset_shares, records.keyset_shares);
+    extend_unique(transcript_signatures, records.transcript_signatures);
+}
+
+fn extend_unique<T>(target: &mut Vec<T>, source: Vec<T>)
+where
+    T: PartialEq,
+{
+    for item in source {
+        if !target.contains(&item) {
+            target.push(item);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
