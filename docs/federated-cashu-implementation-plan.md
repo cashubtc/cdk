@@ -71,6 +71,15 @@ Current blocking bugs:
   same six accepted operations, latest index 5, matching order digest, and
   matching state digest. One harmless duplicate submission/waiter join was
   observed when the immediate observation path raced the periodic observer.
+- Tail-pacing benchmark result: the first activity-hint implementation warmed
+  tail rounds for every authenticated inbound AlephBFT message, which let idle
+  empty-unit gossip keep all members on the active ~500ms creator cadence. The
+  corrected implementation only wakes the network-activity hint for inbound
+  messages that carry CDK consensus data. A fresh five-member threshold-three
+  fakewallet run verified idle creator cadence cooling to about 2s and member
+  CPU around 0.4-0.5%, with cold full mints at 13.90s and 12.01s. The remaining
+  delay is still dominated by three serialized AlephBFT operations plus a
+  possible first 2s idle-tail wakeup.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -1961,13 +1970,17 @@ AlephBFT and consensus unit tests:
   before normal wallet traffic and reproduced high CPU. The live session now
   keeps the 2s idle tail while inactive, marks the shared activity hint when a
   local operation is accepted into the AlephBFT mempool or an authenticated
-  inbound AlephBFT network message is queued, and uses the normal upstream
-  active cadence for tail rounds only while local pending work or recent inbound
-  network activity is present. Focused coverage proves inactive tail rounds stay
-  cold, active tail rounds use the faster cadence, the data provider clears the
-  local-pending hint after pending finalization drains, authenticated inbound
-  private REST gossip wakes the hint, and live private-REST AlephBFT finality
-  still completes.
+  inbound AlephBFT network message carrying CDK consensus data is queued, and
+  uses the normal upstream active cadence for tail rounds only while local
+  pending work or recent consensus-data network activity is present. Focused
+  coverage proves inactive tail rounds stay cold, active tail rounds use the
+  faster cadence, the data provider clears the local-pending hint after pending
+  finalization drains, authenticated inbound private REST gossip carrying data
+  wakes the hint, idle inbound messages do not wake it, and live private-REST
+  AlephBFT finality still completes. Fresh process verification confirmed the
+  idle creator cadence cools to about 2s and member CPU drops below 1%; cold
+  mints still measured 13.90s and 12.01s because three serialized consensus
+  operations remain on the critical path.
 - [x] Public federated mint signing waits for mint-quote payment observation to
   be locally visible before submitting the mint operation to consensus.
   Benchmark traces showed an ordering race where an unpaid mint operation could

@@ -643,6 +643,7 @@ fn aleph_bft_live_session_options_for_startup(
     options
 }
 
+#[cfg(test)]
 fn cdk_aleph_bft_delay_config() -> DelayConfig {
     cdk_aleph_bft_delay_config_with_activity(CdkAlephBftActivityHint::default())
 }

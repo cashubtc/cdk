@@ -2,7 +2,7 @@
 
 Date: 2026-07-09
 
-This note records benchmark results from fresh 5-member, threshold-3 fakewallet AlephBFT federations and fresh CLI wallets. The first run identified why federated minting took tens of seconds. The second run verifies the immediate post-quote payment-observation fix and keeps the remaining delay classified.
+This note records benchmark results from fresh 5-member, threshold-3 fakewallet AlephBFT federations and fresh CLI wallets. The first run identified why federated minting took tens of seconds. The second run verifies the immediate post-quote payment-observation fix and keeps the remaining delay classified. The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip was excluded from the activity hint.
 
 The measurements below are development-environment measurements. Absolute values will vary by machine, but the stage ordering and relative delays are the important result.
 
@@ -266,12 +266,57 @@ Checkpoint update:
   sessions into the idle tail before wallet traffic and reproduced high CPU.
 - The live session now uses an in-memory activity hint instead: inactive tail
   rounds keep the 2s delay, local accepted AlephBFT submissions mark local
-  pending activity, authenticated inbound AlephBFT private REST messages mark a
-  bounded recent-network-activity window, and tail rounds use the normal
-  upstream active cadence only while one of those activity signals is present.
+  pending activity, authenticated inbound AlephBFT private REST messages that
+  actually carry CDK consensus data mark a bounded recent-network-activity
+  window, and tail rounds use the normal upstream active cadence only while one
+  of those activity signals is present.
 - This keeps idle members cold while avoiding repeated 2s tail intervals during
   real consensus work. It does not change operation ordering, journal semantics,
   payment observation semantics, signing rules, or member networking formats.
+- Benchmark correction: the first activity-hint implementation marked every
+  inbound AlephBFT private REST message as activity. Idle empty-unit gossip kept
+  sessions warm forever, with `AlephBFT-creator: Delay passed` every about
+  500ms and member processes around 4-7% CPU. The corrected implementation only
+  marks inbound messages whose decoded AlephBFT network message includes CDK
+  consensus data. After an idle wait past the tail threshold, creator cadence
+  slowed to about 2s and each member sat around 0.4-0.5% CPU.
+
+Selective activity-hint command timing:
+
+| Command | Wall Time | User CPU | Sys CPU | Classification |
+| --- | ---: | ---: | ---: | --- |
+| `curl /v1/info` | 0.87s | 0.00s | 0.00s | direct HTTP unchanged |
+| non-federated `cdk-cli mint-info` | 0.95s | 0.02s | 0.02s | standalone CLI control remained fast |
+| `cdk-cli federation add` | 1.35s | 1.33s | 0.00s | config validation/key aggregation remains CPU-heavy |
+| federated `cdk-cli mint-info` | 1.52s | 0.58s | 0.00s | registry validation cost remains measurable |
+| federated mint #1, 50 sat | 13.90s | 2.38s | 0.06s | cold idle-tail wakeup plus three consensus operations |
+| federated mint #2, 30 sat | 12.01s | 1.14s | 0.03s | follow-on mint faster but still consensus-dominated |
+
+Selective activity-hint mint #1 timeline:
+
+| Stage | Timestamp UTC | Delta From Previous | Notes |
+| --- | --- | ---: | --- |
+| CLI start | 17:57:31.667 | - | command invocation after idle tail cooled to 2s |
+| quote request received by mint | 17:57:36.071 | 4.404s | CLI startup, wallet setup, member selection/fanout setup |
+| fakewallet payment notification | 17:57:36.073 | 0.002s | fakewallet payment itself is effectively immediate |
+| quote/payment observation submitted | 17:57:41.429 | 5.356s | quote consensus accepted before the immediate observation path returned; periodic observer raced harmlessly |
+| payment observation peer-visible | 17:57:42.881 | 1.452s | peer sync observed operations through index 1 |
+| mint/signing accepted and wallet aggregation done | 17:57:45.591 | 2.710s | command completed with issued proofs |
+
+Total wall time: 13.90s.
+
+Selective activity-hint mint #2 timeline:
+
+| Stage | Timestamp UTC | Delta From Previous | Notes |
+| --- | --- | ---: | --- |
+| CLI start | 17:57:45.619 | - | command invocation |
+| quote request received by mint | 17:57:48.016 | 2.397s | lower startup/setup overhead than mint #1 |
+| fakewallet payment notification | 17:57:48.019 | 0.003s | fakewallet payment itself is effectively immediate |
+| quote peer-visible | 17:57:53.077 | 5.058s | peer sync observed operations through index 3 |
+| payment observation submitted | 17:57:53.606 | 0.529s | immediate observation path and periodic observer raced harmlessly |
+| mint/signing accepted and wallet aggregation done | 17:57:57.651 | 4.045s | command completed with issued proofs; peer sync saw operations through index 5 at 17:57:58.104 |
+
+Total wall time: 12.01s.
 
 Investigation targets:
 
@@ -291,8 +336,8 @@ Test plan:
 
 - Done for the activity-hint behavior: focused unit tests cover inactive and
   active tail delays, local pending clearing after finalization drains, inbound
-  private REST gossip waking the hint, and a live private-REST AlephBFT
-  finality smoke.
+  private REST gossip carrying consensus data waking the hint, idle inbound
+  messages not waking the hint, and a live private-REST AlephBFT finality smoke.
 - Still needed: add a non-production benchmark harness for AlephBFT operation latency:
   - one operation
   - three sequential operations
@@ -405,8 +450,10 @@ This totals about 6-8s in the fakewallet happy path. If the protocol remains at 
 1. Implement immediate post-quote payment observation and benchmark the saving.
 2. Add AlephBFT latency instrumentation in a non-production benchmark harness.
 3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
-   checkpoint: pending-work-aware tail cadence is implemented and behavior-tested;
-   fresh process timing remains open.
+   checkpoint: selective pending-work-aware tail cadence is implemented,
+   behavior-tested, and process-verified for idle cooling; cold mints are still
+   12-14s because they need three serialized consensus operations and can wait
+   on the 2s idle tail before the first active proposal.
 4. Cache validated federation configs and aggregate keysets in the wallet/CLI.
 5. Re-benchmark two full mints after every change.
 6. Only after the above, evaluate whether `mint_quote_payment` and `mint` can be safely merged or linked into a fewer-round design.

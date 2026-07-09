@@ -16,12 +16,24 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use super::aleph_bft_runtime::{
-    CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetworkHandle,
+    CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetworkData, CdkAlephBftNetworkHandle,
     CdkAlephBftOutboundMessage,
 };
 use super::peer_client::FederationRestPeerClient;
 
 pub(crate) const CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT: usize = 4096;
+
+/// Classifies inbound AlephBFT messages that should wake active proposal cadence.
+pub(crate) trait CdkAlephBftNetworkActivityMarker {
+    /// Return true when this message carries consensus data, not only idle protocol chatter.
+    fn marks_consensus_activity(&self) -> bool;
+}
+
+impl CdkAlephBftNetworkActivityMarker for CdkAlephBftNetworkData {
+    fn marks_consensus_activity(&self) -> bool {
+        !self.included_data().is_empty()
+    }
+}
 
 /// Cloneable sink for authenticated inbound AlephBFT network messages.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -75,7 +87,7 @@ impl<D> CdkAlephBftNetworkInboundHandle<D> {
 
 impl<D> CdkAlephBftNetworkInboundQueue for CdkAlephBftNetworkInboundHandle<D>
 where
-    D: Decode + Send + Sync + 'static,
+    D: CdkAlephBftNetworkActivityMarker + Decode + Send + Sync + 'static,
 {
     fn queue_request(
         &self,
@@ -114,12 +126,22 @@ where
                 },
             ));
         }
+        let marks_activity = message.marks_consensus_activity();
         self.incoming.send(message).map_err(|_| {
             cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())
         })?;
-        self.activity_hint.mark_network_activity();
+        if marks_activity {
+            self.activity_hint.mark_network_activity();
+        }
 
         Ok(actual)
+    }
+}
+
+#[cfg(test)]
+impl CdkAlephBftNetworkActivityMarker for u64 {
+    fn marks_consensus_activity(&self) -> bool {
+        true
     }
 }
 
@@ -771,4 +793,42 @@ fn hex_encode(bytes: &[u8]) -> String {
     }
 
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use aleph_bft::Network;
+    use parity_scale_codec::{Decode, Encode};
+
+    use crate::federation::aleph_bft_runtime::CdkAlephBftNetwork;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Decode, Encode)]
+    struct IdleNetworkMessage(u64);
+
+    impl CdkAlephBftNetworkActivityMarker for IdleNetworkMessage {
+        fn marks_consensus_activity(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_idle_network_message_does_not_mark_activity_hint() {
+        let (mut network, handle) = CdkAlephBftNetwork::<IdleNetworkMessage>::new_pair();
+        let activity_hint = CdkAlephBftActivityHint::default();
+        let inbound =
+            CdkAlephBftNetworkInboundHandle::with_activity_hint(7, &handle, activity_hint.clone());
+        let request =
+            FederationAlephBftNetworkMessageRequest::new(7, IdleNetworkMessage(42).encode());
+
+        let encoded_bytes = inbound.queue_request(&request).expect("queue request");
+
+        assert_eq!(
+            encoded_bytes,
+            request.message_bytes().expect("message").len()
+        );
+        assert_eq!(network.next_event().await, Some(IdleNetworkMessage(42)));
+        assert!(!activity_hint.is_active());
+    }
 }
