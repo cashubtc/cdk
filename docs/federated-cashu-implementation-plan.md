@@ -92,9 +92,16 @@ Current blocking bugs:
   with one data-provider yield and one duplicate-pending waiter join. A
   five-member threshold-three BFT-sized live-session probe now measures the same
   stage sequence across all five members, with local submit-to-waiter completion
-  around 1.0-1.3s under fast in-process options. This confirms the remaining
-  12-14s fakewallet process mint delay is not caused by the local apply,
-  duplicate-waiter, or waiter-notification path alone.
+  around 1.0-1.3s under fast in-process options. A seven-member threshold-five
+  probe now measures the same stage sequence with local waiter return around
+  2.5-3.3s and all-member apply around 3.0-3.8s. A default-cadence
+  two-operation probe now records the idle-tail shape directly: after an idle
+  pause the cold operation yielded data after about 2.0s and returned its local
+  waiter at about 4.0-4.5s, while the immediate follow-up yielded after about
+  0.48s and returned at about 2.5s. This confirms the remaining 12-14s
+  fakewallet process mint delay is driven by default AlephBFT cadence across
+  three serialized operations, not by the local apply, duplicate-waiter, or
+  waiter-notification path alone.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -2014,7 +2021,14 @@ AlephBFT and consensus unit tests:
   `DataProviderYielded`, two `WaiterReturned` events, and one
   duplicate-pending waiter join. A five-member threshold-three BFT-sized probe
   now covers larger-roster private REST gossip and all-member apply, with the
-  local waiter returning around 1.0-1.3s under fast in-process options. Recorder
+  local waiter returning around 1.0-1.3s under fast in-process options. A
+  seven-member threshold-five BFT-sized probe now covers the same stage sequence
+  at the next planned roster size, with the local waiter returning around
+  2.5-3.3s and all seven members applying by around 3.0-3.8s. A default-cadence
+  cold/warm probe now records the idle-tail effect without fast test delay
+  overrides: the first operation after an idle pause yielded from the data
+  provider after about 2.0s and returned at about 4.0-4.5s, while the immediate
+  follow-up yielded after about 0.48s and returned at about 2.5s. Recorder
   installation is exclusive so parallel tests cannot overwrite the scoped active
   recorder. This gives future cadence and batching work a stable non-production
   benchmark surface.

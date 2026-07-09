@@ -9385,6 +9385,110 @@ async fn aleph_bft_live_session_latency_probe_records_five_member_bft_operation(
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_latency_probe_records_seven_member_bft_operation() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 512,
+        max_peer_deliveries_per_message: 512,
+    };
+    let session = start_multi_member_aleph_bft_live_session(
+        7,
+        5,
+        fast_aleph_bft_live_session_options(pump_config, 500),
+    )
+    .await
+    .expect("start seven-member live session");
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+
+    let operation_id = submit_latency_probe_mint_quote(
+        session
+            .states
+            .first()
+            .expect("seven-member latency probe has local state"),
+    )
+    .await;
+    for state in &session.states {
+        wait_for_applied_operation(state, operation_id).await;
+    }
+
+    let operation_events = latency.events_for_operation(operation_id);
+    assert_latency_stage_order(&operation_events, LATENCY_EXPECTED_STAGES);
+    let end_to_end = latency_stage_delta(
+        &operation_events,
+        CdkAlephBftLatencyStage::SubmitQueued,
+        CdkAlephBftLatencyStage::WaiterReturned,
+    )
+    .expect("submit-to-waiter latency");
+    assert!(
+        end_to_end < Duration::from_secs(10),
+        "seven-member operation {operation_id} took {end_to_end:?}: {}",
+        format_latency_events(&operation_events)
+    );
+    eprintln!(
+        "AlephBFT seven-member latency probe for {operation_id}: {}",
+        format_latency_events(&operation_events)
+    );
+}
+
+#[tokio::test]
+async fn aleph_bft_live_session_latency_probe_records_default_cadence_follow_up() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let session = start_two_member_aleph_bft_live_session(
+        FederationAlephBftLiveSessionOptions::new(pump_config).with_max_round(500),
+    )
+    .await
+    .expect("start default-cadence live session");
+    time::sleep(Duration::from_secs(3)).await;
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+
+    let cold_operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
+    wait_for_applied_operation(&session.first_state, cold_operation_id).await;
+    wait_for_applied_operation(&session.second_state, cold_operation_id).await;
+    let warm_operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
+    wait_for_applied_operation(&session.first_state, warm_operation_id).await;
+    wait_for_applied_operation(&session.second_state, warm_operation_id).await;
+
+    let cold_events = latency.events_for_operation(cold_operation_id);
+    let warm_events = latency.events_for_operation(warm_operation_id);
+    assert_latency_stage_order(&cold_events, LATENCY_EXPECTED_STAGES);
+    assert_latency_stage_order(&warm_events, LATENCY_EXPECTED_STAGES);
+    let cold_end_to_end = latency_stage_delta(
+        &cold_events,
+        CdkAlephBftLatencyStage::SubmitQueued,
+        CdkAlephBftLatencyStage::WaiterReturned,
+    )
+    .expect("cold submit-to-waiter latency");
+    let warm_end_to_end = latency_stage_delta(
+        &warm_events,
+        CdkAlephBftLatencyStage::SubmitQueued,
+        CdkAlephBftLatencyStage::WaiterReturned,
+    )
+    .expect("warm submit-to-waiter latency");
+    assert!(
+        cold_end_to_end < Duration::from_secs(10),
+        "default-cadence cold operation {cold_operation_id} took {cold_end_to_end:?}: {}",
+        format_latency_events(&cold_events)
+    );
+    assert!(
+        warm_end_to_end < Duration::from_secs(10),
+        "default-cadence warm operation {warm_operation_id} took {warm_end_to_end:?}: {}",
+        format_latency_events(&warm_events)
+    );
+    eprintln!(
+        "AlephBFT default-cadence cold latency probe for {cold_operation_id}: {}",
+        format_latency_events(&cold_events)
+    );
+    eprintln!(
+        "AlephBFT default-cadence warm latency probe for {warm_operation_id}: {}",
+        format_latency_events(&warm_events)
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
@@ -12876,13 +12980,22 @@ async fn start_two_member_aleph_bft_live_session(
 async fn start_five_member_aleph_bft_live_session(
     live_options: FederationAlephBftLiveSessionOptions,
 ) -> Result<MultiMemberAlephBftLiveSession, cdk::Error> {
-    let federation_api_urls = (1..=5)
+    start_multi_member_aleph_bft_live_session(5, 3, live_options).await
+}
+
+async fn start_multi_member_aleph_bft_live_session(
+    member_count: u16,
+    signature_threshold: u16,
+    live_options: FederationAlephBftLiveSessionOptions,
+) -> Result<MultiMemberAlephBftLiveSession, cdk::Error> {
+    let federation_api_urls = (1..=member_count)
         .map(|value| {
             MintUrl::from_str(&format!("http://fed{value}.test")).expect("federation api url")
         })
         .collect::<Vec<_>>();
     let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
-        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+        ThresholdParams::with_bft_consensus(member_count, signature_threshold)
+            .expect("threshold params"),
         federation_api_urls.clone(),
     );
     let mut states = Vec::new();
