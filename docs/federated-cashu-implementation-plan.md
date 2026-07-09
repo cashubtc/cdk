@@ -2674,6 +2674,17 @@ Tests and success criteria:
   mint/swap/melt/restore batches, crash-window restart, offline pending paid
   and failed melts, quarantine conflict replay, keyset rotation, restarted
   member catch-up, and final convergence.
+- Latest DKG route-probe smoke-target checkpoint: `just fed-regtest-dkg-full`
+  and `just fed-regtest-postgres-dkg-full` now generate DKG setup-route probe
+  fixtures, set `PROBE_DKG_SETUP_ROUTES=1`, and then continue through the
+  normal local federation smoke path instead of exiting after setup-only
+  activation. The fast `just fed-regtest-check` gate now also runs the
+  `federation_dkg_status` tests so database-backed DKG progress reporting and
+  DB-plus-file completion-record recovery stay covered without starting member
+  processes. Dry-run checks prove both new full smoke targets wire the DKG
+  probes into the generated script with the expected SQLite and Postgres
+  command paths; a live full-process execution remains a future verification
+  target.
 - [ ] Add AlephBFT live private-REST catch-up certification tests for
   self-partitioned proposers, below-quorum-offline operation windows, and
   above-quorum-offline stall windows. These tests must verify reconnect

@@ -340,10 +340,12 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("require_positive_integer SMOKE_QUOTE_SLEEP_MS"));
     assert!(smoke_script.contains("require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS"));
     assert!(smoke_script.contains("require_positive_integer STANDARD_OPERATION_BATCHES"));
-    assert!(smoke_script.contains("STANDARD_OPERATION_BATCHES must be 255 or lower"));
+    assert!(smoke_script.contains("STANDARD_SEED_OFFSET must be 255 or lower"));
+    assert!(smoke_script
+        .contains("STANDARD_SEED_OFFSET plus STANDARD_OPERATION_BATCHES must be 256 or lower"));
     assert!(smoke_script.contains("require_nonnegative_integer POST_CRASH_SEED_OFFSET"));
     assert!(
-        smoke_script.contains("POST_CRASH_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES")
+        smoke_script.contains("POST_CRASH_SEED_OFFSET must be after the standard smoke seed range")
     );
     assert!(smoke_script.contains("require_positive_integer POST_CRASH_OPERATION_BATCHES"));
     assert!(smoke_script
@@ -354,7 +356,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     ));
     assert!(smoke_script.contains("require_nonnegative_integer LONG_PARTITION_SEED_OFFSET"));
     assert!(smoke_script
-        .contains("LONG_PARTITION_SEED_OFFSET must be at least STANDARD_OPERATION_BATCHES"));
+        .contains("LONG_PARTITION_SEED_OFFSET must be after the standard smoke seed range"));
     assert!(smoke_script.contains(
         "LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must not overlap the post-crash seed range"
     ));

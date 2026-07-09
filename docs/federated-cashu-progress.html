@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: deduplicate dkg status recovery records</span>
+          <span class="value">test: add full dkg route-probe smoke targets</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Database-backed <code>dkg-status</code> now merges persisted completion records with file-supplied recovery records idempotently, so repeated keyset-share or transcript-signature material does not inflate readiness counts. Partial setup status also shows durable commitment, reveal, and secret-share progress without marking finalization ready or leaking secret material.</span>
+          <span class="value"><code>just fed-regtest-dkg-full</code> and <code>just fed-regtest-postgres-dkg-full</code> now generate DKG setup-route probe fixtures, set <code>PROBE_DKG_SETUP_ROUTES=1</code>, and continue into the normal full smoke path instead of stopping after setup-only activation. <code>just fed-regtest-check</code> now also runs the database-backed DKG status tests, and dry-runs verified the new SQLite and Postgres target wiring.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden AlephBFT process coverage across storage backends and integrate DKG route-probe coverage into longer generated smoke paths.</span>
+          <span class="value">Run a live full DKG route-probe smoke and broaden AlephBFT process coverage across storage backends.</span>
         </div>
       </aside>
     </header>
@@ -816,7 +816,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-probe-only smoke mode, live route-probe-only process smoke, route-driven local member keyset-share derivation, route-derived transcript-signature route probes, setup-only generated configs, database-backed setup-only readiness, live restart/runtime activation from setup-only records, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, commitment/reveal/secret-share/transcript-signature conflict rejection before sequence persistence, idempotent DB-plus-file completion-record recovery, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is integration into the longer generated smoke path and eventual dealer-free DKG review.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-probe-only smoke mode, live route-probe-only process smoke, full generated smoke targets with route-probe setup enabled, route-driven local member keyset-share derivation, route-derived transcript-signature route probes, setup-only generated configs, database-backed setup-only readiness, live restart/runtime activation from setup-only records, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, commitment/reveal/secret-share/transcript-signature conflict rejection before sequence persistence, idempotent DB-plus-file completion-record recovery, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is live full-process DKG route-probe execution and eventual dealer-free DKG review.</p>
           </article>
         </div>
       </section>
