@@ -215,6 +215,15 @@ Current blocking bugs:
   error is preserved. The wallet regression now passes across mint/swap/melt,
   and the actual CLI send command proves a served invalid share is ignored when
   the delayed valid threshold arrives, leaving the expected 1 sat balance.
+- CLI non-v3 output audit: no normal CLI command accepts a keyset ID or raw
+  blinded-output set. Imported federation configs must be v3/BLS-only, and all
+  mint/send/melt/restore outputs are derived from that validated aggregate
+  keyset. Crafted non-v3 requests remain tested at the wallet connector, where
+  mint, batch mint, swap, restore, and melt change fail before member fanout,
+  and at mint admission, where they fail before consensus construction. The
+  standalone builder regression still accepts configured legacy keysets. A
+  synthetic raw-output CLI hook was deliberately not added because it would
+  create an unsafe surface solely for a redundant test.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -3434,7 +3443,7 @@ Implementation checklist:
   A second focused receive test now proves a token whose mint URL is an imported
   member public URL reaches federation wallet resolution rather than the
   untrusted-mint gate, without needing live member HTTP.
-- [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path now tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests now cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction. `just fed-regtest-cli-smoke-mismatched-member` now covers a live reachable member advertising mismatched federation metadata/keysets while the threshold-valid member set still mints successfully. `just fed-regtest-cli-smoke-insufficient-valid-advertisements` covers too many reachable wrong-metadata members causing `mint-info` to fail before spendable proofs exist. `just fed-regtest-cli-smoke-missing-metadata` covers reachable standalone members that omit federation mint-info metadata, requires the CLI to fail with insufficient valid advertisements, and verifies no local proofs exist. `just fed-regtest-cli-smoke-all-members-unreachable` imports a generated federation without starting any members, requires `mint-info` to fail with insufficient keyset advertisements, and verifies no local proofs exist. `just fed-regtest-cli-smoke-slow-member` now behaviorally exercises a 30-second fakewallet payment delay through the slow member as quote primary, completes threshold mint/swap/change-melt flows, and proves there was no fallback quote churn by requiring the exact 10-operation journal; non-v3 request-output command coverage remains open.
+- [x] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction. Process smokes cover a reachable mismatched member, insufficient valid advertisements, missing federation mint-info metadata, all members unreachable, insufficient consensus threshold, and slow-member quote behavior without duplicate quote churn. Non-v3 raw outputs are intentionally unrepresentable in the CLI; crafted requests are rejected at the wallet pre-fanout and mint pre-consensus boundaries.
 - [x] Document how to use `cdk-cli` against a locally generated federation from
   the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
 
@@ -3534,7 +3543,8 @@ Latest checkpoint:
   was exactly `melt_quote -> swap -> melt`, the returned member caught up to
   the same 17-entry order/state digests, and a post-optimization swap took
   5.45s before all members converged on entry 18. The remaining required CLI
-  value-path work is non-v3 request-output coverage.
+  work is the explicit command-routing audit for direct HTTP and auth-related
+  commands.
   Command-level restore/check-state disagreement coverage is now complete,
   leaving a full external process variant optional rather than required for the
   CLI wiring invariant.
@@ -3612,10 +3622,16 @@ Tests and success criteria:
   fallback.
 - [x] CLI integration or command-level tests prove `cdk-cli` can mint through a
   local federation and receive aggregate-verifiable ordinary Cashu proofs.
-- [ ] CLI integration or command-level tests prove `cdk-cli` can send/swap
+- [x] CLI integration or command-level tests prove `cdk-cli` can send/swap
   existing federated proofs and cannot aggregate shares for a conflicting or
-  sliding-window output set. Current live smoke proves the happy-path online
-  send/swap.
+  sliding-window output set. Live process smoke and the command-level P2PK send
+  regression exercise the real CLI swap path and aggregate ordinary tokens.
+  The honest CLI constructs one canonical `SwapRequest`, so per-member sliding
+  windows are not representable at the command layer; malicious-client
+  coverage lives at the actual trust boundaries in
+  `local_federated_members_reject_sliding_window_swap_output_attack`,
+  `apply_federation_swap_rejects_sliding_window_input_reuse_attack`, and the
+  concurrent conflicting-output Axum regression.
 - [x] CLI integration or command-level tests prove `cdk-cli` can melt through a
   local federation, including the no-change case and a change-output case with
   aggregate-verifiable change proofs. Current live smoke proves the
@@ -3652,7 +3668,7 @@ Tests and success criteria:
 - [x] Repeat the fakewallet CLI smoke with one member stopped when the configured member count and thresholds can still make progress. `just fed-regtest-cli-smoke-offline` now stops one member during CLI mint, check-state, send/receive, spent-token check-state, melt, balance, and copied-seed restore, then restarts it and requires final signed convergence.
 - [x] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable. Process smokes prove one-offline-member restart/catch-up and a behaviorally observed 30-second incoming-payment delay across threshold mint, forced swap, and forced-change melt with exact all-member convergence. `command_send_waits_for_valid_threshold_after_invalid_share` forces a wrong signer share to arrive before one delayed honest share, asserts the invalid response was served, and proves the actual CLI P2PK send succeeds with the later valid threshold and correct remaining balance.
 - [x] CLI tests prove insufficient threshold fails before wallet fanout can produce spendable proofs. `just fed-regtest-cli-smoke-insufficient-threshold` stops two members, expects CLI mint quote creation to fail, rejects any output claiming minted or received positive value, and verifies `check-state` finds no local proofs.
-- [ ] CLI tests prove missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs. Current focused unit coverage proves non-v3/BLS public configs are rejected during CLI import/registry validation. The `fed-regtest-cli-smoke-mismatched-member` process target now covers a live reachable member with mismatched federation metadata/keysets being excluded while the threshold-valid set still produces spendable proofs, `fed-regtest-cli-smoke-insufficient-valid-advertisements` covers the matching live failure path when too few valid member advertisements remain, `fed-regtest-cli-smoke-missing-metadata` covers reachable standalone members that omit federation mint-info metadata, and `fed-regtest-cli-smoke-all-members-unreachable` covers an imported federation whose members are all down. Non-v3 request-output command coverage remains open.
+- [x] CLI tests prove missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs. Process targets cover reachable mismatched and missing-metadata members, insufficient valid advertisements, and all members unreachable. CLI import rejects non-v3/BLS configs before connector construction. Because CLI commands expose no raw keyset/output selector, all normal outputs derive from the validated v3 aggregate keyset; crafted non-v3 mint, batch mint, swap, restore, and melt-change requests are covered directly at the wallet pre-fanout boundary, with matching mint pre-consensus tests and a passing standalone legacy-keyset regression.
 - [x] First-test success criterion: a developer can run generated fakewallet
   federation mints and complete `mint -> send/swap -> melt` using only
   `cdk-cli`, without calling the Rust wallet connector test harness directly.
