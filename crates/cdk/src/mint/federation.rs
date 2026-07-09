@@ -1233,26 +1233,29 @@ impl Mint {
         max_operation_index: u64,
     ) -> Result<bool, Error> {
         let entries = self.localstore.get_federation_journal_entries().await?;
-        Ok(entries.iter().any(|entry| {
-            entry.index <= max_operation_index
-                && FederationPaymentObservationQuarantineRecord::from_journal_entry(entry)
-                    .is_some_and(|record| {
-                        record.quarantine.context == context && record.quarantine.quote == quote
-                    })
-        }))
+        Ok(federation_payment_observation_is_quarantined_in_entries(
+            &entries,
+            context,
+            quote,
+            max_operation_index,
+        ))
     }
 
-    fn federation_payment_observation_can_finalize(
+    fn federation_payment_observation_can_finalize_at_or_before(
         &self,
         candidate: &FederationPaymentObservation,
         observations: &[FederationPaymentObservationRecord],
+        max_operation_index: u64,
     ) -> Result<bool, Error> {
         let config = self.federation_config().ok_or(Error::Internal)?;
         let policy = *config
             .public_config()
             .payment_verification_policy(candidate.context());
         let quorum = candidate.quorum(
-            observations.iter().map(|record| &record.observation),
+            observations
+                .iter()
+                .filter(|record| record.operation_index <= max_operation_index)
+                .map(|record| &record.observation),
             policy.required_matching_observations(),
         );
 
@@ -1272,26 +1275,53 @@ impl Mint {
         operation: &FederationMintQuoteOperation,
     ) -> Result<(), Error> {
         let operation_id = entry.operation_id;
-        let quote = mint_quote_from_federation_operation(
+        let proposed_quote = mint_quote_from_federation_operation(
             operation,
             federation_accepted_logical_time(entry),
         )?;
+        let journal_entries = self.localstore.get_federation_journal_entries().await?;
         let mut tx = self.localstore.begin_transaction().await?;
+        let mut quote;
+        let mut paid_notification = None;
 
-        match tx.get_mint_quote(&quote.id).await? {
+        match tx.get_mint_quote(&proposed_quote.id).await? {
             Some(existing) => {
-                ensure_mint_quote_matches(&existing, &quote)?;
+                ensure_mint_quote_matches(&existing, &proposed_quote)?;
+                quote = existing;
             }
             None => {
-                tx.add_mint_quote(quote.clone()).await?;
+                tx.add_mint_quote(proposed_quote.clone()).await?;
+                quote = database::mint::Acquired::from(proposed_quote);
             }
+        }
+
+        let observations = tx
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MintQuote,
+                &operation.quote,
+            )
+            .await?;
+        if let Some(amount_paid) = self
+            .apply_mint_payment_observations_to_quote(
+                &mut tx,
+                &mut quote,
+                &observations,
+                &journal_entries,
+            )
+            .await?
+        {
+            paid_notification = Some(((*quote).clone(), amount_paid));
         }
 
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
+        let published_quote = (*quote).clone();
         tx.commit().await?;
 
-        self.publish_federation_mint_quote_created(&quote)?;
+        self.publish_federation_mint_quote_created(&published_quote)?;
+        if let Some((quote, amount_paid)) = paid_notification {
+            self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
+        }
 
         Ok(())
     }
@@ -1365,23 +1395,9 @@ impl Mint {
         let operation_id = entry.operation_id;
         let quote_id = quote_id_from_federation(&observation.quote)?;
         let record = payment_observation_record_from_entry(entry)?;
-        let is_quarantined = self
-            .federation_payment_observation_is_quarantined_at_or_before(
-                FederationPaymentObservationContext::MintQuote,
-                &observation.quote,
-                entry.index,
-            )
-            .await?;
+        let journal_entries = self.localstore.get_federation_journal_entries().await?;
         let mut tx = self.localstore.begin_transaction().await?;
-        let mut quote = tx
-            .get_mint_quote(&quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
         let mut paid_notification = None;
-
-        if quote.payment_method != observation.method {
-            return Err(Error::InvalidPaymentMethod);
-        }
 
         tx.add_federation_payment_observation(&record).await?;
         let observations = tx
@@ -1390,37 +1406,18 @@ impl Mint {
                 &observation.quote,
             )
             .await?;
-        let can_finalize =
-            self.federation_payment_observation_can_finalize(&record.observation, &observations)?;
-
-        let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
-        if can_finalize && !is_quarantined && observed_paid > quote.amount_paid() {
-            let additional_amount = observed_paid
-                .checked_sub(&quote.amount_paid())
-                .map_err(|_| Error::AmountOverflow)?;
-            let payment_id = observation
-                .payment_id
-                .as_ref()
-                .map(federation_payment_identifier_label)
-                .or_else(|| observation.payment_proof.clone())
-                .unwrap_or_else(|| {
-                    format!(
-                        "federation:{}:{}",
-                        operation_id,
-                        mint_quote_state_label(observation.state)
-                    )
-                });
-            quote.add_payment(
-                additional_amount,
-                payment_id,
-                Some(
-                    observation
-                        .observed_time
-                        .unwrap_or_else(|| federation_accepted_logical_time(entry)),
-                ),
-            )?;
-            tx.update_mint_quote(&mut quote).await?;
-            paid_notification = Some((quote.clone(), quote.amount_paid()));
+        if let Some(mut quote) = tx.get_mint_quote(&quote_id).await? {
+            if let Some(amount_paid) = self
+                .apply_mint_payment_observations_to_quote(
+                    &mut tx,
+                    &mut quote,
+                    &observations,
+                    &journal_entries,
+                )
+                .await?
+            {
+                paid_notification = Some(((*quote).clone(), amount_paid));
+            }
         }
 
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
@@ -1432,6 +1429,69 @@ impl Mint {
         }
 
         Ok(())
+    }
+
+    async fn apply_mint_payment_observations_to_quote(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &mut database::mint::Acquired<MintQuote>,
+        observations: &[FederationPaymentObservationRecord],
+        journal_entries: &[FederationJournalEntry],
+    ) -> Result<Option<Amount<CurrencyUnit>>, Error> {
+        let mut paid_notification = None;
+
+        for record in observations {
+            let FederationPaymentObservation::MintQuote(observation) = &record.observation else {
+                continue;
+            };
+            if quote.payment_method != observation.method {
+                return Err(Error::InvalidPaymentMethod);
+            }
+
+            let can_finalize = self.federation_payment_observation_can_finalize_at_or_before(
+                &record.observation,
+                observations,
+                record.operation_index,
+            )?;
+            let is_quarantined = federation_payment_observation_is_quarantined_in_entries(
+                journal_entries,
+                FederationPaymentObservationContext::MintQuote,
+                &observation.quote,
+                record.operation_index,
+            );
+
+            let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
+            if can_finalize && !is_quarantined && observed_paid > quote.amount_paid() {
+                let additional_amount = observed_paid
+                    .checked_sub(&quote.amount_paid())
+                    .map_err(|_| Error::AmountOverflow)?;
+                let payment_id = observation
+                    .payment_id
+                    .as_ref()
+                    .map(federation_payment_identifier_label)
+                    .or_else(|| observation.payment_proof.clone())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "federation:{}:{}",
+                            record.operation_id,
+                            mint_quote_state_label(observation.state)
+                        )
+                    });
+                quote.add_payment(
+                    additional_amount,
+                    payment_id,
+                    Some(
+                        observation
+                            .observed_time
+                            .unwrap_or_else(|| record.operation_index.saturating_add(1)),
+                    ),
+                )?;
+                tx.update_mint_quote(quote).await?;
+                paid_notification = Some(quote.amount_paid());
+            }
+        }
+
+        Ok(paid_notification)
     }
 
     async fn apply_federation_mint(
@@ -1772,8 +1832,11 @@ impl Mint {
                     &observation.quote,
                 )
                 .await?;
-            let can_finalize = self
-                .federation_payment_observation_can_finalize(&record.observation, &observations)?;
+            let can_finalize = self.federation_payment_observation_can_finalize_at_or_before(
+                &record.observation,
+                &observations,
+                record.operation_index,
+            )?;
             tx.commit().await?;
             can_finalize
         };
@@ -2212,6 +2275,20 @@ fn federation_accepted_logical_time(entry: &FederationJournalEntry) -> u64 {
     // The MVP journal has ordered consensus but no wall-clock timestamp. Use a
     // stable logical time so deterministic replay converges across members.
     entry.index.saturating_add(1)
+}
+
+fn federation_payment_observation_is_quarantined_in_entries(
+    entries: &[FederationJournalEntry],
+    context: FederationPaymentObservationContext,
+    quote: &str,
+    max_operation_index: u64,
+) -> bool {
+    entries.iter().any(|entry| {
+        entry.index <= max_operation_index
+            && FederationPaymentObservationQuarantineRecord::from_journal_entry(entry).is_some_and(
+                |record| record.quarantine.context == context && record.quarantine.quote == quote,
+            )
+    })
 }
 
 fn mint_quote_response_amounts(

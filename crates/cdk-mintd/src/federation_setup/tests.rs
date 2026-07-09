@@ -249,11 +249,16 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         .contains("--work-dir \"$work_dir\" --config \"$config\" federation dkg-status"));
     assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
     assert!(smoke_script.contains("DKG_ROUTE_PROBE_ONLY"));
+    assert!(smoke_script.contains("FINAL_PUBLIC_CONFIG=\"$PUBLIC_CONFIG\""));
+    assert!(smoke_script.contains("USE_DKG_SETUP_CONFIGS=0"));
     assert!(smoke_script.contains("DKG_SETUP_PUBLIC_CONFIG"));
     assert!(smoke_script.contains("PUBLIC_CONFIG=\"$DKG_SETUP_PUBLIC_CONFIG\""));
+    assert!(smoke_script.contains("PUBLIC_CONFIG=\"$FINAL_PUBLIC_CONFIG\""));
+    assert!(smoke_script.contains("USE_DKG_SETUP_CONFIGS=1"));
     assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES=1"));
     assert!(smoke_script.contains("dkg setup route probe passed"));
     assert!(smoke_script.contains("CDK_FEDERATION_DISABLE_PEER_SYNC=1"));
+    assert!(smoke_script.contains("CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=in_memory"));
     assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
     assert!(smoke_script.contains("member_mint_url()"));
     assert!(smoke_script.contains("member_federation_url()"));
@@ -272,14 +277,18 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("keyset_share_records"));
     assert!(smoke_script.contains("transcript_signature_records"));
     assert!(smoke_script.contains(
-            "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"
+        "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$PROBE_DKG_SETUP_ROUTES\" == \"1\" ]]; then"
         ));
     assert!(smoke_script.contains("wait_for_dkg_status \"$member\""));
     assert!(smoke_script.contains(
             "stop_member \"$member\"\n  done\n  for member in \"${MEMBERS[@]}\"; do\n    start_member \"$member\""
         ));
     assert!(smoke_script.contains("wait_for_runtime_keysets \"$member\""));
-    assert!(smoke_script.contains("exit 0\nfi\n\nfor member in"));
+    assert!(smoke_script.contains("if [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"));
+    assert!(
+        smoke_script.contains("USE_DKG_SETUP_CONFIGS=0\n  PUBLIC_CONFIG=\"$FINAL_PUBLIC_CONFIG\"")
+    );
+    assert!(smoke_script.contains("reset_member_work_dirs\n  for member in"));
     assert!(smoke_script.contains("wait_for_dkg_status()"));
     assert!(smoke_script.contains("print_dkg_record_runbook()"));
     assert!(smoke_script.contains("DKG record recovery for member"));

@@ -623,6 +623,26 @@ fn federation_config_conflict_error(config: &FederationConfigSnapshot) -> Error 
     ))
 }
 
+fn is_dkg_finalization_config_update(
+    existing: &FederationConfigSnapshot,
+    replacement: &FederationConfigSnapshot,
+) -> bool {
+    if existing.federation_id != replacement.federation_id {
+        return false;
+    }
+    if !existing.config.keysets.is_empty() || existing.config.setup_transcript.is_some() {
+        return false;
+    }
+    if replacement.config.keysets.is_empty() || replacement.config.setup_transcript.is_none() {
+        return false;
+    }
+
+    let mut stripped_replacement = replacement.config.clone();
+    stripped_replacement.keysets.clear();
+    stripped_replacement.setup_transcript = None;
+    stripped_replacement == existing.config
+}
+
 fn federation_dkg_transcript_signature_conflict_error(
     signature: &FederationDkgTranscriptSignatureRequest,
 ) -> Error {
@@ -643,6 +663,7 @@ where
         &mut self,
         config: &FederationConfigSnapshot,
     ) -> Result<(), Self::Err> {
+        let config_json = serde_json::to_string(&config.config)?;
         let rows_affected = query(
             r#"
             INSERT INTO federation_config
@@ -659,10 +680,49 @@ where
         )?
         .bind("federation_id", config.federation_id.to_string())
         .bind("config_digest", config.config_digest.to_string())
-        .bind("config_json", serde_json::to_string(&config.config)?)
+        .bind("config_json", config_json.clone())
         .execute(&self.inner)
         .await?;
         if rows_affected == 0 {
+            let mut rows = query(
+                r#"
+                SELECT
+                    federation_id,
+                    config_digest,
+                    config_json
+                FROM federation_config
+                WHERE federation_id = :federation_id
+                "#,
+            )?
+            .bind("federation_id", config.federation_id.to_string())
+            .fetch_all(&self.inner)
+            .await?
+            .into_iter();
+
+            if let Some(existing) = rows
+                .next()
+                .map(sql_row_to_federation_config_snapshot)
+                .transpose()?
+            {
+                if is_dkg_finalization_config_update(&existing, config) {
+                    query(
+                        r#"
+                        UPDATE federation_config
+                        SET
+                            config_digest = :config_digest,
+                            config_json = :config_json
+                        WHERE federation_id = :federation_id
+                        "#,
+                    )?
+                    .bind("federation_id", config.federation_id.to_string())
+                    .bind("config_digest", config.config_digest.to_string())
+                    .bind("config_json", config_json)
+                    .execute(&self.inner)
+                    .await?;
+                    return Ok(());
+                }
+            }
+
             return Err(federation_config_conflict_error(config));
         }
 

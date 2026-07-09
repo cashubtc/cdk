@@ -213,6 +213,31 @@ fn dkg_member_keyset_share(local_member_id: MemberId) -> FederationDkgMemberKeys
     }
 }
 
+fn dkg_finalized_public_config(setup_config: &FederationConfig) -> FederationConfig {
+    let keyset_share = dkg_member_keyset_share(member_id(1));
+    assert_eq!(keyset_share.federation_id, setup_config.federation_id);
+
+    let mut finalized_config = setup_config.clone();
+    finalized_config.keysets = vec![keyset_share.keyset];
+    finalized_config
+        .validate()
+        .expect("finalized config public keysets validate");
+    finalized_config.setup_transcript = Some(
+        FederationDkgTranscript::pedersen_dkg(
+            &finalized_config,
+            &BTreeMap::from([
+                (member_id(1), private_member(1)),
+                (member_id(2), private_member(2)),
+            ]),
+        )
+        .expect("pedersen DKG transcript"),
+    );
+    finalized_config
+        .validate()
+        .expect("finalized config transcript validates");
+    finalized_config
+}
+
 fn dkg_secret_share_request(
     public_config: &FederationConfig,
     sender: MemberId,
@@ -876,7 +901,28 @@ where
         .await
         .expect("commit idempotent federation config");
 
-    let mut conflicting_config = config;
+    let finalized_config = dkg_finalized_public_config(&snapshot.config);
+    let finalized_snapshot =
+        FederationConfigSnapshot::new(finalized_config).expect("finalized config snapshot");
+    assert_eq!(finalized_snapshot.federation_id, snapshot.federation_id);
+    assert_ne!(finalized_snapshot.config_digest, snapshot.config_digest);
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin finalized DKG config");
+    tx.set_federation_config(&finalized_snapshot)
+        .await
+        .expect("persist finalized DKG config");
+    tx.commit().await.expect("commit finalized DKG config");
+
+    assert_eq!(
+        db.get_federation_config(config.federation_id)
+            .await
+            .expect("load finalized DKG config"),
+        Some(finalized_snapshot.clone())
+    );
+
+    let mut conflicting_config = finalized_snapshot.config.clone();
     conflicting_config
         .payment_observation_policy
         .max_pending_quotes += 1;

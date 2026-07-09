@@ -1399,6 +1399,7 @@ set -euo pipefail
 
 CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
 PUBLIC_CONFIG={public_config_path}
+FINAL_PUBLIC_CONFIG="$PUBLIC_CONFIG"
 DKG_SETUP_PUBLIC_CONFIG={dkg_setup_public_config_path}
 POSTGRES_SCHEMA_RESET_URL={postgres_schema_reset_url}
 RESET_POSTGRES_SCHEMAS="${{RESET_POSTGRES_SCHEMAS:-0}}"
@@ -1414,11 +1415,11 @@ STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 CHECK_PROMETHEUS_METRICS="${{CHECK_PROMETHEUS_METRICS:-1}}"
 PROBE_DKG_SETUP_ROUTES="${{PROBE_DKG_SETUP_ROUTES:-0}}"
 DKG_ROUTE_PROBE_ONLY="${{DKG_ROUTE_PROBE_ONLY:-0}}"
+USE_DKG_SETUP_CONFIGS=0
 FEDERATION_CONSENSUS_BACKEND="${{FEDERATION_CONSENSUS_BACKEND:-}}"
 FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${{FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-}}"
 if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
   PROBE_DKG_SETUP_ROUTES=1
-  PUBLIC_CONFIG="$DKG_SETUP_PUBLIC_CONFIG"
 fi
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
@@ -1451,7 +1452,7 @@ if [[ -z "$STANDARD_SEED_OFFSET" ]]; then
 fi
 
 member_config() {{
-  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
     case "$1" in
 {dkg_setup_config_cases}      *) return 1 ;;
     esac
@@ -1463,7 +1464,7 @@ member_config() {{
 }}
 
 member_work_dir() {{
-  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
     case "$1" in
 {dkg_setup_work_dir_cases}      *) return 1 ;;
     esac
@@ -1475,7 +1476,7 @@ member_work_dir() {{
 }}
 
 member_private_config() {{
-  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
     case "$1" in
 {dkg_setup_private_config_cases}      *) return 1 ;;
     esac
@@ -1523,11 +1524,12 @@ start_member() {{
     mintd_env+=(CDK_MINTD_PROMETHEUS_ENABLED=false)
     mintd_env_count=$((mintd_env_count + 1))
   fi
-  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
     mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
     mintd_env_count=$((mintd_env_count + 1))
-  fi
-  if [[ -n "$FEDERATION_CONSENSUS_BACKEND" ]]; then
+    mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=in_memory)
+    mintd_env_count=$((mintd_env_count + 1))
+  elif [[ -n "$FEDERATION_CONSENSUS_BACKEND" ]]; then
     mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="$FEDERATION_CONSENSUS_BACKEND")
     mintd_env_count=$((mintd_env_count + 1))
   fi
@@ -2194,6 +2196,10 @@ trap cleanup EXIT INT TERM
 
 validate_smoke_members
 validate_smoke_settings
+if [[ "$PROBE_DKG_SETUP_ROUTES" == "1" ]]; then
+  USE_DKG_SETUP_CONFIGS=1
+  PUBLIC_CONFIG="$DKG_SETUP_PUBLIC_CONFIG"
+fi
 reset_member_work_dirs
 
 for member in "${{MEMBERS[@]}}"; do
@@ -2202,7 +2208,7 @@ done
 
 probe_dkg_setup_routes
 wait_for_dkg_setup_records
-if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+if [[ "$PROBE_DKG_SETUP_ROUTES" == "1" ]]; then
   for member in "${{MEMBERS[@]}}"; do
     wait_for_dkg_status "$member"
   done
@@ -2215,8 +2221,19 @@ if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
   for member in "${{MEMBERS[@]}}"; do
     wait_for_runtime_keysets "$member"
   done
-  printf 'dkg setup route probe passed\n'
-  exit 0
+  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+    printf 'dkg setup route probe passed\n'
+    exit 0
+  fi
+  for member in "${{MEMBERS[@]}}"; do
+    stop_member "$member"
+  done
+  USE_DKG_SETUP_CONFIGS=0
+  PUBLIC_CONFIG="$FINAL_PUBLIC_CONFIG"
+  reset_member_work_dirs
+  for member in "${{MEMBERS[@]}}"; do
+    start_member "$member"
+  done
 fi
 
 for member in "${{MEMBERS[@]}}"; do
