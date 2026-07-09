@@ -621,7 +621,7 @@ fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="2
   CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
 # Run a real cdk-cli wallet smoke against generated fake-wallet federation members
-fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fed-regtest-cli-wallet" members="5" threshold="3" port_start="62885":
+fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fed-regtest-cli-wallet" members="5" threshold="3" port_start="62885" offline_member="0":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
@@ -645,6 +645,9 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
   just fed-regtest-start "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   trap 'just fed-regtest-stop "{{dir}}"' EXIT
   wait_for_cli_smoke_status
+  if [[ "{{offline_member}}" != "0" ]]; then
+    just fed-regtest-stop-member "{{offline_member}}" "{{dir}}"
+  fi
   rm -rf -- "{{wallet_dir}}" "{{wallet_dir}}-restore"
   mint_url="http://127.0.0.1:{{port_start}}"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
@@ -677,8 +680,15 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
     restore "$mint_url" | tee "{{wallet_dir}}/restore.out"
   grep -Eq 'Restored: [1-9][0-9]*' "{{wallet_dir}}/restore.out"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat balance
+  if [[ "{{offline_member}}" != "0" ]]; then
+    just fed-regtest-start-member "{{offline_member}}" "{{dir}}" "0"
+  fi
   wait_for_cli_smoke_status
   printf 'cdk-cli federation smoke passed\n'
+
+# Run the CLI federation smoke while one member is offline, then restart it and require catch-up
+fed-regtest-cli-smoke-offline dir="target/cdk-fed-regtest-cli-offline" wallet_dir="target/cdk-fed-regtest-cli-offline-wallet" members="5" threshold="3" port_start="64885" offline_member="5":
+  just fed-regtest-cli-smoke "{{dir}}" "{{wallet_dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{offline_member}}"
 
 # Run generated local federation smoke with a longer offline operation window
 fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="5" threshold="3" port_start="25885" offline_batches="8":
@@ -910,7 +920,7 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
   done
 
 # Start one generated fake-wallet federation member
-fed-regtest-start-member member dir="target/cdk-fed-regtest":
+fed-regtest-start-member member dir="target/cdk-fed-regtest" build="1":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
@@ -929,10 +939,30 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest":
     exit 0
   fi
   mkdir -p "$work_dir"
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  if [[ "{{build}}" == "1" ]]; then
+    cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  fi
   target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
   echo "$!" > "$pid_file"
   echo "started member {{member}} with pid $(cat "$pid_file")"
+  mint_url="$(awk -F' = ' '/^url = / { gsub("\"", "", $2); print $2; exit }' "$config")"
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      echo "member {{member}} exited before becoming reachable" >&2
+      tail -n 80 "$work_dir/mintd.log" >&2 || true
+      tail -n 80 "$work_dir"/logs/cdk-mintd.log.* >&2 || true
+      exit 1
+    fi
+    if curl -fsS "$mint_url/v1/info" >/dev/null 2>&1; then
+      echo "member {{member}} is reachable at $mint_url"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "member {{member}} did not become reachable at $mint_url" >&2
+  tail -n 80 "$work_dir/mintd.log" >&2 || true
+  tail -n 80 "$work_dir"/logs/cdk-mintd.log.* >&2 || true
+  exit 1
 
 # Stop one generated fake-wallet federation member
 fed-regtest-stop-member member dir="target/cdk-fed-regtest":

@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The first live five-member threshold-three AlephBFT CLI smoke now mints, swaps, receives, melts, and reconverges all members; remaining CLI work is broader command coverage, invite ergonomics, restore/check-state smokes, and offline or bad-member matrices.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live five-member threshold-three AlephBFT CLI smokes now cover the happy path and a one-offline-member path with restart catch-up; remaining CLI work is broader command coverage, invite ergonomics, slow or bad-member matrices, and no-threshold failure cases.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add cli federation smoke</span>
+          <span class="value">test: add cli federation offline smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value"><code>just fed-regtest-cli-smoke</code> now runs a repeatable five-member threshold-three AlephBFT fakewallet federation through real <code>cdk-cli</code> commands: public-config import, federation-aware <code>mint-info</code>, mint, local proof <code>check-state</code>, send/receive, spent-token <code>check-state</code>, generated fake-invoice melt, copied-seed restore in a fresh CLI database, balance, and final signed convergence status.</span>
+          <span class="value"><code>just fed-regtest-cli-smoke-offline</code> now repeats the real CLI mint, local proof <code>check-state</code>, send/receive, spent-token <code>check-state</code>, generated fake-invoice melt, copied-seed restore, balance, and final status flow while one member is offline, then restarts that member and requires catch-up to the same accepted operation count, order digest, and state digest.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add CLI failure matrices for one offline member, slow members, bad shares, insufficient threshold, mismatched keysets, and mismatched restore/check-state member views.</span>
+          <span class="value">Add CLI failure matrices for slow members, bad shares, insufficient threshold, mismatched keysets, and mismatched restore/check-state member views.</span>
         </div>
       </aside>
     </header>
@@ -699,7 +699,7 @@
             <div>
               <h3>Milestone 25: CLI wallet federation support</h3>
               <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
-              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI mint/send/receive/melt/restore smoke, and standalone CLI compatibility are passing; adversarial member CLI smokes remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, one-offline-member CLI smoke with restart catch-up, and standalone CLI compatibility are passing; slow-member, bad-share, and no-threshold CLI smokes remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -744,7 +744,7 @@
           </article>
           <article class="item">
             <h3>Operations and tooling</h3>
-            <p>Mintd can generate local federation configs, run smoke scripts, run repeated standard/long-partition smoke-operation batches, inspect configs, query signed status, compare digests, view payment observations, run DKG status checks, generate fresh fake invoices, and exercise SQLite/Postgres process flows. A scripted end-to-end CLI wallet smoke now runs against a live five-member threshold-three AlephBFT fakewallet federation and completes minting, swapping, receiving, token check-state, melting, copied-seed restore, balance, and convergence checks.</p>
+            <p>Mintd can generate local federation configs, run smoke scripts, run repeated standard/long-partition smoke-operation batches, inspect configs, query signed status, compare digests, view payment observations, run DKG status checks, generate fresh fake invoices, and exercise SQLite/Postgres process flows. Scripted end-to-end CLI wallet smokes now run against live five-member threshold-three AlephBFT fakewallet federations and complete minting, swapping, receiving, token check-state, melting, copied-seed restore, balance, convergence checks, and one-offline-member restart catch-up.</p>
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
@@ -929,7 +929,7 @@
         <div class="stack">
           <article class="item">
             <h3>CLI federation coverage</h3>
-            <p>Add failure matrices for slow, offline, bad-share, mismatched-keyset, insufficient-threshold, and mismatched restore/check-state member views now that the happy-path CLI smoke is scripted.</p>
+            <p>Add failure matrices for slow, bad-share, mismatched-keyset, insufficient-threshold, and mismatched restore/check-state member views now that happy-path and one-offline-member CLI smokes are scripted.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>
