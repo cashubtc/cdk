@@ -3115,7 +3115,10 @@ Implementation checklist:
   mint/federation identity, or return a clear actionable error when the CLI has
   not imported the corresponding federation config. The first path resolves
   tokens whose mint URL matches the imported local federation URL or any member
-  public mint URL in the imported federation config.
+  public mint URL in the imported federation config. A focused receive test now
+  proves an unimported token mint URL fails before receive/network work with an
+  error that tells the user to run `cdk-cli federation add --public-config
+  <path>` for federated tokens or `--allow-untrusted` for standalone mints.
 - [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path now tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests now cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction; broader live member-advertisement failures still need command-level coverage.
 - [x] Document how to use `cdk-cli` against a locally generated federation from
   the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
@@ -3154,7 +3157,9 @@ Latest checkpoint:
   wallet repository, `get_or_create_wallet` maps both the local federation URL
   and imported member public URLs to a `FederatedMintConnector`, unsupported
   federation units fail before wallet creation, and unrelated mint URLs still use
-  the standalone wallet path.
+  the standalone wallet path. A focused receive test now proves unimported
+  federation-token mint URLs fail with an actionable import-config error before
+  network receive work starts.
 
 Scripted local CLI smoke command:
 
@@ -3238,7 +3243,11 @@ Tests and success criteria:
   silently treating the token as a standalone mint token. Current live smoke
   proves receive when the token mint URL matches the imported federation URL,
   and focused registry coverage proves imported member public URLs resolve to
-  the same federation metadata before wallet construction.
+  the same federation metadata before wallet construction. Focused receive
+  coverage now proves a token from an unimported mint URL fails with an explicit
+  `cdk-cli federation add --public-config <path>` hint before network receive
+  work starts; command-level receive coverage for imported member URL tokens
+  remains open.
 - [x] Add a fakewallet federation CLI smoke test that starts N local federation
   members, imports `federation-public.json` into `cdk-cli`, mints with fake paid
   quotes, performs send/swap, melts through the fake successful backend, and

@@ -234,3 +234,61 @@ async fn nostr_receive(
 
     Ok(tokens)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use cdk::cdk_database::{self, WalletDatabase};
+    use cdk::mint_url::MintUrl;
+    use cdk::nuts::{Id, Proof};
+    use cdk::secret::Secret;
+    use cdk::wallet::{WalletRepository, WalletRepositoryBuilder};
+    use cdk::Amount;
+
+    use super::*;
+
+    async fn test_repository() -> WalletRepository {
+        let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("wallet memory db"),
+        );
+        WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository")
+    }
+
+    fn token_for_mint(mint_url: MintUrl) -> String {
+        let proof = Proof::new(
+            Amount::from(1),
+            Id::from_str("009a1f293253e41e").expect("keyset id"),
+            Secret::generate(),
+            "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"
+                .parse()
+                .expect("proof signature"),
+        );
+        Token::new(mint_url, vec![proof], None, CurrencyUnit::Sat).to_string()
+    }
+
+    #[tokio::test]
+    async fn receive_token_rejects_unimported_federation_member_with_actionable_error() {
+        let repository = test_repository().await;
+        let token = token_for_mint(
+            MintUrl::from_str("https://unimported-fed.example.com").expect("mint url"),
+        );
+
+        let err = receive_token(&repository, &token, &[], &[], false, &CurrencyUnit::Sat)
+            .await
+            .expect_err("untrusted federation token rejected");
+
+        let err = err.to_string();
+        assert!(err.contains("not trusted or imported as a federation member"));
+        assert!(err.contains("cdk-cli federation add --public-config"));
+        assert!(err.contains("--allow-untrusted"));
+    }
+}
