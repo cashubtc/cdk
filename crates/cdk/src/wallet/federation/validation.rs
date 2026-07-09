@@ -1,4 +1,6 @@
-use cdk_common::federation::{FederatedKeyset, FederationConfig, FederationError, MemberId};
+use cdk_common::federation::{
+    FederatedKeyset, FederationConfig, FederationConfigDigest, FederationError, MemberId,
+};
 
 use crate::nuts::{KeySet, KeySetInfo, MintInfo};
 use crate::Error;
@@ -19,6 +21,24 @@ impl FederationWalletConnector {
             .as_ref()
             .ok_or(FederationError::MissingFederationMintInfo { member_id })?;
         Ok(public_config.validate_member_mint_info(member_id, federation_info)?)
+    }
+
+    /// Validate one member's federation metadata with a precomputed config digest.
+    pub fn validate_member_mint_info_with_config_digest(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        mint_info: &MintInfo,
+        config_digest: FederationConfigDigest,
+    ) -> Result<(), Error> {
+        let federation_info = mint_info
+            .federation
+            .as_ref()
+            .ok_or(FederationError::MissingFederationMintInfo { member_id })?;
+        Ok(public_config.validate_member_mint_info_with_config_digest(
+            member_id,
+            federation_info,
+            config_digest,
+        )?)
     }
 
     /// Validate the aggregate keysets advertised by one federation member.
@@ -57,7 +77,6 @@ pub(super) fn validate_member_active_keysets(
     member_id: MemberId,
     advertised_keysets: &[KeySet],
 ) -> Result<(), Error> {
-    public_config.validate()?;
     if !public_config.members.contains_key(&member_id) {
         return Err(FederationError::UnknownMember { member_id }.into());
     }

@@ -430,19 +430,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, and reachable standalone members missing federation mint-info metadata failing before proofs exist. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, and explicit primary-member request policy at the CLI boundary. Remaining CLI work is broader command coverage, slow or bad-member matrices, and non-v3 request-output command cases.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, and reachable standalone members missing federation mint-info metadata failing before proofs exist. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, explicit primary-member request policy, and read-only startup behavior at the CLI boundary. The latest performance pass removes repeated full wallet-side federation validation and eager read-only CLI activation/recovery from the hot path; remaining CLI work is broader command coverage, slow or bad-member matrices, and non-v3 request-output command cases.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add cli missing-metadata smoke</span>
+          <span class="value">fix: reduce federated wallet startup latency</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value"><code>just fed-regtest-cli-smoke-missing-metadata</code> passed live: three honest members plus two reachable standalone fakewallet mints made <code>mint-info</code> fail with required 4, received 3, explicit missing federation mint-info diagnostics, and no local proofs.</span>
+          <span class="value">Federated <code>mint-info</code> latency was traced to repeated wallet/CLI validation and activation, not the public info endpoint. The imported-registry hot path now skips read-only activation/recovery, caches the federation digest, validates member metadata with the cached digest, reuses the first validated member <code>mint-info</code>, and reduces clean AlephBFT tick logs to trace; fresh wallet-library constructors still full-validate external configs.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add CLI failure matrices for slow members, bad shares, non-v3 request-output failures, all-members-unreachable, and mismatched restore/check-state member views.</span>
+          <span class="value">Profile the remaining mint-side latency in payment-observation cadence and AlephBFT finality, then add CLI failure matrices for slow members, bad shares, non-v3 request-output failures, all-members-unreachable, and mismatched restore/check-state member views.</span>
         </div>
       </aside>
     </header>
@@ -790,7 +790,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues are fixed and closed unless they reappear, successful AlephBFT gossip stays on the no-write fast path, high-frequency status/local-status/network-message routes keep REST sequence watermarks in memory, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, concurrent duplicate public value routes are member-local idempotent for mint, swap, and melt, concurrent all-member wallet mint, swap, and melt fanout returns identical aggregate-verifiable responses while leaving one accepted operation per member, mint and swap keep one response cache entry per member, swap fanout spends each input once per member, melt fanout converges through matching paid observations while making only one elected development-backend payment attempt, duplicate AlephBFT peer entries cannot inflate quorum or skipped-member telemetry, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
+            <p>Known CPU spin and blocking-call issues are fixed and closed unless they reappear, successful AlephBFT gossip stays on the no-write fast path with clean ticks logged at trace, high-frequency status/local-status/network-message routes keep REST sequence watermarks in memory, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, federated wallet startup avoids repeated full BLS aggregate config validation on read-only CLI commands, concurrent duplicate public value routes are member-local idempotent for mint, swap, and melt, concurrent all-member wallet mint, swap, and melt fanout returns identical aggregate-verifiable responses while leaving one accepted operation per member, mint and swap keep one response cache entry per member, swap fanout spends each input once per member, melt fanout converges through matching paid observations while making only one elected development-backend payment attempt, duplicate AlephBFT peer entries cannot inflate quorum or skipped-member telemetry, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -854,7 +854,10 @@
           generated post-crash operation smoke, followed by
           larger wallet-operation smoke repetitions, storage-backed 4-member
           and 5-member partition windows, and compile gates. The previous CPU issue is closed unless it
-          reappears.
+          reappears. The latest wallet-startup performance check confirms
+          federated <code>mint-info</code> is no longer CPU-bound by repeated full
+          config validation; remaining mint latency work should focus on
+          payment-observation timing and AlephBFT finality.
         </p>
       </section>
 
@@ -940,8 +943,8 @@
             <p>Repeat the now-passing SQLite and Postgres federation smokes against larger rosters to catch any storage contention, quorum edge, or slow catch-up path that the focused tests cannot show.</p>
           </article>
           <article class="item">
-            <h3>Seven-member fanout profiling</h3>
-            <p>Return to seven-member mint request and share aggregation profiling now that quote visibility, pending paid melt recovery, and failed pending melt compensation no longer mask the real runtime cost.</p>
+            <h3>Mint-side latency profiling</h3>
+            <p>Profile payment-observation cadence, AlephBFT finality, and share collection now that wallet startup validation no longer masks the real runtime cost.</p>
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>

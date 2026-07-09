@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk_common::federation::{FederationConfig, FederationError, FederationInvite, MemberId};
+use cdk_common::federation::{
+    FederationConfig, FederationConfigDigest, FederationError, FederationInvite, MemberId,
+};
 use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
@@ -46,6 +48,7 @@ use self::validation::{
 #[derive(Clone)]
 pub struct FederatedMintConnector {
     public_config: FederationConfig,
+    config_digest: FederationConfigDigest,
     member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     primary_member_id: MemberId,
     config: FederatedMintConnectorConfig,
@@ -208,6 +211,20 @@ impl FederatedMintConnector {
         public_config: FederationConfig,
         config: FederatedMintConnectorConfig,
     ) -> Result<Self, Error> {
+        public_config.validate()?;
+        Self::from_validated_public_config_urls_with_config(public_config, config)
+    }
+
+    /// Create a wallet connector from member URLs in an already-validated config.
+    ///
+    /// This is intended for trusted local registries that fully validated the
+    /// federation config when it was imported. New external configs should use
+    /// [`Self::from_public_config_urls_with_config`] so threshold aggregate keys
+    /// and setup proofs are checked before the connector is constructed.
+    pub fn from_validated_public_config_urls_with_config(
+        public_config: FederationConfig,
+        config: FederatedMintConnectorConfig,
+    ) -> Result<Self, Error> {
         let member_connectors = public_config
             .members
             .iter()
@@ -229,6 +246,21 @@ impl FederatedMintConnector {
         config: FederatedMintConnectorConfig,
     ) -> Result<Self, Error> {
         public_config.validate()?;
+        Self::new_with_validated_config(public_config, member_connectors, config)
+    }
+
+    /// Create a wallet connector with an already-validated federation config.
+    ///
+    /// This path avoids repeating expensive threshold aggregate-key validation
+    /// after a config has been fully checked at import time. New external
+    /// configs should use [`Self::new_with_config`].
+    pub fn new_with_validated_config(
+        public_config: FederationConfig,
+        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        config: FederatedMintConnectorConfig,
+    ) -> Result<Self, Error> {
+        public_config.validate_wallet_runtime_metadata()?;
+        let config_digest = public_config.config_digest_for_validated_config()?;
         config.validate()?;
 
         for member_id in public_config.members.keys() {
@@ -270,6 +302,7 @@ impl FederatedMintConnector {
 
         Ok(Self {
             public_config,
+            config_digest,
             member_connectors,
             primary_member_id,
             config,
@@ -520,15 +553,31 @@ impl FederatedMintConnector {
     async fn validate_member_active_keysets(
         &self,
     ) -> Result<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>, Error> {
+        Ok(self
+            .validate_member_active_keysets_with_mint_info()
+            .await?
+            .0)
+    }
+
+    async fn validate_member_active_keysets_with_mint_info(
+        &self,
+    ) -> Result<
+        (
+            BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+            Option<MintInfo>,
+        ),
+        Error,
+    > {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         if let Some(cached) = self.valid_member_connectors_cache.read().await.clone() {
             if cached.len() >= threshold {
-                return Ok(cached);
+                return Ok((cached, None));
             }
         }
 
         let mut valid_member_connectors = BTreeMap::new();
         let mut valid_members = 0usize;
+        let mut first_valid_mint_info = None;
         let mut failures = Vec::new();
         let mut members = self.member_connectors.iter();
         let mut pending = FuturesUnordered::new();
@@ -553,10 +602,11 @@ impl FederatedMintConnector {
         while let Some((member_id, result)) = pending.next().await {
             match result {
                 Ok((mint_info, advertised)) => {
-                    match FederationWalletConnector::validate_member_mint_info(
+                    match FederationWalletConnector::validate_member_mint_info_with_config_digest(
                         &self.public_config,
                         member_id,
                         &mint_info,
+                        self.config_digest,
                     )
                     .and_then(|_| {
                         validate_member_active_keysets(&self.public_config, member_id, &advertised)
@@ -564,6 +614,9 @@ impl FederatedMintConnector {
                         Ok(()) => {
                             if let Some(connector) = self.member_connectors.get(&member_id) {
                                 valid_member_connectors.insert(member_id, connector.clone());
+                            }
+                            if first_valid_mint_info.is_none() {
+                                first_valid_mint_info = Some(mint_info);
                             }
                             valid_members = valid_members.saturating_add(1);
                         }
@@ -577,10 +630,11 @@ impl FederatedMintConnector {
                 while let Some((member_id, result)) = pending.next().now_or_never().flatten() {
                     match result {
                         Ok((mint_info, advertised)) => {
-                            match FederationWalletConnector::validate_member_mint_info(
+                            match FederationWalletConnector::validate_member_mint_info_with_config_digest(
                                 &self.public_config,
                                 member_id,
                                 &mint_info,
+                                self.config_digest,
                             )
                             .and_then(|_| {
                                 validate_member_active_keysets(
@@ -595,6 +649,9 @@ impl FederatedMintConnector {
                                         valid_member_connectors
                                             .insert(member_id, connector.clone());
                                     }
+                                    if first_valid_mint_info.is_none() {
+                                        first_valid_mint_info = Some(mint_info);
+                                    }
                                 }
                                 Err(err) => {
                                     failures.push(format!("member {}: {}", member_id, err));
@@ -606,7 +663,7 @@ impl FederatedMintConnector {
                 }
                 *self.valid_member_connectors_cache.write().await =
                     Some(valid_member_connectors.clone());
-                return Ok(valid_member_connectors);
+                return Ok((valid_member_connectors, first_valid_mint_info));
             }
 
             while pending.len() < concurrency {
@@ -627,7 +684,7 @@ impl FederatedMintConnector {
         }
 
         *self.valid_member_connectors_cache.write().await = Some(valid_member_connectors.clone());
-        Ok(valid_member_connectors)
+        Ok((valid_member_connectors, first_valid_mint_info))
     }
 
     async fn collect_mint_responses<F, Fut>(
@@ -1563,10 +1620,11 @@ impl MintConnector for FederatedMintConnector {
         while let Some((member_id, result)) = pending.next().await {
             match result {
                 Ok((mint_info, advertised)) => {
-                    FederationWalletConnector::validate_member_mint_info(
+                    FederationWalletConnector::validate_member_mint_info_with_config_digest(
                         &self.public_config,
                         member_id,
                         &mint_info,
+                        self.config_digest,
                     )?;
                     validate_member_advertised_keyset(&self.public_config, member_id, &advertised)?;
                     valid_members = valid_members.saturating_add(1);
@@ -1803,7 +1861,12 @@ impl MintConnector for FederatedMintConnector {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        let member_connectors = self.validate_member_active_keysets().await?;
+        let (member_connectors, mint_info) =
+            self.validate_member_active_keysets_with_mint_info().await?;
+        if let Some(mint_info) = mint_info {
+            return Ok(mint_info);
+        }
+
         self.call_first_healthy_member_from(
             &member_connectors,
             "mint info",

@@ -16,7 +16,7 @@ use cdk_common::federation::{FederationConfig, FederationId, FederationInvite, M
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::{activate_federation_wallet, set_federation_registry};
+use crate::utils::set_federation_registry;
 
 const FEDERATION_REGISTRY_VERSION: u16 = 1;
 const FEDERATION_REGISTRY_FILE: &str = "federations.json";
@@ -207,7 +207,7 @@ pub struct StoredFederationWallet {
 impl StoredFederationWallet {
     /// Validate this imported federation wallet config.
     pub fn validate(&self) -> Result<()> {
-        self.public_config.validate()?;
+        self.public_config.validate_wallet_runtime_metadata()?;
         self.connector_policy.connector_config().validate()?;
         if let Some(primary_member_id) = self.connector_policy.primary_member_id {
             if !self.public_config.members.contains_key(&primary_member_id) {
@@ -236,8 +236,7 @@ impl StoredFederationWallet {
 
     /// Build the federated mint connector for this imported federation.
     pub fn mint_connector(&self) -> Result<Arc<dyn MintConnector + Send + Sync>> {
-        self.validate()?;
-        let connector = FederatedMintConnector::from_public_config_urls_with_config(
+        let connector = FederatedMintConnector::from_validated_public_config_urls_with_config(
             self.public_config.clone(),
             self.connector_policy.connector_config(),
         )?;
@@ -281,7 +280,11 @@ impl StoredFederationWallet {
 
     /// Return the public config digest for display.
     pub fn config_digest(&self) -> Result<String> {
-        Ok(self.public_config.config_digest()?.to_string())
+        self.validate()?;
+        Ok(self
+            .public_config
+            .config_digest_for_validated_config()?
+            .to_string())
     }
 }
 
@@ -351,20 +354,16 @@ impl StoredFederationConnectorPolicy {
 /// Run a federation-aware wallet command.
 pub async fn federation(
     work_dir: &Path,
-    wallet_repository: &WalletRepository,
+    _wallet_repository: &WalletRepository,
     command: &FederationCommand,
 ) -> Result<()> {
     match &command.command {
-        FederationSubCommand::Add(args) => add(work_dir, wallet_repository, args).await,
+        FederationSubCommand::Add(args) => add(work_dir, args).await,
         FederationSubCommand::List => list(work_dir),
     }
 }
 
-async fn add(
-    work_dir: &Path,
-    wallet_repository: &WalletRepository,
-    args: &FederationAddSubCommand,
-) -> Result<()> {
+async fn add(work_dir: &Path, args: &FederationAddSubCommand) -> Result<()> {
     let mut registry = FederationWalletRegistry::load(work_dir)?;
     let public_config = load_imported_public_config(args)?;
     let local_mint_url = match &args.local_mint_url {
@@ -374,7 +373,6 @@ async fn add(
     let wallet = registry.upsert(public_config, local_mint_url, args.connector_policy()?)?;
     registry.save(work_dir)?;
     set_federation_registry(registry)?;
-    activate_federation_wallet(wallet_repository, &wallet).await?;
 
     println!("Imported federation {}", wallet.federation_id());
     println!("  Local mint URL: {}", wallet.local_mint_url);
@@ -432,6 +430,7 @@ fn load_imported_public_config(args: &FederationAddSubCommand) -> Result<Federat
         (Some(path), None) => load_public_config(path),
         (None, Some(invite_code)) => {
             let invite = FederationInvite::from_str(invite_code)?;
+            invite.config.validate()?;
             Ok(invite.config)
         }
         (None, None) => bail!("Provide either --public-config or --invite-code"),

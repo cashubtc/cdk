@@ -513,18 +513,36 @@ where
             {
                 Ok(outcome) => {
                     if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
-                        tracing::debug!(
-                            messages_drained = outcome.messages_drained,
-                            retry_messages_drained = outcome.retry_messages_drained,
-                            encoded_bytes = outcome.encoded_bytes,
-                            remote_accepted_members = outcome.remote_accepted_members.len(),
-                            remote_failed_members = outcome.remote_failed_members.len(),
-                            remote_requeued_members = outcome.remote_requeued_members.len(),
-                            remote_skipped_members = outcome.remote_skipped_members.len(),
-                            retry_queue_len = outcome.retry_queue_len,
-                            reached_idle = outcome.reached_idle,
-                            "AlephBFT network pump tick completed"
-                        );
+                        let remote_failed_members = outcome.remote_failed_members.len();
+                        let remote_requeued_members = outcome.remote_requeued_members.len();
+                        let remote_skipped_members = outcome.remote_skipped_members.len();
+                        if remote_failed_members > 0
+                            || remote_requeued_members > 0
+                            || remote_skipped_members > 0
+                        {
+                            tracing::debug!(
+                                messages_drained = outcome.messages_drained,
+                                retry_messages_drained = outcome.retry_messages_drained,
+                                encoded_bytes = outcome.encoded_bytes,
+                                remote_accepted_members = outcome.remote_accepted_members.len(),
+                                remote_failed_members,
+                                remote_requeued_members,
+                                remote_skipped_members,
+                                retry_queue_len = outcome.retry_queue_len,
+                                reached_idle = outcome.reached_idle,
+                                "AlephBFT network pump tick completed with incomplete delivery"
+                            );
+                        } else {
+                            tracing::trace!(
+                                messages_drained = outcome.messages_drained,
+                                retry_messages_drained = outcome.retry_messages_drained,
+                                encoded_bytes = outcome.encoded_bytes,
+                                remote_accepted_members = outcome.remote_accepted_members.len(),
+                                retry_queue_len = outcome.retry_queue_len,
+                                reached_idle = outcome.reached_idle,
+                                "AlephBFT network pump tick completed"
+                            );
+                        }
                     }
                 }
                 Err(err) => {

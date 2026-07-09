@@ -1942,6 +1942,44 @@ impl FederatedKeyset {
         threshold_params: ThresholdParams,
         members: &BTreeMap<MemberId, MemberConfigPublic>,
     ) -> Result<()> {
+        self.validate_metadata(members)?;
+
+        for (amount, aggregate_key) in &self.aggregate_keys {
+            let mut shares = Vec::with_capacity(members.len());
+            for member_id in members.keys() {
+                let member_shares = self.public_shares.get(member_id).ok_or(
+                    FederationError::MissingPublicShares {
+                        keyset_id: self.id,
+                        member_id: *member_id,
+                    },
+                )?;
+                let share =
+                    member_shares
+                        .get(amount)
+                        .ok_or(FederationError::MissingPublicShareAmount {
+                            keyset_id: self.id,
+                            member_id: *member_id,
+                            amount: *amount,
+                        })?;
+                shares.push(*share);
+            }
+
+            let derived = aggregate_public_key_shares(
+                usize::from(threshold_params.signature_threshold),
+                &shares,
+            )?;
+            if derived != *aggregate_key {
+                return Err(FederationError::AggregateKeyMismatch {
+                    keyset_id: self.id,
+                    amount: *amount,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_metadata(&self, members: &BTreeMap<MemberId, MemberConfigPublic>) -> Result<()> {
         if self.aggregate_keys.is_empty() {
             return Err(FederationError::EmptyFederatedKeyset { keyset_id: self.id });
         }
@@ -1995,38 +2033,6 @@ impl FederatedKeyset {
                         signer_id: share.signer_id().get(),
                     });
                 }
-            }
-        }
-
-        for (amount, aggregate_key) in &self.aggregate_keys {
-            let mut shares = Vec::with_capacity(members.len());
-            for member_id in members.keys() {
-                let member_shares = self.public_shares.get(member_id).ok_or(
-                    FederationError::MissingPublicShares {
-                        keyset_id: self.id,
-                        member_id: *member_id,
-                    },
-                )?;
-                let share =
-                    member_shares
-                        .get(amount)
-                        .ok_or(FederationError::MissingPublicShareAmount {
-                            keyset_id: self.id,
-                            member_id: *member_id,
-                            amount: *amount,
-                        })?;
-                shares.push(*share);
-            }
-
-            let derived = aggregate_public_key_shares(
-                usize::from(threshold_params.signature_threshold),
-                &shares,
-            )?;
-            if derived != *aggregate_key {
-                return Err(FederationError::AggregateKeyMismatch {
-                    keyset_id: self.id,
-                    amount: *amount,
-                });
             }
         }
 
@@ -3575,9 +3581,46 @@ impl FederationConfig {
         Ok(())
     }
 
+    /// Validate config metadata needed by an already-imported wallet runtime.
+    ///
+    /// This keeps cheap structural, version, roster, keyset ID, member-share
+    /// presence, and payment-policy checks, but skips expensive threshold BLS
+    /// aggregate-key interpolation and setup-transcript proof validation. New
+    /// external federation configs should still use [`Self::validate`] at
+    /// import or mint startup.
+    pub fn validate_wallet_runtime_metadata(&self) -> Result<()> {
+        self.protocol_versions.validate()?;
+
+        let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
+        if expected_id != self.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: expected_id,
+                found: self.federation_id,
+            });
+        }
+
+        for keyset in &self.keysets {
+            keyset.validate_metadata(&self.members)?;
+        }
+
+        self.payment_observation_policy
+            .validate(self.threshold_params)?;
+
+        Ok(())
+    }
+
     /// Compute a digest of the complete public federation config.
     pub fn config_digest(&self) -> Result<FederationConfigDigest> {
         self.validate()?;
+        self.config_digest_for_validated_config()
+    }
+
+    /// Compute a digest of an already-validated public federation config.
+    ///
+    /// This avoids repeating threshold BLS key interpolation on hot paths where
+    /// the caller has already validated the config during construction or
+    /// registry loading.
+    pub fn config_digest_for_validated_config(&self) -> Result<FederationConfigDigest> {
         let config = serde_json::to_vec(self)?;
         let mut transcript = Vec::new();
         append_bytes(&mut transcript, FEDERATION_CONFIG_DIGEST_VERSION);
@@ -3607,6 +3650,20 @@ impl FederationConfig {
         expected_member_id: MemberId,
         info: &FederationInfo,
     ) -> Result<()> {
+        let expected_digest = self.config_digest()?;
+        self.validate_member_mint_info_with_config_digest(expected_member_id, info, expected_digest)
+    }
+
+    /// Validate a member's mint-info federation advertisement using a known config digest.
+    ///
+    /// Callers should use this after validating the config and computing its
+    /// digest once for the surrounding operation.
+    pub fn validate_member_mint_info_with_config_digest(
+        &self,
+        expected_member_id: MemberId,
+        info: &FederationInfo,
+        expected_digest: FederationConfigDigest,
+    ) -> Result<()> {
         if !self.members.contains_key(&expected_member_id) {
             return Err(FederationError::UnknownMember {
                 member_id: expected_member_id,
@@ -3630,7 +3687,6 @@ impl FederationConfig {
         }
 
         let found_digest = FederationConfigDigest::from_str(&info.config_digest)?;
-        let expected_digest = self.config_digest()?;
         if found_digest != expected_digest {
             return Err(FederationError::FederationConfigDigestMismatch {
                 member_id: expected_member_id,

@@ -1324,6 +1324,24 @@ fn federated_mint_connector_rejects_invalid_member_call_policy() {
 }
 
 #[test]
+fn federated_mint_connector_rejects_tampered_aggregate_key() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let connectors = member_connectors(&bundle, &outputs);
+    let mut public_config = bundle.public_config.clone();
+    let amount = Amount::from(1);
+    let wrong_aggregate_key = *public_config.keysets[0]
+        .aggregate_keys
+        .get(&Amount::from(2))
+        .expect("alternate aggregate key");
+    public_config.keysets[0]
+        .aggregate_keys
+        .insert(amount, wrong_aggregate_key);
+
+    assert!(FederatedMintConnector::new(public_config, connectors).is_err());
+}
+
+#[test]
 fn federated_mint_connector_builds_http_members_from_invite_code() {
     let bundle = threshold_bundle();
     let invite = FederationInvite::new(bundle.public_config.clone()).expect("invite");

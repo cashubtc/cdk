@@ -266,19 +266,23 @@ async fn main() -> Result<()> {
         let federation_registry =
             sub_commands::federation::FederationWalletRegistry::load(&work_dir)?;
         utils::set_federation_registry(federation_registry)?;
-        utils::activate_federation_wallets(&wallet_repository).await?;
+        if command_needs_federation_wallet_activation(&args.command) {
+            utils::activate_federation_wallets(&wallet_repository).await?;
+        }
     }
 
-    let wallets = wallet_repository.get_wallets().await;
+    if command_needs_wallet_recovery(&args.command) {
+        let wallets = wallet_repository.get_wallets().await;
 
-    for wallet in wallets {
-        // Recover from incomplete operations (required after wallet creation)
-        let recovery = wallet.recover_incomplete_sagas().await?;
-        if !recovery.is_empty() {
-            println!(
-                "Recovered {} operations, {} compensated, {} skipped, {} failed",
-                recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
-            );
+        for wallet in wallets {
+            // Recover from incomplete operations (required after wallet creation)
+            let recovery = wallet.recover_incomplete_sagas().await?;
+            if !recovery.is_empty() {
+                println!(
+                    "Recovered {} operations, {} compensated, {} skipped, {} failed",
+                    recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+                );
+            }
         }
     }
 
@@ -435,6 +439,23 @@ async fn main() -> Result<()> {
     }
 }
 
+#[cfg(feature = "federation")]
+fn command_needs_federation_wallet_activation(command: &Commands) -> bool {
+    match command {
+        Commands::MintInfo(_) | Commands::Federation(_) => false,
+        _ => true,
+    }
+}
+
+fn command_needs_wallet_recovery(command: &Commands) -> bool {
+    match command {
+        Commands::MintInfo(_) => false,
+        #[cfg(feature = "federation")]
+        Commands::Federation(_) => false,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +485,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mint_info_skips_wallet_recovery() {
+        let cli = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
+
+        assert!(!command_needs_wallet_recovery(&cli.command));
+    }
+
     #[cfg(feature = "federation")]
     #[test]
     fn parses_federation_add_public_config_command() {
@@ -483,6 +511,21 @@ mod tests {
                 command: sub_commands::federation::FederationSubCommand::Add(_)
             })
         ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn read_only_federation_commands_skip_startup_wallet_activation() {
+        let mint_info = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
+        let federation_list = Cli::parse_from(["cdk-cli", "federation", "list"]);
+
+        assert!(!command_needs_federation_wallet_activation(
+            &mint_info.command
+        ));
+        assert!(!command_needs_federation_wallet_activation(
+            &federation_list.command
+        ));
+        assert!(!command_needs_wallet_recovery(&federation_list.command));
     }
 
     #[cfg(feature = "federation")]

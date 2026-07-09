@@ -184,15 +184,25 @@ pub(crate) fn spawn_federation_aleph_bft_driver_loop_with_config(
             {
                 Ok(outcome) => {
                     if outcome.finalized_units > 0 {
-                        tracing::debug!(
-                            finalized_units = outcome.finalized_units,
-                            local_responses = outcome.local_responses,
-                            remote_accepted_members = outcome.remote_accepted_members,
-                            remote_failed_members = outcome.remote_failed_members,
-                            remote_skipped_members = outcome.remote_skipped_members,
-                            reached_idle = outcome.reached_idle,
-                            "AlephBFT federation driver tick completed"
-                        );
+                        if outcome.remote_failed_members > 0 || outcome.remote_skipped_members > 0 {
+                            tracing::debug!(
+                                finalized_units = outcome.finalized_units,
+                                local_responses = outcome.local_responses,
+                                remote_accepted_members = outcome.remote_accepted_members,
+                                remote_failed_members = outcome.remote_failed_members,
+                                remote_skipped_members = outcome.remote_skipped_members,
+                                reached_idle = outcome.reached_idle,
+                                "AlephBFT federation driver tick completed with incomplete delivery"
+                            );
+                        } else {
+                            tracing::trace!(
+                                finalized_units = outcome.finalized_units,
+                                local_responses = outcome.local_responses,
+                                remote_accepted_members = outcome.remote_accepted_members,
+                                reached_idle = outcome.reached_idle,
+                                "AlephBFT federation driver tick completed"
+                            );
+                        }
                     }
                 }
                 Err(err) => {
