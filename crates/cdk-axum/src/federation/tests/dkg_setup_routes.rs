@@ -584,3 +584,57 @@ async fn private_dkg_commitment_route_rejects_conflict_before_sequence_persisten
     assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
     assert_eq!(commitments, vec![first_commitment]);
 }
+
+#[tokio::test]
+async fn private_dkg_reveal_route_rejects_conflict_before_sequence_persistence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let commitment = dkg_commitment_request(&public_config, peer_private.member_id, 21).commitment;
+    state
+        .persist_federation_dkg_commitment(&commitment, peer_private.member_id, 1)
+        .await
+        .expect("persist DKG commitment");
+    let first_payload = dkg_reveal_request(&public_config, peer_private.member_id, 21);
+    let first_reveal = first_payload.reveal.clone();
+    let first_request = signed_dkg_reveal_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        2,
+        first_payload,
+    );
+    let conflicting_request = signed_dkg_reveal_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        3,
+        dkg_reveal_request(&public_config, peer_private.member_id, 31),
+    );
+
+    let _ = post_dkg_reveal(State(state.clone()), Json(first_request))
+        .await
+        .expect("first reveal accepted");
+    let response = post_dkg_reveal(State(state.clone()), Json(conflicting_request))
+        .await
+        .expect_err("conflicting reveal must fail");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    let reveals = state
+        .mint
+        .localstore()
+        .get_federation_dkg_reveals()
+        .await
+        .expect("persisted reveals");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+    assert_eq!(reveals, vec![first_reveal]);
+}

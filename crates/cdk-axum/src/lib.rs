@@ -2745,6 +2745,22 @@ impl MintState {
         }
 
         let db = self.mint.localstore();
+        let existing_signatures = db.get_federation_dkg_transcript_signatures().await?;
+        if existing_signatures.iter().any(|existing| {
+            existing.signer == signature.signer
+                && existing.transcript_hash == signature.transcript_hash
+                && existing != signature
+        }) {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "conflicting transcript signature for member {} transcript {}",
+                        signature.signer, signature.transcript_hash
+                    ),
+                },
+            ));
+        }
+
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_transcript_signature(signature)
             .await?;

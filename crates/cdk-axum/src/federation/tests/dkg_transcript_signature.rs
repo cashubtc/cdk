@@ -50,6 +50,68 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
 }
 
 #[tokio::test]
+async fn private_dkg_transcript_signature_route_rejects_conflict_before_sequence_persistence() {
+    let (state, public_config, local_private, peer_private, transcript_hash) =
+        route_derived_dkg_transcript_fixture().await;
+    let local_member = local_private.member_id;
+    let first_payload = FederationDkgTranscriptSignatureRequest::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        transcript_hash,
+        FederationDkgTranscriptSignature::sign(transcript_hash, &peer_private)
+            .expect("first transcript signature"),
+    );
+    let conflicting_payload = FederationDkgTranscriptSignatureRequest::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        transcript_hash,
+        FederationDkgTranscriptSignature::sign(transcript_hash, &peer_private)
+            .expect("conflicting transcript signature"),
+    );
+    assert_ne!(
+        first_payload.signature, conflicting_payload.signature,
+        "randomized transcript signatures should produce a distinct conflict payload"
+    );
+    let first_request = signed_dkg_transcript_signature_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        4,
+        first_payload,
+    );
+    let conflicting_request = signed_dkg_transcript_signature_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        5,
+        conflicting_payload,
+    );
+
+    let _ = post_dkg_transcript_signature(State(state.clone()), Json(first_request))
+        .await
+        .expect("first transcript signature accepted");
+    let response = post_dkg_transcript_signature(State(state.clone()), Json(conflicting_request))
+        .await
+        .expect_err("conflicting transcript signature must fail");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&4));
+    let signatures = state
+        .mint
+        .localstore()
+        .get_federation_dkg_transcript_signatures()
+        .await
+        .expect("persisted transcript signatures");
+    assert_eq!(signatures, vec![first_payload]);
+}
+
+#[tokio::test]
 async fn private_dkg_transcript_signature_route_rejects_before_local_keyset_share() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
