@@ -872,6 +872,9 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
     assert!(smoke_script.contains(
         "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND=\"$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND\""
     ));
+    assert!(smoke_script.contains(
+        "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT=\"$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION\""
+    ));
     assert!(smoke_script.contains("wait_for_configured_aleph_bft_auto_rotation"));
     assert!(smoke_script.contains("run_configured_aleph_bft_auto_rotation_warmup"));
     assert!(smoke_script
@@ -938,6 +941,9 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
         .contains("LONG_PARTITION_OPERATION_BATCHES=\"${LONG_PARTITION_OPERATION_BATCHES:-4}\""));
     assert!(smoke_script.contains(
         "ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION=\"${ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION:-1}\""
+    ));
+    assert!(smoke_script.contains(
+        "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT=\"$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION\""
     ));
     assert!(smoke_script.contains(
         "ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES=\"${ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES:-1}\""

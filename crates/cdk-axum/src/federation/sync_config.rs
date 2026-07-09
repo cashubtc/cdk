@@ -56,6 +56,8 @@ pub struct FederationPeerSyncConfig {
     pub response_cache_limit: usize,
     /// Optional AlephBFT live-session round cap used to force natural session rollover.
     pub aleph_bft_live_session_max_round: Option<u16>,
+    /// Optional number of capped AlephBFT live-session rollovers before restoring the normal cap.
+    pub aleph_bft_live_session_rotation_limit: Option<usize>,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -80,6 +82,7 @@ impl Default for FederationPeerSyncConfig {
             response_waiter_limit: DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT,
             response_cache_limit: DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT,
             aleph_bft_live_session_max_round: None,
+            aleph_bft_live_session_rotation_limit: None,
         }
     }
 }
@@ -150,6 +153,16 @@ impl FederationPeerSyncConfig {
         }
         if self.aleph_bft_live_session_max_round == Some(0) {
             anyhow::bail!("federation AlephBFT live session max round must be greater than zero");
+        }
+        if self.aleph_bft_live_session_rotation_limit == Some(0) {
+            anyhow::bail!(
+                "federation AlephBFT live session rotation limit must be greater than zero"
+            );
+        }
+        if self.aleph_bft_live_session_rotation_limit.is_some()
+            && self.aleph_bft_live_session_max_round.is_none()
+        {
+            anyhow::bail!("federation AlephBFT live session rotation limit requires a max round");
         }
 
         Ok(())

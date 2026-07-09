@@ -59,9 +59,12 @@ impl FederationAlephBftLiveSessionOptions {
     ) -> Self {
         let mut options = Self::new(pump_config);
         if let Some(max_round) = sync_config.aleph_bft_live_session_max_round {
+            let rotation_limit = sync_config
+                .aleph_bft_live_session_rotation_limit
+                .unwrap_or(1);
             options = options
                 .with_max_round(max_round)
-                .with_automatic_rotation_limit(1);
+                .with_automatic_rotation_limit(rotation_limit);
         }
         options
     }
@@ -316,6 +319,26 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_options_and_tra
 where
     T: Transport + 'static,
 {
+    start_federation_aleph_bft_live_session_with_options_and_transport_inner(
+        state,
+        sync_config,
+        options,
+        transport,
+        true,
+    )
+    .await
+}
+
+async fn start_federation_aleph_bft_live_session_with_options_and_transport_inner<T>(
+    state: &mut MintState,
+    sync_config: FederationPeerSyncConfig,
+    options: FederationAlephBftLiveSessionOptions,
+    transport: T,
+    restore_recovered_startup_round_cap: bool,
+) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
     sync_config.validate().map_err(|err| {
         cdk::Error::Custom(format!("Invalid AlephBFT live session sync config: {err}"))
     })?;
@@ -371,11 +394,11 @@ where
     let has_existing_session_backup = existing_session_backup_bytes
         .as_ref()
         .is_some_and(|bytes| !bytes.is_empty());
-    let options = aleph_bft_live_session_options_for_startup(
-        options,
-        session_id,
-        has_existing_session_backup,
-    );
+    let options = if restore_recovered_startup_round_cap {
+        aleph_bft_live_session_options_for_startup(options, session_id, has_existing_session_backup)
+    } else {
+        options
+    };
     let session_io =
         CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&retry_store), session_id)
             .await?;
@@ -736,11 +759,12 @@ where
             .map_err(cdk::Error::from)?;
     }
 
-    match start_federation_aleph_bft_live_session_with_options_and_transport(
+    match start_federation_aleph_bft_live_session_with_options_and_transport_inner(
         state,
         sync_config,
         options,
         transport,
+        false,
     )
     .await?
     {
@@ -823,11 +847,12 @@ where
         "AlephBFT live session completed; rotating automatically"
     );
 
-    match start_federation_aleph_bft_live_session_with_options_and_transport(
+    match start_federation_aleph_bft_live_session_with_options_and_transport_inner(
         state,
         sync_config,
         options,
         transport,
+        false,
     )
     .await?
     {

@@ -13,6 +13,8 @@ pub const ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS: &str =
     "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
     "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND";
+pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT: &str =
+    "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT";
 
 impl Federation {
     pub fn from_env(mut self) -> Result<Self> {
@@ -58,6 +60,18 @@ impl Federation {
             self.peer_sync.aleph_bft_live_session_max_round = Some(max_round);
         }
 
+        if let Ok(rotation_limit) = env::var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT) {
+            let rotation_limit = rotation_limit.parse::<usize>().map_err(|_| {
+                anyhow!("Federation AlephBFT live session rotation limit must fit in usize")
+            })?;
+            if rotation_limit == 0 {
+                return Err(anyhow!(
+                    "Federation AlephBFT live session rotation limit must be greater than zero"
+                ));
+            }
+            self.peer_sync.aleph_bft_live_session_rotation_limit = Some(rotation_limit);
+        }
+
         Ok(self)
     }
 }
@@ -81,6 +95,7 @@ mod tests {
         env::remove_var(ENV_FEDERATION_CONSENSUS_BACKEND);
         env::remove_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
+        env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT);
     }
 
     #[test]
@@ -165,6 +180,24 @@ mod tests {
     }
 
     #[test]
+    fn federation_env_overrides_aleph_bft_live_session_rotation_limit() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT, "3");
+
+        let config = Federation::default()
+            .from_env()
+            .expect("federation env config");
+
+        assert_eq!(
+            config.peer_sync.aleph_bft_live_session_rotation_limit,
+            Some(3)
+        );
+
+        clear_federation_env();
+    }
+
+    #[test]
     fn federation_env_overrides_operation_submission_timeout() {
         let _guard = env_lock();
         clear_federation_env();
@@ -210,6 +243,24 @@ mod tests {
         assert!(
             err.to_string().contains("must be greater than zero"),
             "error should explain invalid max round: {err}"
+        );
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_rejects_invalid_aleph_bft_live_session_rotation_limit() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT, "0");
+
+        let err = Federation::default()
+            .from_env()
+            .expect_err("zero rotation limit should fail");
+
+        assert!(
+            err.to_string().contains("must be greater than zero"),
+            "error should explain invalid rotation limit: {err}"
         );
 
         clear_federation_env();

@@ -2658,9 +2658,22 @@ Tests and success criteria:
   auto-rotation variant now defaults to the `aleph_bft` backend, runs an
   isolated warm-up batch before waiting for the target session, aligns generated
   member operation-submission timeouts with the smoke operation timeout, and
-  exposes the path through `just fed-regtest-aleph-rotation`; the live process
-  finality stall found by that target remains open until the network-message
-  pump/finality progression issue is fixed.
+  exposes the path through `just fed-regtest-aleph-rotation`.
+- Latest AlephBFT multi-rotation process-smoke checkpoint: generated smoke
+  can now pass an explicit AlephBFT live-session rotation limit to each member
+  so `ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION=2` exercises two capped natural
+  `run_session` completions before restoring the production round cap. The
+  startup path still strips capped test settings for recovered nonzero sessions
+  and backup-backed restarts, while in-process automatic rotation preserves the
+  remaining cap. The `fed-regtest-long-partition`,
+  `fed-regtest-aleph-rotation`, and Postgres long-partition `just` targets now
+  wire their `offline_batches` argument to the generated script's
+  `LONG_PARTITION_OPERATION_BATCHES` variable instead of an unused legacy name.
+  A five-member threshold-three AlephBFT process smoke with target session 2
+  and six long-partition wallet-operation batches passed through post-rotation
+  mint/swap/melt/restore batches, crash-window restart, offline pending paid
+  and failed melts, quarantine conflict replay, keyset rotation, restarted
+  member catch-up, and final convergence.
 - [ ] Add AlephBFT live private-REST catch-up certification tests for
   self-partitioned proposers, below-quorum-offline operation windows, and
   above-quorum-offline stall windows. These tests must verify reconnect

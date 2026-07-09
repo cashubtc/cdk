@@ -627,7 +627,7 @@ fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="
     cd {{invocation_directory()}}
   fi
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
-  OFFLINE_OPERATION_BATCHES="{{offline_batches}}" CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
+  LONG_PARTITION_OPERATION_BATCHES="{{offline_batches}}" CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
 # Run generated local federation smoke with AlephBFT auto-rotation enabled
 fed-regtest-aleph-rotation dir="target/cdk-fed-regtest-aleph-rotation" members="5" threshold="3" port_start="27885" offline_batches="8" max_round="6" target_session="1":
@@ -640,7 +640,7 @@ fed-regtest-aleph-rotation dir="target/cdk-fed-regtest-aleph-rotation" members="
   FEDERATION_CONSENSUS_BACKEND=aleph_bft \
     ALEPH_BFT_AUTO_ROTATION_MAX_ROUND="{{max_round}}" \
     ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION="{{target_session}}" \
-    OFFLINE_OPERATION_BATCHES="{{offline_batches}}" \
+    LONG_PARTITION_OPERATION_BATCHES="{{offline_batches}}" \
     CDK_MINTD_BIN=target/debug/cdk-mintd \
     bash "{{dir}}/smoke-local-federation.sh"
 
@@ -714,7 +714,7 @@ fed-regtest-postgres-long-partition dir="target/cdk-fed-regtest-postgres-long-pa
   fi
   just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
-  RESET_POSTGRES_SCHEMAS=1 OFFLINE_OPERATION_BATCHES="{{offline_batches}}" CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
+  RESET_POSTGRES_SCHEMAS=1 LONG_PARTITION_OPERATION_BATCHES="{{offline_batches}}" CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
 # Run the generated setup-only DKG route-probe smoke with PostgreSQL member schemas
 fed-regtest-postgres-dkg-setup dir="target/cdk-fed-regtest-postgres-dkg" members="5" threshold="3" port_start="24885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":

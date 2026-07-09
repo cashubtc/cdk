@@ -218,6 +218,15 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             aleph_bft_live_session_max_round: Some(0),
             ..valid
         },
+        FederationPeerSyncConfig {
+            aleph_bft_live_session_max_round: Some(9),
+            aleph_bft_live_session_rotation_limit: Some(0),
+            ..valid
+        },
+        FederationPeerSyncConfig {
+            aleph_bft_live_session_rotation_limit: Some(2),
+            ..valid
+        },
     ];
 
     for config in cases {
@@ -241,15 +250,20 @@ fn aleph_bft_live_session_options_use_configured_sync_round_cap() {
         pump_config,
         FederationPeerSyncConfig {
             aleph_bft_live_session_max_round: Some(9),
+            aleph_bft_live_session_rotation_limit: Some(2),
             ..Default::default()
         },
     );
     assert_eq!(configured_options.max_round(), 9);
-    assert_eq!(configured_options.automatic_rotation_limit(), Some(1));
+    assert_eq!(configured_options.automatic_rotation_limit(), Some(2));
 
-    let rotated_options = configured_options.after_automatic_rotation();
-    assert_eq!(rotated_options.max_round(), 3000);
-    assert_eq!(rotated_options.automatic_rotation_limit(), None);
+    let first_rotated_options = configured_options.after_automatic_rotation();
+    assert_eq!(first_rotated_options.max_round(), 9);
+    assert_eq!(first_rotated_options.automatic_rotation_limit(), Some(1));
+
+    let second_rotated_options = first_rotated_options.after_automatic_rotation();
+    assert_eq!(second_rotated_options.max_round(), 3000);
+    assert_eq!(second_rotated_options.automatic_rotation_limit(), None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -9709,7 +9723,7 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
         max_peer_deliveries_per_message: 256,
     };
     let options =
-        fast_aleph_bft_live_session_options(pump_config, 6).with_automatic_rotation_limit(1);
+        fast_aleph_bft_live_session_options(pump_config, 6).with_automatic_rotation_limit(2);
 
     let first_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
         &mut first_state,
@@ -9742,8 +9756,8 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
             .with_state(second_state.clone()),
     );
 
-    wait_for_aleph_bft_session(&first_state, 1).await;
-    wait_for_aleph_bft_session(&second_state, 1).await;
+    wait_for_aleph_bft_session(&first_state, 2).await;
+    wait_for_aleph_bft_session(&second_state, 2).await;
     for state in [&first_state, &second_state] {
         assert!(state.federation_aleph_bft_live_session_active().await);
         assert!(state.federation_aleph_bft_network_inbound_active().await);
@@ -9754,7 +9768,7 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
                 .get_federation_aleph_bft_active_session()
                 .await
                 .expect("auto-rotated active session"),
-            Some(1)
+            Some(2)
         );
     }
 
@@ -9774,7 +9788,7 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
             .federation_aleph_bft_status()
             .await
             .expect("post-auto-rotation AlephBFT status");
-        assert_eq!(status.session, 1);
+        assert_eq!(status.session, 2);
         assert_eq!(status.accepted_operation_count, 1);
         assert!(state
             .mint

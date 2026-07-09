@@ -1130,6 +1130,9 @@ pub struct FederationPeerSync {
     /// Optional AlephBFT live-session round cap used to force natural rollover.
     #[serde(default)]
     pub aleph_bft_live_session_max_round: Option<u16>,
+    /// Optional number of capped AlephBFT live-session rollovers before restoring the normal cap.
+    #[serde(default)]
+    pub aleph_bft_live_session_rotation_limit: Option<usize>,
 }
 
 #[cfg(feature = "federation")]
@@ -1158,6 +1161,7 @@ impl Default for FederationPeerSync {
             response_waiter_limit: default_federation_response_waiter_limit(),
             response_cache_limit: default_federation_response_cache_limit(),
             aleph_bft_live_session_max_round: None,
+            aleph_bft_live_session_rotation_limit: None,
         }
     }
 }

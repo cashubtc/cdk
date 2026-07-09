@@ -1538,6 +1538,8 @@ start_member() {{
   if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
     mintd_env+=(CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND="$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND")
     mintd_env_count=$((mintd_env_count + 1))
+    mintd_env+=(CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT="$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION")
+    mintd_env_count=$((mintd_env_count + 1))
   fi
   if (( mintd_env_count == 0 )); then
     "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
