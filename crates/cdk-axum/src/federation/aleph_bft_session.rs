@@ -17,8 +17,8 @@ use super::aleph_bft_network::{
     CdkAlephBftNetworkInboundHandle, CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
 };
 use super::aleph_bft_runtime::{
-    CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData, CdkAlephBftSessionIo,
-    CdkAlephBftTokioSpawnHandle,
+    CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
+    CdkAlephBftSessionIo, CdkAlephBftTokioSpawnHandle,
 };
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
@@ -213,6 +213,7 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationAlephBftLiveSessionHandle {
     exit: Mutex<Option<oneshot::Sender<()>>>,
+    activity_hint: CdkAlephBftActivityHint,
     spawn_handle: CdkAlephBftTokioSpawnHandle,
     session_task: JoinHandle<()>,
     network_pump_task: JoinHandle<()>,
@@ -228,6 +229,10 @@ impl std::fmt::Debug for FederationAlephBftLiveSessionHandle {
 }
 
 impl FederationAlephBftLiveSessionHandle {
+    pub(crate) fn mark_activity(&self) {
+        self.activity_hint.mark_local_pending();
+    }
+
     fn shutdown(&self) {
         self.shutdown_inner(true);
     }
@@ -399,9 +404,14 @@ where
     } else {
         options
     };
-    let session_io =
-        CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&retry_store), session_id)
-            .await?;
+    let activity_hint = CdkAlephBftActivityHint::default();
+    let session_io = CdkAlephBftSessionIo::from_db(
+        Arc::clone(&consensus),
+        Arc::clone(&retry_store),
+        session_id,
+        activity_hint.clone(),
+    )
+    .await?;
     let reload_persisted_network_retries = has_existing_session_backup;
     if !reload_persisted_network_retries {
         let orphan_retries = retry_store
@@ -432,7 +442,11 @@ where
     }
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
-    let inbound = CdkAlephBftNetworkInboundHandle::new(session_id, &network_handle);
+    let inbound = CdkAlephBftNetworkInboundHandle::with_activity_hint(
+        session_id,
+        &network_handle,
+        activity_hint.clone(),
+    );
     *state.federation_aleph_bft_network_inbound.write().await = Some(Arc::new(inbound));
 
     let aleph_config = aleph_bft_config(
@@ -440,6 +454,7 @@ where
         keychain.index(),
         session_id,
         &options,
+        activity_hint.clone(),
     )?;
     let (exit_sender, exit_receiver) = oneshot::channel();
     let terminator = Terminator::create_root(exit_receiver, "cdk-aleph-bft-session");
@@ -566,6 +581,7 @@ where
     );
     let handle = Arc::new(FederationAlephBftLiveSessionHandle {
         exit: Mutex::new(Some(exit_sender)),
+        activity_hint,
         spawn_handle,
         session_task,
         network_pump_task,
@@ -591,6 +607,7 @@ fn aleph_bft_config(
     node_index: aleph_bft::NodeIndex,
     session_id: u64,
     options: &FederationAlephBftLiveSessionOptions,
+    activity_hint: CdkAlephBftActivityHint,
 ) -> Result<AlephBftConfig, cdk::Error> {
     let config = match options.delay_config.clone() {
         Some(delay_config) => create_config(
@@ -606,7 +623,7 @@ fn aleph_bft_config(
             node_index,
             session_id,
             options.max_round,
-            cdk_aleph_bft_delay_config(),
+            cdk_aleph_bft_delay_config_with_activity(activity_hint),
             options.time_to_reach_max_round,
         ),
     };
@@ -627,10 +644,14 @@ fn aleph_bft_live_session_options_for_startup(
 }
 
 fn cdk_aleph_bft_delay_config() -> DelayConfig {
+    cdk_aleph_bft_delay_config_with_activity(CdkAlephBftActivityHint::default())
+}
+
+fn cdk_aleph_bft_delay_config_with_activity(activity_hint: CdkAlephBftActivityHint) -> DelayConfig {
     let mut delay_config = default_delay_config();
     let default_unit_creation_delay = Arc::clone(&delay_config.unit_creation_delay);
     delay_config.unit_creation_delay = Arc::new(move |round| {
-        if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND {
+        if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND && !activity_hint.is_active() {
             CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
         } else {
             default_unit_creation_delay(round)
@@ -1025,5 +1046,31 @@ mod tests {
 
         assert_eq!(tail_delay, CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY);
         assert!(tail_delay > early_delay);
+    }
+
+    #[test]
+    fn aleph_bft_live_session_activity_hint_keeps_tail_rounds_on_active_cadence() {
+        let activity_hint = CdkAlephBftActivityHint::default();
+        let delay_config = cdk_aleph_bft_delay_config_with_activity(activity_hint.clone());
+        let early_delay =
+            (delay_config.unit_creation_delay)(CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND);
+        let tail_round = CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND + 1;
+
+        assert_eq!(
+            (delay_config.unit_creation_delay)(tail_round),
+            CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
+        );
+
+        activity_hint.mark_local_pending();
+        assert_eq!((delay_config.unit_creation_delay)(tail_round), early_delay);
+
+        activity_hint.set_local_pending(false);
+        assert_eq!(
+            (delay_config.unit_creation_delay)(tail_round),
+            CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
+        );
+
+        activity_hint.mark_network_activity();
+        assert_eq!((delay_config.unit_creation_delay)(tail_round), early_delay);
     }
 }

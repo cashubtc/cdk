@@ -1583,6 +1583,13 @@ impl MintState {
             .is_some()
     }
 
+    async fn mark_aleph_bft_consensus_activity(&self) {
+        let Some(handle) = self.federation_aleph_bft_live_session.read().await.clone() else {
+            return;
+        };
+        handle.mark_activity();
+    }
+
     pub(crate) async fn federation_invalid_operation_alert_summaries(
         &self,
     ) -> Vec<FederationInvalidOperationAlertSummary> {
@@ -1818,7 +1825,8 @@ impl MintState {
                 return Err(cdk::Error::from(err));
             }
         };
-        if matches!(admission, FederationConsensusItemAdmission::Accepted) {
+        let accepted_admission = matches!(admission, FederationConsensusItemAdmission::Accepted);
+        if accepted_admission {
             let limit = self
                 .federation_peer_sync_config
                 .unwrap_or_default()
@@ -1833,7 +1841,7 @@ impl MintState {
                 return Err(cdk::Error::from(err));
             }
         }
-        if matches!(admission, FederationConsensusItemAdmission::Accepted) {
+        if accepted_admission {
             let session_id = next_consensus.aleph_bft_status()?.session;
             self.persist_federation_aleph_bft_pending_operation(
                 FederationAlephBftPendingOperationRecord {
@@ -1859,6 +1867,9 @@ impl MintState {
 
         *consensus = next_consensus;
         drop(consensus);
+        if accepted_admission {
+            self.mark_aleph_bft_consensus_activity().await;
+        }
         if let Some((sender, sequence)) = sequence {
             self.remember_federation_aleph_bft_pending_sequence(operation_id, sender, sequence)
                 .await;

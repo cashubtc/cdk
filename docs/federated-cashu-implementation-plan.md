@@ -1956,6 +1956,18 @@ AlephBFT and consensus unit tests:
   as retryable. Process benchmarking exposed a backup-saver termination after
   SQLite storage contention; the runtime now retries backup-byte persistence
   with bounded backoff and has focused retry-classification coverage.
+- [x] AlephBFT live-session tail pacing is pending-work aware. The fixed
+  always-fast delay experiment was rejected because it reached the 2s idle tail
+  before normal wallet traffic and reproduced high CPU. The live session now
+  keeps the 2s idle tail while inactive, marks the shared activity hint when a
+  local operation is accepted into the AlephBFT mempool or an authenticated
+  inbound AlephBFT network message is queued, and uses the normal upstream
+  active cadence for tail rounds only while local pending work or recent inbound
+  network activity is present. Focused coverage proves inactive tail rounds stay
+  cold, active tail rounds use the faster cadence, the data provider clears the
+  local-pending hint after pending finalization drains, authenticated inbound
+  private REST gossip wakes the hint, and live private-REST AlephBFT finality
+  still completes.
 - [x] Public federated mint signing waits for mint-quote payment observation to
   be locally visible before submitting the mint operation to consensus.
   Benchmark traces showed an ordering race where an unpaid mint operation could

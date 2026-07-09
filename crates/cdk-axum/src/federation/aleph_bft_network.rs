@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use super::aleph_bft_runtime::{
-    CdkAlephBftKeychain, CdkAlephBftNetworkHandle, CdkAlephBftOutboundMessage,
+    CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetworkHandle,
+    CdkAlephBftOutboundMessage,
 };
 use super::peer_client::FederationRestPeerClient;
 
@@ -38,6 +39,7 @@ pub(crate) trait CdkAlephBftNetworkInboundQueue: fmt::Debug + Send + Sync {
 pub(crate) struct CdkAlephBftNetworkInboundHandle<D> {
     session_id: u64,
     incoming: mpsc::UnboundedSender<D>,
+    activity_hint: CdkAlephBftActivityHint,
     _message: PhantomData<fn() -> D>,
 }
 
@@ -53,9 +55,19 @@ impl<D> fmt::Debug for CdkAlephBftNetworkInboundHandle<D> {
 impl<D> CdkAlephBftNetworkInboundHandle<D> {
     /// Create an inbound queue handle for a channel-backed network session.
     pub(crate) fn new(session_id: u64, handle: &CdkAlephBftNetworkHandle<D>) -> Self {
+        Self::with_activity_hint(session_id, handle, CdkAlephBftActivityHint::default())
+    }
+
+    /// Create an inbound queue handle with a shared AlephBFT activity hint.
+    pub(crate) fn with_activity_hint(
+        session_id: u64,
+        handle: &CdkAlephBftNetworkHandle<D>,
+        activity_hint: CdkAlephBftActivityHint,
+    ) -> Self {
         Self {
             session_id,
             incoming: handle.incoming_sender(),
+            activity_hint,
             _message: PhantomData,
         }
     }
@@ -105,6 +117,7 @@ where
         self.incoming.send(message).map_err(|_| {
             cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())
         })?;
+        self.activity_hint.mark_network_activity();
 
         Ok(actual)
     }

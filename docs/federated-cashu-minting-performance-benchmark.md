@@ -260,6 +260,19 @@ Current observation:
 - Each consensus operation takes roughly 3.5-9.7s.
 - A mint needs three of these operations.
 
+Checkpoint update:
+
+- A fixed always-fast active delay was tested and rejected because it pushed
+  sessions into the idle tail before wallet traffic and reproduced high CPU.
+- The live session now uses an in-memory activity hint instead: inactive tail
+  rounds keep the 2s delay, local accepted AlephBFT submissions mark local
+  pending activity, authenticated inbound AlephBFT private REST messages mark a
+  bounded recent-network-activity window, and tail rounds use the normal
+  upstream active cadence only while one of those activity signals is present.
+- This keeps idle members cold while avoiding repeated 2s tail intervals during
+  real consensus work. It does not change operation ordering, journal semantics,
+  payment observation semantics, signing rules, or member networking formats.
+
 Investigation targets:
 
 - AlephBFT session proposal interval.
@@ -276,7 +289,11 @@ Expected impact:
 
 Test plan:
 
-- Add a non-production benchmark harness for AlephBFT operation latency:
+- Done for the activity-hint behavior: focused unit tests cover inactive and
+  active tail delays, local pending clearing after finalization drains, inbound
+  private REST gossip waking the hint, and a live private-REST AlephBFT
+  finality smoke.
+- Still needed: add a non-production benchmark harness for AlephBFT operation latency:
   - one operation
   - three sequential operations
   - duplicate fanout submissions
@@ -387,7 +404,9 @@ This totals about 6-8s in the fakewallet happy path. If the protocol remains at 
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
 2. Add AlephBFT latency instrumentation in a non-production benchmark harness.
-3. Tune AlephBFT proposal/finality intervals and verify no CPU spin.
+3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
+   checkpoint: pending-work-aware tail cadence is implemented and behavior-tested;
+   fresh process timing remains open.
 4. Cache validated federation configs and aggregate keysets in the wallet/CLI.
 5. Re-benchmark two full mints after every change.
 6. Only after the above, evaluate whether `mint_quote_payment` and `mint` can be safely merged or linked into a fewer-round design.

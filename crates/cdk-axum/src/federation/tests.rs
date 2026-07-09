@@ -55,7 +55,7 @@ use super::aleph_bft_network::{
     CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
     CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT,
 };
-use super::aleph_bft_runtime::{CdkAlephBftKeychain, CdkAlephBftNetwork};
+use super::aleph_bft_runtime::{CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork};
 use super::*;
 
 mod aleph_bft_routes;

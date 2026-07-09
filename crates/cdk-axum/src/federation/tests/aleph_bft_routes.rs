@@ -726,8 +726,10 @@ async fn private_aleph_bft_finalized_unit_route_rejects_storage_conflict_before_
 async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
-    *state.federation_aleph_bft_network_inbound.write().await =
-        Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
+    let activity_hint = CdkAlephBftActivityHint::default();
+    *state.federation_aleph_bft_network_inbound.write().await = Some(Arc::new(
+        CdkAlephBftNetworkInboundHandle::with_activity_hint(0, &handle, activity_hint.clone()),
+    ));
     let request = signed_aleph_bft_network_message_request(
         &public_config,
         &peer_private,
@@ -745,6 +747,7 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
     assert_eq!(response.federation_id, public_config.federation_id);
     assert_eq!(response.session_id, 0);
     assert_eq!(network.next_event().await, Some(42));
+    assert!(activity_hint.is_active());
     let sequences = state
         .mint
         .localstore()

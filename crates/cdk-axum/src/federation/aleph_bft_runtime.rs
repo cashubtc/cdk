@@ -6,6 +6,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use aleph_bft::{
     DataProvider, FinalizationHandler, Hasher as AlephHasher, Index, Keychain, LocalIO,
@@ -29,6 +30,13 @@ use crate::{
     is_retryable_federation_database_error, FEDERATION_APPLY_RETRY_INITIAL_DELAY,
     FEDERATION_APPLY_RETRY_MAX_DELAY,
 };
+
+/// How long inbound AlephBFT traffic keeps a member on the active proposal cadence.
+///
+/// Non-submitting members can have no local pending mempool while still needing
+/// to create empty units so a peer's data can finalize. Keep that wake-up
+/// bounded and purely in-memory.
+pub(crate) const CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE: Duration = Duration::from_secs(10);
 
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,18 +409,92 @@ impl Decode for CdkAlephBftData {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CdkAlephBftActivityHintState {
+    local_pending: bool,
+    active_until: Option<Instant>,
+}
+
+/// In-memory hint used to keep AlephBFT proposal cadence warm only around work.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftActivityHint {
+    state: Arc<Mutex<CdkAlephBftActivityHintState>>,
+}
+
+impl Default for CdkAlephBftActivityHintState {
+    fn default() -> Self {
+        Self {
+            local_pending: false,
+            active_until: None,
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftActivityHint {
+    /// Mark this member as having locally queued or pending-finalization work.
+    pub(crate) fn mark_local_pending(&self) {
+        self.set_local_pending(true);
+    }
+
+    /// Update whether this member still has local pending consensus work.
+    pub(crate) fn set_local_pending(&self, pending: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.local_pending = pending;
+        }
+    }
+
+    /// Mark recent inbound AlephBFT network traffic from a peer.
+    pub(crate) fn mark_network_activity(&self) {
+        let deadline = Instant::now() + CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE;
+        if let Ok(mut state) = self.state.lock() {
+            state.active_until = Some(match state.active_until {
+                Some(existing) => existing.max(deadline),
+                None => deadline,
+            });
+        }
+    }
+
+    /// Return whether this session should use active proposal cadence.
+    pub(crate) fn is_active(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.local_pending {
+            return true;
+        }
+
+        match state.active_until {
+            Some(deadline) if deadline > Instant::now() => true,
+            Some(_) => {
+                state.active_until = None;
+                false
+            }
+            None => false,
+        }
+    }
+}
+
 /// Runtime-backed data provider for upstream AlephBFT sessions.
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftDataProvider {
     consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
+    activity_hint: CdkAlephBftActivityHint,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftDataProvider {
-    /// Create a data provider over the same consensus runtime used by public admission.
-    pub(crate) fn new(consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>) -> Self {
-        Self { consensus }
+    /// Create a data provider with a shared AlephBFT activity hint.
+    pub(crate) fn with_activity_hint(
+        consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
+        activity_hint: CdkAlephBftActivityHint,
+    ) -> Self {
+        Self {
+            consensus,
+            activity_hint,
+        }
     }
 }
 
@@ -421,16 +503,18 @@ impl DataProvider for CdkAlephBftDataProvider {
     type Output = CdkAlephBftData;
 
     async fn get_data(&mut self) -> Option<Self::Output> {
-        let payload = {
+        let (payload, pending_after) = {
             let mut consensus = self.consensus.lock().await;
-            match consensus.next_aleph_bft_unit_payload() {
+            let payload = match consensus.next_aleph_bft_unit_payload() {
                 Ok(payload) => payload,
                 Err(err) => {
                     tracing::warn!("AlephBFT data provider could not build CDK unit: {}", err);
                     return None;
                 }
-            }
+            };
+            (payload, consensus.pending_mempool_len())
         };
+        self.activity_hint.set_local_pending(pending_after > 0);
 
         match payload {
             Some(payload) => match CdkAlephBftData::try_from_payload(payload) {
@@ -828,11 +912,12 @@ impl CdkAlephBftSessionIo {
         consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
         db: DynMintDatabase,
         session_id: u64,
+        activity_hint: CdkAlephBftActivityHint,
     ) -> Result<Self, cdk::Error> {
         let backup = CdkAlephBftDbBackup::new(db, session_id);
         let unit_loader = backup.try_reader().await?;
         let unit_saver = backup.writer();
-        let data_provider = CdkAlephBftDataProvider::new(consensus);
+        let data_provider = CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint);
         let (sender, finalized_units) = mpsc::unbounded_channel();
         let finalization_handler = CdkAlephBftFinalizationHandler::new(sender);
         let local_io = LocalIO::new_with_unit_finalization_handler(
@@ -1216,6 +1301,7 @@ mod tests {
         )
         .expect("runtime");
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        let activity_hint = CdkAlephBftActivityHint::default();
         {
             let mut runtime = consensus.lock().await;
             let admission = runtime
@@ -1227,14 +1313,48 @@ mod tests {
             );
         }
 
-        let mut provider = CdkAlephBftDataProvider::new(consensus.clone());
+        let mut provider =
+            CdkAlephBftDataProvider::with_activity_hint(consensus.clone(), activity_hint.clone());
         let data = provider.get_data().await.expect("queued data");
 
         assert_eq!(data.payload().federation_id, federation_id(8));
         assert_eq!(data.payload().submitting_member, member_id(1));
         assert_eq!(data.payload().unit_index, 0);
+        assert!(activity_hint.is_active());
         assert!(provider.get_data().await.is_none());
         assert_eq!(consensus.lock().await.queued_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_data_provider_clears_activity_after_pending_finalization_drains() {
+        let runtime = FederationConsensusRuntime::with_backend(
+            FederationConsensusBackendKind::AlephBft,
+            federation_id(8),
+            member_id(1),
+        )
+        .expect("runtime");
+        let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        {
+            let mut runtime = consensus.lock().await;
+            runtime
+                .submit_aleph_bft_envelope(mint_quote_envelope("quote-activity"))
+                .expect("submit");
+        }
+
+        let activity_hint = CdkAlephBftActivityHint::default();
+        let mut provider =
+            CdkAlephBftDataProvider::with_activity_hint(consensus.clone(), activity_hint.clone());
+        let data = provider.get_data().await.expect("queued data");
+        assert!(activity_hint.is_active());
+        {
+            let mut runtime = consensus.lock().await;
+            runtime
+                .finalize_aleph_bft_unit(data.payload().clone())
+                .expect("finalize unit");
+        }
+
+        assert!(provider.get_data().await.is_none());
+        assert!(!activity_hint.is_active());
     }
 
     #[tokio::test]
@@ -1366,10 +1486,14 @@ mod tests {
         )
         .expect("runtime");
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
-        let session_io =
-            CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&db), 103)
-                .await
-                .expect("session io");
+        let session_io = CdkAlephBftSessionIo::from_db(
+            Arc::clone(&consensus),
+            Arc::clone(&db),
+            103,
+            CdkAlephBftActivityHint::default(),
+        )
+        .await
+        .expect("session io");
         let (local_io, mut finalized_units) = session_io.into_parts();
         let (mut data_provider, mut finalization_handler, mut unit_saver, mut unit_loader) =
             local_io.into_components();
