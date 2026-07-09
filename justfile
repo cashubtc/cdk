@@ -760,6 +760,96 @@ fed-regtest-cli-smoke-insufficient-threshold dir="target/cdk-fed-regtest-cli-ins
   grep -Fq 'No local proofs found' "{{wallet_dir}}/check-insufficient.out"
   printf 'cdk-cli insufficient-threshold smoke passed\n'
 
+# Run the CLI federation smoke with one reachable member advertising mismatched federation metadata.
+fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch" bad_dir="target/cdk-fed-regtest-cli-mismatch-bad" wallet_dir="target/cdk-fed-regtest-cli-mismatch-wallet" members="5" threshold="4" port_start="54885":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
+  export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
+  bad_port_start=$(({{port_start}} + 100))
+  wait_for_honest_status() {
+    local attempt
+    for attempt in $(seq 1 60); do
+      if target/debug/cdk-mintd federation status \
+        --public-config "{{dir}}/federation-public.json" \
+        --private-config "{{dir}}/member-1/federation-private.json" \
+        --member 1 \
+        --member 3 \
+        --member 4 \
+        --member 5 \
+        --require-ready \
+        --require-converged \
+        --require-session-outcome-quorum \
+        --require-no-digest-alerts \
+        --require-no-invalid-operation-alerts >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'honest federation members did not become ready for mismatched-member CLI smoke\n' >&2
+    target/debug/cdk-mintd federation status \
+      --public-config "{{dir}}/federation-public.json" \
+      --private-config "{{dir}}/member-1/federation-private.json" \
+      --member 1 \
+      --member 3 \
+      --member 4 \
+      --member 5 || true
+    return 1
+  }
+  wait_for_mismatched_member_info() {
+    local mint_url="http://127.0.0.1:$(({{port_start}} + 1))"
+    local attempt
+    for attempt in $(seq 1 30); do
+      if curl -fsS "$mint_url/v1/info" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'mismatched member did not expose mint info at %s\n' "$mint_url" >&2
+    return 1
+  }
+  cargo build -p cdk-cli --features federation
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
+  just fed-regtest-clean "{{bad_dir}}" >/dev/null 2>&1 || true
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  just fed-regtest-generate "{{bad_dir}}" "{{members}}" "{{threshold}}" "$bad_port_start"
+  trap 'just fed-regtest-stop "{{dir}}"; just fed-regtest-stop "{{bad_dir}}"' EXIT
+  for member in 1 3 4 5; do
+    just fed-regtest-start-member "$member" "{{dir}}" "0"
+  done
+  work_dir="{{dir}}/member-2/work"
+  config="{{dir}}/member-2/config.toml"
+  pid_file="${work_dir}/mintd.pid"
+  mkdir -p "$work_dir"
+  CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH="{{bad_dir}}/federation-public.json" \
+  CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH="{{bad_dir}}/member-1/federation-private.json" \
+    nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+  echo "$!" > "$pid_file"
+  echo "started mismatched member 2 with pid $(cat "$pid_file")"
+  wait_for_honest_status
+  wait_for_mismatched_member_info
+  rm -rf -- "{{wallet_dir}}"
+  mint_url="http://127.0.0.1:{{port_start}}"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --primary-member-id 1 \
+    --member-request-timeout-secs 60 \
+    --member-fallback-timeout-secs 60 \
+    --quote-status-member-timeout-secs 60 \
+    --fanout-concurrency 1
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    mint "$mint_url" 12 --wait-duration 90
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-mismatched-member.out"
+  grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' "{{wallet_dir}}/check-mismatched-member.out"
+  wait_for_honest_status
+  printf 'cdk-cli mismatched-member smoke passed\n'
+
 # Run generated local federation smoke with a longer offline operation window
 fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="5" threshold="3" port_start="25885" offline_batches="8":
   #!/usr/bin/env bash
