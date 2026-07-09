@@ -7,8 +7,10 @@ AlephBFT federations and fresh CLI wallets. The first run identified why
 federated minting took tens of seconds. The second run verifies the immediate
 post-quote payment-observation fix and keeps the remaining delay classified.
 The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip
-was excluded from the activity hint. The next benchmark target is receiver-side
-token receive, which redeems a received token by performing a federated swap.
+was excluded from the activity hint. The latest fresh process run rechecks the
+current code and keeps consensus cadence as the dominant remaining mint delay.
+The next benchmark target is receiver-side token receive, which redeems a
+received token by performing a federated swap.
 
 The measurements below are development-environment measurements. Absolute values will vary by machine, but the stage ordering and relative delays are the important result.
 
@@ -21,6 +23,11 @@ The measurements below are development-environment measurements. Absolute values
 - Wallet: fresh `cdk-cli` work directory
 - Operation tested: two full federated mints after adding the federation registry
 - Receiver-side token receive/swap benchmark: required, not yet measured
+- Instrumentation policy: targeted timing/log instrumentation is allowed when
+  it is useful to isolate delays. It must not change protocol behavior, signing
+  semantics, payment semantics, consensus ordering, or wallet fanout behavior.
+  Temporary instrumentation should be removed before finishing unless it is
+  intentionally kept as normal low-noise diagnostics.
 - Mint operation sequence confirmed in the journal:
   - `mint_quote`
   - `mint_quote_payment`
@@ -36,6 +43,100 @@ Each mint currently requires three serialized consensus operations. For two mint
 6. `mint`
 
 Finalized item count was higher than accepted operation count because wallet/member fanout causes duplicate finalizations. The duplicates did not change the accepted journal order.
+
+## Current Fresh Process Verification Run
+
+A fresh five-member, threshold-three fakewallet AlephBFT federation and fresh
+wallet were started from scratch and measured end to end. This run did not add
+production instrumentation; timings were taken from command wall/user/sys time,
+mint logs, federation status, and the member databases.
+
+Command timing:
+
+| Command | Wall Time | User CPU | Sys CPU | Classification |
+| --- | ---: | ---: | ---: | --- |
+| `curl /v1/info` | 0.88s | 0.00s | 0.00s | direct HTTP info path is not the delay source |
+| non-federated `cdk-cli mint-info` | 2.70s | 0.03s | 0.01s | standalone CLI startup baseline |
+| `cdk-cli federation add` | 1.42s | 1.40s | 0.01s | federation config validation/key aggregation remains CPU-heavy |
+| federated `cdk-cli mint-info` | 1.53s | 0.60s | 0.00s | old 36s `mint-info` CPU burn did not reproduce |
+| federated mint #1, 50 sat | 15.99s | 2.43s | 0.03s | dominated by three serialized AlephBFT operations plus CLI setup |
+| federated mint #2, 30 sat | 12.70s | 1.17s | 0.01s | same shape with lower CLI/setup overhead |
+
+All members converged on six accepted journal operations in the same order:
+
+1. `mint_quote`
+2. `mint_quote_payment`
+3. `mint`
+4. `mint_quote`
+5. `mint_quote_payment`
+6. `mint`
+
+All five members had operation count 6, latest operation index 5, and 14
+finalized AlephBFT items. Member status reported two duplicate submissions and
+two duplicate pending-waiter joins in this run, but the accepted journal order
+remained exactly one quote, one payment observation, and one mint operation per
+logical wallet mint.
+
+Current mint #1 timeline:
+
+| Stage | Timestamp UTC | Delta From Previous | Notes |
+| --- | --- | ---: | --- |
+| CLI start | 19:18:53 | - | command invocation |
+| quote request received by mint | 19:18:57.816 | about 4.8s | CLI startup, wallet setup, member selection/fanout setup |
+| fakewallet payment notification | 19:18:57.817 | about 2ms | fakewallet payment is effectively immediate |
+| quote consensus accepted before or at | 19:19:04.717 | about 6.9s | immediate payment-observation path could only run after `mint_quote` consensus returned |
+| payment observation submitted | 19:19:04.717 | 0.000s | immediate observation path, not the periodic observer tick, submitted the paid observation |
+| payment observation peer-visible | 19:19:06.982 | about 2.3s | peer sync observed operations through index 1 |
+| mint/signing accepted and shares returned | by 19:19:09 | at most about 2.0s | command completed with issued proofs before later peer-sync visibility |
+| wallet aggregation done | 19:19:09 | - | command completed |
+
+Total wall time: 15.99s.
+
+Current mint #2 timeline:
+
+| Stage | Timestamp UTC | Delta From Previous | Notes |
+| --- | --- | ---: | --- |
+| CLI start | 19:19:25 | - | command invocation |
+| quote request received by mint | 19:19:27.731 | about 2.7s | lower CLI/setup overhead than mint #1 |
+| fakewallet payment notification | 19:19:27.733 | about 3ms | fakewallet payment is effectively immediate |
+| quote consensus accepted before or at | 19:19:34.395 | about 6.7s | immediate payment-observation path ran after quote consensus returned |
+| payment observation submitted | 19:19:34.395 | 0.000s | immediate observation path submitted the paid observation |
+| payment observation peer-visible | 19:19:37.173 | about 2.8s | peer sync observed operations through index 4 |
+| mint/signing peer-visible | 19:19:37.537 | about 0.4s | peer sync observed operations through index 5 |
+| wallet aggregation done | 19:19:38 | about 0.5s | command completed with issued proofs |
+
+Total wall time: 12.70s.
+
+Current classification:
+
+- Primary delay: AlephBFT consensus cadence. Each mint still requires the three
+  accepted operations `mint_quote`, `mint_quote_payment`, and `mint`.
+- Secondary delay: CLI/wallet setup before the mint receives the quote request,
+  about 4.8s for the first command and 2.7s for the second in this run.
+- Not dominant: fakewallet payment settlement, direct `/v1/info` HTTP latency,
+  database contention, catch-up after startup, private REST networking, or
+  duplicate submissions.
+- The payment observer tick is no longer the dominant happy-path delay for
+  fakewallet minting because the route submits an immediate paid observation as
+  soon as quote consensus returns.
+- CPU is still a follow-up risk: after the mint benchmark, all members were
+  healthy and converged, but AlephBFT continued producing idle units and member
+  processes were observed with nontrivial CPU usage while the task queue still
+  carried dozens of `UnitBroadcast` tasks. Treat the earlier CPU issue as
+  improved, not fully closed, until an idle-after-work CPU test passes.
+
+Smallest clean next fix candidate:
+
+- Add low-noise, production-safe timing diagnostics around the existing
+  AlephBFT lifecycle stages: submit queued, data provider yielded, network
+  message delivered, finalized data received, apply completed, operation
+  notified, and waiter returned.
+- Use those diagnostics to tune the live-session proposal/finality cadence
+  without changing protocol behavior. The evidence points at consensus cadence,
+  not payment settlement or raw HTTP.
+- Re-run this same process benchmark plus an idle-after-work CPU check before
+  considering larger protocol changes such as merging payment observation and
+  mint signing.
 
 ## Pre-Fix Command Timing Summary
 
