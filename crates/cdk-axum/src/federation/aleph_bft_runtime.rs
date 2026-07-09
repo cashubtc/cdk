@@ -1,5 +1,6 @@
 use core::fmt;
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher as StdHasher};
 use std::io;
@@ -37,6 +38,7 @@ use crate::{
 /// to create empty units so a peer's data can finalize. Keep that wake-up
 /// bounded and purely in-memory.
 pub(crate) const CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE: Duration = Duration::from_secs(10);
+const CDK_ALEPH_BFT_FINALIZATION_ACTIVITY_GRACE: Duration = Duration::from_secs(1);
 
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,7 +414,7 @@ impl Decode for CdkAlephBftData {
 #[derive(Debug, Clone)]
 struct CdkAlephBftActivityHintState {
     local_pending: bool,
-    active_until: Option<Instant>,
+    network_activity: BTreeMap<[u8; 32], Instant>,
 }
 
 /// In-memory hint used to keep AlephBFT proposal cadence warm only around work.
@@ -420,13 +422,14 @@ struct CdkAlephBftActivityHintState {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftActivityHint {
     state: Arc<Mutex<CdkAlephBftActivityHintState>>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl Default for CdkAlephBftActivityHintState {
     fn default() -> Self {
         Self {
             local_pending: false,
-            active_until: None,
+            network_activity: BTreeMap::new(),
         }
     }
 }
@@ -443,23 +446,36 @@ impl CdkAlephBftActivityHint {
         if let Ok(mut state) = self.state.lock() {
             state.local_pending = pending;
         }
+        if pending {
+            self.changed.notify_one();
+        }
     }
 
     /// Mark recent inbound AlephBFT network traffic from a peer.
-    pub(crate) fn mark_network_activity(&self) {
+    pub(crate) fn mark_network_activity(&self, activity_ids: impl IntoIterator<Item = [u8; 32]>) {
         let deadline = Instant::now() + CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE;
         if let Ok(mut state) = self.state.lock() {
-            state.active_until = Some(match state.active_until {
-                Some(existing) => existing.max(deadline),
-                None => deadline,
-            });
+            for activity_id in activity_ids {
+                state.network_activity.insert(activity_id, deadline);
+            }
+        }
+        self.changed.notify_one();
+    }
+
+    /// Bound peer-driven active cadence once the corresponding data finalizes.
+    fn mark_network_activity_finalized(&self, activity_id: [u8; 32]) {
+        let deadline = Instant::now() + CDK_ALEPH_BFT_FINALIZATION_ACTIVITY_GRACE;
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(existing) = state.network_activity.get_mut(&activity_id) {
+                *existing = (*existing).min(deadline);
+            }
         }
     }
 
     #[cfg(test)]
     pub(crate) fn clear_network_activity(&self) {
         if let Ok(mut state) = self.state.lock() {
-            state.active_until = None;
+            state.network_activity.clear();
         }
     }
 
@@ -472,13 +488,19 @@ impl CdkAlephBftActivityHint {
             return true;
         }
 
-        match state.active_until {
-            Some(deadline) if deadline > Instant::now() => true,
-            Some(_) => {
-                state.active_until = None;
-                false
+        let now = Instant::now();
+        state.network_activity.retain(|_, deadline| *deadline > now);
+        !state.network_activity.is_empty()
+    }
+
+    /// Wait until local work or relevant peer traffic makes the session active.
+    async fn wait_for_activity(&self) {
+        loop {
+            let changed = self.changed.notified();
+            if self.is_active() {
+                return;
             }
-            None => false,
+            changed.await;
         }
     }
 }
@@ -510,37 +532,41 @@ impl DataProvider for CdkAlephBftDataProvider {
     type Output = CdkAlephBftData;
 
     async fn get_data(&mut self) -> Option<Self::Output> {
-        let (payload, pending_after) = {
-            let mut consensus = self.consensus.lock().await;
-            let payload = match consensus.next_aleph_bft_unit_payload() {
-                Ok(payload) => payload,
-                Err(err) => {
-                    tracing::warn!("AlephBFT data provider could not build CDK unit: {}", err);
-                    return None;
-                }
-            };
-            (payload, consensus.pending_mempool_len())
-        };
-        self.activity_hint.set_local_pending(pending_after > 0);
-
-        match payload {
-            Some(payload) => {
-                crate::federation::aleph_bft_latency::record(
-                    crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::DataProviderYielded,
-                    payload.operation_ids.iter().copied(),
-                );
-                match CdkAlephBftData::try_from_payload(payload) {
-                    Ok(data) => Some(data),
+        loop {
+            let payload = {
+                let mut consensus = self.consensus.lock().await;
+                let payload = match consensus.next_aleph_bft_unit_payload() {
+                    Ok(payload) => payload,
                     Err(err) => {
-                        tracing::warn!(
-                            "AlephBFT data provider rejected CDK unit encoding: {}",
-                            err
-                        );
-                        None
+                        tracing::warn!("AlephBFT data provider could not build CDK unit: {}", err);
+                        return None;
+                    }
+                };
+                let pending_after = consensus.pending_mempool_len();
+                self.activity_hint.set_local_pending(pending_after > 0);
+                payload
+            };
+
+            match payload {
+                Some(payload) => {
+                    crate::federation::aleph_bft_latency::record(
+                        crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::DataProviderYielded,
+                        payload.operation_ids.iter().copied(),
+                    );
+                    match CdkAlephBftData::try_from_payload(payload) {
+                        Ok(data) => return Some(data),
+                        Err(err) => {
+                            tracing::warn!(
+                                "AlephBFT data provider rejected CDK unit encoding: {}",
+                                err
+                            );
+                            return None;
+                        }
                     }
                 }
+                None if self.activity_hint.is_active() => return None,
+                None => self.activity_hint.wait_for_activity().await,
             }
-            None => None,
         }
     }
 }
@@ -550,6 +576,7 @@ impl DataProvider for CdkAlephBftDataProvider {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftFinalizationHandler {
     finalized_units: mpsc::UnboundedSender<FederationAlephBftUnitPayload>,
+    activity_hint: CdkAlephBftActivityHint,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -558,7 +585,17 @@ impl CdkAlephBftFinalizationHandler {
     pub(crate) fn new(
         finalized_units: mpsc::UnboundedSender<FederationAlephBftUnitPayload>,
     ) -> Self {
-        Self { finalized_units }
+        Self::with_activity_hint(finalized_units, CdkAlephBftActivityHint::default())
+    }
+
+    fn with_activity_hint(
+        finalized_units: mpsc::UnboundedSender<FederationAlephBftUnitPayload>,
+        activity_hint: CdkAlephBftActivityHint,
+    ) -> Self {
+        Self {
+            finalized_units,
+            activity_hint,
+        }
     }
 }
 
@@ -568,7 +605,10 @@ impl FinalizationHandler<CdkAlephBftData> for CdkAlephBftFinalizationHandler {
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::FinalizedDataReceived,
             data.payload().operation_ids.iter().copied(),
         );
-        if self.finalized_units.send(data.into_payload()).is_err() {
+        let payload = data.into_payload();
+        self.activity_hint
+            .mark_network_activity_finalized(payload.body_hash.to_bytes());
+        if self.finalized_units.send(payload).is_err() {
             tracing::warn!("AlephBFT finalized CDK unit receiver is closed");
         }
     }
@@ -937,9 +977,11 @@ impl CdkAlephBftSessionIo {
         let backup = CdkAlephBftDbBackup::new(db, session_id);
         let unit_loader = backup.try_reader().await?;
         let unit_saver = backup.writer();
-        let data_provider = CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint);
+        let data_provider =
+            CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint.clone());
         let (sender, finalized_units) = mpsc::unbounded_channel();
-        let finalization_handler = CdkAlephBftFinalizationHandler::new(sender);
+        let finalization_handler =
+            CdkAlephBftFinalizationHandler::with_activity_hint(sender, activity_hint);
         let local_io = LocalIO::new_with_unit_finalization_handler(
             data_provider,
             finalization_handler,
@@ -1346,6 +1388,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cdk_aleph_bft_data_provider_wakes_for_local_submission() {
+        let runtime = FederationConsensusRuntime::with_backend(
+            FederationConsensusBackendKind::AlephBft,
+            federation_id(8),
+            member_id(1),
+        )
+        .expect("runtime");
+        let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        let activity_hint = CdkAlephBftActivityHint::default();
+        let mut provider =
+            CdkAlephBftDataProvider::with_activity_hint(consensus.clone(), activity_hint.clone());
+        let next_data = provider.get_data();
+        tokio::pin!(next_data);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut next_data)
+                .await
+                .is_err(),
+            "empty provider should wait for local work"
+        );
+
+        {
+            let mut runtime = consensus.lock().await;
+            runtime
+                .submit_aleph_bft_envelope(mint_quote_envelope("quote-wakeup"))
+                .expect("submit local operation");
+        }
+        activity_hint.mark_local_pending();
+
+        let data = tokio::time::timeout(Duration::from_millis(100), &mut next_data)
+            .await
+            .expect("local activity should wake data provider")
+            .expect("queued data");
+        assert_eq!(data.payload().operation_ids.len(), 1);
+    }
+
+    #[tokio::test]
     async fn cdk_aleph_bft_data_provider_clears_activity_after_pending_finalization_drains() {
         let runtime = FederationConsensusRuntime::with_backend(
             FederationConsensusBackendKind::AlephBft,
@@ -1373,8 +1451,23 @@ mod tests {
                 .expect("finalize unit");
         }
 
-        assert!(provider.get_data().await.is_none());
+        let next_data = provider.get_data();
+        tokio::pin!(next_data);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut next_data)
+                .await
+                .is_err(),
+            "idle data provider should wait instead of creating empty units"
+        );
         assert!(!activity_hint.is_active());
+
+        activity_hint.mark_network_activity([[7u8; 32]]);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut next_data)
+                .await
+                .expect("network activity should wake data provider")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1382,13 +1475,21 @@ mod tests {
         let payload = module_fact_payload(2);
         let data = CdkAlephBftData::try_from_payload(payload.clone()).expect("data");
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let mut handler = CdkAlephBftFinalizationHandler::new(sender);
+        let activity_hint = CdkAlephBftActivityHint::default();
+        activity_hint.mark_network_activity([payload.body_hash.to_bytes()]);
+        let mut handler =
+            CdkAlephBftFinalizationHandler::with_activity_hint(sender, activity_hint.clone());
+        assert!(activity_hint.is_active());
 
         handler.data_finalized(data);
         let finalized = receiver.recv().await.expect("finalized payload");
 
         assert_eq!(finalized.body_hash, payload.body_hash);
         assert_eq!(finalized.unit_index, payload.unit_index);
+        assert!(activity_hint.is_active());
+        tokio::time::sleep(CDK_ALEPH_BFT_FINALIZATION_ACTIVITY_GRACE + Duration::from_millis(25))
+            .await;
+        assert!(!activity_hint.is_active());
     }
 
     #[tokio::test]
@@ -1506,11 +1607,12 @@ mod tests {
         )
         .expect("runtime");
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        let activity_hint = CdkAlephBftActivityHint::default();
         let session_io = CdkAlephBftSessionIo::from_db(
             Arc::clone(&consensus),
             Arc::clone(&db),
             103,
-            CdkAlephBftActivityHint::default(),
+            activity_hint.clone(),
         )
         .await
         .expect("session io");
@@ -1539,6 +1641,7 @@ mod tests {
                 .expect("read appended backup"),
             Some(b"persisted-next".to_vec())
         );
+        activity_hint.mark_network_activity([[8u8; 32]]);
         assert!(data_provider.get_data().await.is_none());
         assert_eq!(
             finalized_units

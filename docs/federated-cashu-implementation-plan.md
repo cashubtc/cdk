@@ -141,7 +141,32 @@ Current blocking bugs:
   caught up on the third strict status attempt, and all five members converged
   on nine operations, latest index 8, identical order/state digests, zero
   pending work, and no digest or invalid-operation alerts. The observed CPU
-  issue is fixed and covered by duplicate-replay plus process idle checks.
+  replay issue is fixed and covered by duplicate-replay plus process idle
+  checks.
+- Receiver-side CLI benchmark: a fresh receiver redeemed a pre-created 30 sat
+  token through exactly one accepted federated `swap` in 7.92s wall, 1.73s user
+  CPU, and 0.02s system CPU. About 4.9s elapsed before all-member submission,
+  the cold data-provider wait was about 1.96s, first private REST delivery took
+  about 60ms, submit-to-finality took 2.37s, and submit-to-waiter return took
+  2.89s. Sender and receiver balances were 70 sat and 30 sat with no pending or
+  spent local proofs; all members converged on four operations, latest index 3,
+  identical order/state digests, zero pending work, and no alerts.
+- Final idle-CPU follow-up: a 30-second process CPU-time delta proved the
+  earlier instantaneous samples missed periodic work. Trace-enabled members
+  averaged about 31% of a core and trace-disabled members 27-29% because an
+  inactive live session still created one empty unit per member every two
+  seconds, growing the DAG by 25 units per 10 seconds. The data provider now
+  waits when no local or peer operation is active and wakes immediately for a
+  local submission or newly seen authenticated peer payload. Peer activity is
+  tracked by body hash and retains a one-second post-finality tail; a no-tail
+  process experiment was rejected after it stranded a payment observation at
+  rounds 3-4. A stack sample then found the remaining post-work load in peer
+  status repeatedly loading and deserializing the full finalized-item table to
+  count it. Cheap order status now reads the AlephBFT runtime cursor instead.
+  Fresh idle members measured 0.9% CPU, post-work members 3.9-4.8%, and corrected
+  full mints completed in 8.20s and 5.45s across a persisted restart. The final
+  strict gate converged all five members on six operations with identical
+  order/state digests and no pending work or alerts.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -153,7 +178,12 @@ Current blocking bugs:
   `cargo check -p cdk-axum --features federation`. Active-cadence coverage also
   passed `inbound_replayed_consensus_data_does_not_refresh_activity_hint`,
   `inbound_idle_network_message_does_not_mark_activity_hint`, the default
-  cold/warm latency probe, and the five-member latency probe.
+  cold/warm latency probe, and the five-member latency probe. The final idle
+  follow-up also passed the `cdk_aleph_bft_data_provider` and
+  `cdk_aleph_bft_finalization_handler` filters,
+  `aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations`, all
+  five `aleph_bft_live_session_latency_probe_records_` tests, and
+  `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,prometheus`.
 
 ## Sources reviewed
 
@@ -383,8 +413,17 @@ Current confirmed shape:
   repeatedly refreshing the activity window. Live sessions now wake once per
   previously unseen unit-body hash, cap the tracker at 16,384 entries, and do
   not refresh activity for replayed payloads. A five-process post-work gate
-  measured every member at 0.3-0.7% CPU, and duplicate-replay coverage proves
-  replays still reach AlephBFT without extending the wakeup window.
+  initially measured every member at 0.3-0.7% in short samples, and
+  duplicate-replay coverage proves replays still reach AlephBFT without
+  extending the wakeup window. A later 30-second CPU-time measurement exposed
+  27-32% sustained periodic idle work from continued empty-unit creation. The
+  accepted follow-up blocks the async data provider while inactive, wakes it
+  for local or new peer operation data, retains a one-second post-finality
+  propagation tail, and replaces the peer-status full finalized-history scan
+  with the maintained runtime cursor. Fresh idle CPU is now about 0.9% and
+  post-work debug CPU about 4-5%, with no continued DAG growth; two full mints,
+  persisted restart, strict convergence, and the focused wake/finality/status
+  tests pass.
 - Resolved wallet startup performance checkpoint: the later slow
   `cdk-cli mint-info` and first federated mint request delay were isolated to
   repeated full wallet-side federation validation and eager CLI federation wallet
@@ -2019,11 +2058,16 @@ AlephBFT and consensus unit tests:
   `rest_peer_client_detects_catch_up_materialized_state_mismatch`.
 - [x] The data provider never spins at 100 percent CPU when the pending queue is
   empty, full, or repeatedly receiving duplicate operations. Direct
-  data-provider coverage now proves repeated empty polls do not advance unit
-  indexes or create phantom work; existing size-limit, duplicate-operation,
-  semantic-conflict, pending-mempool backpressure, and idle-driver tests cover
-  the full/duplicate/conflicting cases and the Axum tick surface. The CPU-spin
-  issue is closed and needs no further work unless it is observed again.
+  data-provider coverage now proves an inactive provider waits without
+  advancing unit indexes or creating phantom work, and local submissions or
+  newly seen authenticated peer payloads wake it. Existing size-limit,
+  duplicate-operation, semantic-conflict, pending-mempool backpressure, and
+  idle-driver tests cover the full/duplicate/conflicting cases and the Axum
+  tick surface. Thirty-second process measurements found and fixed the later
+  periodic empty-unit variant: pre-fix members used 27-32% CPU and grew the DAG
+  every two seconds; corrected fresh idle members use about 0.9%, post-work
+  debug members use about 4-5%, and the DAG stops growing. The CPU-spin issue is
+  closed and needs no further work unless it is observed again.
 - [x] Federated CLI startup and read-only mint-info paths avoid repeating full
   BLS aggregate-key validation after a federation registry entry has already
   been validated. Profiling showed the slow path was CPU time in repeated
@@ -2042,16 +2086,18 @@ AlephBFT and consensus unit tests:
   keeps the 2s idle tail while inactive, marks the shared activity hint when a
   local operation is accepted into the AlephBFT mempool or an authenticated
   inbound AlephBFT network message carrying CDK consensus data is queued, and
-  uses the normal upstream active cadence for tail rounds only while local
-  pending work or recent consensus-data network activity is present. Focused
-  coverage proves inactive tail rounds stay cold, active tail rounds use the
-  faster cadence, the data provider clears the local-pending hint after pending
-  finalization drains, authenticated inbound private REST gossip carrying data
-  wakes the hint, idle inbound messages do not wake it, and live private-REST
-  AlephBFT finality still completes. Fresh process verification confirmed the
-  idle creator cadence cools to about 2s and member CPU drops below 1%; cold
-  mints still measured 13.90s and 12.01s because three serialized consensus
-  operations remain on the critical path.
+  uses a 100ms active cadence only while local pending work or tracked
+  consensus-data network activity is present. The async data provider waits
+  instead of creating empty units once both sources clear. Newly finalized peer
+  bodies retain a one-second propagation tail so local finality cannot strand
+  slower members; replayed bodies do not refresh the window. Focused coverage
+  proves inactive providers wait, active tail rounds use the faster cadence,
+  finalization shortens peer activity, authenticated data gossip wakes the
+  provider, idle and replayed messages do not extend it, and live private-REST
+  finality still completes. Fresh process verification measured a sleeping
+  full mint at 8.20s and a warm post-restart mint at 5.45s. Fresh idle CPU is
+  about 0.9%; post-work debug CPU is about 4-5% after replacing peer status's
+  full finalized-item scan with the maintained runtime cursor.
 - [x] Non-production AlephBFT latency instrumentation records stage timing
   without changing production protocol behavior. The scoped test-only recorder
   captures operation-specific submit queueing, upstream data-provider yield,

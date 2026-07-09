@@ -1086,7 +1086,7 @@ mod tests {
             CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
         );
 
-        activity_hint.mark_network_activity();
+        activity_hint.mark_network_activity([[1u8; 32]]);
         assert_eq!(
             (delay_config.unit_creation_delay)(tail_round),
             CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY

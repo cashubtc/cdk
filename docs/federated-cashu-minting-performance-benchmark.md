@@ -7,11 +7,10 @@ AlephBFT federations and fresh CLI wallets. The first run identified why
 federated minting took tens of seconds. The second run verifies the immediate
 post-quote payment-observation fix and keeps the remaining delay classified.
 The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip
-was excluded from the activity hint. The latest run accepts a 100ms active-only
-cadence, deduplicates replayed consensus-data wakeups, and verifies both faster
-minting and low idle CPU.
-The next benchmark target is receiver-side token receive, which redeems a
-received token by performing a federated swap.
+was excluded from the activity hint. Later runs accept a 100ms active-only
+cadence, deduplicate replayed consensus-data wakeups, stop empty-unit creation
+when no operation is active, and remove an O(history) finalized-item scan from
+peer status. A receiver-side token receive benchmark is also complete.
 
 The measurements below are development-environment measurements. Absolute values will vary by machine, but the stage ordering and relative delays are the important result.
 
@@ -23,7 +22,7 @@ The measurements below are development-environment measurements. Absolute values
 - Consensus backend: AlephBFT
 - Wallet: fresh `cdk-cli` work directory
 - Operation tested: two full federated mints after adding the federation registry
-- Receiver-side token receive/swap benchmark: required, not yet measured
+- Receiver-side token receive/swap benchmark: completed at 7.92s wall
 - Instrumentation policy: targeted timing/log instrumentation is allowed when
   it is useful to isolate delays. It must not change protocol behavior, signing
   semantics, payment semantics, consensus ordering, or wallet fanout behavior.
@@ -107,8 +106,43 @@ Restart and catch-up gate:
 - Pending mempool and waiter counts returned to zero and no digest or invalid
   operation alerts were reported.
 
-This closes the observed post-work CPU issue and accepts the active-only cadence
-change. The next performance target is receiver-side receive/swap.
+The first short CPU samples understated a remaining issue. A later 30-second
+CPU-time delta measured every member at about 31% of one core while idle. The
+AlephBFT status reports showed why: even with no CDK operation pending, every
+member still created an empty unit every two seconds, growing the shared DAG by
+25 units per 10 seconds. Trace-disabled repetition remained at 27-29%, ruling
+out lifecycle instrumentation.
+
+The clean follow-up makes the async data provider wait when there is neither
+local pending/finalization work nor a bounded peer-data activity window. Local
+submission and newly seen authenticated CDK data wake it immediately. Peer
+activity is tracked by unit-body hash, shortened to a one-second tail after
+local finality so slower members can finish, and replayed data cannot extend it.
+An intentionally too-short no-tail experiment was rejected by the process gate
+because it stranded `mint_quote_payment` at rounds 3-4; the accepted one-second
+tail completed full mints normally.
+
+A stack sample then isolated the remaining post-work CPU in peer sync rather
+than AlephBFT cadence: every cheap order-status read loaded and JSON-decoded the
+entire durable finalized-item table only to calculate its length. Order status
+now reads the already-maintained AlephBFT runtime finalized cursor. This keeps
+catch-up semantics unchanged and removes the O(finalized history) parse.
+
+Final corrected process results:
+
+| Check | Result |
+| --- | ---: |
+| fresh fully idle member CPU | 0.9% each over 20s |
+| full mint from a sleeping session | 8.20s wall |
+| warm mint after persisted restart | 5.45s wall |
+| post-work member CPU after mint #1 | 3.9-4.0% each over 20s |
+| post-work member CPU after mint #2 | 4.5-4.8% each over 20s |
+| accepted operations after two mints | 6, identical on all members |
+
+The final strict gate reported identical order/state digests, zero pending
+mempool items and waiters, and no digest, payment, or invalid-operation alerts.
+The unbounded CPU/DAG-growth bug is closed. The remaining low single-digit
+debug-build load is bounded periodic peer status work, not a spin loop.
 
 ## Lifecycle-Traced 500ms Active-Cadence Baseline
 
@@ -435,9 +469,8 @@ Expected saving: about 1-3s per command if config validation/key aggregation is 
 - Catch-up/sync after startup: members remained healthy and converged.
 - Private REST networking after startup: no evidence it dominated steady-state minting.
 - Duplicate submissions: created extra finalization noise, but accepted journal operations remained six for two mints.
-- Receiver-side receive/swap: not yet measured in this benchmark document. It
-  must be measured independently because it should normally require one
-  consensus operation instead of three.
+- Receiver-side receive/swap: measured independently at 7.92s with exactly one
+  accepted consensus operation; its dominant delay was pre-submit CLI setup.
 
 ## Improvement Candidates
 
@@ -505,6 +538,11 @@ Checkpoint update:
   unseen CDK unit-body hash. This preserves the first-arrival wakeup while
   preventing old consensus-data replay from keeping the 100ms active cadence
   alive indefinitely.
+- Final idle correction: an inactive data provider waits instead of emitting an
+  empty unit every two seconds. Local work and new peer operation bodies wake
+  it, and local finality shortens peer activity to a one-second propagation
+  tail. Peer order status also uses the maintained AlephBFT finalized cursor
+  instead of loading and decoding the entire finalized-item table to count it.
 
 Selective activity-hint command timing:
 
@@ -545,8 +583,8 @@ Total wall time: 12.01s.
 
 ## Receiver-Side Receive/Swap Benchmark
 
-Status: required next measurement; no authoritative timing has been recorded in
-this document yet.
+Status: completed on a fresh five-member, threshold-three fakewallet AlephBFT
+federation with fresh sender and receiver wallets.
 
 Receiving a Cashu token is not just a local wallet import. The receiver redeems
 the sender's proofs by creating new blinded outputs and submitting a swap to the
@@ -592,17 +630,31 @@ date -u +"RECEIVE CLI end UTC: %Y-%m-%dT%H:%M:%SZ"
 If the exact `send` command shape changes, keep the benchmark invariant the
 same: the token must already exist before the timed receiver command starts.
 
-Required receive timeline:
+Measured receive timeline:
 
 | Stage | Timestamp UTC | Delta From Previous | Notes |
 | --- | --- | ---: | --- |
-| receiver CLI start | TBD | - | command invocation |
-| token decoded and federation wallet selected | TBD | TBD | wallet/CLI setup and federation registry lookup |
-| swap request received by mint | TBD | TBD | public `/v1/swap` request from receiver wallet |
-| swap consensus accepted | TBD | TBD | accepted `swap` operation in AlephBFT journal |
-| input proofs spent and output shares persisted | TBD | TBD | deterministic apply/materialization complete |
-| shares returned to receiver | TBD | TBD | threshold member responses available |
-| receiver aggregation done | TBD | TBD | receiver stores fresh proofs and command exits |
+| receiver CLI start | 20:24:17 | - | command invocation |
+| all-member swap submission | 20:24:21.932-21.935 | about 4.9s | CLI activation, token decode, connector setup, and member fanout |
+| primary data-provider yield | 20:24:23.891 | 1.957s | one already-scheduled cold idle wait |
+| first private REST delivery | 20:24:23.950 | 0.060s | member networking was not dominant |
+| first finalized data | 20:24:24.308 | 0.358s | 2.374s submit-to-finality |
+| apply/materialization complete | 20:24:24.817 | 0.509s | inputs spent and output shares persisted |
+| waiter/share responses returned | 20:24:24.828 | 0.011s | all participating member waiters released |
+| receiver aggregation done | 20:24:25 | under 1s | command exited after storing fresh proofs |
+
+Command timing was 7.92s wall, 1.73s user CPU, and 0.02s system CPU. Exactly
+one `swap` was accepted at journal index 3; no duplicate logical swap was
+appended. The sender ended with 70 sat and 14 unspent local proofs, while the
+receiver ended with 30 sat and 11 unspent proofs. Both wallets had zero pending
+or spent local proofs. All five members converged on four operations, latest
+index 3, identical order/state digests, zero pending work, and no alerts.
+
+The dominant receive delay was before mint submission: about 4.9 seconds of CLI
+startup, registry activation, token parsing, and connector construction. The
+single consensus operation took about 2.9 seconds from submit through waiter
+return; private REST delivery was about 60ms and aggregation/storage finished
+in under a second. The under-10-second target therefore passes.
 
 Target: receiver-side receive should complete in under 10 seconds on a fresh
 five-member, threshold-three fakewallet AlephBFT federation. Since receive is
@@ -787,10 +839,9 @@ Receiver-side receive/swap target budget:
 | `swap` consensus | <= 2s |
 | share collection/aggregation/storage | <= 1s |
 
-This gives a normal warm receive target around 3-4s and a hard target below
-10s. If receive is slower than 10s, the benchmark should identify whether the
-extra time is before swap submission, inside consensus, or after accepted swap
-application.
+This leaves a normal warm receive target around 3-4s and confirms the hard
+target below 10s. Further improvement should focus first on CLI activation and
+connector setup, then on eliminating the one already-scheduled cold idle wait.
 
 ## Recommended Work Order
 
@@ -806,13 +857,19 @@ application.
    versus about 0.48s for the immediate follow-up.
 3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Completed:
    active work uses 100ms unit creation, duplicate consensus-data gossip cannot
-   refresh activity, fresh mints complete in about 8-9s, idle members cool to
-   0.3-0.7% CPU, and one-member offline restart/catch-up converges exactly. Cold
-   work can still wait on one already-scheduled 2s idle interval.
+   refresh activity, the data provider waits instead of producing empty idle
+   units, and finalized peer activity keeps a one-second propagation tail.
+   Fresh idle members use about 0.9% CPU and post-work debug members about
+   4-5%; the old 27-32% sustained idle load and unbounded DAG growth are gone.
+   Fresh/warm mints complete in about 5-8s, and one-member offline
+   restart/catch-up converges exactly. Cold work can still wait on one
+   already-scheduled 2s idle interval.
 4. Cache validated federation configs and aggregate keysets in the wallet/CLI.
    Current checkpoint: startup activation now builds one federated connector per
    imported federation and reuses it across all active units in that command
    process. Remaining work is cross-process validated-config/digest caching if
    later measurements still show CLI registry validation as meaningful.
 5. Re-benchmark two full mints and one receiver-side receive/swap after every change.
+   Current checkpoint: two corrected full mints completed in 8.20s and 5.45s;
+   receiver-side receive completed in 7.92s with exactly one accepted swap.
 6. Only after the above, evaluate whether `mint_quote_payment` and `mint` can be safely merged or linked into a fewer-round design.

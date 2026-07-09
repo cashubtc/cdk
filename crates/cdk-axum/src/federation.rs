@@ -529,15 +529,12 @@ async fn local_peer_status_and_entries(
         runtime_config.consensus_backend(),
     );
     if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
-        let finalized_item_count = state
-            .mint
-            .localstore()
-            .get_federation_aleph_bft_finalized_items()
-            .await?
-            .len();
-        status = status.with_aleph_bft_next_item_index(
-            u64::try_from(finalized_item_count).expect("AlephBFT finalized item count fits in u64"),
-        );
+        let next_item_index = state
+            .federation_aleph_bft_status()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("AlephBFT consensus status is unavailable"))?
+            .next_item_index;
+        status = status.with_aleph_bft_next_item_index(next_item_index);
     }
     let entries = journal.entries().to_vec();
     Ok((status, entries))

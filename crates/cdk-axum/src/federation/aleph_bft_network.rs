@@ -33,8 +33,8 @@ struct CdkAlephBftSeenConsensusActivity {
 }
 
 impl CdkAlephBftSeenConsensusActivity {
-    fn mark_new(&mut self, activity_ids: Vec<[u8; 32]>, limit: usize) -> (bool, bool) {
-        let mut marks_activity = false;
+    fn mark_new(&mut self, activity_ids: Vec<[u8; 32]>, limit: usize) -> (Vec<[u8; 32]>, bool) {
+        let mut new_activity_ids = Vec::new();
         let mut report_limit = false;
         for activity_id in activity_ids {
             if self.ids.contains(&activity_id) {
@@ -48,9 +48,9 @@ impl CdkAlephBftSeenConsensusActivity {
                 continue;
             }
             self.ids.insert(activity_id);
-            marks_activity = true;
+            new_activity_ids.push(activity_id);
         }
-        (marks_activity, report_limit)
+        (new_activity_ids, report_limit)
     }
 }
 
@@ -123,11 +123,11 @@ impl<D> CdkAlephBftNetworkInboundHandle<D> {
     }
 
     fn mark_new_consensus_activity(&self, activity_ids: Vec<[u8; 32]>) {
-        let (marks_activity, report_limit) = match self.seen_consensus_activity.lock() {
+        let (new_activity_ids, report_limit) = match self.seen_consensus_activity.lock() {
             Ok(mut seen) => {
                 seen.mark_new(activity_ids, CDK_ALEPH_BFT_SEEN_CONSENSUS_ACTIVITY_LIMIT)
             }
-            Err(_) => (false, false),
+            Err(_) => (Vec::new(), false),
         };
         if report_limit {
             tracing::warn!(
@@ -136,8 +136,8 @@ impl<D> CdkAlephBftNetworkInboundHandle<D> {
                 "AlephBFT consensus-activity wakeup tracker reached its bound"
             );
         }
-        if marks_activity {
-            self.activity_hint.mark_network_activity();
+        if !new_activity_ids.is_empty() {
+            self.activity_hint.mark_network_activity(new_activity_ids);
         }
     }
 }
@@ -963,10 +963,10 @@ mod tests {
     fn seen_consensus_activity_stops_waking_after_its_bound() {
         let mut seen = CdkAlephBftSeenConsensusActivity::default();
 
-        assert_eq!(seen.mark_new(vec![[1u8; 32]], 1), (true, false));
-        assert_eq!(seen.mark_new(vec![[1u8; 32]], 1), (false, false));
-        assert_eq!(seen.mark_new(vec![[2u8; 32]], 1), (false, true));
-        assert_eq!(seen.mark_new(vec![[3u8; 32]], 1), (false, false));
+        assert_eq!(seen.mark_new(vec![[1u8; 32]], 1), (vec![[1u8; 32]], false));
+        assert_eq!(seen.mark_new(vec![[1u8; 32]], 1), (Vec::new(), false));
+        assert_eq!(seen.mark_new(vec![[2u8; 32]], 1), (Vec::new(), true));
+        assert_eq!(seen.mark_new(vec![[3u8; 32]], 1), (Vec::new(), false));
         assert_eq!(seen.ids.len(), 1);
     }
 }

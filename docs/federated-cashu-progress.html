@@ -431,19 +431,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, slow and unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Focused tests cover federation metadata/keyset validation, wallet connector reuse, receive resolution, pending-work-aware AlephBFT pacing, duplicate consensus-data replay cooling, and two-, five-, and seven-member lifecycle probes. Active work now uses a 100ms cadence while idle tail rounds remain at 2s; fresh five-member mints complete in about 8-9s, all members cool to 0.3-0.7% CPU, and an offline member catches up to identical journal and state digests after restart.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, slow and unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Active work uses a 100ms cadence, while an inactive data provider waits instead of creating empty units. Corrected full mints complete in about 5-8s, receiver-side token redemption completes in 7.92s, fresh idle members use about 0.9% CPU, and post-work debug members remain around 4-5% without continued DAG growth.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: bound active AlephBFT cadence</span>
+          <span class="value">fix: stop idle federation CPU work</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The accepted 100ms active-only cadence reduced fresh no-trace mints to 8.45s and 8.75s from a traced 500ms baseline of 14.36s and 10.13s. Replayed old consensus payloads no longer refresh activity, so a 15s idle gate measured 0.3-0.7% CPU per member. A 9.22s mint succeeded with one member offline; after restart, all five converged on nine operations, index 8, and identical order/state digests with no alerts.</span>
+          <span class="value">A 30s CPU-time measurement found that short samples had missed 27-32% periodic idle work: each member still created an empty unit every two seconds. The data provider now sleeps while inactive, wakes for local or new peer operation data, and keeps a one-second post-finality propagation tail. A stack sample also removed peer status's O(history) finalized-item scan. Fresh idle CPU is about 0.9%, post-work debug CPU is 3.9-4.8%, corrected mints took 8.20s and 5.45s across restart, and all five members converged on six operations with no pending work or alerts. A fresh receiver redeemed 30 sat through exactly one swap in 7.92s.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Benchmark receiver-side token receive/swap with the accepted cadence, then measure federated swap and melt lifecycle stages under warm, cold, slow-member, and one-member-offline conditions while preserving the passing idle CPU and catch-up gates.</span>
+          <span class="value">Measure direct federated swap and melt lifecycle stages under warm, cold, slow-member, and one-member-offline conditions, then add the remaining CLI bad-share and non-v3 request-output process failures while preserving the passing idle CPU, restart, catch-up, and convergence gates.</span>
         </div>
       </aside>
     </header>
@@ -791,7 +791,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known blocking-call issues and the post-work CPU spin path are fixed. Active AlephBFT work uses a bounded 100ms cadence, replayed consensus-data gossip cannot refresh the activity window, and a five-process idle gate cools members to 0.3-0.7% CPU. Successful gossip stays on the no-write fast path, high-frequency routes keep sequence watermarks in memory, peer sync has backoff and timeout knobs, operation admission is bounded, catching-up members fail closed before value mutations and resume when healthy, backup persistence retries transient storage contention, value routes remain consensus-gated and idempotent, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
+            <p>Known blocking-call issues and the post-work CPU spin path are fixed. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; inactive data providers wait instead of creating empty units; and locally finalized peer data retains a one-second propagation tail. Fresh idle members use about 0.9% CPU and post-work debug members about 4-5%, without continued DAG growth. Cheap peer order status reads the maintained AlephBFT cursor instead of loading the full finalized-item history. Operation admission is bounded, catching-up members fail closed before value mutations and resume when healthy, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -855,12 +855,14 @@
           generated post-crash operation smoke, followed by
           larger wallet-operation smoke repetitions, storage-backed 4-member
           and 5-member partition windows, and compile gates. The previous CPU issue is fixed: replayed
-          consensus-data gossip no longer refreshes activity, and the five-process idle gate passes at
-          0.3-0.7% CPU per member. The latest wallet-startup performance check confirms
+          consensus-data gossip no longer refreshes activity, inactive data providers stop empty-unit
+          creation, and the peer-status hot path no longer reparses the finalized-item history merely
+          to count it. Fresh idle members use about 0.9% CPU and post-work debug members about 4-5%.
+          The latest wallet-startup performance check confirms
           federated <code>mint-info</code> is no longer CPU-bound by repeated full
           config validation. Opt-in process lifecycle traces cover queue,
-          network, finality, apply, and waiter stages; the next latency target is
-          receiver-side receive/swap plus swap and melt fault conditions.
+          network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
+          direct swap and melt fault conditions are next.
         </p>
       </section>
 
@@ -947,7 +949,7 @@
           </article>
           <article class="item">
             <h3>Receiver and value-operation latency</h3>
-            <p>Benchmark receiver-side receive/swap plus direct swap and melt under warm, cold, slow-member, and one-member-offline conditions, using the accepted 100ms active cadence and retaining the passing idle CPU, restart, catch-up, and convergence gates.</p>
+            <p>Receiver-side receive/swap now passes at 7.92s with exactly one accepted swap. Benchmark direct swap and melt under warm, cold, slow-member, and one-member-offline conditions, using the accepted wakeable 100ms active cadence and retaining the passing idle CPU, restart, catch-up, and convergence gates.</p>
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
