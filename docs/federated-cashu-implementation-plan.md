@@ -3149,7 +3149,12 @@ Latest checkpoint:
   reporting a zero-value receive. Focused CLI unit tests now also prove malformed
   registry/public-config JSON, stale registry/public-config protocol versions,
   mismatched roster metadata, inactive keysets, and non-v3/BLS keysets are
-  rejected before any federated connector is constructed.
+  rejected before any federated connector is constructed. A repository-level CLI
+  utility test now proves imported federation wallets are activated into the
+  wallet repository, `get_or_create_wallet` maps both the local federation URL
+  and imported member public URLs to a `FederatedMintConnector`, unsupported
+  federation units fail before wallet creation, and unrelated mint URLs still use
+  the standalone wallet path.
 
 Scripted local CLI smoke command:
 
@@ -3207,11 +3212,13 @@ Tests and success criteria:
 - [x] CLI command tests prove `cdk-cli federation add --public-config
   <federation-public.json>` stores only public federation metadata and never
   persists member private configs or mint-side private material.
-- [ ] CLI wallet construction tests prove wallet lookup and
+- [x] CLI wallet construction tests prove wallet lookup and
   `get_or_create_wallet` choose `FederatedMintConnector` for imported
   federations and the existing HTTP connector for standalone mints. Current
-  focused tests cover connector construction; startup/get-or-create behavior is
-  covered by the live CLI smoke.
+  focused tests cover connector construction, registry activation into an
+  in-memory wallet repository, local federation URL lookup, imported member
+  public URL lookup, unsupported federation unit rejection, and standalone URL
+  fallback.
 - [x] CLI integration or command-level tests prove `cdk-cli` can mint through a
   local federation and receive aggregate-verifiable ordinary Cashu proofs.
 - [ ] CLI integration or command-level tests prove `cdk-cli` can send/swap

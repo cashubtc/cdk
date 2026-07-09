@@ -170,3 +170,153 @@ async fn create_or_replace_federation_wallet(
         .await
         .map_err(Into::into)
 }
+
+#[cfg(all(test, feature = "federation"))]
+mod federation_tests {
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use cdk::cdk_database::{self, WalletDatabase};
+    use cdk::nuts::nut01::BlsSecretKey;
+    use cdk::wallet::WalletRepositoryBuilder;
+    use cdk::Amount;
+    use cdk_common::federation::{
+        generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
+    };
+    use cdk_common::SecretKey;
+
+    use super::*;
+    use crate::sub_commands::federation::{
+        FederationWalletRegistry, StoredFederationConnectorPolicy,
+    };
+
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("valid member id")
+    }
+
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    fn member(member_id: MemberId) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    }
+
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn valid_public_config() -> cdk_common::federation::FederationConfig {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (Amount::from(1), vec![bls_key(1), bls_key(2)]),
+                    (Amount::from(2), vec![bls_key(3), bls_key(4)]),
+                ]),
+            )],
+        )
+        .expect("trusted dealer configs")
+        .public_config
+    }
+
+    async fn test_repository() -> WalletRepository {
+        let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("wallet memory db"),
+        );
+        WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository")
+    }
+
+    fn connector_debug(wallet: &cdk::wallet::Wallet) -> String {
+        format!("{:?}", wallet.mint_connector())
+    }
+
+    #[tokio::test]
+    async fn get_or_create_wallet_uses_federation_registry_for_local_and_member_urls() {
+        let public_config = valid_public_config();
+        let local_mint_url = public_config
+            .members
+            .get(&member_id(1))
+            .expect("member one")
+            .public_mint_url
+            .clone();
+        let member_two_url = public_config
+            .members
+            .get(&member_id(2))
+            .expect("member two")
+            .public_mint_url
+            .clone();
+        let standalone_url =
+            MintUrl::from_str("https://standalone.example.com").expect("standalone url");
+
+        let mut registry = FederationWalletRegistry::default();
+        registry
+            .upsert(
+                public_config,
+                local_mint_url.clone(),
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect("upsert");
+        set_federation_registry(registry).expect("set federation registry");
+
+        let repository = test_repository().await;
+        activate_federation_wallets(&repository)
+            .await
+            .expect("activate federation wallets");
+
+        let local_wallet = repository
+            .get_wallet(&local_mint_url, &CurrencyUnit::Sat)
+            .await
+            .expect("pre-activated local federation wallet");
+        assert!(connector_debug(&local_wallet).contains("FederatedMintConnector"));
+
+        let member_wallet = get_or_create_wallet(&repository, &member_two_url, &CurrencyUnit::Sat)
+            .await
+            .expect("member url federation wallet");
+        assert_eq!(member_wallet.mint_url, member_two_url);
+        assert!(connector_debug(&member_wallet).contains("FederatedMintConnector"));
+
+        let unsupported_unit_err =
+            get_or_create_wallet(&repository, &local_mint_url, &CurrencyUnit::Usd)
+                .await
+                .expect_err("unsupported federation unit rejected");
+        let unsupported_unit_err = unsupported_unit_err.to_string();
+        assert!(unsupported_unit_err.contains("does not advertise an active"));
+        assert!(unsupported_unit_err.contains("keyset"));
+
+        let standalone_wallet =
+            get_or_create_wallet(&repository, &standalone_url, &CurrencyUnit::Sat)
+                .await
+                .expect("standalone wallet");
+        assert_eq!(standalone_wallet.mint_url, standalone_url);
+        assert!(!connector_debug(&standalone_wallet).contains("FederatedMintConnector"));
+    }
+}
