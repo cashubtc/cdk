@@ -180,6 +180,8 @@ message PaymentQuoteRequest {
   // Structured options for onchain quote requests. Onchain processors need the
   // mint-generated quote_id and amount when preparing fee_options.
   optional OnchainOutgoingPaymentOptions onchain_options = 7;
+  // Optional amount the wallet would like to pay for custom payment methods.
+  optional AmountMessage amount = 8;
 }
 
 enum QuoteState {

@@ -1346,6 +1346,7 @@ mod tests {
                 method: "paypal".to_string(),
                 request: "paypal://pay?id=123".to_string(),
                 unit: cdk_common::CurrencyUnit::Sat,
+                amount: None,
                 extra: serde_json::Value::Null,
             }))
             .await

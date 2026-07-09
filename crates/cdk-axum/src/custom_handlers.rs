@@ -1105,6 +1105,7 @@ mod tests {
             method: "venmo".to_string(),
             request: "test-payment-request".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: Value::Null,
         })
         .unwrap();
@@ -1144,6 +1145,7 @@ mod tests {
             method: "PayPal".to_string(),
             request: "test-payment-request".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: Value::Null,
         })
         .unwrap();

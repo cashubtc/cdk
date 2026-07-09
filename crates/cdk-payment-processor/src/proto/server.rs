@@ -329,12 +329,17 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 ))
             }
             OutgoingPaymentRequestType::Custom => {
+                let amount = request
+                    .amount
+                    .try_from_proto()
+                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
+
                 // Custom payment method - pass request as-is with no validation
                 cdk_common::payment::OutgoingPaymentOptions::Custom(Box::new(
                     cdk_common::payment::CustomOutgoingPaymentOptions {
                         method: String::new(), // Will be set from variant
                         request: request.request.clone(),
-                        amount: None,
+                        amount,
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(TryInto::try_into).transpose()?,

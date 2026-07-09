@@ -288,6 +288,13 @@ impl MintPayment for PaymentProcessorClient {
             _ => None,
         };
 
+        let amount = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => {
+                opts.amount.clone().into_proto()
+            }
+            _ => None,
+        };
+
         let quote_id = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.quote_id.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.quote_id.to_string(),
@@ -304,6 +311,7 @@ impl MintPayment for PaymentProcessorClient {
                 extra_json,
                 quote_id,
                 onchain_options,
+                amount,
             }))
             .await
             .map_err(|err| {

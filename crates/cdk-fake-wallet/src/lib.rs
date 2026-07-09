@@ -441,8 +441,19 @@ impl FakeWallet {
     async fn custom_outgoing_amount(
         &self,
         unit: &CurrencyUnit,
+        amount: Option<&Amount<CurrencyUnit>>,
         extra_json: &Option<String>,
     ) -> Result<Amount<CurrencyUnit>, Error> {
+        if let Some(amount) = amount {
+            return convert_currency_amount(
+                amount.value(),
+                amount.unit(),
+                unit,
+                &self.exchange_rate_cache,
+            )
+            .await;
+        }
+
         #[derive(Deserialize)]
         struct CustomAmountField {
             amount: Option<u64>,
@@ -587,7 +598,11 @@ impl MintPayment for FakeWallet {
                 self.ensure_custom_method_supported(&custom_options.method)?;
 
                 let amount = self
-                    .custom_outgoing_amount(unit, &custom_options.extra_json)
+                    .custom_outgoing_amount(
+                        unit,
+                        custom_options.amount.as_ref(),
+                        &custom_options.extra_json,
+                    )
                     .await?;
 
                 return Ok(PaymentQuoteResponse {
@@ -768,7 +783,11 @@ impl MintPayment for FakeWallet {
                 self.ensure_custom_method_supported(&custom_options.method)?;
 
                 let total_spent = self
-                    .custom_outgoing_amount(unit, &custom_options.extra_json)
+                    .custom_outgoing_amount(
+                        unit,
+                        custom_options.amount.as_ref(),
+                        &custom_options.extra_json,
+                    )
                     .await?;
 
                 Ok(MakePaymentResponse {
@@ -1070,8 +1089,8 @@ fn fake_secret_key(seed: &str) -> SecretKey {
 #[cfg(test)]
 mod tests {
     use cdk_common::payment::{
-        CustomIncomingPaymentOptions, IncomingPaymentOptions, MintPayment,
-        OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
+        CustomIncomingPaymentOptions, CustomOutgoingPaymentOptions, IncomingPaymentOptions,
+        MintPayment, OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
     };
 
     use super::*;
@@ -1091,6 +1110,22 @@ mod tests {
 
     fn test_wallet() -> FakeWallet {
         test_wallet_with_delay(0)
+    }
+
+    fn custom_outgoing_options(
+        amount: Option<Amount<CurrencyUnit>>,
+        extra_json: Option<String>,
+    ) -> OutgoingPaymentOptions {
+        OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
+            method: "venmo".to_string(),
+            request: "test-payment-request".to_string(),
+            amount,
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options: None,
+            extra_json,
+            quote_id: cdk_common::QuoteId::new(),
+        }))
     }
 
     #[tokio::test]
@@ -1176,5 +1211,59 @@ mod tests {
             PaymentIdentifier::QuoteId(quote_id)
         );
         assert_eq!(response.status, MeltQuoteState::Paid);
+    }
+
+    #[tokio::test]
+    async fn custom_outgoing_quote_prefers_typed_amount() {
+        let wallet = test_wallet()
+            .with_custom_payment_methods(HashMap::from([("venmo".to_string(), "{}".to_string())]));
+
+        let response = wallet
+            .get_payment_quote(
+                &CurrencyUnit::Sat,
+                custom_outgoing_options(
+                    Some(Amount::new(20, CurrencyUnit::Sat)),
+                    Some(r#"{"amount":30}"#.to_string()),
+                ),
+            )
+            .await
+            .expect("configured custom method should quote outgoing payment");
+
+        assert_eq!(response.amount, Amount::new(20, CurrencyUnit::Sat));
+    }
+
+    #[tokio::test]
+    async fn custom_outgoing_payment_prefers_typed_amount() {
+        let wallet = test_wallet()
+            .with_custom_payment_methods(HashMap::from([("venmo".to_string(), "{}".to_string())]));
+
+        let response = wallet
+            .make_payment(
+                &CurrencyUnit::Sat,
+                custom_outgoing_options(
+                    Some(Amount::new(20, CurrencyUnit::Sat)),
+                    Some(r#"{"amount":30}"#.to_string()),
+                ),
+            )
+            .await
+            .expect("configured custom method should make outgoing payment");
+
+        assert_eq!(response.total_spent, Amount::new(21, CurrencyUnit::Sat));
+    }
+
+    #[tokio::test]
+    async fn custom_outgoing_amount_falls_back_to_extra_json() {
+        let wallet = test_wallet()
+            .with_custom_payment_methods(HashMap::from([("venmo".to_string(), "{}".to_string())]));
+
+        let response = wallet
+            .get_payment_quote(
+                &CurrencyUnit::Sat,
+                custom_outgoing_options(None, Some(r#"{"amount":30}"#.to_string())),
+            )
+            .await
+            .expect("configured custom method should quote outgoing payment");
+
+        assert_eq!(response.amount, Amount::new(30, CurrencyUnit::Sat));
     }
 }
