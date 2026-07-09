@@ -451,7 +451,7 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          The implementation plan has 25 milestone points, including the
+          The implementation plan has 27 milestone points, including the
           explicit Milestone 16A convergence certification gate. The ordered
           list below names the milestone points one by one with status derived
           from the latest implementation plan; milestones with any remaining
@@ -482,7 +482,9 @@
           <li>Milestone 20: distributed key generation. <span class="status progress">In progress</span></li>
           <li>Milestone 21: key rotation and federation upgrades. <span class="status progress">In progress</span></li>
           <li>Milestone 22: observability and operator safety. <span class="status progress">In progress</span></li>
-          <li>Milestone 23: security review checklist. <span class="status progress">In progress</span></li>
+          <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status progress">In progress</span></li>
+          <li>Milestone 24: security review checklist. <span class="status progress">In progress</span></li>
+          <li>Milestone 25: CLI wallet federation support. <span class="status progress">In progress</span></li>
         </ol>
         <ul class="milestones" aria-label="Implementation plan milestone points">
           <li class="milestone">
@@ -679,9 +681,25 @@
           </li>
           <li class="milestone">
             <div>
-              <h3>Milestone 23: security review checklist</h3>
+              <h3>Milestone 23: production cleanup and payment-backend isolation</h3>
+              <p>Objective: remove MVP and development scaffolding from production federation semantics before real-funds deployment.</p>
+              <p class="test-gate"><strong>Test gate:</strong> federation code is payment-backend agnostic, production startup rejects implicit development policies, fakewallet remains development-only, durable state is used for status and catch-up, and module cleanup keeps focused tests passing.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </li>
+          <li class="milestone">
+            <div>
+              <h3>Milestone 24: security review checklist</h3>
               <p>Objective: make the design reviewable before mainnet use.</p>
               <p class="test-gate"><strong>Test gate:</strong> reviewers can trace every signature share to an accepted operation hash, operation decoding is fuzzed, the attack suite passes, and no public route signs directly in federation mode.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </li>
+          <li class="milestone">
+            <div>
+              <h3>Milestone 25: CLI wallet federation support</h3>
+              <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>

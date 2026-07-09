@@ -3034,6 +3034,33 @@ Tests and success criteria:
 - [x] Add executable source audit proving production Axum public handlers do not call direct signing helpers and preserve consensus-before-response ordering for mint, swap, and melt.
 - [x] Complete final security-review signoff that no route signs directly in federation mode.
 
+## Milestone 25: CLI wallet federation support
+
+Objective: make `cdk-cli` usable as a federation-aware wallet, not only a consumer of the wallet library connector in tests or downstream applications.
+
+Implementation checklist:
+
+- [ ] Add a `cdk-cli` configuration path for federation wallet use, accepting either a federation invite code, a federation public config file, or a local wallet federation config that identifies the member roster.
+- [ ] Teach CLI wallet construction to build a `FederatedMintConnector` when federation wallet mode is configured, while keeping the existing single-mint HTTP connector path unchanged for standalone wallets.
+- [ ] Persist enough federation metadata in the CLI wallet state or config to reopen the same wallet without repeatedly passing the full invite/config, without storing member private configs or mint-side private material.
+- [ ] Wire `cdk-cli` mint, swap, melt, restore, check-state, keyset discovery, mint-info, and quote-status commands through the federation connector when federation mode is active.
+- [ ] Add CLI options for wallet-side federation request policy where needed: member request timeout, quote-status timeout, retry count, fanout concurrency, and optional primary-member preference for quote creation.
+- [ ] Ensure CLI output remains compatible with normal Cashu tokens and proofs after threshold aggregation; the user should not receive member-share artifacts or federation-internal response material.
+- [ ] Validate federation mint-info metadata and v3/BLS aggregate keysets before CLI mint/swap/melt/restore fanout, using the same wallet-library validation path as `FederatedMintConnector`.
+- [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases.
+- [ ] Document how to use `cdk-cli` against a locally generated federation from the regtest/smoke tooling.
+
+Tests and success criteria:
+
+- [ ] CLI unit tests prove federation wallet config parsing accepts a valid invite/config and rejects malformed, stale-version, mismatched-roster, or non-v3/BLS federation metadata before constructing a wallet connector.
+- [ ] CLI integration or command-level tests prove `cdk-cli` can mint through a local federation and receive aggregate-verifiable ordinary Cashu proofs.
+- [ ] CLI integration or command-level tests prove `cdk-cli` can swap existing federated proofs and cannot aggregate shares for a conflicting or sliding-window output set.
+- [ ] CLI integration or command-level tests prove `cdk-cli` can melt through a local federation, including the no-change case and a change-output case with aggregate-verifiable change proofs.
+- [ ] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists.
+- [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable.
+- [ ] CLI tests prove insufficient threshold, missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs.
+- [ ] Existing standalone `cdk-cli` tests keep passing with federation disabled and do not require federation config.
+
 ## MVP cut lines
 
 MVP 1: local deterministic federation
@@ -3085,3 +3112,4 @@ MVP 3: payments and production hardening
 16. Add network chaos, catch-up, and payment-observation recovery tests.
 17. Add real payment observation policy and DKG.
 18. Add production cleanup and payment-backend isolation.
+19. Add CLI wallet federation support.
