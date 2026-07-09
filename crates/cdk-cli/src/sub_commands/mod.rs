@@ -7,6 +7,8 @@ pub mod check_requests;
 pub mod create_request;
 pub mod decode_request;
 pub mod decode_token;
+#[cfg(feature = "federation")]
+pub mod federation;
 pub mod generate_public_key;
 pub mod get_public_keys;
 pub mod list_mint_proofs;

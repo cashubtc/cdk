@@ -84,6 +84,9 @@ enum Commands {
     DecodeToken(sub_commands::decode_token::DecodeTokenSubCommand),
     /// Balance
     Balance,
+    /// Federation-aware wallet configuration
+    #[cfg(feature = "federation")]
+    Federation(sub_commands::federation::FederationCommand),
     /// Pay bolt11 invoice
     Melt(sub_commands::melt::MeltSubCommand),
     /// Claim pending mint quotes that have been paid
@@ -256,6 +259,14 @@ async fn main() -> Result<()> {
         builder.build().await?
     };
 
+    #[cfg(feature = "federation")]
+    {
+        let federation_registry =
+            sub_commands::federation::FederationWalletRegistry::load(&work_dir)?;
+        utils::set_federation_registry(federation_registry)?;
+        utils::activate_federation_wallets(&wallet_repository).await?;
+    }
+
     let wallets = wallet_repository.get_wallets().await;
 
     for wallet in wallets {
@@ -275,6 +286,11 @@ async fn main() -> Result<()> {
         }
         Commands::Balance => {
             sub_commands::balance::balance(&wallet_repository, currency_unit.as_ref()).await
+        }
+        #[cfg(feature = "federation")]
+        Commands::Federation(sub_command_args) => {
+            sub_commands::federation::federation(&work_dir, &wallet_repository, sub_command_args)
+                .await
         }
         Commands::Melt(sub_command_args) => {
             sub_commands::melt::pay(&wallet_repository, sub_command_args, &default_unit).await
@@ -436,5 +452,24 @@ mod tests {
             cli.proxy.as_ref().map(url::Url::as_str),
             Some("http://127.0.0.1:8080/")
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn parses_federation_add_public_config_command() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "federation",
+            "add",
+            "--public-config",
+            "federation-public.json",
+        ]);
+
+        assert!(matches!(
+            cli.command,
+            Commands::Federation(sub_commands::federation::FederationCommand {
+                command: sub_commands::federation::FederationSubCommand::Add(_)
+            })
+        ));
     }
 }

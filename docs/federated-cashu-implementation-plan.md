@@ -3071,37 +3071,131 @@ Objective: make `cdk-cli` usable as a federation-aware wallet, not only a consum
 
 Implementation checklist:
 
-- [ ] Enable federation support in `cdk-cli` dependencies, either directly for the development milestone or behind a CLI feature flag that can be used by local federation tests.
-- [ ] Add a `cdk-cli` configuration path for federation wallet use, accepting either a federation invite code, a federation public config file, or a local wallet federation config that identifies the member roster.
-- [ ] Add an explicit CLI import command for the first test path, such as `cdk-cli federation add --public-config <federation-public.json>`, with room to add invite-code import later.
-- [ ] Define how the CLI identifies a federation wallet in local state and token workflows. The first test path may map the federation to a primary member URL or local alias, but the plan must record whether a later logical federation URL/alias is needed to avoid confusing token identity semantics.
-- [ ] Teach CLI wallet construction to build a `FederatedMintConnector` when federation wallet mode is configured, while keeping the existing single-mint HTTP connector path unchanged for standalone wallets.
-- [ ] Wire CLI wallet lookup and `get_or_create_wallet` flows so they detect stored federation metadata and inject the `FederatedMintConnector` instead of the normal single-mint HTTP connector.
-- [ ] Persist enough federation metadata in the CLI wallet state or config to reopen the same wallet without repeatedly passing the full invite/config, without storing member private configs or mint-side private material. A public-metadata sidecar file in the CLI work directory is acceptable for the first fakewallet federation test.
-- [ ] Wire `cdk-cli` mint, mint-pending, swap/send, receive, melt, restore, check-state/check-pending, balance, keyset discovery, mint-info, and quote-status commands through the federation connector when federation mode is active.
-- [ ] Add CLI options for wallet-side federation request policy where needed: member request timeout, quote-status timeout, retry count, fanout concurrency, and optional primary-member preference for quote creation.
-- [ ] Ensure CLI output remains compatible with normal Cashu tokens and proofs after threshold aggregation; the user should not receive member-share artifacts or federation-internal response material.
-- [ ] Validate federation mint-info metadata and v3/BLS aggregate keysets before CLI mint/swap/melt/restore fanout, using the same wallet-library validation path as `FederatedMintConnector`.
-- [ ] Make received-token handling resolve federation metadata from the token mint/federation identity, or return a clear actionable error when the CLI has not imported the corresponding federation config.
+- [x] Enable federation support in `cdk-cli` dependencies behind a CLI
+  `federation` feature.
+- [x] Add a `cdk-cli` configuration path for the first federation wallet use
+  case by accepting a federation public config file and persisting it as a
+  public-metadata sidecar in the CLI work directory.
+- [x] Add an explicit CLI import command for the first test path:
+  `cdk-cli federation add --public-config <federation-public.json>`. Invite-code
+  import remains a later extension.
+- [x] Define how the first CLI path identifies a federation wallet in local
+  state and token workflows: it maps the federation to the first member's public
+  mint URL by default, with an override for the local wallet mint URL. A later
+  logical federation URL/alias should still be revisited before user-facing
+  deployments to avoid confusing token identity semantics.
+- [x] Teach CLI wallet construction to build a `FederatedMintConnector` when
+  federation wallet mode is configured, while keeping the existing single-mint
+  HTTP connector path unchanged for standalone wallets.
+- [x] Wire CLI wallet lookup and `get_or_create_wallet` flows so they detect
+  stored federation metadata and inject the `FederatedMintConnector` instead of
+  the normal single-mint HTTP connector.
+- [x] Persist enough federation metadata in the CLI wallet state to reopen the
+  same wallet without repeatedly passing the full config, without storing member
+  private configs or mint-side private material.
+- [ ] Wire every `cdk-cli` command through the federation connector when
+  federation mode is active. The first path now covers startup activation,
+  balance, mint, send/swap, receive, melt, restore-style wallet lookup, keyset
+  helper commands that use `get_or_create_wallet`, and mint-pending wallet
+  recovery. Direct HTTP commands such as `mint-info` still need explicit
+  federation-aware routing or a documented standalone behavior.
+- [ ] Add all CLI options for wallet-side federation request policy. The first
+  path now exposes member fallback timeout, member request timeout, quote-status
+  timeout, retry count, fanout concurrency, and mint-quote visibility controls;
+  an explicit primary-member preference for quote creation remains open.
+- [x] Ensure CLI output remains compatible with normal Cashu tokens and proofs
+  after threshold aggregation; the first CLI smoke returned an ordinary Cashu
+  token after online send/swap, not member-share artifacts.
+- [x] Validate federation mint-info metadata and v3/BLS aggregate keysets before
+  CLI mint/swap/melt/restore fanout by using the wallet-library
+  `FederatedMintConnector` validation path.
+- [ ] Make received-token handling resolve federation metadata from the token
+  mint/federation identity, or return a clear actionable error when the CLI has
+  not imported the corresponding federation config. The first path resolves
+  tokens whose mint URL matches the imported primary/local federation URL.
 - [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases.
-- [ ] Document how to use `cdk-cli` against a locally generated federation from the regtest/smoke tooling.
+- [x] Document how to use `cdk-cli` against a locally generated federation from
+  the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
+
+Latest checkpoint:
+
+- The first real CLI smoke passed against a five-member, threshold-three
+  AlephBFT fakewallet federation. The smoke imported `federation-public.json`
+  with `cdk-cli federation add`, minted 20 sat through the federation connector,
+  performed an online `send`/swap for 7 sat and received the ordinary Cashu
+  token back, melted a 10 sat BOLT11 invoice with 1 sat fee paid, verified the
+  final CLI balance was 9 sat, and verified all five federation members were
+  healthy and converged at 6 accepted operations with the same order digest and
+  state digest.
+
+First local CLI smoke command shape:
+
+```bash
+CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=aleph_bft \
+CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=60 \
+just fed-regtest-start target/cdk-cli-fed-smoke-aleph-live 5 3 62705
+
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive \
+  federation add --public-config target/cdk-cli-fed-smoke-aleph-live/federation-public.json \
+  --member-request-timeout-secs 60 \
+  --member-fallback-timeout-secs 60 \
+  --quote-status-member-timeout-secs 60
+
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive --unit sat \
+  mint http://127.0.0.1:62705 20 --wait-duration 90
+
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive --unit sat \
+  send --mint-url http://127.0.0.1:62705 --amount 7
+
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive --unit sat \
+  receive <token-from-send>
+
+target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive --unit sat \
+  melt --mint-url http://127.0.0.1:62705 --method bolt11 --invoice <valid-10-sat-bolt11>
+```
 
 Tests and success criteria:
 
-- [ ] CLI unit tests prove federation wallet config parsing accepts a valid invite/config and rejects malformed, stale-version, mismatched-roster, or non-v3/BLS federation metadata before constructing a wallet connector.
-- [ ] CLI command tests prove `cdk-cli federation add --public-config <federation-public.json>` stores only public federation metadata, can reopen the wallet without the original file, and never persists member private configs or mint-side private material.
-- [ ] CLI wallet construction tests prove wallet lookup and `get_or_create_wallet` choose `FederatedMintConnector` for imported federations and the existing HTTP connector for standalone mints.
-- [ ] CLI integration or command-level tests prove `cdk-cli` can mint through a local federation and receive aggregate-verifiable ordinary Cashu proofs.
-- [ ] CLI integration or command-level tests prove `cdk-cli` can send/swap existing federated proofs and cannot aggregate shares for a conflicting or sliding-window output set.
-- [ ] CLI integration or command-level tests prove `cdk-cli` can melt through a local federation, including the no-change case and a change-output case with aggregate-verifiable change proofs.
+- [ ] CLI unit tests prove federation wallet config parsing accepts a valid
+  invite/config and rejects malformed, stale-version, mismatched-roster, or
+  non-v3/BLS federation metadata before constructing a wallet connector. Current
+  focused tests cover valid public config persistence, inactive keyset
+  rejection, connector construction, and CLI parse shape.
+- [x] CLI command tests prove `cdk-cli federation add --public-config
+  <federation-public.json>` stores only public federation metadata and never
+  persists member private configs or mint-side private material.
+- [ ] CLI wallet construction tests prove wallet lookup and
+  `get_or_create_wallet` choose `FederatedMintConnector` for imported
+  federations and the existing HTTP connector for standalone mints. Current
+  focused tests cover connector construction; startup/get-or-create behavior is
+  covered by the live CLI smoke.
+- [x] CLI integration or command-level tests prove `cdk-cli` can mint through a
+  local federation and receive aggregate-verifiable ordinary Cashu proofs.
+- [ ] CLI integration or command-level tests prove `cdk-cli` can send/swap
+  existing federated proofs and cannot aggregate shares for a conflicting or
+  sliding-window output set. Current live smoke proves the happy-path online
+  send/swap.
+- [ ] CLI integration or command-level tests prove `cdk-cli` can melt through a
+  local federation, including the no-change case and a change-output case with
+  aggregate-verifiable change proofs. Current live smoke proves the
+  change-output path.
 - [ ] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists.
-- [ ] CLI receive tests prove received tokens resolve to imported federation metadata, and missing federation metadata produces a clear error instead of silently treating the token as a standalone mint token.
-- [ ] Add a fakewallet federation CLI smoke test that starts N local federation members, imports `federation-public.json` into `cdk-cli`, mints with fake paid quotes, performs send/swap, melts through the fake successful backend, and verifies balances and aggregate-verifiable proofs.
+- [ ] CLI receive tests prove received tokens resolve to imported federation
+  metadata, and missing federation metadata produces a clear error instead of
+  silently treating the token as a standalone mint token. Current live smoke
+  proves receive when the token mint URL matches the imported federation URL.
+- [x] Add a fakewallet federation CLI smoke test that starts N local federation
+  members, imports `federation-public.json` into `cdk-cli`, mints with fake paid
+  quotes, performs send/swap, melts through the fake successful backend, and
+  verifies balances and aggregate-verifiable proofs.
 - [ ] Repeat the fakewallet CLI smoke with one member stopped when the configured member count and thresholds can still make progress.
 - [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable.
 - [ ] CLI tests prove insufficient threshold, missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs.
-- [ ] First-test success criterion: a developer can run generated fakewallet federation mints and complete `mint -> send/swap -> melt` using only `cdk-cli`, without calling the Rust wallet connector test harness directly.
-- [ ] Existing standalone `cdk-cli` tests keep passing with federation disabled and do not require federation config.
+- [x] First-test success criterion: a developer can run generated fakewallet
+  federation mints and complete `mint -> send/swap -> melt` using only
+  `cdk-cli`, without calling the Rust wallet connector test harness directly.
+- [x] Existing standalone `cdk-cli` tests keep passing with federation disabled
+  and do not require federation config.
 
 ## MVP cut lines
 

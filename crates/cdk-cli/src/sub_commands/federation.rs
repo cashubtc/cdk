@@ -1,0 +1,545 @@
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Result};
+use cdk::mint_url::MintUrl;
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::{
+    FederatedMintConnector, FederatedMintConnectorConfig, MintConnector, WalletConfig,
+    WalletRepository,
+};
+use cdk_common::federation::{FederationConfig, FederationId};
+use clap::{Args, Subcommand};
+use serde::{Deserialize, Serialize};
+
+use crate::utils::{activate_federation_wallet, set_federation_registry};
+
+const FEDERATION_REGISTRY_VERSION: u16 = 1;
+const FEDERATION_REGISTRY_FILE: &str = "federations.json";
+
+/// Federation-aware wallet commands.
+#[derive(Args)]
+pub struct FederationCommand {
+    /// Federation command to run.
+    #[command(subcommand)]
+    pub command: FederationSubCommand,
+}
+
+/// Federation-aware wallet subcommands.
+#[derive(Subcommand)]
+pub enum FederationSubCommand {
+    /// Import a public federation config for wallet operations.
+    Add(FederationAddSubCommand),
+    /// List imported federation wallet configs.
+    List,
+}
+
+/// Import a public federation config for wallet operations.
+#[derive(Args)]
+pub struct FederationAddSubCommand {
+    /// Path to federation-public.json.
+    #[arg(long)]
+    public_config: PathBuf,
+    /// Local wallet mint URL to map this federation to.
+    ///
+    /// Defaults to the first member's public mint URL. This keeps existing
+    /// Cashu token mint-url semantics unchanged during the first CLI milestone.
+    #[arg(long)]
+    local_mint_url: Option<MintUrl>,
+    /// Timeout in seconds for sequential first-healthy-member calls.
+    #[arg(long, default_value_t = 10)]
+    member_fallback_timeout_secs: u64,
+    /// Per-member timeout in seconds for fanout requests.
+    #[arg(long, default_value_t = 10)]
+    member_request_timeout_secs: u64,
+    /// Additional retry attempts for retryable member fanout failures.
+    #[arg(long, default_value_t = 0)]
+    member_request_max_retries: u16,
+    /// Per-member timeout in seconds for quote-status polling calls.
+    #[arg(long, default_value_t = 10)]
+    quote_status_member_timeout_secs: u64,
+    /// Maximum number of concurrent member calls.
+    #[arg(long, default_value_t = usize::MAX)]
+    fanout_concurrency: usize,
+    /// Attempts to wait for a newly created mint quote to become threshold-visible.
+    #[arg(long, default_value_t = 100)]
+    mint_quote_visibility_attempts: u16,
+    /// Delay in milliseconds between mint quote threshold-visibility attempts.
+    #[arg(long, default_value_t = 50)]
+    mint_quote_visibility_retry_delay_ms: u64,
+}
+
+impl FederationAddSubCommand {
+    fn connector_policy(&self) -> StoredFederationConnectorPolicy {
+        StoredFederationConnectorPolicy {
+            member_fallback_timeout_secs: self.member_fallback_timeout_secs,
+            member_request_timeout_secs: self.member_request_timeout_secs,
+            member_request_max_retries: self.member_request_max_retries,
+            quote_status_member_timeout_secs: self.quote_status_member_timeout_secs,
+            fanout_concurrency: self.fanout_concurrency,
+            mint_quote_visibility_attempts: self.mint_quote_visibility_attempts,
+            mint_quote_visibility_retry_delay_ms: self.mint_quote_visibility_retry_delay_ms,
+        }
+    }
+}
+
+/// Persistent public federation wallet registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FederationWalletRegistry {
+    /// Sidecar schema version.
+    pub version: u16,
+    /// Imported federation wallet configs.
+    pub wallets: Vec<StoredFederationWallet>,
+}
+
+impl Default for FederationWalletRegistry {
+    fn default() -> Self {
+        Self {
+            version: FEDERATION_REGISTRY_VERSION,
+            wallets: Vec::new(),
+        }
+    }
+}
+
+impl FederationWalletRegistry {
+    /// Load the public federation wallet registry from a CLI work directory.
+    pub fn load(work_dir: &Path) -> Result<Self> {
+        let path = registry_path(work_dir);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let contents = fs::read_to_string(path)?;
+        let registry: Self = serde_json::from_str(&contents)?;
+        registry.validate()?;
+        Ok(registry)
+    }
+
+    /// Persist the public federation wallet registry in a CLI work directory.
+    pub fn save(&self, work_dir: &Path) -> Result<()> {
+        self.validate()?;
+        let contents = serde_json::to_string_pretty(self)?;
+        fs::write(registry_path(work_dir), contents)?;
+        Ok(())
+    }
+
+    /// Validate the registry and all imported federation configs.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_REGISTRY_VERSION {
+            bail!("Unsupported federation registry version {}", self.version);
+        }
+
+        for wallet in &self.wallets {
+            wallet.validate()?;
+        }
+
+        Ok(())
+    }
+
+    /// Add or replace an imported public federation config.
+    pub fn upsert(
+        &mut self,
+        public_config: FederationConfig,
+        local_mint_url: MintUrl,
+        connector_policy: StoredFederationConnectorPolicy,
+    ) -> Result<StoredFederationWallet> {
+        let wallet = StoredFederationWallet {
+            local_mint_url,
+            public_config,
+            connector_policy,
+        };
+        wallet.validate()?;
+
+        if let Some(existing) = self
+            .wallets
+            .iter_mut()
+            .find(|existing| existing.local_mint_url == wallet.local_mint_url)
+        {
+            *existing = wallet.clone();
+        } else {
+            self.wallets.push(wallet.clone());
+        }
+
+        Ok(wallet)
+    }
+
+    /// Find an imported federation wallet by its local mint URL mapping.
+    pub fn find_by_mint_url(&self, mint_url: &MintUrl) -> Option<&StoredFederationWallet> {
+        self.wallets
+            .iter()
+            .find(|wallet| &wallet.local_mint_url == mint_url)
+    }
+}
+
+/// Public metadata needed by the CLI to reopen a federation wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredFederationWallet {
+    /// Mint URL used by existing CLI wallet and token flows.
+    pub local_mint_url: MintUrl,
+    /// Public federation config; never contains member private configs or secret shares.
+    pub public_config: FederationConfig,
+    /// Wallet-side member request policy.
+    #[serde(default)]
+    pub connector_policy: StoredFederationConnectorPolicy,
+}
+
+impl StoredFederationWallet {
+    /// Validate this imported federation wallet config.
+    pub fn validate(&self) -> Result<()> {
+        self.public_config.validate()?;
+        self.connector_policy.connector_config().validate()?;
+
+        if self.active_units().is_empty() {
+            bail!(
+                "Federation {} does not advertise an active keyset",
+                self.public_config.federation_id
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Build the wallet config that injects a federated mint connector.
+    pub fn wallet_config(&self) -> Result<WalletConfig> {
+        self.validate()?;
+        let connector = FederatedMintConnector::from_public_config_urls_with_config(
+            self.public_config.clone(),
+            self.connector_policy.connector_config(),
+        )?;
+        let connector = Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>;
+        Ok(WalletConfig::new().with_mint_connector(connector))
+    }
+
+    /// Return all active units advertised by the imported federation.
+    pub fn active_units(&self) -> Vec<CurrencyUnit> {
+        self.public_config
+            .keysets
+            .iter()
+            .filter(|keyset| keyset.active)
+            .map(|keyset| keyset.unit.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Return whether the imported federation advertises an active keyset for a unit.
+    pub fn supports_unit(&self, unit: &CurrencyUnit) -> bool {
+        self.public_config
+            .keysets
+            .iter()
+            .any(|keyset| keyset.active && &keyset.unit == unit)
+    }
+
+    /// Return the federation ID for display.
+    pub fn federation_id(&self) -> FederationId {
+        self.public_config.federation_id
+    }
+
+    /// Return the public config digest for display.
+    pub fn config_digest(&self) -> Result<String> {
+        Ok(self.public_config.config_digest()?.to_string())
+    }
+}
+
+/// Persisted wallet-side federation request policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoredFederationConnectorPolicy {
+    /// Timeout in seconds for sequential first-healthy-member calls.
+    pub member_fallback_timeout_secs: u64,
+    /// Per-member timeout in seconds for fanout requests.
+    pub member_request_timeout_secs: u64,
+    /// Additional retry attempts for retryable member fanout failures.
+    pub member_request_max_retries: u16,
+    /// Per-member timeout in seconds for quote-status polling calls.
+    pub quote_status_member_timeout_secs: u64,
+    /// Maximum number of concurrent member calls.
+    pub fanout_concurrency: usize,
+    /// Attempts to wait for a newly created mint quote to become threshold-visible.
+    pub mint_quote_visibility_attempts: u16,
+    /// Delay in milliseconds between mint quote threshold-visibility attempts.
+    pub mint_quote_visibility_retry_delay_ms: u64,
+}
+
+impl Default for StoredFederationConnectorPolicy {
+    fn default() -> Self {
+        Self::from_connector_config(FederatedMintConnectorConfig::default())
+    }
+}
+
+impl StoredFederationConnectorPolicy {
+    /// Convert a runtime connector policy into the persisted CLI form.
+    pub fn from_connector_config(config: FederatedMintConnectorConfig) -> Self {
+        Self {
+            member_fallback_timeout_secs: config.member_fallback_timeout.as_secs(),
+            member_request_timeout_secs: config.member_request_timeout.as_secs(),
+            member_request_max_retries: config.member_request_max_retries,
+            quote_status_member_timeout_secs: config.quote_status_member_timeout.as_secs(),
+            fanout_concurrency: config.fanout_concurrency,
+            mint_quote_visibility_attempts: config.mint_quote_visibility_attempts,
+            mint_quote_visibility_retry_delay_ms: millis_u64(
+                config.mint_quote_visibility_retry_delay,
+            ),
+        }
+    }
+
+    /// Convert the persisted CLI policy into the runtime connector policy.
+    pub fn connector_config(&self) -> FederatedMintConnectorConfig {
+        FederatedMintConnectorConfig {
+            member_fallback_timeout: Duration::from_secs(self.member_fallback_timeout_secs),
+            member_request_timeout: Duration::from_secs(self.member_request_timeout_secs),
+            member_request_max_retries: self.member_request_max_retries,
+            quote_status_member_timeout: Duration::from_secs(self.quote_status_member_timeout_secs),
+            fanout_concurrency: self.fanout_concurrency,
+            mint_quote_visibility_attempts: self.mint_quote_visibility_attempts,
+            mint_quote_visibility_retry_delay: Duration::from_millis(
+                self.mint_quote_visibility_retry_delay_ms,
+            ),
+        }
+    }
+}
+
+/// Run a federation-aware wallet command.
+pub async fn federation(
+    work_dir: &Path,
+    wallet_repository: &WalletRepository,
+    command: &FederationCommand,
+) -> Result<()> {
+    match &command.command {
+        FederationSubCommand::Add(args) => add(work_dir, wallet_repository, args).await,
+        FederationSubCommand::List => list(work_dir),
+    }
+}
+
+async fn add(
+    work_dir: &Path,
+    wallet_repository: &WalletRepository,
+    args: &FederationAddSubCommand,
+) -> Result<()> {
+    let mut registry = FederationWalletRegistry::load(work_dir)?;
+    let public_config = load_public_config(&args.public_config)?;
+    let local_mint_url = match &args.local_mint_url {
+        Some(local_mint_url) => local_mint_url.clone(),
+        None => primary_member_mint_url(&public_config)?,
+    };
+    let wallet = registry.upsert(public_config, local_mint_url, args.connector_policy())?;
+    registry.save(work_dir)?;
+    set_federation_registry(registry)?;
+    activate_federation_wallet(wallet_repository, &wallet).await?;
+
+    println!("Imported federation {}", wallet.federation_id());
+    println!("  Local mint URL: {}", wallet.local_mint_url);
+    println!(
+        "  Members: {} (signature threshold {}, consensus threshold {})",
+        wallet.public_config.threshold_params.member_count,
+        wallet.public_config.threshold_params.signature_threshold,
+        wallet.public_config.threshold_params.consensus_threshold
+    );
+    println!("  Active units: {}", display_units(&wallet.active_units()));
+    println!("  Config digest: {}", wallet.config_digest()?);
+
+    Ok(())
+}
+
+fn list(work_dir: &Path) -> Result<()> {
+    let registry = FederationWalletRegistry::load(work_dir)?;
+
+    if registry.wallets.is_empty() {
+        println!("No federations imported");
+        return Ok(());
+    }
+
+    for wallet in registry.wallets {
+        println!("Federation {}", wallet.federation_id());
+        println!("  Local mint URL: {}", wallet.local_mint_url);
+        println!(
+            "  Members: {} (signature threshold {}, consensus threshold {})",
+            wallet.public_config.threshold_params.member_count,
+            wallet.public_config.threshold_params.signature_threshold,
+            wallet.public_config.threshold_params.consensus_threshold
+        );
+        println!("  Active units: {}", display_units(&wallet.active_units()));
+        println!("  Config digest: {}", wallet.config_digest()?);
+    }
+
+    Ok(())
+}
+
+fn load_public_config(path: &Path) -> Result<FederationConfig> {
+    let contents = fs::read_to_string(path)?;
+    let config: FederationConfig = serde_json::from_str(&contents)?;
+    config.validate()?;
+    Ok(config)
+}
+
+fn primary_member_mint_url(config: &FederationConfig) -> Result<MintUrl> {
+    config
+        .members
+        .values()
+        .next()
+        .map(|member| member.public_mint_url.clone())
+        .ok_or_else(|| anyhow!("Federation config does not contain any members"))
+}
+
+fn registry_path(work_dir: &Path) -> PathBuf {
+    work_dir.join(FEDERATION_REGISTRY_FILE)
+}
+
+fn display_units(units: &[CurrencyUnit]) -> String {
+    units
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    use cdk::nuts::nut01::BlsSecretKey;
+    use cdk::Amount;
+    use cdk_common::federation::{
+        generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
+    };
+    use cdk_common::SecretKey;
+
+    use super::*;
+
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("valid member id")
+    }
+
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    fn member(member_id: MemberId) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    }
+
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn valid_public_config() -> FederationConfig {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (Amount::from(1), vec![bls_key(1), bls_key(2)]),
+                    (Amount::from(2), vec![bls_key(3), bls_key(4)]),
+                ]),
+            )],
+        )
+        .expect("trusted dealer configs")
+        .public_config
+    }
+
+    fn temp_work_dir() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "cdk-cli-federation-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("temp dir");
+        path
+    }
+
+    #[test]
+    fn registry_stores_only_public_federation_metadata() {
+        let work_dir = temp_work_dir();
+        let public_config = valid_public_config();
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+
+        let mut registry = FederationWalletRegistry::default();
+        registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect("upsert");
+        registry.save(&work_dir).expect("save");
+
+        let contents = fs::read_to_string(registry_path(&work_dir)).expect("registry file");
+        assert!(contents.contains("\"public_config\""));
+        assert!(!contents.contains("private_configs"));
+        assert!(!contents.contains("identity_secret_key"));
+        assert!(!contents.contains("secret_shares"));
+
+        let loaded = FederationWalletRegistry::load(&work_dir).expect("load");
+        assert_eq!(loaded.wallets.len(), 1);
+
+        fs::remove_dir_all(work_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn registry_rejects_inactive_federation_wallet() {
+        let mut public_config = valid_public_config();
+        for keyset in &mut public_config.keysets {
+            keyset.active = false;
+        }
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let mut registry = FederationWalletRegistry::default();
+
+        let err = registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect_err("inactive federation should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("does not advertise an active keyset"));
+    }
+
+    #[test]
+    fn stored_wallet_builds_federated_connector_config() {
+        let public_config = valid_public_config();
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let wallet = StoredFederationWallet {
+            local_mint_url,
+            public_config,
+            connector_policy: StoredFederationConnectorPolicy::default(),
+        };
+
+        wallet.wallet_config().expect("wallet config");
+        assert!(wallet.supports_unit(&CurrencyUnit::Sat));
+    }
+}
