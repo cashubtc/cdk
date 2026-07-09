@@ -999,6 +999,42 @@ fed-regtest-cli-smoke-missing-metadata dir="target/cdk-fed-regtest-cli-missing-m
   grep -Fq 'No local proofs found' "{{wallet_dir}}/check-missing-metadata.out"
   printf 'cdk-cli missing-metadata smoke passed\n'
 
+# Run the CLI federation smoke with an imported federation whose members are all unreachable.
+fed-regtest-cli-smoke-all-members-unreachable dir="target/cdk-fed-regtest-cli-all-unreachable" wallet_dir="target/cdk-fed-regtest-cli-all-unreachable-wallet" members="5" threshold="3" port_start="57885":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo build -p cdk-cli --features federation
+  just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  rm -rf -- "{{wallet_dir}}"
+  mkdir -p "{{wallet_dir}}"
+  mint_url="http://127.0.0.1:{{port_start}}"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --member-request-timeout-secs 1 \
+    --member-fallback-timeout-secs 1 \
+    --quote-status-member-timeout-secs 1 \
+    --mint-quote-visibility-attempts 2 \
+    --mint-quote-visibility-retry-delay-ms 50
+  set +e
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
+    mint-info "$mint_url" > "{{wallet_dir}}/mint-info-all-unreachable.out" 2>&1
+  mint_info_status="$?"
+  set -e
+  cat "{{wallet_dir}}/mint-info-all-unreachable.out"
+  if [[ "$mint_info_status" == "0" ]]; then
+    printf 'mint-info unexpectedly succeeded while all federation members were unreachable\n' >&2
+    exit 1
+  fi
+  grep -Fq 'insufficient federation keyset advertisements' "{{wallet_dir}}/mint-info-all-unreachable.out"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-all-unreachable.out"
+  grep -Fq 'No local proofs found' "{{wallet_dir}}/check-all-unreachable.out"
+  printf 'cdk-cli all-members-unreachable smoke passed\n'
+
 # Run generated local federation smoke with a longer offline operation window
 fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="5" threshold="3" port_start="25885" offline_batches="8":
   #!/usr/bin/env bash
