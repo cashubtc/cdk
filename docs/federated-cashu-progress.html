@@ -435,15 +435,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: trace AlephBFT operation lifecycle</span>
+          <span class="value">fix: honor mintd trace filters</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT now exposes opt-in per-operation process traces for queue admission, data-provider yield, private REST delivery, finality, apply-loop receipt, durable apply, notification, and waiter return. The existing five live-session latency probes still pass, the non-test federation feature build passes, and normal logging avoids opaque-message decoding unless the dedicated trace target is enabled.</span>
+          <span class="value">AlephBFT now exposes opt-in per-operation process traces for queue admission, data-provider yield, private REST delivery, finality, apply-loop receipt, durable apply, notification, and waiter return. A fresh traced five-member baseline completed two mints in 14.36s and 10.13s with all members converged on six accepted operations. First-mint submit-to-finality measured 2.281s for quote, 3.007s for payment observation, and 2.430s for mint, while private REST delivery took tens of milliseconds and quote/payment apply took 5-6ms, proving active consensus cadence is dominant.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run the five-process benchmark with lifecycle traces, compare CDK's 500ms active cadence against a Fedimint-inspired 100ms active cadence while retaining the 2s idle cooling path, and accept a timing change only if mint latency improves without reviving idle CPU, catch-up, or convergence problems.</span>
+          <span class="value">Compare the traced 500ms baseline against a Fedimint-inspired 100ms active cadence while retaining the 2s idle cooling path, and accept the timing change only if mint latency improves without reviving idle CPU, catch-up, or convergence problems.</span>
         </div>
       </aside>
     </header>

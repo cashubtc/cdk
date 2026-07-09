@@ -110,6 +110,19 @@ Current blocking bugs:
   a real five-process mint benchmark to distinguish creator cadence, private
   REST delivery, finality, durable apply, notification, and waiter return
   without changing protocol behavior.
+- `cdk-mintd` tracing now honors the standard `RUST_LOG` filter, falling back
+  to its existing DEBUG defaults when the variable is absent or invalid. Pair
+  the dedicated AlephBFT lifecycle target with a TRACE console or file writer
+  level to capture the opt-in process timeline; normal startup remains
+  unchanged.
+- Fresh traced five-member baseline: full mints completed in 14.36s and 10.13s
+  and all members converged on exactly six accepted operations. For the first
+  mint, submit-to-finality took about 2.281s for `mint_quote`, 3.007s for
+  `mint_quote_payment`, and 2.430s for `mint`; private REST delivery followed
+  data yield in roughly 12-58ms, quote/payment apply took 5-6ms, and accepted
+  mint signing/materialization took about 430ms. The second mint batched quote
+  and payment observation into one finalized unit and was correspondingly
+  faster. This makes active AlephBFT cadence the proven next tuning boundary.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,

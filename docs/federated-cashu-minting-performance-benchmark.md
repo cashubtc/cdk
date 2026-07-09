@@ -29,8 +29,9 @@ The measurements below are development-environment measurements. Absolute values
   Temporary instrumentation should be removed before finishing unless it is
   intentionally kept as normal low-noise diagnostics.
 - Process lifecycle traces are available without changing normal log volume by
-  enabling only
-  `cdk_axum::federation::aleph_bft_latency=trace`. The trace emits
+  setting
+  `RUST_LOG=info,cdk_axum::federation::aleph_bft_latency=trace` and
+  `CDK_MINTD_LOGGING_FILE_LEVEL=trace`. The trace emits
   `submit_queued`, `data_provider_yielded`, `network_message_delivered`,
   `finalized_data_received`, `apply_loop_received`, `apply_completed`,
   `operation_notified`, and `waiter_returned`, keyed by operation ID. Opaque
@@ -51,6 +52,45 @@ Each mint currently requires three serialized consensus operations. For two mint
 6. `mint`
 
 Finalized item count was higher than accepted operation count because wallet/member fanout causes duplicate finalizations. The duplicates did not change the accepted journal order.
+
+## Lifecycle-Traced 500ms Active-Cadence Baseline
+
+After process lifecycle tracing was enabled, a fresh five-member run measured
+two full mints at 14.36s and 10.13s. All members converged on the same six
+accepted journal operations, latest index 5, matching order and state digests,
+and 13 finalized AlephBFT items.
+
+The first mint's primary-member lifecycle deltas were:
+
+| Operation | Submit to Data Yield | Submit to Finality | Finality to Apply | Submit to Waiter Return |
+| --- | ---: | ---: | ---: | ---: |
+| `mint_quote` | 0.269s | 2.281s | 0.005s | 2.286s |
+| `mint_quote_payment` | 0.493s | 3.007s | 0.006s | 3.013s |
+| `mint` | 0.412s | 2.430s | 0.430s | 2.860s |
+
+The first successful private REST deliveries followed data-provider yield in
+roughly 12-58ms. Quote and payment-observation durable apply took about 5-6ms.
+Mint apply took about 430ms because it includes accepted output signing and
+materialization, but it was still much smaller than the consensus-finality
+interval.
+
+During the second mint, `mint_quote` and `mint_quote_payment` entered the same
+AlephBFT data unit and were finalized together. The final `mint` operation was
+first yielded by another member about 0.296s after local admission, finalized
+about 1.833s after local admission, and durably applied in about 0.177s. This
+explains why the second full mint was faster while preserving the same ordered
+three-operation journal.
+
+Classification from the process trace:
+
+- Dominant: AlephBFT active round/finality cadence.
+- Secondary: CLI and wallet setup before the first consensus submission.
+- Small but measurable: accepted mint signing/materialization.
+- Not dominant: private REST delivery, quote/payment durable apply, waiter
+  notification, fakewallet settlement, catch-up, or DB contention.
+
+This evidence supports testing a faster active-only unit-creation cadence while
+retaining the existing 2s idle cadence and pending-work activity hint.
 
 ## Current Fresh Process Verification Run
 
