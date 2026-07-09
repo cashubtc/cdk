@@ -1955,7 +1955,11 @@ impl MintState {
         if let Some((sender, sequence)) = sequence {
             self.record_federation_sequence(sender, sequence).await;
         }
-        self.apply_federation_journal_entry(&entry).await?;
+        let applied = self.apply_federation_journal_entry(&entry).await?;
+        if applied {
+            self.mark_federation_operations_applied(&[entry.operation_id])
+                .await?;
+        }
         self.notify_federation_operation(response.clone()).await;
 
         Ok(response)
@@ -3706,7 +3710,7 @@ pub(crate) fn is_retryable_federation_apply_error(err: &cdk::Error) -> bool {
 }
 
 #[cfg(feature = "federation")]
-fn is_retryable_federation_database_error(err: &cdk::cdk_database::Error) -> bool {
+pub(crate) fn is_retryable_federation_database_error(err: &cdk::cdk_database::Error) -> bool {
     match err {
         cdk::cdk_database::Error::ConcurrentUpdate | cdk::cdk_database::Error::Locked => true,
         cdk::cdk_database::Error::Database(source) => {

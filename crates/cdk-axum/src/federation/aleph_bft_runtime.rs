@@ -25,6 +25,11 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
+use crate::{
+    is_retryable_federation_database_error, FEDERATION_APPLY_RETRY_INITIAL_DELAY,
+    FEDERATION_APPLY_RETRY_MAX_DELAY,
+};
+
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -743,11 +748,50 @@ async fn persist_aleph_bft_backup_bytes(
         return Ok(());
     }
 
-    let mut tx = db.begin_transaction().await.map_err(database_io_error)?;
+    let mut attempts = 0usize;
+    let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+
+    loop {
+        match try_persist_aleph_bft_backup_bytes(Arc::clone(&db), session_id, &bytes).await {
+            Ok(()) => {
+                if attempts > 0 {
+                    tracing::info!(
+                        session_id,
+                        retry_attempts = attempts,
+                        "AlephBFT backup persistence recovered after transient storage contention"
+                    );
+                }
+                return Ok(());
+            }
+            Err(err) if is_retryable_federation_database_error(&err) => {
+                attempts = attempts.saturating_add(1);
+                if attempts == 1 || attempts % 10 == 0 {
+                    tracing::warn!(
+                        session_id,
+                        retry_attempts = attempts,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "AlephBFT backup persistence hit transient storage contention; retrying"
+                    );
+                }
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
+            }
+            Err(err) => return Err(database_io_error(err)),
+        }
+    }
+}
+
+async fn try_persist_aleph_bft_backup_bytes(
+    db: DynMintDatabase,
+    session_id: u64,
+    bytes: &[u8],
+) -> Result<(), cdk_common::database::Error> {
+    let mut tx = db.begin_transaction().await?;
     tx.append_federation_aleph_bft_backup_bytes(session_id, &bytes)
-        .await
-        .map_err(database_io_error)?;
-    tx.commit().await.map_err(database_io_error)
+        .await?;
+    tx.commit().await
 }
 
 fn database_io_error(err: cdk_common::database::Error) -> io::Error {
@@ -1375,6 +1419,26 @@ mod tests {
         let backup = CdkAlephBftDbBackup::new(db, 100);
 
         assert_writer(backup.writer());
+    }
+
+    #[test]
+    fn cdk_aleph_bft_db_backup_writer_retries_transient_storage_contention() {
+        let sqlite_locked = cdk_common::database::Error::Database(Box::new(std::io::Error::other(
+            "database is locked",
+        )));
+        let sqlite_busy =
+            cdk_common::database::Error::Database(Box::new(std::io::Error::other("DatabaseBusy")));
+
+        assert!(crate::is_retryable_federation_database_error(
+            &cdk_common::database::Error::Locked
+        ));
+        assert!(crate::is_retryable_federation_database_error(
+            &sqlite_locked
+        ));
+        assert!(crate::is_retryable_federation_database_error(&sqlite_busy));
+        assert!(!crate::is_retryable_federation_database_error(
+            &cdk_common::database::Error::InvalidDbResponse
+        ));
     }
 
     #[tokio::test]

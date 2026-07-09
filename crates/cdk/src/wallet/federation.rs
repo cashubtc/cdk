@@ -236,7 +236,7 @@ impl FederatedMintConnector {
                 )
             })
             .collect();
-        Self::new_with_config(public_config, member_connectors, config)
+        Self::new_with_validated_config(public_config, member_connectors, config)
     }
 
     /// Create a wallet connector with an explicit member-call policy.

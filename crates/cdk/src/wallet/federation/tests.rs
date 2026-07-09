@@ -16,7 +16,7 @@ use cdk_common::federation::{
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
+use cdk_common::nuts::nut01::{trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey};
 use cdk_common::nuts::nut02::KeySet;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::util::unix_time;
@@ -525,6 +525,30 @@ fn member_connectors(
             )
         })
         .collect()
+}
+
+fn public_config_with_mismatched_public_share(
+    bundle: &TrustedDealerConfigBundle,
+) -> FederationConfig {
+    let mut public_config = bundle.public_config.clone();
+    let amount = Amount::from(1);
+    let wrong_keyset = trusted_dealer_keygen(
+        &[
+            BlsSecretKey::from_reduced_bytes(&[9; 32]),
+            BlsSecretKey::from_reduced_bytes(&[10; 32]),
+        ],
+        &[
+            member_id(1).to_bls_signer_id(),
+            member_id(2).to_bls_signer_id(),
+        ],
+    )
+    .expect("wrong keyset");
+    public_config.keysets[0]
+        .public_shares
+        .get_mut(&member_id(1))
+        .expect("member shares")
+        .insert(amount, wrong_keyset.public_shares()[0]);
+    public_config
 }
 
 fn member_connectors_with_only_keysets(
@@ -1339,6 +1363,28 @@ fn federated_mint_connector_rejects_tampered_aggregate_key() {
         .insert(amount, wrong_aggregate_key);
 
     assert!(FederatedMintConnector::new(public_config, connectors).is_err());
+}
+
+#[test]
+fn federated_mint_connector_rejects_tampered_public_config_urls() {
+    let bundle = threshold_bundle();
+    let public_config = public_config_with_mismatched_public_share(&bundle);
+
+    assert!(FederatedMintConnector::from_public_config_urls(public_config).is_err());
+}
+
+#[test]
+fn federated_mint_connector_trusted_public_config_urls_skip_full_aggregate_validation() {
+    let bundle = threshold_bundle();
+    let public_config = public_config_with_mismatched_public_share(&bundle);
+
+    let connector = FederatedMintConnector::from_validated_public_config_urls_with_config(
+        public_config.clone(),
+        FederatedMintConnectorConfig::default(),
+    )
+    .expect("trusted local-registry config should skip repeated aggregate validation");
+
+    assert_eq!(connector.public_config(), &public_config);
 }
 
 #[test]

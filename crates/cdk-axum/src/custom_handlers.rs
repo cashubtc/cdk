@@ -34,6 +34,9 @@ const FEDERATION_MINT_PAYMENT_OBSERVER_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
 #[cfg(feature = "federation")]
 const FEDERATION_MINT_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
+#[cfg(feature = "federation")]
+const FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
 
 /// Header extractor for the Prefer header
 ///
@@ -165,6 +168,9 @@ async fn process_federation_mint_input(
     state: &MintState,
     input: &cdk::mint::MintInput,
 ) -> Result<Option<MintResponse>, cdk::Error> {
+    state.ensure_federation_ready_for_public_submit().await?;
+    ensure_federation_mint_quotes_paid_for_signing(state, input).await?;
+
     let Some(operation_id) = submit_federation_mint_operation(state, input.clone()).await? else {
         return Ok(None);
     };
@@ -175,6 +181,68 @@ async fn process_federation_mint_input(
             .persisted_mint_share_response(operation_id, input)
             .await?,
     ))
+}
+
+#[cfg(feature = "federation")]
+async fn ensure_federation_mint_quotes_paid_for_signing(
+    state: &MintState,
+    input: &cdk::mint::MintInput,
+) -> Result<(), cdk::Error> {
+    if state.mint.federation_config().is_none() {
+        return Ok(());
+    }
+
+    let quote_ids = input.quote_ids();
+    if quote_ids.is_empty() {
+        return Ok(());
+    }
+
+    let responses = state.mint.check_mint_quotes(&quote_ids).await?;
+    for response in &responses {
+        submit_federation_mint_quote_payment_observation(state, response).await?;
+    }
+
+    let wait_timeout = state
+        .federation_peer_sync_config
+        .unwrap_or_default()
+        .operation_submission_timeout;
+    tokio::time::timeout(
+        wait_timeout,
+        wait_for_federation_mint_quotes_paid_locally(state, &quote_ids),
+    )
+    .await
+    .map_err(|_| cdk::Error::PendingQuote)?
+}
+
+#[cfg(feature = "federation")]
+async fn wait_for_federation_mint_quotes_paid_locally(
+    state: &MintState,
+    quote_ids: &[QuoteId],
+) -> Result<(), cdk::Error> {
+    loop {
+        let mut all_paid = true;
+        for quote_id in quote_ids {
+            let quote = state
+                .mint
+                .localstore()
+                .get_mint_quote(quote_id)
+                .await?
+                .ok_or(cdk::Error::UnknownQuote)?;
+            if !matches!(
+                quote.state(),
+                cdk::nuts::MintQuoteState::Paid | cdk::nuts::MintQuoteState::Issued
+            ) {
+                all_paid = false;
+                break;
+            }
+        }
+
+        if all_paid {
+            return Ok(());
+        }
+
+        tokio::time::sleep(FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL).await;
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -1495,6 +1563,16 @@ mod tests {
         );
         assert_contains_in_order(
             mint_handler,
+            "state.ensure_federation_ready_for_public_submit().await?",
+            "ensure_federation_mint_quotes_paid_for_signing(state, input).await?",
+        );
+        assert_contains_in_order(
+            mint_handler,
+            "ensure_federation_mint_quotes_paid_for_signing(state, input).await?",
+            "submit_federation_mint_operation(state, input.clone()).await?",
+        );
+        assert_contains_in_order(
+            mint_handler,
             "submit_federation_mint_operation(state, input.clone()).await?",
             "persisted_mint_share_response(operation_id, input)",
         );
@@ -1820,6 +1898,16 @@ mod tests {
             custom_handlers,
             "async fn process_federation_mint_input",
             "fn mint_quote_response_to_string",
+        );
+        assert_contains_in_order(
+            mint_submit,
+            "state.ensure_federation_ready_for_public_submit().await?",
+            "ensure_federation_mint_quotes_paid_for_signing(state, input).await?",
+        );
+        assert_contains_in_order(
+            mint_submit,
+            "ensure_federation_mint_quotes_paid_for_signing(state, input).await?",
+            "submit_federation_mint_operation(state, input.clone()).await?",
         );
         assert_contains_in_order(
             mint_submit,
@@ -2688,6 +2776,61 @@ mod tests {
         panic!("bolt11 quote was not paid by the fake wallet");
     }
 
+    #[cfg(feature = "federation")]
+    async fn create_federation_observed_paid_bolt11_quote(state: &MintState) -> QuoteId {
+        let quote_id = create_paid_bolt11_quote(state).await;
+        let response = state
+            .mint
+            .check_mint_quotes(std::slice::from_ref(&quote_id))
+            .await
+            .expect("mint quote status")
+            .into_iter()
+            .next()
+            .expect("mint quote status response");
+        record_local_federation_mint_quote_payment_observation(state, &response).await;
+        quote_id
+    }
+
+    #[cfg(feature = "federation")]
+    async fn record_local_federation_mint_quote_payment_observation(
+        state: &MintState,
+        response: &MintQuoteResponse<QuoteId>,
+    ) {
+        let config = state.mint.federation_config().expect("federation config");
+        let (amount_paid, amount_issued) = mint_quote_response_amounts(response);
+        let envelope = config.mint_quote_payment_observation_with_metadata(
+            response.quote().to_string(),
+            response.method(),
+            MintQuoteState::Paid,
+            amount_paid,
+            amount_issued,
+            None,
+            None,
+            None,
+        );
+        let operation_id = envelope.operation_id().expect("payment operation id");
+        let FederationOperation::MintQuotePayment(observation) = envelope.operation else {
+            panic!("expected mint quote payment observation");
+        };
+        let record = cdk::federation::FederationPaymentObservationRecord {
+            operation_id,
+            operation_index: 0,
+            observation: cdk::federation::FederationPaymentObservation::MintQuote(observation),
+        };
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("mint transaction");
+        tx.add_federation_payment_observation(&record)
+            .await
+            .expect("record federation payment observation");
+        tx.commit()
+            .await
+            .expect("commit federation payment observation");
+    }
+
     fn outputs_for_amount(state: &MintState, amount: u64) -> Vec<BlindedMessage> {
         outputs_for_amount_with_label(
             state,
@@ -3359,7 +3502,11 @@ mod tests {
         }
 
         async fn get_mint_keysets(&self) -> Result<cdk::nuts::KeysetResponse, cdk::Error> {
-            Err(Self::unsupported("get_mint_keysets"))
+            self.state
+                .mint
+                .effective_federation_keysets()
+                .await
+                .map(|keysets| keysets.unwrap_or_else(|| self.state.mint.keysets()))
         }
 
         async fn post_mint_quote(
@@ -3518,7 +3665,7 @@ mod tests {
         }
 
         async fn get_mint_info(&self) -> Result<cdk::nuts::MintInfo, cdk::Error> {
-            Err(Self::unsupported("get_mint_info"))
+            self.state.mint.mint_info().await
         }
 
         async fn post_check_state(
@@ -4705,9 +4852,73 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn process_federation_mint_input_waits_for_paid_quote_before_queueing() {
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            60,
+            CurrencyUnit::Sat,
+        );
+        let mut state = create_federated_test_state_with_backend(Arc::new(fake)).await;
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_millis(10),
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .expect("mint quote")
+            .try_into()
+            .expect("bolt11 quote");
+        let input = cdk::mint::MintInput::Single(MintRequest {
+            quote: quote.quote.clone(),
+            outputs: outputs_for_amount(&state, 2),
+            signature: None,
+        });
+
+        let error = process_federation_mint_input(&state, &input)
+            .await
+            .expect_err("unpaid federated mint should remain pending");
+
+        assert!(
+            matches!(error, cdk::Error::PendingQuote),
+            "unpaid federated mint must be retryable: {error}"
+        );
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "unpaid federated mint must not enter consensus before payment observation"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_mint_quote(&quote.quote)
+                .await
+                .expect("mint quote lookup")
+                .expect("mint quote")
+                .state(),
+            MintQuoteState::Unpaid
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn cache_post_batch_mint_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount(&state, 2);
         let blinded_secret = outputs[0]
             .blinded_secret
@@ -4781,7 +4992,7 @@ mod tests {
     #[tokio::test]
     async fn cache_post_batch_mint_aleph_bft_public_route_fails_closed_before_queueing() {
         let state = create_aleph_bft_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let request = BatchMintRequest {
             quotes: vec![quote_id],
             quote_amounts: None,
@@ -4815,7 +5026,7 @@ mod tests {
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
         });
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount_with_label(&state, 2, "aleph-public-mint-timeout-retry");
         let request = BatchMintRequest {
             quotes: vec![quote_id],
@@ -5006,7 +5217,7 @@ mod tests {
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
         });
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount_with_label(&state, 2, "aleph-public-single-mint-retry");
         let request = MintRequest {
             quote: quote_id.clone(),
@@ -5240,7 +5451,7 @@ mod tests {
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
         });
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount_with_label(&state, 2, "aleph-public-mint-pending-join");
         let request = BatchMintRequest {
             quotes: vec![quote_id],
@@ -5422,7 +5633,7 @@ mod tests {
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
         });
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount_with_label(&state, 2, "aleph-single-mint-pending-join");
         let request = MintRequest {
             quote: quote_id.clone(),
@@ -5618,7 +5829,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_federation_batch_mint_returns_persisted_signature_shares() {
         let state = create_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount(&state, 2);
         let input = cdk::mint::MintInput::Batch(BatchMintRequest {
             quotes: vec![quote_id],
@@ -5650,7 +5861,7 @@ mod tests {
     async fn duplicate_federation_mint_after_cache_eviction_returns_persisted_shares() {
         let mut state = create_federated_test_state().await;
         limit_federation_response_cache_to_one(&mut state);
-        let first_quote_id = create_paid_bolt11_quote(&state).await;
+        let first_quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let first_outputs = outputs_for_amount_with_label(&state, 2, "mint-cache-eviction-first");
         let first_input = cdk::mint::MintInput::Batch(BatchMintRequest {
             quotes: vec![first_quote_id],
@@ -5665,7 +5876,7 @@ mod tests {
             .expect("first federation mint response");
         assert_eq!(state.federation_response_cache_entry_count(), 1);
 
-        let second_quote_id = create_paid_bolt11_quote(&state).await;
+        let second_quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let second_outputs = outputs_for_amount_with_label(&state, 2, "mint-cache-eviction-second");
         let second_input = cdk::mint::MintInput::Batch(BatchMintRequest {
             quotes: vec![second_quote_id],
@@ -5721,7 +5932,7 @@ mod tests {
         );
         let state =
             create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, &seed).await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let outputs = outputs_for_amount_with_label(&state, 2, "mint-sqlite-restart");
         let batch_request = BatchMintRequest {
             quotes: vec![quote_id],
@@ -5862,7 +6073,7 @@ mod tests {
         let state = create_federated_test_state_with_backend(wallet).await;
         let request_count = 8;
 
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let mint_request = BatchMintRequest {
             quotes: vec![quote_id],
             quote_amounts: None,
@@ -6005,7 +6216,7 @@ mod tests {
     #[tokio::test]
     async fn batch_mint_rejects_same_quote_with_different_outputs_without_signing() {
         let state = create_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let first_outputs = outputs_for_amount_with_label(&state, 2, "same-quote-first-output");
         let second_outputs = outputs_for_amount_with_label(&state, 2, "same-quote-second-output");
 
@@ -7467,7 +7678,7 @@ mod tests {
         let peer = config.member_id();
         let not_ready = "catching up";
 
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_observed_paid_bolt11_quote(&state).await;
         let mint_request = BatchMintRequest {
             quotes: vec![quote_id],
             quote_amounts: None,

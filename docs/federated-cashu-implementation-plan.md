@@ -1918,6 +1918,31 @@ AlephBFT and consensus unit tests:
   semantic-conflict, pending-mempool backpressure, and idle-driver tests cover
   the full/duplicate/conflicting cases and the Axum tick surface. The CPU-spin
   issue is closed and needs no further work unless it is observed again.
+- [x] Federated CLI startup and read-only mint-info paths avoid repeating full
+  BLS aggregate-key validation after a federation registry entry has already
+  been validated. Profiling showed the slow path was CPU time in repeated
+  `FederationConfig::validate` / aggregate public-key reconstruction rather
+  than the `/v1/info` HTTP request itself. Focused wallet tests now prove the
+  untrusted public-config URL constructor still rejects tampered aggregate
+  material, while the trusted registry constructor skips the redundant
+  validation pass.
+- [x] AlephBFT backup persistence treats transient locked/busy database writes
+  as retryable. Process benchmarking exposed a backup-saver termination after
+  SQLite storage contention; the runtime now retries backup-byte persistence
+  with bounded backoff and has focused retry-classification coverage.
+- [x] Public federated mint signing waits for mint-quote payment observation to
+  be locally visible before submitting the mint operation to consensus.
+  Benchmark traces showed an ordering race where an unpaid mint operation could
+  enter AlephBFT before the corresponding payment observation and then be
+  rejected definitively by some members. The public route now checks the local
+  backend, submits the payment observation when available, waits for local
+  Paid/Issued state, and returns a retryable pending quote instead of queueing
+  an unpaid mint. The federated mint route suite covers the unpaid-before-queue
+  behavior plus duplicate/retry response handling. A fresh five-member
+  threshold-three AlephBFT fakewallet timing run measured direct `/v1/info` at
+  0.92s, federation import at 1.44s real / 1.42s user, federated `mint-info` at
+  1.52s real / 0.57s user, and federated mint of 50 sat at 13.07s real / 2.48s
+  user.
 - [x] Bounded queues apply backpressure under load and do not drop finalized
   consensus items. The pending-mempool overflow regression now rejects only the
   new operation, keeps the already admitted unit previewable, lets duplicate
@@ -3176,7 +3201,11 @@ Latest checkpoint:
   verifies `check-state` reports no remaining local proofs after the melt.
   The local federation start helpers now also launch member daemons with `nohup`
   and closed stdin so the short-lived recipe shell cannot terminate member
-  processes before the CLI smoke reaches readiness polling. The mismatched-member
+  processes before the CLI smoke reaches readiness polling. A later performance
+  benchmark showed that some one-shot automation shells can still reap
+  background benchmark members after the shell exits even without mintd panic
+  logs; live timing runs should keep the harness shell alive or use the scripted
+  smoke recipe for the duration of the benchmark. The mismatched-member
   CLI smoke target now starts four honest members plus one reachable member
   running with a different federation config, imports the honest public config
   with sequential fanout, and proves a 4-of-5 wallet can still mint using the
