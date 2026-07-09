@@ -40,5 +40,8 @@ url.workspace = true
 serde_with.workspace = true
 lightning.workspace = true
 
+[dev-dependencies]
+async-trait.workspace = true
+
 [lints]
 workspace = true

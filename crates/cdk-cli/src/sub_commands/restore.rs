@@ -29,3 +29,57 @@ pub async fn restore(
 
     Ok(())
 }
+
+#[cfg(all(test, feature = "federation"))]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk::wallet::{WalletConfig, WalletRepositoryBuilder};
+    use cdk_common::database::WalletDatabase;
+
+    use super::*;
+    use crate::test_support::{federated_connector_with_faults, MemberFault};
+
+    #[tokio::test]
+    async fn command_rejects_restore_without_threshold_member_agreement() {
+        let fixture = federated_connector_with_faults([
+            MemberFault::RestoreOutput(None),
+            MemberFault::RestoreOutput(Some(0)),
+            MemberFault::RestoreOutput(Some(1)),
+        ]);
+        let localstore: Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync> =
+            Arc::new(
+                cdk_sqlite::wallet::memory::empty()
+                    .await
+                    .expect("wallet database"),
+            );
+        let repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository");
+        repository
+            .set_mint_config(
+                fixture.mint_url.clone(),
+                CurrencyUnit::Sat,
+                WalletConfig::new().with_mint_connector(fixture.connector),
+            )
+            .await
+            .expect("federation wallet");
+
+        let err = restore(
+            &repository,
+            &RestoreSubCommand {
+                mint_url: fixture.mint_url,
+            },
+            &CurrencyUnit::Sat,
+        )
+        .await
+        .expect_err("mismatched federation restore views must fail");
+
+        assert!(err
+            .to_string()
+            .contains("insufficient matching federation restore responses: required 2"));
+    }
+}

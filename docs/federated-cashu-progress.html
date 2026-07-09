@@ -435,15 +435,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: extend slow-member federation CLI smoke</span>
+          <span class="value">test: cover CLI federation state disagreement</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The slow-member CLI smoke now exercises the full value path against a five-member threshold-four federation. Member 5 has a behaviorally verified 30-second payment delay and serves as quote primary: its mint completes in 37.60s without fallback quote churn, while a forced P2PK swap completes in 3.55s and a forced-change melt in 6.74s. The journal is exactly <code>mint_quote -&gt; mint_quote_payment -&gt; mint -&gt; swap -&gt; mint_quote -&gt; mint_quote_payment -&gt; mint -&gt; melt_quote -&gt; swap -&gt; melt</code>; all five members converge on matching digests with no pending work, duplicate submissions, or alerts.</span>
+          <span class="value">The CLI restore and check-state commands now have command-level no-quorum regressions. Three scripted members advertise valid federation metadata and v3 aggregate keysets but return mutually inconsistent views through the real <code>FederatedMintConnector</code>; the actual commands reject both cases with the explicit required-two threshold error instead of accepting or persisting a minority response. The harness is test-only and adds no production fault flag or protocol branch. The preceding slow-member value smoke remains green: swap 3.55s, delayed-primary mint 37.60s, change melt 6.74s, and exact 10-operation all-member convergence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add the remaining CLI invalid-share, non-v3 request-output, and mismatched restore/check-state process failures while preserving the passing slow/offline value paths, CPU, restart, catch-up, and convergence gates.</span>
+          <span class="value">Add the remaining CLI invalid-share and non-v3 request-output coverage while preserving the passing state-disagreement, slow/offline value paths, CPU, restart, catch-up, and convergence gates.</span>
         </div>
       </aside>
     </header>
@@ -700,7 +700,7 @@
             <div>
               <h3>Milestone 25: CLI wallet federation support</h3>
               <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
-              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, invite-code import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, detached local member daemon startup, one-offline-member CLI smoke with restart catch-up, behaviorally verified 30-second slow-primary mint plus forced P2PK swap and forced-change melt with exact-journal no-duplicate proof, insufficient-threshold mint failure without proofs, all-members-unreachable mint-info failure without proofs, no-change and change-output melt CLI smoke coverage, one reachable mismatched-metadata member tolerated by a threshold-valid set, insufficient-valid-advertisement failure before proofs, missing federation mint-info metadata failure before proofs, CLI registry/public-config malformed, stale-version, mismatched-roster, inactive-keyset, and non-v3/BLS rejection tests, repository activation tests for local/member federation URLs plus standalone fallback, missing-federation-metadata receive error coverage, imported member-URL receive resolution, explicit <code>--primary-member-id</code> request-policy coverage, and standalone CLI compatibility are passing; bad-share and non-v3 request-output CLI smokes remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, invite-code import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, detached local member daemon startup, one-offline-member CLI smoke with restart catch-up, behaviorally verified 30-second slow-primary mint plus forced P2PK swap and forced-change melt with exact-journal no-duplicate proof, command-level restore and check-state no-quorum rejection through the real threshold connector, insufficient-threshold mint failure without proofs, all-members-unreachable mint-info failure without proofs, no-change and change-output melt CLI smoke coverage, one reachable mismatched-metadata member tolerated by a threshold-valid set, insufficient-valid-advertisement failure before proofs, missing federation mint-info metadata failure before proofs, CLI registry/public-config malformed, stale-version, mismatched-roster, inactive-keyset, and non-v3/BLS rejection tests, repository activation tests for local/member federation URLs plus standalone fallback, missing-federation-metadata receive error coverage, imported member-URL receive resolution, explicit <code>--primary-member-id</code> request-policy coverage, and standalone CLI compatibility are passing; bad-share and non-v3 request-output CLI coverage remains.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -940,7 +940,7 @@
         <div class="stack">
           <article class="item">
             <h3>CLI federation coverage</h3>
-            <p>Add failure matrices for bad-share, live member-advertised mismatched-keyset, non-v3 request-output, and mismatched restore/check-state member views now that happy-path, one-offline-member, slow-member, all-members-unreachable, insufficient-threshold, and static metadata-rejection CLI coverage are scripted.</p>
+            <p>Add failure matrices for bad-share and non-v3 request-output behavior now that happy-path, one-offline-member, slow-member, all-members-unreachable, insufficient-threshold, static metadata rejection, and command-level restore/check-state disagreement are covered.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

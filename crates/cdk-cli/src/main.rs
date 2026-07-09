@@ -23,6 +23,8 @@ use url::Url;
 
 mod nostr_storage;
 mod sub_commands;
+#[cfg(all(test, feature = "federation"))]
+mod test_support;
 mod token_storage;
 mod utils;
 

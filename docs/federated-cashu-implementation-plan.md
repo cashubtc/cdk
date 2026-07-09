@@ -198,6 +198,13 @@ Current blocking bugs:
   mint -> melt_quote -> swap -> melt`; all five members converged on those 10
   operations with identical order/state digests, no pending work, no duplicate
   submissions, and no alerts.
+- CLI state-consistency follow-up: test-only scripted members now feed three
+  mutually inconsistent restore or check-state views through the real
+  `FederatedMintConnector`, a real wallet repository, and the actual CLI
+  subcommand functions. Both commands fail with the explicit required-two
+  threshold error instead of printing or persisting a minority view. The
+  fixture still performs v3 aggregate-keyset and member mint-info validation;
+  no production fault switch or protocol branch was added.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -3516,9 +3523,11 @@ Latest checkpoint:
   paths with one member offline took 4.90s and 8.45s. The melt journal sequence
   was exactly `melt_quote -> swap -> melt`, the returned member caught up to
   the same 17-entry order/state digests, and a post-optimization swap took
-  5.45s before all members converged on entry 18. The remaining CLI value-path
-  work is invalid-share, non-v3 request-output, and mismatched
-  restore/check-state process failures.
+  5.45s before all members converged on entry 18. The remaining required CLI
+  value-path work is invalid-share and non-v3 request-output coverage.
+  Command-level restore/check-state disagreement coverage is now complete,
+  leaving a full external process variant optional rather than required for the
+  CLI wiring invariant.
 
 Scripted local CLI smoke command:
 
@@ -3602,10 +3611,17 @@ Tests and success criteria:
   aggregate-verifiable change proofs. Current live smoke proves the
   change-output path on the main wallet and the no-change exact-input path on a
   separate wallet in `just fed-regtest-cli-smoke`.
-- [ ] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists.
+- [x] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists. `command_rejects_restore_without_threshold_member_agreement` and `command_rejects_check_state_without_threshold_member_agreement` install a real `FederatedMintConnector` with validated v3 keysets and member mint-info into a real CLI wallet repository, invoke the actual command functions, and require the explicit required-two no-quorum errors for three distinct member views.
+  `cargo test -p cdk-cli --no-default-features --features federation --
+  --test-threads 1` passed all 27 tests on 2026-07-10. The default-feature
+  run passed 28 of 29; the only failure was the pre-existing npubcash
+  `set_mint_keeps_local_active_mint_when_server_update_fails` timeout, unrelated
+  to federation state handling. CLI-only clippy passed after allowing that
+  crate's pre-existing `match_like_matches_macro` warning in startup routing.
   Current scripted smoke proves happy-path local proof check-state, spent-token
   check-state after receive, and copied-seed restore through the federation
-  connector; mismatched/no-threshold member-state CLI coverage remains open.
+  connector; the command-level tests now cover mismatched/no-threshold member
+  views for both restore and check-state.
 - [x] CLI receive tests prove received tokens resolve to imported federation
   metadata, and missing federation metadata produces a clear error instead of
   silently treating the token as a standalone mint token. Current live smoke

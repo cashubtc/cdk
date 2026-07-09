@@ -116,3 +116,81 @@ fn print_states(label: &str, states: &[cdk::nuts::ProofState]) {
         println!("{} {}", proof_state.y, proof_state.state);
     }
 }
+
+#[cfg(all(test, feature = "federation"))]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk::nuts::Proof;
+    use cdk::secret::Secret;
+    use cdk::wallet::{WalletConfig, WalletRepositoryBuilder};
+    use cdk::Amount;
+    use cdk_common::database::WalletDatabase;
+    use cdk_common::wallet::ProofInfo;
+
+    use super::*;
+    use crate::test_support::{federated_connector_with_faults, test_bls_signature, MemberFault};
+
+    #[tokio::test]
+    async fn command_rejects_check_state_without_threshold_member_agreement() {
+        let fixture = federated_connector_with_faults([
+            MemberFault::CheckState(State::Unspent),
+            MemberFault::CheckState(State::Pending),
+            MemberFault::CheckState(State::Spent),
+        ]);
+        let localstore: Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync> =
+            Arc::new(
+                cdk_sqlite::wallet::memory::empty()
+                    .await
+                    .expect("wallet database"),
+            );
+        let repository = WalletRepositoryBuilder::new()
+            .localstore(localstore.clone())
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository");
+        repository
+            .set_mint_config(
+                fixture.mint_url.clone(),
+                CurrencyUnit::Sat,
+                WalletConfig::new().with_mint_connector(fixture.connector),
+            )
+            .await
+            .expect("federation wallet");
+        let proof = Proof::new(
+            Amount::from(1),
+            fixture.keyset_id,
+            Secret::generate(),
+            test_bls_signature(b"cli-check-state-proof"),
+        );
+        localstore
+            .update_proofs(
+                vec![ProofInfo::new(
+                    proof,
+                    fixture.mint_url.clone(),
+                    State::Unspent,
+                    CurrencyUnit::Sat,
+                )
+                .expect("proof info")],
+                Vec::new(),
+            )
+            .await
+            .expect("store proof");
+
+        let err = check_state(
+            &repository,
+            &CheckStateSubCommand {
+                mint_url: Some(fixture.mint_url),
+                token: None,
+            },
+            &CurrencyUnit::Sat,
+        )
+        .await
+        .expect_err("mismatched federation states must fail");
+
+        assert!(err
+            .to_string()
+            .contains("insufficient matching federation check-state responses: required 2"));
+    }
+}

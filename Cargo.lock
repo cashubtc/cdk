@@ -1390,6 +1390,7 @@ name = "cdk-cli"
 version = "0.17.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bip39",
  "bitcoin 0.32.101",
  "cdk",
