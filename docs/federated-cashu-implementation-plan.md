@@ -205,6 +205,16 @@ Current blocking bugs:
   threshold error instead of printing or persisting a minority view. The
   fixture still performs v3 aggregate-keyset and member mint-info validation;
   no production fault switch or protocol branch was added.
+- Invalid-share ordering follow-up: the existing five-member 3-of-5
+  slow/offline/bad-share regression exposed that wallet collection stopped at
+  three raw responses before validating their shares. Two honest responses plus
+  one early bad response therefore failed immediately instead of waiting for a
+  slightly slower third honest member. Mint, batch mint, swap, and melt
+  collectors now stop only when the gathered responses form a threshold-valid
+  aggregate; if no valid threshold arrives, the existing detailed aggregation
+  error is preserved. The wallet regression now passes across mint/swap/melt,
+  and the actual CLI send command proves a served invalid share is ignored when
+  the delayed valid threshold arrives, leaving the expected 1 sat balance.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -2695,7 +2705,7 @@ Tests and success criteria:
 
 - [x] Federated connector mints proofs accepted by existing wallet proof verification.
 - [x] Connector tolerates one offline member when threshold can still be met.
-- [x] Connector rejects a bad share from one member and still succeeds if enough good shares remain.
+- [x] Connector rejects a bad share from one member and still succeeds if enough good shares remain. The collector now waits for a threshold-valid aggregate rather than stopping at the raw response count, so an early bad share cannot exclude a slightly slower honest response. The deterministic 3-of-5 mint/swap/melt regression and command-level CLI P2PK send regression both exercise this ordering.
 - [x] Connector fails if responses have mismatched amounts or keyset IDs.
 - [x] Connector fails if members advertise different aggregate keysets or any non-v3 federation keyset.
 - [x] Connector rejects missing or mismatched federation mint-info metadata before signing fanout.
@@ -3524,7 +3534,7 @@ Latest checkpoint:
   was exactly `melt_quote -> swap -> melt`, the returned member caught up to
   the same 17-entry order/state digests, and a post-optimization swap took
   5.45s before all members converged on entry 18. The remaining required CLI
-  value-path work is invalid-share and non-v3 request-output coverage.
+  value-path work is non-v3 request-output coverage.
   Command-level restore/check-state disagreement coverage is now complete,
   leaving a full external process variant optional rather than required for the
   CLI wiring invariant.
@@ -3613,7 +3623,7 @@ Tests and success criteria:
   separate wallet in `just fed-regtest-cli-smoke`.
 - [x] CLI integration or command-level tests prove `cdk-cli` restore and check-state commands use threshold member responses and reject mismatched member state when no threshold agreement exists. `command_rejects_restore_without_threshold_member_agreement` and `command_rejects_check_state_without_threshold_member_agreement` install a real `FederatedMintConnector` with validated v3 keysets and member mint-info into a real CLI wallet repository, invoke the actual command functions, and require the explicit required-two no-quorum errors for three distinct member views.
   `cargo test -p cdk-cli --no-default-features --features federation --
-  --test-threads 1` passed all 27 tests on 2026-07-10. The default-feature
+  --test-threads 1` passed all 28 tests on 2026-07-10. The default-feature
   run passed 28 of 29; the only failure was the pre-existing npubcash
   `set_mint_keeps_local_active_mint_when_server_update_fails` timeout, unrelated
   to federation state handling. CLI-only clippy passed after allowing that
@@ -3640,7 +3650,7 @@ Tests and success criteria:
   spent-token check-state, generated fake-invoice melt, copied-seed restore, and
   final signed convergence status.
 - [x] Repeat the fakewallet CLI smoke with one member stopped when the configured member count and thresholds can still make progress. `just fed-regtest-cli-smoke-offline` now stops one member during CLI mint, check-state, send/receive, spent-token check-state, melt, balance, and copied-seed restore, then restarts it and requires final signed convergence.
-- [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable. Current process smoke proves the one-offline-member path, including restart/catch-up. `just fed-regtest-cli-smoke-slow-member` now proves a member with a behaviorally observed 30-second incoming-payment delay can serve as quote primary while threshold mint, forced swap, and forced-change melt complete without duplicate quotes; the exact 10-operation journal and final all-member convergence are required. Invalid-share CLI process coverage remains open.
+- [x] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable. Process smokes prove one-offline-member restart/catch-up and a behaviorally observed 30-second incoming-payment delay across threshold mint, forced swap, and forced-change melt with exact all-member convergence. `command_send_waits_for_valid_threshold_after_invalid_share` forces a wrong signer share to arrive before one delayed honest share, asserts the invalid response was served, and proves the actual CLI P2PK send succeeds with the later valid threshold and correct remaining balance.
 - [x] CLI tests prove insufficient threshold fails before wallet fanout can produce spendable proofs. `just fed-regtest-cli-smoke-insufficient-threshold` stops two members, expects CLI mint quote creation to fail, rejects any output claiming minted or received positive value, and verifies `check-state` finds no local proofs.
 - [ ] CLI tests prove missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs. Current focused unit coverage proves non-v3/BLS public configs are rejected during CLI import/registry validation. The `fed-regtest-cli-smoke-mismatched-member` process target now covers a live reachable member with mismatched federation metadata/keysets being excluded while the threshold-valid set still produces spendable proofs, `fed-regtest-cli-smoke-insufficient-valid-advertisements` covers the matching live failure path when too few valid member advertisements remain, `fed-regtest-cli-smoke-missing-metadata` covers reachable standalone members that omit federation mint-info metadata, and `fed-regtest-cli-smoke-all-members-unreachable` covers an imported federation whose members are all down. Non-v3 request-output command coverage remains open.
 - [x] First-test success criterion: a developer can run generated fakewallet

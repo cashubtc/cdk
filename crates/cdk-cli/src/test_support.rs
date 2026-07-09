@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk::mint_url::MintUrl;
@@ -18,8 +20,8 @@ use cdk::{
     MintQuoteResponse,
 };
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederationOperationId, MemberId, ThresholdParams,
+    TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::SecretKey;
 
@@ -27,13 +29,19 @@ use cdk_common::SecretKey;
 pub enum MemberFault {
     CheckState(State),
     RestoreOutput(Option<usize>),
+    SwapShare {
+        signer_id: MemberId,
+        delay: Duration,
+    },
 }
 
 #[derive(Debug)]
 struct ScriptedFederationMember {
+    member_id: MemberId,
     keyset: KeySet,
     mint_info: MintInfo,
     fault: MemberFault,
+    invalid_share_calls: Arc<AtomicUsize>,
 }
 
 impl ScriptedFederationMember {
@@ -142,8 +150,39 @@ impl MintConnector for ScriptedFederationMember {
         Err(Self::unsupported("post_melt"))
     }
 
-    async fn post_swap(&self, _request: SwapRequest) -> Result<SwapResponse, Error> {
-        Err(Self::unsupported("post_swap"))
+    async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
+        let MemberFault::SwapShare { signer_id, delay } = self.fault else {
+            return Err(Self::unsupported("post_swap"));
+        };
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        if signer_id != self.member_id {
+            self.invalid_share_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        let private_config = test_bundle()
+            .private_configs
+            .get(&signer_id)
+            .expect("member private config");
+        let shares = private_config
+            .sign_blinded_messages(
+                &test_bundle().public_config,
+                FederationOperationId::from_bytes([42; 32]),
+                request.outputs(),
+            )
+            .expect("member signature shares");
+        Ok(SwapResponse {
+            signatures: shares
+                .shares
+                .into_iter()
+                .map(|share| BlindSignature {
+                    amount: share.amount,
+                    keyset_id: share.keyset_id,
+                    c: share.share.signature().into(),
+                    dleq: None,
+                })
+                .collect(),
+        })
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
@@ -202,6 +241,7 @@ impl MintConnector for ScriptedFederationMember {
 
 pub struct FederatedConnectorFixture {
     pub connector: Arc<dyn MintConnector + Send + Sync>,
+    pub invalid_share_calls: Arc<AtomicUsize>,
     pub keyset_id: Id,
     pub mint_url: MintUrl,
 }
@@ -228,6 +268,7 @@ pub fn federated_connector_with_faults(faults: [MemberFault; 3]) -> FederatedCon
         .expect("member one")
         .public_mint_url
         .clone();
+    let invalid_share_calls = Arc::new(AtomicUsize::new(0));
     let connectors = [member_id(1), member_id(2), member_id(3)]
         .into_iter()
         .zip(faults)
@@ -240,9 +281,11 @@ pub fn federated_connector_with_faults(faults: [MemberFault; 3]) -> FederatedCon
             (
                 member_id,
                 Arc::new(ScriptedFederationMember {
+                    member_id,
                     keyset: keyset.clone(),
                     mint_info,
                     fault,
+                    invalid_share_calls: Arc::clone(&invalid_share_calls),
                 }) as Arc<dyn MintConnector + Send + Sync>,
             )
         })
@@ -254,6 +297,7 @@ pub fn federated_connector_with_faults(faults: [MemberFault; 3]) -> FederatedCon
 
     FederatedConnectorFixture {
         connector,
+        invalid_share_calls,
         keyset_id,
         mint_url,
     }
@@ -285,7 +329,7 @@ fn test_bundle() -> &'static TrustedDealerConfigBundle {
     })
 }
 
-fn member_id(id: u16) -> MemberId {
+pub fn member_id(id: u16) -> MemberId {
     MemberId::new(id).expect("valid member id")
 }
 

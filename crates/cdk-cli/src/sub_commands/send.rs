@@ -270,3 +270,112 @@ pub async fn send(
 
     Ok(())
 }
+
+#[cfg(all(test, feature = "federation"))]
+mod tests {
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use cdk::nuts::{Proof, SecretKey, State};
+    use cdk::secret::Secret;
+    use cdk::wallet::{WalletConfig, WalletRepositoryBuilder};
+    use cdk_common::database::WalletDatabase;
+    use cdk_common::wallet::ProofInfo;
+
+    use super::*;
+    use crate::test_support::{
+        federated_connector_with_faults, member_id, test_bls_signature, MemberFault,
+    };
+
+    #[tokio::test]
+    async fn command_send_waits_for_valid_threshold_after_invalid_share() {
+        let fixture = federated_connector_with_faults([
+            MemberFault::SwapShare {
+                signer_id: member_id(1),
+                delay: Duration::from_millis(20),
+            },
+            MemberFault::SwapShare {
+                signer_id: member_id(2),
+                delay: Duration::ZERO,
+            },
+            MemberFault::SwapShare {
+                signer_id: member_id(1),
+                delay: Duration::ZERO,
+            },
+        ]);
+        let localstore: Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync> =
+            Arc::new(
+                cdk_sqlite::wallet::memory::empty()
+                    .await
+                    .expect("wallet database"),
+            );
+        let repository = WalletRepositoryBuilder::new()
+            .localstore(localstore.clone())
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository");
+        repository
+            .set_mint_config(
+                fixture.mint_url.clone(),
+                CurrencyUnit::Sat,
+                WalletConfig::new().with_mint_connector(fixture.connector),
+            )
+            .await
+            .expect("federation wallet");
+        let proof = Proof::new(
+            Amount::from(2),
+            fixture.keyset_id,
+            Secret::generate(),
+            test_bls_signature(b"cli-invalid-share-input"),
+        );
+        localstore
+            .update_proofs(
+                vec![ProofInfo::new(
+                    proof,
+                    fixture.mint_url.clone(),
+                    State::Unspent,
+                    CurrencyUnit::Sat,
+                )
+                .expect("proof info")],
+                Vec::new(),
+            )
+            .await
+            .expect("store proof");
+        let receiver_pubkey = SecretKey::generate().public_key().to_hex();
+
+        send(
+            &repository,
+            &SendSubCommand {
+                memo: None,
+                preimage: None,
+                hash: None,
+                required_sigs: None,
+                locktime: None,
+                pubkey: vec![receiver_pubkey],
+                refund_keys: Vec::new(),
+                v3: false,
+                offline: false,
+                include_fee: false,
+                tolerance: None,
+                mint_url: Some(fixture.mint_url.to_string()),
+                use_p2bk: false,
+                amount: Some(1),
+            },
+            &CurrencyUnit::Sat,
+        )
+        .await
+        .expect("valid threshold should ignore one invalid share");
+
+        assert_eq!(fixture.invalid_share_calls.load(Ordering::Relaxed), 1);
+        let wallet = repository
+            .get_wallet(&fixture.mint_url, &CurrencyUnit::Sat)
+            .await
+            .expect("federation wallet");
+        assert_eq!(
+            wallet.total_balance().await.expect("wallet balance"),
+            1.into()
+        );
+    }
+}

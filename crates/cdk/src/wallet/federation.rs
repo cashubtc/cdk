@@ -690,6 +690,8 @@ impl FederatedMintConnector {
     async fn collect_mint_responses<F, Fut>(
         &self,
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        outputs: &[BlindedMessage],
+        amount_validation: ShareAmountValidation,
         mut call_member: F,
     ) -> Result<Vec<(MemberId, MintResponse)>, Error>
     where
@@ -704,7 +706,12 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "mint request",
-                |responses| responses.len() >= threshold,
+                |responses| {
+                    responses.len() >= threshold
+                        && self
+                            .aggregate_member_responses(outputs, responses, amount_validation)
+                            .is_ok()
+                },
             )
             .await;
 
@@ -727,6 +734,7 @@ impl FederatedMintConnector {
     async fn collect_melt_responses<F, Fut>(
         &self,
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        outputs: Option<&[BlindedMessage]>,
         mut call_member: F,
     ) -> Result<Vec<(MemberId, MeltQuoteResponse<String>)>, Error>
     where
@@ -741,7 +749,10 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "melt request",
-                |responses| responses.len() >= threshold,
+                |responses| {
+                    responses.len() >= threshold
+                        && self.aggregate_melt_response(outputs, responses).is_ok()
+                },
             )
             .await;
 
@@ -1683,11 +1694,16 @@ impl MintConnector for FederatedMintConnector {
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_mint_responses(&member_connectors, |connector| {
-                let method = method.clone();
-                let request = request.clone();
-                async move { connector.post_mint(&method, request).await }
-            })
+            .collect_mint_responses(
+                &member_connectors,
+                &request.outputs,
+                ShareAmountValidation::Exact,
+                |connector| {
+                    let method = method.clone();
+                    let request = request.clone();
+                    async move { connector.post_mint(&method, request).await }
+                },
+            )
             .await?;
         let result = self.aggregate_member_responses(
             &request.outputs,
@@ -1733,11 +1749,16 @@ impl MintConnector for FederatedMintConnector {
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_mint_responses(&member_connectors, |connector| {
-                let method = method.clone();
-                let request = request.clone();
-                async move { connector.post_batch_mint(&method, request).await }
-            })
+            .collect_mint_responses(
+                &member_connectors,
+                &request.outputs,
+                ShareAmountValidation::Exact,
+                |connector| {
+                    let method = method.clone();
+                    let request = request.clone();
+                    async move { connector.post_batch_mint(&method, request).await }
+                },
+            )
             .await?;
         let result = self.aggregate_member_responses(
             &request.outputs,
@@ -1811,7 +1832,7 @@ impl MintConnector for FederatedMintConnector {
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_melt_responses(&member_connectors, |connector| {
+            .collect_melt_responses(&member_connectors, outputs.as_deref(), |connector| {
                 let method = method.clone();
                 let request = request.clone();
                 async move { connector.post_melt(&method, request).await }
@@ -1832,17 +1853,22 @@ impl MintConnector for FederatedMintConnector {
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_mint_responses(&member_connectors, |connector| {
-                let request = request.clone();
-                async move {
-                    connector
-                        .post_swap(request)
-                        .await
-                        .map(|response| MintResponse {
-                            signatures: response.signatures,
-                        })
-                }
-            })
+            .collect_mint_responses(
+                &member_connectors,
+                request.outputs(),
+                ShareAmountValidation::Exact,
+                |connector| {
+                    let request = request.clone();
+                    async move {
+                        connector
+                            .post_swap(request)
+                            .await
+                            .map(|response| MintResponse {
+                                signatures: response.signatures,
+                            })
+                    }
+                },
+            )
             .await?;
         let response = self.aggregate_member_responses(
             request.outputs(),
