@@ -131,6 +131,43 @@ Total wall time: 12.58s.
 
 Total wall time: 8.65s.
 
+## Rejected AlephBFT Delay-Cap Experiment
+
+A follow-up experiment capped the early AlephBFT unit-creation delay at 100ms
+while keeping the existing 2s idle-tail delay after round 64. This change was
+tested and then removed; it is not part of the production code.
+
+Clean five-member, threshold-three fakewallet timings from that experiment:
+
+| Command | Wall Time | User CPU | Sys CPU | Classification |
+| --- | ---: | ---: | ---: | --- |
+| `curl /v1/info` | 0.88s | 0.00s | 0.00s | direct HTTP unchanged |
+| non-federated `cdk-cli mint-info` | 0.90s | 0.02s | 0.00s | standalone CLI control was fast |
+| `cdk-cli federation add` | 1.35s | 1.34s | 0.00s | config validation/key aggregation remains CPU-heavy |
+| federated `cdk-cli mint-info` | 1.49s | 0.56s | 0.00s | federation info path was not the bottleneck |
+| federated mint #1, 50 sat | 30.26s | 2.37s | 0.01s | worse than the post-fix baseline |
+| federated mint #2, 30 sat | 22.67s | 1.16s | 0.01s | still dominated by consensus pacing |
+
+The cap made every member reach round 64 within roughly 10s after startup, so
+normal wallet traffic landed in the 2s idle-tail cadence. During the mint
+commands, member logs showed `AlephBFT-creator: Delay passed` every about 2s.
+The first mint received its quote request at 17:18:35.695 UTC, fakewallet
+reported payment at 17:18:35.697 UTC, and the first accepted journal operation
+became visible to member-1 peer sync at 17:18:47.909 UTC. Payment observation
+was submitted at 17:18:49.537 UTC, operation count reached 2 at 17:18:52.910
+UTC, and the wallet completed at 17:19:01 UTC. The second mint had the same
+shape: quote request at 17:19:03.970 UTC, fakewallet payment at 17:19:03.972
+UTC, payment observation at 17:19:13.651 UTC, operation count reached 5 at
+17:19:18.075 UTC, and the wallet completed at 17:19:24 UTC.
+
+The experiment also reproduced the old CPU symptom: after the mints, several
+member processes were observed near a full core while the AlephBFT task queue
+still carried dozens of `UnitBroadcast` tasks. Conclusion: a fixed faster delay
+cap is the wrong fix. The next candidate should be pending-work-aware: keep
+idle behavior cold, but wake/propose quickly when the federation mempool gains
+new consensus work, or rotate/reset an idle session in a way that does not
+spin or burn through the active rounds before user traffic arrives.
+
 ## Dominant Delay Classification
 
 ### Primary: AlephBFT Consensus Cadence
