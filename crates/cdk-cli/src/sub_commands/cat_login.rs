@@ -9,6 +9,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::token_storage;
+use crate::utils::ensure_standalone_mint_command;
 
 #[derive(Args, Serialize, Deserialize)]
 pub struct CatLoginSubCommand {
@@ -26,6 +27,7 @@ pub async fn cat_login(
     work_dir: &Path,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
+    ensure_standalone_mint_command(&mint_url, "cat-login")?;
 
     // Ensure the mint exists
     if !wallet_repository.has_mint(&mint_url).await {

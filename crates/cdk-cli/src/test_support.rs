@@ -360,3 +360,8 @@ fn bls_key(byte: u8) -> BlsSecretKey {
 pub fn test_bls_signature(label: &[u8]) -> PublicKey {
     PublicKey::from(BlsG1PublicKey::hash_to_curve(label))
 }
+
+#[cfg(feature = "npubcash")]
+pub fn federation_public_config() -> cdk_common::federation::FederationConfig {
+    test_bundle().public_config.clone()
+}

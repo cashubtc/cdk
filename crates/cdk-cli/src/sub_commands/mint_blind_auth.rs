@@ -9,7 +9,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::token_storage;
-use crate::utils::get_or_create_wallet;
+use crate::utils::{ensure_standalone_mint_command, get_or_create_wallet};
 
 #[derive(Args, Serialize, Deserialize)]
 pub struct MintBlindAuthSubCommand {
@@ -29,6 +29,7 @@ pub async fn mint_blind_auth(
     unit: &CurrencyUnit,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
+    ensure_standalone_mint_command(&mint_url, "mint-blind-auth")?;
 
     // Ensure the mint exists
     if !wallet_repository.has_mint(&mint_url).await {

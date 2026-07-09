@@ -7,7 +7,7 @@ use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 use clap::Args;
 
-use crate::utils::get_number_input;
+use crate::utils::{get_number_input, get_or_create_wallet};
 
 #[derive(Args)]
 pub struct TransferSubCommand {
@@ -75,7 +75,7 @@ pub async fn transfer(
     let source_mint_url = if let Some(source_mint) = &sub_command_args.source_mint {
         let url = MintUrl::from_str(source_mint)?;
         // Verify the mint is in the wallet
-        if !wallet_repository.has_mint(&url).await {
+        if !wallet_repository.has_mint(&url).await && !is_configured_federation_url(&url)? {
             bail!(
                 "Source mint {} is not in the wallet. Please add it first.",
                 url
@@ -97,7 +97,7 @@ pub async fn transfer(
     let target_mint_url = if let Some(target_mint) = &sub_command_args.target_mint {
         let url = MintUrl::from_str(target_mint)?;
         // Verify the mint is in the wallet
-        if !wallet_repository.has_mint(&url).await {
+        if !wallet_repository.has_mint(&url).await && !is_configured_federation_url(&url)? {
             bail!(
                 "Target mint {} is not in the wallet. Please add it first.",
                 url
@@ -130,8 +130,8 @@ pub async fn transfer(
     }
 
     // Get source and target wallets
-    let source_wallet = wallet_repository.get_wallet(&source_mint_url, unit).await?;
-    let target_wallet = wallet_repository.get_wallet(&target_mint_url, unit).await?;
+    let source_wallet = get_or_create_wallet(wallet_repository, &source_mint_url, unit).await?;
+    let target_wallet = get_or_create_wallet(wallet_repository, &target_mint_url, unit).await?;
 
     // Determine transfer mode and execute
     if sub_command_args.full_balance {
@@ -227,4 +227,14 @@ pub async fn transfer(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn is_configured_federation_url(mint_url: &MintUrl) -> Result<bool> {
+    crate::utils::is_configured_federation_mint_url(mint_url)
+}
+
+#[cfg(not(feature = "federation"))]
+fn is_configured_federation_url(_mint_url: &MintUrl) -> Result<bool> {
+    Ok(false)
 }

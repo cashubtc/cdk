@@ -425,25 +425,26 @@
           <a class="link-pill" href="./federated-cashu-storage-scope.md">Storage scope</a>
           <a class="link-pill" href="./fedimint_consensus_review.md">Fedimint consensus review</a>
           <a class="link-pill" href="./federated-cashu-minting-performance-benchmark.md">Minting benchmark</a>
+          <a class="link-pill" href="./federated-cashu-cli-routing-audit.md">CLI routing audit</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, a behaviorally verified slow payment member, unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Forced direct swaps complete in 3.55-5.45s and change melts in 6.74-8.45s across live, offline, and slow-backend matrices. Active work uses a 100ms cadence, while an inactive data provider waits instead of creating empty units; trace-enabled post-work members remain around 4% CPU without continued DAG growth.</span>
+          <span class="value">Milestone 25 is complete: <code>cdk-cli</code> can import federation public metadata, construct a threshold connector, and run mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Every command is now classified as federation-aware, local-only, or standalone-only; member aliases cannot silently fall back to a standalone HTTP wallet. The live smoke matrix covers offline, slow, unreachable, bad-share, insufficient-threshold, metadata-disagreement, and both melt-change branches.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: close CLI non-v3 output audit</span>
+          <span class="value">fix: close CLI federation routing gaps</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The CLI non-v3 audit is complete without adding a raw-output escape hatch. Federation import accepts only v3/BLS aggregate keysets, and normal mint/send/melt/restore commands derive outputs from that validated keyset. Crafted non-v3 mint, batch mint, swap, restore, and melt-change requests fail at the wallet before member fanout and at the mint before consensus; standalone legacy-keyset compatibility still passes. The preceding invalid-share fix remains green across 3-of-5 mint/swap/melt and actual CLI P2PK send, and the federation-focused CLI suite passes 28/28.</span>
+          <span class="value">The command-routing audit is complete. NpubCash and explicit transfer source/target URLs resolve imported member aliases through <code>get_or_create_wallet</code>; CAT login, device login, blind-auth minting, and mint-URL mutation fail closed for imported federations; and local decode commands avoid needless federation activation and saga recovery. The command-by-command classification and test gates are recorded in the CLI routing audit.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Complete the explicit CLI command-routing audit for direct HTTP and auth-related commands, documenting standalone-only behavior or routing through the federation connector where appropriate.</span>
+          <span class="value">Run a fresh five-member, threshold-three end-to-end minting benchmark with untouched baseline logs and command resource times. Build exact timelines for two mints, then use temporary behavior-neutral instrumentation only if the baseline cannot isolate wallet, payment-observer, consensus, networking, catch-up, or database delay.</span>
         </div>
       </aside>
     </header>
@@ -485,7 +486,7 @@
           <li>Milestone 22: observability and operator safety. <span class="status progress">In progress</span></li>
           <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status progress">In progress</span></li>
           <li>Milestone 24: security review checklist. <span class="status progress">In progress</span></li>
-          <li>Milestone 25: CLI wallet federation support. <span class="status progress">In progress</span></li>
+          <li>Milestone 25: CLI wallet federation support. <span class="status done">Done</span></li>
         </ol>
         <ul class="milestones" aria-label="Implementation plan milestone points">
           <li class="milestone">
@@ -700,9 +701,9 @@
             <div>
               <h3>Milestone 25: CLI wallet federation support</h3>
               <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
-              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, invite-code import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, explicit <code>check-state</code>, generated fake invoices, scripted AlephBFT CLI happy-path smoke, detached local member daemon startup, one-offline-member CLI smoke with restart catch-up, behaviorally verified 30-second slow-primary mint plus forced P2PK swap and forced-change melt with exact-journal no-duplicate proof, command-level invalid-share tolerance in CLI P2PK send, command-level restore and check-state no-quorum rejection through the real threshold connector, insufficient-threshold mint failure without proofs, all-members-unreachable mint-info failure without proofs, no-change and change-output melt CLI smoke coverage, one reachable mismatched-metadata member tolerated by a threshold-valid set, insufficient-valid-advertisement failure before proofs, missing federation mint-info metadata failure before proofs, CLI registry/public-config malformed, stale-version, mismatched-roster, inactive-keyset, non-v3/BLS import rejection, wallet pre-fanout non-v3 request rejection, repository activation tests for local/member federation URLs plus standalone fallback, missing-federation-metadata receive error coverage, imported member-URL receive resolution, explicit <code>--primary-member-id</code> request-policy coverage, and standalone CLI compatibility are passing; the explicit direct-HTTP/auth command-routing audit remains.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Complete: public-config and invite-code import, connector activation/reuse, federation-aware mint-info and token-member alias resolution, v3/BLS validation, mint/swap/melt/restore/check-state flows, invalid-share and no-quorum command regressions, live happy/offline/slow/unreachable/mismatched-member smokes, and the command-by-command routing audit. Direct mint interaction uses the federation connector; local-only commands avoid needless activation, while undefined federation authentication and mint-URL mutation commands fail closed.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
         </ul>
       </section>
@@ -939,8 +940,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>CLI federation coverage</h3>
-            <p>Audit direct HTTP and auth-related commands one by one, routing them through imported federation metadata where meaningful and documenting commands that are intentionally standalone-only.</p>
+            <h3>Fresh mint latency timeline</h3>
+            <p>Benchmark a fresh five-member, threshold-three AlephBFT federation with curl, standalone and federated mint-info, and two full mints. Preserve the untouched baseline first; temporary timing, tracing, counters, or profiling may then be added when behavior-neutral and removed before the checkpoint closes.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

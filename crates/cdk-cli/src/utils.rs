@@ -78,6 +78,22 @@ pub async fn get_or_create_wallet(
 }
 
 #[cfg(feature = "federation")]
+/// Reject a command whose semantics are only defined for standalone mints.
+pub fn ensure_standalone_mint_command(mint_url: &MintUrl, command: &str) -> Result<()> {
+    if is_configured_federation_mint_url(mint_url)? {
+        bail!("{command} is standalone-only and is not supported for imported federations");
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "federation"))]
+/// Accept a standalone-only command when federation support is disabled.
+pub fn ensure_standalone_mint_command(_mint_url: &MintUrl, _command: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
 /// Return whether a mint URL maps to an imported federation wallet.
 pub fn is_configured_federation_mint_url(mint_url: &MintUrl) -> Result<bool> {
     Ok(federation_wallet_for_mint_url(mint_url)?.is_some())
@@ -264,6 +280,37 @@ mod federation_tests {
 
     fn connector_debug(wallet: &cdk::wallet::Wallet) -> String {
         format!("{:?}", wallet.mint_connector())
+    }
+
+    #[test]
+    fn standalone_command_guard_rejects_imported_federation_urls() {
+        let public_config = valid_public_config();
+        let local_mint_url = public_config
+            .members
+            .get(&member_id(1))
+            .expect("member one")
+            .public_mint_url
+            .clone();
+        let mut registry = FederationWalletRegistry::default();
+        registry
+            .upsert(
+                public_config,
+                local_mint_url.clone(),
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect("upsert");
+        set_federation_registry(registry).expect("set federation registry");
+
+        let err = ensure_standalone_mint_command(&local_mint_url, "cat-login")
+            .expect_err("federation auth must fail closed");
+        assert!(err
+            .to_string()
+            .contains("not supported for imported federations"));
+
+        let standalone_mint_url = MintUrl::from_str("https://standalone.example.com")
+            .expect("standalone mint URL");
+        ensure_standalone_mint_command(&standalone_mint_url, "cat-login")
+            .expect("standalone command remains supported");
     }
 
     #[tokio::test]

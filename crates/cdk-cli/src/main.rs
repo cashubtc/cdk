@@ -444,14 +444,27 @@ async fn main() -> Result<()> {
 #[cfg(feature = "federation")]
 fn command_needs_federation_wallet_activation(command: &Commands) -> bool {
     match command {
-        Commands::MintInfo(_) | Commands::Federation(_) => false,
+        Commands::DecodeToken(_)
+        | Commands::MintInfo(_)
+        | Commands::Federation(_)
+        | Commands::DecodeRequest(_)
+        | Commands::UpdateMintUrl(_)
+        | Commands::MintBlindAuth(_)
+        | Commands::CatLogin(_)
+        | Commands::CatDeviceLogin(_) => false,
         _ => true,
     }
 }
 
 fn command_needs_wallet_recovery(command: &Commands) -> bool {
     match command {
-        Commands::MintInfo(_) => false,
+        Commands::DecodeToken(_)
+        | Commands::MintInfo(_)
+        | Commands::DecodeRequest(_)
+        | Commands::UpdateMintUrl(_)
+        | Commands::MintBlindAuth(_)
+        | Commands::CatLogin(_)
+        | Commands::CatDeviceLogin(_) => false,
         #[cfg(feature = "federation")]
         Commands::Federation(_) => false,
         _ => true,
@@ -518,8 +531,27 @@ mod tests {
     #[cfg(feature = "federation")]
     #[test]
     fn read_only_federation_commands_skip_startup_wallet_activation() {
+        let decode_token = Cli::parse_from(["cdk-cli", "decode-token", "cashuAeyJ0b2tlbiI6W119fQ"]);
         let mint_info = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
         let federation_list = Cli::parse_from(["cdk-cli", "federation", "list"]);
+        let decode_request = Cli::parse_from(["cdk-cli", "decode-request", "creqAeyJ0IjoibCJ9"]);
+        let update_mint_url = Cli::parse_from([
+            "cdk-cli",
+            "update-mint-url",
+            "https://old.example.com",
+            "https://new.example.com",
+        ]);
+        let mint_blind_auth =
+            Cli::parse_from(["cdk-cli", "mint-blind-auth", "https://mint.example.com"]);
+        let cat_login = Cli::parse_from([
+            "cdk-cli",
+            "cat-login",
+            "https://mint.example.com",
+            "user",
+            "password",
+        ]);
+        let cat_device_login =
+            Cli::parse_from(["cdk-cli", "cat-device-login", "https://mint.example.com"]);
 
         assert!(!command_needs_federation_wallet_activation(
             &mint_info.command
@@ -527,6 +559,19 @@ mod tests {
         assert!(!command_needs_federation_wallet_activation(
             &federation_list.command
         ));
+        for command in [&decode_token.command, &decode_request.command] {
+            assert!(!command_needs_federation_wallet_activation(command));
+            assert!(!command_needs_wallet_recovery(command));
+        }
+        for command in [
+            &update_mint_url.command,
+            &mint_blind_auth.command,
+            &cat_login.command,
+            &cat_device_login.command,
+        ] {
+            assert!(!command_needs_federation_wallet_activation(command));
+            assert!(!command_needs_wallet_recovery(command));
+        }
         assert!(!command_needs_wallet_recovery(&federation_list.command));
     }
 

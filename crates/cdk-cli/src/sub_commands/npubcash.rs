@@ -12,30 +12,17 @@ use cdk::StreamExt;
 use clap::Subcommand;
 use nostr_sdk::ToBech32;
 
+use crate::utils::get_or_create_wallet;
+
 /// Helper function to get wallet for a specific mint URL
 async fn get_wallet_for_mint(
     wallet_repository: &WalletRepository,
     mint_url_str: &str,
 ) -> Result<Arc<Wallet>> {
     let mint_url = MintUrl::from_str(mint_url_str)?;
-
-    // Check if wallet exists for this mint
-    if !wallet_repository.has_mint(&mint_url).await {
-        // Add the mint to the wallet
-        wallet_repository.add_wallet(mint_url.clone()).await?;
-    }
-
-    match wallet_repository
-        .get_wallet(&mint_url, &CurrencyUnit::Sat)
-        .await
-    {
-        Ok(wallet) => Ok(Arc::new(wallet)),
-        Err(_) => Ok(Arc::new(
-            wallet_repository
-                .create_wallet(mint_url, CurrencyUnit::Sat, None)
-                .await?,
-        )),
-    }
+    Ok(Arc::new(
+        get_or_create_wallet(wallet_repository, &mint_url, &CurrencyUnit::Sat).await?,
+    ))
 }
 
 /// Helper function to get or create a Sat wallet without probing the mint.
@@ -43,6 +30,13 @@ async fn get_wallet_for_mint_without_probe(
     wallet_repository: &WalletRepository,
     mint_url: MintUrl,
 ) -> Result<Arc<Wallet>> {
+    #[cfg(feature = "federation")]
+    if crate::utils::is_configured_federation_mint_url(&mint_url)? {
+        return Ok(Arc::new(
+            get_or_create_wallet(wallet_repository, &mint_url, &CurrencyUnit::Sat).await?,
+        ));
+    }
+
     match wallet_repository
         .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
@@ -367,7 +361,68 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
-    use super::set_mint;
+    use super::{get_wallet_for_mint, get_wallet_for_mint_without_probe, set_mint};
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn wallet_helpers_use_federation_connector_for_imported_member_urls() {
+        use crate::sub_commands::federation::{
+            FederationWalletRegistry, StoredFederationConnectorPolicy,
+        };
+        use crate::test_support::{federation_public_config, member_id};
+        use crate::utils::set_federation_registry;
+
+        let public_config = federation_public_config();
+        let local_mint_url = public_config
+            .members
+            .get(&member_id(1))
+            .expect("member one")
+            .public_mint_url
+            .clone();
+        let member_two_url = public_config
+            .members
+            .get(&member_id(2))
+            .expect("member two")
+            .public_mint_url
+            .clone();
+        let member_three_url = public_config
+            .members
+            .get(&member_id(3))
+            .expect("member three")
+            .public_mint_url
+            .clone();
+        let mut registry = FederationWalletRegistry::default();
+        registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect("upsert");
+        set_federation_registry(registry).expect("set federation registry");
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("memory db"),
+        );
+        let wallet_repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository builds");
+
+        let member_two_url = member_two_url.to_string();
+        let normal = get_wallet_for_mint(&wallet_repository, &member_two_url)
+            .await
+            .expect("federation wallet");
+        let no_probe = get_wallet_for_mint_without_probe(&wallet_repository, member_three_url)
+            .await
+            .expect("federation wallet without probe");
+
+        assert!(format!("{:?}", normal.mint_connector()).contains("FederatedMintConnector"));
+        assert!(format!("{:?}", no_probe.mint_connector()).contains("FederatedMintConnector"));
+    }
 
     #[tokio::test]
     async fn set_mint_persists_requested_url_after_server_update() {

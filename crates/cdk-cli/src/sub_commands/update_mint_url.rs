@@ -4,6 +4,8 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
 use clap::Args;
 
+use crate::utils::ensure_standalone_mint_command;
+
 #[derive(Args)]
 pub struct UpdateMintUrlSubCommand {
     /// Old Mint Url
@@ -21,6 +23,7 @@ pub async fn update_mint_url(
         old_mint_url,
         new_mint_url,
     } = sub_command_args;
+    ensure_standalone_mint_command(old_mint_url, "update-mint-url")?;
 
     let mut wallet = wallet_repository
         .get_wallet(&sub_command_args.old_mint_url, unit)

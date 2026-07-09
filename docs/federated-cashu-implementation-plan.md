@@ -3412,14 +3412,15 @@ Implementation checklist:
   multi-unit federations during startup activation while keeping the persisted
   registry JSON unchanged. Focused coverage proves `Sat` and `Usd` wallets
   activated from one imported federation share the same connector `Arc`.
-- [ ] Wire every `cdk-cli` command through the federation connector when
-  federation mode is active. The first path now covers startup activation,
-  balance, mint, send/swap, receive, melt, restore-style wallet lookup, keyset
-  helper commands that use `get_or_create_wallet`, mint-pending wallet
-  recovery, `mint-info` through the imported federation connector, and explicit
-  `check-state` for local wallet proofs or token proofs. Remaining direct HTTP
-  or auth-related commands need an explicit federation-aware route or a
-  documented standalone behavior.
+- [x] Wire every `cdk-cli` command through the federation connector when
+  federation mode is active, or classify it explicitly as local-only or
+  standalone-only. The command-by-command audit is recorded in
+  `docs/federated-cashu-cli-routing-audit.md`. NpubCash and explicit transfer
+  wallet lookup now resolve imported member aliases through
+  `get_or_create_wallet`; CAT login, CAT device login, blind-auth minting, and
+  mint-URL mutation reject imported federations before direct member transport
+  or local mutation. Pure decode commands skip eager federation activation and
+  wallet recovery.
 - [x] Add all CLI options for wallet-side federation request policy. The CLI
   import path now exposes member fallback timeout, member request timeout,
   quote-status timeout, retry count, fanout concurrency, mint-quote visibility
@@ -3542,9 +3543,11 @@ Latest checkpoint:
   paths with one member offline took 4.90s and 8.45s. The melt journal sequence
   was exactly `melt_quote -> swap -> melt`, the returned member caught up to
   the same 17-entry order/state digests, and a post-optimization swap took
-  5.45s before all members converged on entry 18. The remaining required CLI
-  work is the explicit command-routing audit for direct HTTP and auth-related
-  commands.
+  5.45s before all members converged on entry 18. The command-routing audit is
+  now complete: every CLI command is classified as federation-aware,
+  local-only, or standalone-only; NpubCash and transfer member aliases use the
+  federation connector; and undefined per-mint auth/URL-mutation operations
+  fail closed for imported federations.
   Command-level restore/check-state disagreement coverage is now complete,
   leaving a full external process variant optional rather than required for the
   CLI wiring invariant.
