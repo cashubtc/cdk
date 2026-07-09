@@ -3,8 +3,8 @@
 Date: 2026-07-09
 
 This note records timing-sensitive issues found during a read-only review of
-federation-mode minting, wallet behavior, and swap handling. It is intended as
-a work queue for follow-up fixes and tests.
+federation-mode minting, wallet behavior, swap handling, and melt handling. It
+is intended as a work queue for follow-up fixes and tests.
 
 ## Scope
 
@@ -636,6 +636,283 @@ properties:
 - Wallet aggregation verifies member share metadata and BLS share correctness
   before constructing final signatures.
 
+## Federated Melt Findings
+
+These findings focus on federation-mode melt quote creation, accepted melt
+apply, outgoing payment execution, payment observation convergence, change
+signing, and wallet recovery behavior.
+
+### P1: Melt Quote Consensus Does Not Fix the Quote Terms
+
+`FederationMeltQuoteOperation` carries only the quote ID and wallet request:
+
+- `crates/cdk-common/src/federation/operation.rs:468`
+
+During apply, each member independently reconstructs and persists the melt quote
+from its own payment backend:
+
+- `crates/cdk/src/mint/federation.rs:1790`
+- `crates/cdk/src/mint/melt/mod.rs:307`
+
+This is materially weaker than mint quote consensus, where the accepted
+operation includes the quote response. Melt quote generation can differ across
+members in amount, fee reserve, expiry, onchain fee options, request lookup ID,
+or backend-specific metadata. Payment observations later require local quote
+amount and fee reserve to match the observation:
+
+- `crates/cdk/src/mint/federation.rs:2370`
+
+Honest members can therefore accept the same melt quote operation but persist
+different quote terms, then reject each other's payment observations or compute
+different change. Fake-wallet tests can hide this because the fake backend
+returns deterministic quote terms.
+
+Recommended fix:
+
+- Put the full melt quote response or canonical quote terms into
+  `FederationMeltQuoteOperation`, including amount, fee reserve, expiry,
+  payment method, request string, selected fee options, and stable lookup
+  metadata required for later status checks.
+- Materialize exactly the accepted consensus quote terms on every member.
+- Treat local backend quote generation by the proposing member as provisional
+  until the exact terms are accepted by consensus.
+- Reject replay if an existing local quote with the same ID does not match the
+  accepted terms.
+
+Tests to add:
+
+- Two members whose backends return different fee reserves for the same payment
+  request still materialize the exact consensus fee reserve.
+- A non-proposer member does not call quote generation in a way that can alter
+  amount, expiry, or lookup ID after consensus.
+- A mismatched pre-existing local quote is rejected before any melt can reserve
+  inputs.
+- Payment observations using the accepted consensus amount and fee reserve
+  finalize consistently on all members.
+
+### P1: Consensus Apply Can Block on Outgoing Payment Execution
+
+`apply_federation_melt` calls the full federation melt execution path:
+
+- `crates/cdk/src/mint/federation.rs:1979`
+- `crates/cdk/src/mint/melt/mod.rs:1242`
+
+That path can call the elected member's payment backend synchronously during
+consensus materialization:
+
+- `crates/cdk/src/mint/melt/melt_saga/mod.rs:761`
+- `crates/cdk/src/mint/melt/melt_saga/mod.rs:804`
+
+This means a slow or hanging backend can stall apply, route waiters, replay, and
+catch-up. Consensus apply should be deterministic and bounded; external payment
+execution is nondeterministic IO and should not sit directly in the finalizer's
+critical path.
+
+Recommended fix:
+
+- Split accepted melt apply into a deterministic reservation phase and an async
+  payment-worker phase.
+- During apply, reserve inputs, persist the melt saga, record the elected payer,
+  and mark the operation applied without waiting on external payment IO.
+- Let the elected payment worker attempt payment with explicit timeouts and
+  submit `MeltQuotePayment` observations.
+- Let non-elected members only reserve and wait for observations.
+
+Tests to add:
+
+- Elected backend hangs; consensus apply still completes with quote/proofs
+  pending and no finalizer deadlock.
+- Payment worker later reports `Paid`; quorum observation finalizes the melt.
+- Payment worker later reports `Failed`; quorum observation rolls the melt back.
+- Restart while payment worker is in flight resumes from durable saga state
+  without repeating an unsafe payment attempt.
+
+### P1: Melt Can Rely on a Local-Only Quote
+
+The public melt quote route creates and persists a local quote before submitting
+the melt quote operation to federation consensus:
+
+- `crates/cdk-axum/src/custom_handlers.rs:917`
+- `crates/cdk/src/mint/melt/mod.rs:284`
+
+The accepted melt path then loads the local quote and validates local state:
+
+- `crates/cdk/src/mint/melt/mod.rs:1275`
+
+I did not see an explicit check that the quote has a prior accepted
+`MeltQuote` journal entry before a `Melt` operation can reserve inputs or
+attempt payment. If quote consensus times out after local quote creation, or a
+member receives a malicious private operation for a locally known but
+non-consensus quote, a melt can be driven by state that is not part of the
+federation order.
+
+Recommended fix:
+
+- `apply_federation_melt` must require an accepted `MeltQuote` entry for the
+  quote ID at or before the melt operation index.
+- Local-only melt quotes must remain provisional and non-spendable in
+  federation mode.
+- The quote operation's accepted terms should be the only authority for melt
+  quote materialization.
+
+Tests to add:
+
+- Local quote exists but no accepted `MeltQuote` operation exists; federated
+  melt fails before reserving inputs.
+- Accepted `Melt` appears before accepted `MeltQuote`; replay rejects or parks
+  it deterministically without payment execution.
+- Quote creation times out after local persistence; paying/melting that quote
+  remains impossible until quote consensus finalizes.
+
+### P2: Successful Melt Does Not Immediately Submit a Payment Observation
+
+The public melt flow submits the melt operation and then returns the stored
+local response:
+
+- `crates/cdk-axum/src/custom_handlers.rs:1056`
+- `crates/cdk-axum/src/custom_handlers.rs:1073`
+
+Terminal melt payment observations are submitted from quote-status checks:
+
+- `crates/cdk-axum/src/custom_handlers.rs:1049`
+- `crates/cdk-axum/src/custom_handlers.rs:347`
+
+This can leave the elected member locally finalized while the rest of the
+federation remains pending until the wallet or an operator later checks quote
+status. In a real quorum policy, a single elected `Paid` member is not enough to
+finalize the federation, so convergence can depend on a follow-up route call
+rather than the payment attempt itself.
+
+Recommended fix:
+
+- When a federated melt reaches a terminal local state during `post_melt`,
+  submit the corresponding `MeltQuotePayment` observation immediately.
+- Also add a periodic melt payment observer loop for pending local melt sagas,
+  analogous to the mint payment observer loop.
+- Ensure observation submission is idempotent and skips when a matching
+  observation or satisfied quorum already exists.
+
+Tests to add:
+
+- Successful `post_melt` records a `MeltQuotePayment(Paid)` observation without
+  requiring a subsequent quote-status check.
+- Failed `post_melt` records a `MeltQuotePayment(Failed)` observation when a
+  payment attempt was accepted and terminally failed.
+- Pending `post_melt` does not submit terminal evidence until backend status
+  becomes terminal.
+- Duplicate observation submission from route plus observer loop stores only
+  one local observer/state record.
+
+### P2: Melt Conflict Keys Are Quote-Scoped Only
+
+Federation `Melt` operations conflict by quote ID:
+
+- `crates/cdk-common/src/federation/operation.rs:1410`
+
+That prevents two different melt requests from spending the same quote, but it
+does not prevent the same input proofs from being submitted across different
+quotes. As with swaps, database proof state should prevent double spend, but
+conflicting operations can still enter consensus and only fail during apply.
+That increases journal bloat, replay work, route timeouts, and denial-of-service
+surface.
+
+Recommended fix:
+
+- Add input proof conflict keys derived from each melt input proof `Y`.
+- Keep the quote conflict key as well, because one quote should still map to one
+  exact melt request.
+- Reject same-input different-quote melts before payment execution or change
+  signing.
+
+Tests to add:
+
+- Two accepted melts with different quotes but the same input proof: one wins,
+  the loser is rejected before payment execution.
+- Restart/replay rebuilds quote and input conflict keys and preserves winner
+  and loser statuses.
+- A malicious wallet cannot flood many same-input melt operations that all
+  reach backend payment attempts.
+
+### P2: Wallet Melt Status Change Aggregation Does Not Verify Shares
+
+Normal mint/swap/melt-change aggregation validates each member's BLS share
+against the member public share before aggregation:
+
+- `crates/cdk/src/wallet/federation.rs:1012`
+
+Melt quote status recovery aggregates change shares directly after matching
+metadata:
+
+- `crates/cdk/src/wallet/federation.rs:1274`
+- `crates/cdk/src/wallet/federation.rs:1345`
+
+This path checks amount/keyset metadata but does not appear to verify each
+member's blind signature share against the change blinded message and member
+public share before interpolation. A malicious or stale member can therefore
+poison recovered change aggregation and cause wallet recovery failure even when
+enough honest members are online.
+
+Recommended fix:
+
+- Reuse `aggregate_member_responses` or the same `valid_member_share_set`
+  validation for melt status change signatures.
+- Status recovery must know or retrieve the original change blinded outputs
+  before accepting change shares.
+- Continue collecting responses until threshold valid compatible change shares
+  are available, not merely threshold matching metadata responses.
+
+Tests to add:
+
+- Melt status returns two valid change shares and one invalid share in a 2-of-3
+  or 3-of-5 setup; wallet ignores the invalid share and succeeds if enough
+  valid shares remain.
+- If not enough valid shares remain, wallet keeps the melt pending and returns a
+  bounded recovery error without releasing proofs.
+- A member returning a valid-looking amount/keyset but invalid BLS share cannot
+  corrupt stored wallet change proofs.
+
+### P2: Failed Payment Quorum Matching Includes Free-Form Failure Text
+
+Melt payment evidence matching includes `failure_reason`:
+
+- `crates/cdk-common/src/federation/operation.rs:507`
+
+Honest members can agree that a payment failed while returning different
+backend error text. Under a quorum policy, those observations will be treated as
+conflicting instead of matching, leaving the melt pending and proofs locked
+until manual intervention or quarantine.
+
+Recommended fix:
+
+- Treat failure text as audit metadata rather than quorum identity.
+- Match failed observations on quote, method, state, amount, fee reserve, stable
+  payment ID where available, and a normalized failure class if needed.
+- Preserve raw backend failure text in observation records for operator review.
+
+Tests to add:
+
+- Two members observe `Failed` with different raw failure text; quorum still
+  rolls back the melt.
+- Two members observe different terminal states (`Paid` vs `Failed`); the report
+  remains conflicting/quarantinable.
+- Failure text is preserved for diagnostics but does not block matching
+  rollback evidence.
+
+### Melt Non-Issues Observed
+
+The reviewed code and existing tests already cover several important melt
+properties:
+
+- Inputs are reserved before an outgoing payment attempt.
+- Under real quorum policies, non-elected members reserve without attempting the
+  external payment.
+- `Unknown` backend payment status remains transient and does not become a
+  durable melt quote state.
+- Paid and failed observations are quorum-gated under real policies.
+- Duplicate same-quote melts are conflict-keyed by quote ID.
+- Pending AlephBFT melts do not appear to reserve inputs, mutate quote state, or
+  sign change before finality.
+
 ## Non-Issues Observed
 
 ### AlephBFT Waiters Are Bounded
@@ -677,3 +954,15 @@ in backend-dependent row order for SQL backends.
 9. Change wallet signing fanout to wait for threshold valid compatible shares,
    not threshold raw successful HTTP responses.
 10. Ensure swap apply failures wake waiters and persist terminal retry status.
+11. Put full melt quote terms into consensus and materialize those exact terms
+    on every member.
+12. Split federated melt apply from outgoing payment execution so consensus
+    apply cannot block on external payment IO.
+13. Require an accepted prior `MeltQuote` operation before any federated melt can
+    reserve inputs or attempt payment.
+14. Submit terminal melt payment observations directly from terminal melt
+    outcomes, and add a periodic pending-melt observer loop.
+15. Add melt input conflict keys in addition to quote-scoped conflict keys.
+16. Verify BLS change shares during melt status recovery before aggregation.
+17. Normalize failed melt payment evidence so free-form failure text does not
+    prevent honest rollback quorum.
