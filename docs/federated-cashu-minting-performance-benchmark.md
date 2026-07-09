@@ -60,6 +60,179 @@ order:
 
 Finalized item count was higher than accepted operation count because wallet/member fanout causes duplicate finalizations. The duplicates did not change the accepted journal order.
 
+## Fresh CLI and Mint Rebaseline After Command-Routing Audit
+
+On 2026-07-10 local time, a fresh five-member, threshold-three fakewallet
+AlephBFT federation and fresh CLI wallet were measured before changing
+production code. Member, request-fallback, and quote-status timeouts were 90s
+so timeout-driven quote fallback could not distort the run.
+
+### Untouched baseline
+
+| Command | Wall | User | System |
+| --- | ---: | ---: | ---: |
+| direct `curl /v1/info` | 0.92s | 0.00s | 0.00s |
+| CLI `mint-info` without imported federation metadata | 2.28s | 0.03s | 0.02s |
+| `federation add` | 1.42s | 1.41s | 0.01s |
+| CLI `mint-info` with imported federation metadata | 1.56s | 0.61s | 0.01s |
+| first full federated mint, 50 sat | 9.15s | 3.46s | 0.03s |
+| second full federated mint, 30 sat | 6.05s | 1.45s | 0.01s |
+
+The previously observed 36s federated `mint-info`, 46s pre-handler delay, and
+66s mint did not reproduce. Both mints succeeded, and all five members
+converged on exactly six accepted operations with matching order/state digests,
+zero pending mempool items or waiters, zero duplicate submissions, and no
+digest, payment, or invalid-operation alerts.
+
+### Trace-confirmed timelines
+
+The untouched baseline inherited `RUST_LOG=warn`, so it intentionally lacked
+fine-grained stage events. A second fresh federation enabled the existing
+behavior-neutral AlephBFT lifecycle trace plus normal mint/payment debug logs.
+It measured 9.14s and 6.22s, within 0.01s and 0.17s of the untouched run, so the
+trace did not materially perturb the result.
+
+First mint, 50 sat and 14 outputs:
+
+| Stage | UTC timestamp | Delta |
+| --- | --- | ---: |
+| CLI start | 23:07:12.592 | - |
+| quote request created by member 1 | 23:07:17.052 | 4.460s |
+| fakewallet payment notification | 23:07:17.054 | 0.002s |
+| `mint_quote` consensus submitted | 23:07:17.054 | effectively immediate |
+| `mint_quote` applied and primary waiter returned | 23:07:17.481 | 0.427s |
+| immediate payment observation submitted | 23:07:17.483 | 0.002s |
+| `mint_quote_payment` applied and waiter returned | 23:07:18.108 | 0.625s |
+| `mint` submitted by member fanout | 23:07:18.189 | 0.081s |
+| threshold member handlers returned shares | 23:07:19.045 | 0.856s |
+| wallet aggregation, verification, persistence, and CLI completion | 23:07:21.750 | 2.705s |
+
+Second mint, 30 sat and four outputs:
+
+| Stage | UTC timestamp | Delta |
+| --- | --- | ---: |
+| CLI start | 23:07:21.760 | - |
+| quote request created by member 1 | 23:07:24.235 | 2.475s |
+| fakewallet payment notification | 23:07:24.237 | 0.002s |
+| `mint_quote` consensus submitted | 23:07:24.255 | 0.018s |
+| `mint_quote` applied and primary waiter returned | 23:07:24.825 | 0.570s |
+| immediate payment observation submitted | 23:07:24.838 | 0.013s |
+| `mint_quote_payment` applied and waiter returned | 23:07:25.449 | 0.611s |
+| `mint` submitted by member fanout | 23:07:26.602 | 1.153s |
+| threshold member handlers returned shares | 23:07:27.199 | 0.597s |
+| wallet aggregation, verification, persistence, and CLI completion | 23:07:27.997 | 0.798s |
+
+The journal on every member was exactly:
+
+1. `mint_quote`
+2. `mint_quote_payment`
+3. `mint`
+4. `mint_quote`
+5. `mint_quote_payment`
+6. `mint`
+
+This confirms that a successful mint still requires three consensus-visible
+state transitions. The immediate payment-observation path was used; the 5s
+periodic observer tick was not on the happy-path critical path.
+
+### Temporary wallet/CLI probe
+
+After the untouched and trace-only runs, temporary elapsed-time markers were
+added behind a local environment flag. They were removed completely before
+this checkpoint was finalized. Two further production-equivalent mints
+measured the following stages:
+
+| Stage | First mint, 14 outputs | Second mint, 4 outputs |
+| --- | ---: | ---: |
+| CLI startup through command dispatch | 0.508s | 1.431s |
+| persisted federation registry validation | 0.494s | 0.494s |
+| wallet repository rebuild | about 0.009s | about 0.932s |
+| mint metadata/keyset load | 3.023s | 0.041s |
+| quote request including quote/payment consensus | 2.047s | 2.122s |
+| mint member calls, consensus, share checks, and aggregation | 2.870s | 2.292s |
+| aggregate blind-signature verification | 0.309s | 0.084s |
+| proof construction/unblinding | 0.035s | 0.009s |
+| final BLS proof verification | 0.307s | 0.087s |
+| wallet proof persistence after verification | about 0.012s | about 0.004s |
+| full command wall time | 9.19s | 6.12s |
+
+The first mint's metadata cost is a necessary initial online member/keyset
+validation and is persisted: it falls from about 3.02s to 41ms on the next
+process. BLS work scales with output count. The federation connector validates
+each member's partial blind signatures before interpolation, then the wallet
+validates aggregate blind signatures, unblinds them, and validates the final
+proofs.
+
+The warm repository stage exposed a separate wallet-library bug:
+`WalletRepository::load_wallets` ignored persisted `MintInfo` and performed a
+direct single-mint `/v1/info` fetch before the CLI loaded and installed its
+federation registry. This was both a roughly 0.93s startup cost and a read-path
+bypass of the federation connector.
+
+### Accepted startup fix and verification
+
+Repository reconstruction now derives initial wallet units from persisted mint
+metadata. A missing metadata row retains the existing sat fallback.
+Online metadata refresh still occurs through the wallet's configured connector
+when an operation requests it; no value or trust semantics changed.
+
+Focused connection-counter tests prove repository startup opens no mint TCP
+connection for either a persisted `MintInfo` row or a missing-metadata `None` row. A
+fresh post-fix five-member process run measured:
+
+| Command | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| first 50 sat mint | 9.15s | 9.21s | within run variance |
+| warm second 30 sat mint | 6.05s | 4.97s | 1.08s faster |
+
+All five post-fix members again converged on the exact six-operation sequence
+with matching digests and no pending work or alerts. One member recorded one
+idempotent duplicate submission/waiter join; there was no duplicate accepted
+journal operation.
+
+### Current classification and next candidate
+
+- **Dominant current cost:** wallet/library work, specifically cold metadata
+  discovery on first use and output-count-dependent BLS share/proof validation.
+- **AlephBFT consensus:** measurable but no longer dominant; each traced
+  operation completed in roughly 0.43-0.86s.
+- **Mint handler and fakewallet:** fakewallet notification took about 2ms;
+  quote/payment apply and handler work were small relative to wallet setup and
+  cryptography.
+- **Payment observer:** the immediate path was used, so the periodic tick did
+  not delay either mint.
+- **Private REST:** first operation-bearing deliveries followed data-provider
+  yield by milliseconds to tens of milliseconds.
+- **Catch-up/sync:** all members were ready and converged before commands and
+  remained converged afterward.
+- **Database contention:** one roughly 0.29-0.36s SQLite `BEGIN IMMEDIATE` wait
+  appeared during a 14-output mint, but wallet proof persistence itself took
+  about 12ms and DB contention was not dominant.
+- **Duplicate submissions:** zero in the untouched/trace baseline; one
+  idempotent duplicate in the post-fix repeat, with the same six accepted
+  operations.
+
+The next clean performance candidate is cryptographic batching, not a consensus
+or retry change:
+
+1. Add a secure randomized batch verifier for blinded partial BLS signature
+   shares in `cashu`; on batch failure, fall back to individual checks so a bad
+   member can be excluded without hiding which response failed.
+2. Replace the final per-proof v3 verification loop with the existing
+   `batch_verify_bls_messages` primitive.
+3. Evaluate whether aggregate blind-signature verification is redundant when
+   metadata is checked and the final unblinded proof batch is always verified;
+   do not remove it without an explicit security argument and corruption tests.
+4. Benchmark 4, 14, and 64 outputs across 3-of-5 and 5-of-7 thresholds before
+   accepting any optimization.
+
+Required tests for that candidate include valid batch/scalar equivalence,
+single corrupted share rejection, collector continuation to a slower valid
+threshold, malformed metadata rejection before crypto, corrupted aggregate and
+unblinded proof rejection, denomination/keyset mixing, and standalone v3/BLS
+wallet compatibility. No cryptographic verification was removed or weakened in
+this checkpoint.
+
 ## Accepted 100ms Active Cadence and Idle CPU Fix
 
 CDK now uses a 100ms unit-creation delay only while the existing activity hint

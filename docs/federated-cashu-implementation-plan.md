@@ -54,6 +54,29 @@ Current blocking bugs:
 
 ## Recent performance checkpoint
 
+- Fresh post-routing rebaseline: direct `/v1/info` completed in 0.92s,
+  standalone CLI `mint-info` in 2.28s, federated CLI `mint-info` in 1.56s,
+  and two full five-member threshold-three mints in 9.15s and 6.05s. The old
+  36s `mint-info`, 46s pre-handler delay, and 66s mint did not reproduce. All
+  members converged on the exact six-operation journal with no pending work.
+- Existing AlephBFT lifecycle traces measured each accepted mint operation at
+  roughly 0.43-0.86s. Fakewallet notification took about 2ms, immediate payment
+  observation was used, and private REST delivery, catch-up, and DB persistence
+  were not dominant. The current dominant costs are cold wallet metadata
+  discovery plus output-count-dependent BLS share aggregation and proof
+  verification.
+- The benchmark found one wallet-library startup bypass:
+  `WalletRepository::load_wallets` fetched `/v1/info` from the stored mint URL
+  before the CLI could install an imported federation connector. Repository
+  reload now uses persisted `MintInfo` units, retains the existing sat fallback
+  for missing metadata, and performs no startup network request. Connection
+  counter tests cover both persisted and missing metadata. A fresh live repeat
+  left the first mint unchanged at 9.21s and reduced the warm second mint from
+  6.05s to 4.97s while preserving the exact journal and convergence.
+- Next performance candidate: securely batch partial blind-signature share and
+  final proof verification, with scalar fallback on batch failure and explicit
+  corrupted-share/proof tests. No cryptographic verification was weakened in
+  the startup fix.
 - Latest minting performance checkpoint: a fresh five-member, threshold-three
   fakewallet AlephBFT benchmark confirmed the pre-fix delay was not direct HTTP,
   fakewallet settlement, catch-up, or DB contention. Each full mint still
@@ -3420,7 +3443,9 @@ Implementation checklist:
   `get_or_create_wallet`; CAT login, CAT device login, blind-auth minting, and
   mint-URL mutation reject imported federations before direct member transport
   or local mutation. Pure decode commands skip eager federation activation and
-  wallet recovery.
+  wallet recovery. Repository startup also reconstructs wallets from persisted
+  mint metadata instead of making a direct `/v1/info` request before federation
+  connector activation.
 - [x] Add all CLI options for wallet-side federation request policy. The CLI
   import path now exposes member fallback timeout, member request timeout,
   quote-status timeout, retry count, fanout concurrency, mint-quote visibility

@@ -307,8 +307,8 @@ mod federation_tests {
             .to_string()
             .contains("not supported for imported federations"));
 
-        let standalone_mint_url = MintUrl::from_str("https://standalone.example.com")
-            .expect("standalone mint URL");
+        let standalone_mint_url =
+            MintUrl::from_str("https://standalone.example.com").expect("standalone mint URL");
         ensure_standalone_mint_command(&standalone_mint_url, "cat-login")
             .expect("standalone command remains supported");
     }

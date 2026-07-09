@@ -622,30 +622,24 @@ impl WalletRepository {
 
     /// Load all wallets from database
     ///
-    /// This loads wallets for all mints stored in the database.
-    /// For each mint, it fetches the mint info to discover supported units
-    /// and creates a wallet for each supported unit.
+    /// This loads wallets for all mints stored in the database. Persisted mint
+    /// info determines the initial units without performing network requests
+    /// before callers can install custom mint connectors.
     #[instrument(skip(self))]
     async fn load_wallets(&self) -> Result<(), Error> {
         let mints = self.localstore.get_mints().await.map_err(Error::Database)?;
 
-        for (mint_url, _mint_info) in mints {
-            // Try to fetch mint info and create wallets for all supported units
-            // If fetch fails, fall back to creating just a Sat wallet
-            let units = match self.fetch_mint_info(&mint_url).await {
-                Ok(info) => {
-                    let supported = info.supported_units();
-                    if supported.is_empty() {
-                        vec![CurrencyUnit::Sat]
-                    } else {
-                        supported.into_iter().cloned().collect()
-                    }
-                }
-                Err(_) => {
-                    // If we can't fetch mint info, use default Sat unit for backward compatibility
-                    vec![CurrencyUnit::Sat]
-                }
-            };
+        for (mint_url, mint_info) in mints {
+            let units = mint_info
+                .as_ref()
+                .map(|info| {
+                    info.supported_units()
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .filter(|units| !units.is_empty())
+                .unwrap_or_else(|| vec![CurrencyUnit::Sat]);
 
             for unit in units {
                 let key = WalletKey::new(mint_url.clone(), unit.clone());
@@ -951,6 +945,71 @@ mod tests {
     async fn test_wallet_repository_creation() {
         let repo = create_test_repository().await;
         assert!(repo.wallets.try_read().is_ok());
+    }
+
+    #[tokio::test]
+    async fn repository_load_uses_persisted_mint_info_without_network() {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let (mint_url, direct_connections, listener_handle) =
+            local_mint_url_with_connection_counter().await;
+        let mut mint_info = crate::nuts::MintInfo::default();
+        mint_info.nuts.nut04 = crate::nuts::nut04::Settings::new(
+            vec![crate::nuts::nut04::MintMethodSettings {
+                method: cdk_common::PaymentMethod::BOLT11,
+                unit: CurrencyUnit::Usd,
+                method_name: None,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            }],
+            false,
+        );
+        localstore
+            .add_mint(mint_url.clone(), Some(mint_info))
+            .await
+            .expect("Failed to persist mint info");
+
+        let repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("Failed to rebuild WalletRepository");
+
+        listener_handle.abort();
+        assert_eq!(direct_connections.load(Ordering::SeqCst), 0);
+        assert!(repository.has_wallet(&mint_url, &CurrencyUnit::Usd).await);
+        assert!(!repository.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
+    }
+
+    #[tokio::test]
+    async fn repository_load_without_mint_info_uses_sat_without_network() {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let (mint_url, direct_connections, listener_handle) =
+            local_mint_url_with_connection_counter().await;
+        localstore
+            .add_mint(mint_url.clone(), None)
+            .await
+            .expect("Failed to persist mint URL");
+
+        let repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("Failed to rebuild WalletRepository");
+
+        listener_handle.abort();
+        assert_eq!(direct_connections.load(Ordering::SeqCst), 0);
+        assert!(repository.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
     }
 
     #[tokio::test]

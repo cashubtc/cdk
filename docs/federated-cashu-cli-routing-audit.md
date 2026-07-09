@@ -61,6 +61,9 @@ federation connector.
 - Local decode commands and standalone-only commands skip eager federation
   activation; local decode and standalone-only commands also skip unrelated
   saga recovery.
+- Wallet repository reconstruction uses persisted mint metadata and does not
+  issue a direct `/v1/info` request before imported federation connectors are
+  installed.
 
 ## Test Gates
 
@@ -72,6 +75,8 @@ federation connector.
 - Startup classification tests prove read-only/local and standalone-only
   commands do not eagerly activate federation wallets; commands that need
   wallet networking continue to activate them.
+- Wallet-library connection-counter tests prove repository reconstruction does
+  not contact a mint for either persisted `MintInfo` or missing-metadata rows.
 - The full federation-focused CLI suite passes, including mint, send/swap,
   melt, restore, check-state, invalid-share, keyset validation, member-routing,
   and no-quorum regressions.
