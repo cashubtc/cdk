@@ -1,8 +1,14 @@
-# Federated Cashu Minting Performance Benchmark
+# Federated Cashu Minting and Receive Performance Benchmark
 
 Date: 2026-07-09
 
-This note records benchmark results from fresh 5-member, threshold-3 fakewallet AlephBFT federations and fresh CLI wallets. The first run identified why federated minting took tens of seconds. The second run verifies the immediate post-quote payment-observation fix and keeps the remaining delay classified. The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip was excluded from the activity hint.
+This note records benchmark results from fresh 5-member, threshold-3 fakewallet
+AlephBFT federations and fresh CLI wallets. The first run identified why
+federated minting took tens of seconds. The second run verifies the immediate
+post-quote payment-observation fix and keeps the remaining delay classified.
+The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip
+was excluded from the activity hint. The next benchmark target is receiver-side
+token receive, which redeems a received token by performing a federated swap.
 
 The measurements below are development-environment measurements. Absolute values will vary by machine, but the stage ordering and relative delays are the important result.
 
@@ -14,6 +20,7 @@ The measurements below are development-environment measurements. Absolute values
 - Consensus backend: AlephBFT
 - Wallet: fresh `cdk-cli` work directory
 - Operation tested: two full federated mints after adding the federation registry
+- Receiver-side token receive/swap benchmark: required, not yet measured
 - Mint operation sequence confirmed in the journal:
   - `mint_quote`
   - `mint_quote_payment`
@@ -218,6 +225,9 @@ Expected saving: about 1-3s per command if config validation/key aggregation is 
 - Catch-up/sync after startup: members remained healthy and converged.
 - Private REST networking after startup: no evidence it dominated steady-state minting.
 - Duplicate submissions: created extra finalization noise, but accepted journal operations remained six for two mints.
+- Receiver-side receive/swap: not yet measured in this benchmark document. It
+  must be measured independently because it should normally require one
+  consensus operation instead of three.
 
 ## Improvement Candidates
 
@@ -318,6 +328,87 @@ Selective activity-hint mint #2 timeline:
 
 Total wall time: 12.01s.
 
+## Receiver-Side Receive/Swap Benchmark
+
+Status: required next measurement; no authoritative timing has been recorded in
+this document yet.
+
+Receiving a Cashu token is not just a local wallet import. The receiver redeems
+the sender's proofs by creating new blinded outputs and submitting a swap to the
+mint. In federation mode, that swap must be serialized through consensus before
+the receiver can aggregate returned shares into fresh proofs. This makes
+receiver-side token receive the next critical wallet-facing latency benchmark.
+
+Expected accepted operation sequence for one receive:
+
+1. `swap`
+
+The receive benchmark should use a fresh receiver wallet that has already
+imported the same federation public config as the sender. The sender should
+create a token from already-minted proofs, preferably with `--offline`, so the
+measurement isolates the receiver-side swap rather than sender-side token
+preparation.
+
+Suggested command shape:
+
+```bash
+export FED_DIR=target/perf-fed-5
+export SENDER_WALLET_DIR=target/perf-wallet-sender
+export RECEIVER_WALLET_DIR=target/perf-wallet-receiver
+export MINT_URL=<primary federation member URL>
+
+target/debug/cdk-cli --work-dir "$RECEIVER_WALLET_DIR" --non-interactive \
+  federation add --public-config "$FED_DIR/federation-public.json" \
+  --member-request-timeout-secs 90 \
+  --member-fallback-timeout-secs 90 \
+  --quote-status-member-timeout-secs 90
+
+TOKEN=$(
+  target/debug/cdk-cli --work-dir "$SENDER_WALLET_DIR" --non-interactive \
+    --unit sat send --mint-url "$MINT_URL" --amount 30 --offline
+)
+
+date -u +"RECEIVE CLI start UTC: %Y-%m-%dT%H:%M:%SZ"
+time target/debug/cdk-cli --work-dir "$RECEIVER_WALLET_DIR" --non-interactive \
+  --unit sat receive "$TOKEN"
+date -u +"RECEIVE CLI end UTC: %Y-%m-%dT%H:%M:%SZ"
+```
+
+If the exact `send` command shape changes, keep the benchmark invariant the
+same: the token must already exist before the timed receiver command starts.
+
+Required receive timeline:
+
+| Stage | Timestamp UTC | Delta From Previous | Notes |
+| --- | --- | ---: | --- |
+| receiver CLI start | TBD | - | command invocation |
+| token decoded and federation wallet selected | TBD | TBD | wallet/CLI setup and federation registry lookup |
+| swap request received by mint | TBD | TBD | public `/v1/swap` request from receiver wallet |
+| swap consensus accepted | TBD | TBD | accepted `swap` operation in AlephBFT journal |
+| input proofs spent and output shares persisted | TBD | TBD | deterministic apply/materialization complete |
+| shares returned to receiver | TBD | TBD | threshold member responses available |
+| receiver aggregation done | TBD | TBD | receiver stores fresh proofs and command exits |
+
+Target: receiver-side receive should complete in under 10 seconds on a fresh
+five-member, threshold-three fakewallet AlephBFT federation. Since receive is
+expected to require one consensus operation rather than the mint path's three
+serialized operations, a healthy warm receive should be materially faster than
+minting. A cold receive may still expose the idle-tail wakeup penalty, but it
+should not approach the old 24-28s mint timings.
+
+Classification rules:
+
+- If `/v1/swap` reaches a mint quickly but `swap consensus accepted` is delayed,
+  classify the delay as AlephBFT consensus cadence or idle-tail wakeup.
+- If `swap consensus accepted` is fast but `shares returned` or
+  `receiver aggregation done` is delayed, classify the delay as wallet fanout,
+  member response waiting, share verification, aggregation, or storage.
+- If the mint never sees `/v1/swap` for several seconds, classify the delay as
+  CLI startup, federation registry validation, token parsing, or connector
+  setup.
+- If accepted journal order shows more than one logical `swap` for a single
+  receive, classify and investigate duplicate submissions separately.
+
 Investigation targets:
 
 - AlephBFT session proposal interval.
@@ -360,9 +451,17 @@ Test plan:
   across all five live members; focused runs returned the local waiter around
   1.0-1.3s after recorder installation and then confirmed all members applied
   the operation.
-- Still needed: extend the non-production benchmark harness for AlephBFT operation latency:
-  - idle-tail first-operation versus active-tail follow-on runs
-  - 7-member federations
+  A seven-member threshold-five BFT-sized probe records the same stage sequence
+  across all seven live members; the focused run returned the local waiter
+  around 2.5-3.3s and confirmed all members applied by around 3.0-3.8s.
+  A default-cadence cold/warm probe records the idle-tail shape without fast
+  test delay overrides. After an idle pause, the cold operation yielded data
+  after about 2.0s and returned the local waiter at about 4.0-4.5s. The
+  immediate follow-up yielded after about 0.48s and returned at about 2.5s.
+- Still needed: use the combined process and in-process evidence to choose and
+  test a production-safe latency improvement:
+  - default-cadence process repetitions before and after any candidate tuning
+  - CPU and catch-up safety checks under idle and active workloads
 - Record proposal submitted, proposal broadcast, finalized, applied, and waiter notified timestamps.
 - Compare default timing with tuned intervals.
 - Confirm no CPU spin and no lost catch-up behavior.
@@ -465,20 +564,36 @@ To reach 5-10s full minting, a realistic near-term budget is:
 
 This totals about 6-8s in the fakewallet happy path. If the protocol remains at three serialized consensus operations, each consensus operation must be consistently near 1-2s. If consensus remains 4-10s per operation, the 5-10s target is not reachable without reducing the number of consensus operations.
 
+Receiver-side receive/swap target budget:
+
+| Stage | Target |
+| --- | ---: |
+| CLI startup/token decode/member setup | <= 1s |
+| `swap` consensus | <= 2s |
+| share collection/aggregation/storage | <= 1s |
+
+This gives a normal warm receive target around 3-4s and a hard target below
+10s. If receive is slower than 10s, the benchmark should identify whether the
+extra time is before swap submission, inside consensus, or after accepted swap
+application.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
 2. Add AlephBFT latency instrumentation in a non-production benchmark harness.
    Current checkpoint: single-operation, three-operation, duplicate-fanout, and
-   five-member live-session stage timing are implemented. Fast in-process
-   two-member finality/apply/waiter completion is around 50-80ms per operation;
-   the five-member threshold-three probe returned the local waiter around
-   1.0-1.3s.
+   five-member and seven-member live-session stage timing are implemented. Fast
+   in-process two-member finality/apply/waiter completion is around 50-80ms per
+   operation; the five-member threshold-three probe returned the local waiter
+   around 1.0-1.3s, and the seven-member threshold-five probe returned it around
+   2.5-3.3s. Default-cadence cold/warm timing now shows the idle-tail
+   data-provider wait directly: about 2.0s before the cold operation yields,
+   versus about 0.48s for the immediate follow-up.
 3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
    checkpoint: selective pending-work-aware tail cadence is implemented,
    behavior-tested, and process-verified for idle cooling; cold mints are still
    12-14s because they need three serialized consensus operations and can wait
    on the 2s idle tail before the first active proposal.
 4. Cache validated federation configs and aggregate keysets in the wallet/CLI.
-5. Re-benchmark two full mints after every change.
+5. Re-benchmark two full mints and one receiver-side receive/swap after every change.
 6. Only after the above, evaluate whether `mint_quote_payment` and `mint` can be safely merged or linked into a fewer-round design.
