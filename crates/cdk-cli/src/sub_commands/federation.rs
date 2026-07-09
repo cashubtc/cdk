@@ -171,7 +171,7 @@ impl FederationWalletRegistry {
     pub fn find_by_mint_url(&self, mint_url: &MintUrl) -> Option<&StoredFederationWallet> {
         self.wallets
             .iter()
-            .find(|wallet| &wallet.local_mint_url == mint_url)
+            .find(|wallet| wallet.matches_mint_url(mint_url))
     }
 }
 
@@ -205,13 +205,17 @@ impl StoredFederationWallet {
 
     /// Build the wallet config that injects a federated mint connector.
     pub fn wallet_config(&self) -> Result<WalletConfig> {
+        Ok(WalletConfig::new().with_mint_connector(self.mint_connector()?))
+    }
+
+    /// Build the federated mint connector for this imported federation.
+    pub fn mint_connector(&self) -> Result<Arc<dyn MintConnector + Send + Sync>> {
         self.validate()?;
         let connector = FederatedMintConnector::from_public_config_urls_with_config(
             self.public_config.clone(),
             self.connector_policy.connector_config(),
         )?;
-        let connector = Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>;
-        Ok(WalletConfig::new().with_mint_connector(connector))
+        Ok(Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>)
     }
 
     /// Return all active units advertised by the imported federation.
@@ -232,6 +236,16 @@ impl StoredFederationWallet {
             .keysets
             .iter()
             .any(|keyset| keyset.active && &keyset.unit == unit)
+    }
+
+    /// Return whether a mint URL identifies this imported federation wallet.
+    pub fn matches_mint_url(&self, mint_url: &MintUrl) -> bool {
+        &self.local_mint_url == mint_url
+            || self
+                .public_config
+                .members
+                .values()
+                .any(|member| &member.public_mint_url == mint_url)
     }
 
     /// Return the federation ID for display.
@@ -541,5 +555,31 @@ mod tests {
 
         wallet.wallet_config().expect("wallet config");
         assert!(wallet.supports_unit(&CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn registry_resolves_member_public_mint_url() {
+        let public_config = valid_public_config();
+        let member_two_url = public_config
+            .members
+            .get(&member_id(2))
+            .expect("member two")
+            .public_mint_url
+            .clone();
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+
+        let mut registry = FederationWalletRegistry::default();
+        registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect("upsert");
+
+        let resolved = registry
+            .find_by_mint_url(&member_two_url)
+            .expect("member URL resolves to imported federation");
+        assert!(resolved.matches_mint_url(&member_two_url));
     }
 }

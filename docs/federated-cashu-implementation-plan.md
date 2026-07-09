@@ -3096,9 +3096,10 @@ Implementation checklist:
 - [ ] Wire every `cdk-cli` command through the federation connector when
   federation mode is active. The first path now covers startup activation,
   balance, mint, send/swap, receive, melt, restore-style wallet lookup, keyset
-  helper commands that use `get_or_create_wallet`, and mint-pending wallet
-  recovery. Direct HTTP commands such as `mint-info` still need explicit
-  federation-aware routing or a documented standalone behavior.
+  helper commands that use `get_or_create_wallet`, mint-pending wallet
+  recovery, and `mint-info` through the imported federation connector. Remaining
+  direct HTTP or auth-related commands need an explicit federation-aware route
+  or a documented standalone behavior.
 - [ ] Add all CLI options for wallet-side federation request policy. The first
   path now exposes member fallback timeout, member request timeout, quote-status
   timeout, retry count, fanout concurrency, and mint-quote visibility controls;
@@ -3112,8 +3113,9 @@ Implementation checklist:
 - [ ] Make received-token handling resolve federation metadata from the token
   mint/federation identity, or return a clear actionable error when the CLI has
   not imported the corresponding federation config. The first path resolves
-  tokens whose mint URL matches the imported primary/local federation URL.
-- [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases.
+  tokens whose mint URL matches the imported local federation URL or any member
+  public mint URL in the imported federation config.
+- [ ] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path now tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member.
 - [x] Document how to use `cdk-cli` against a locally generated federation from
   the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
 
@@ -3126,7 +3128,10 @@ Latest checkpoint:
   token back, melted a 10 sat BOLT11 invoice with 1 sat fee paid, verified the
   final CLI balance was 9 sat, and verified all five federation members were
   healthy and converged at 6 accepted operations with the same order digest and
-  state digest.
+  state digest. A follow-up CLI routing checkpoint now resolves imported
+  federations by any member public mint URL, uses the federation connector for
+  `mint-info`, and treats imported member URLs as trusted federation metadata
+  during receive.
 
 First local CLI smoke command shape:
 
@@ -3160,7 +3165,8 @@ Tests and success criteria:
   invite/config and rejects malformed, stale-version, mismatched-roster, or
   non-v3/BLS federation metadata before constructing a wallet connector. Current
   focused tests cover valid public config persistence, inactive keyset
-  rejection, connector construction, and CLI parse shape.
+  rejection, member public mint URL resolution, connector construction, and CLI
+  parse shape.
 - [x] CLI command tests prove `cdk-cli federation add --public-config
   <federation-public.json>` stores only public federation metadata and never
   persists member private configs or mint-side private material.
@@ -3183,7 +3189,9 @@ Tests and success criteria:
 - [ ] CLI receive tests prove received tokens resolve to imported federation
   metadata, and missing federation metadata produces a clear error instead of
   silently treating the token as a standalone mint token. Current live smoke
-  proves receive when the token mint URL matches the imported federation URL.
+  proves receive when the token mint URL matches the imported federation URL,
+  and focused registry coverage proves imported member public URLs resolve to
+  the same federation metadata before wallet construction.
 - [x] Add a fakewallet federation CLI smoke test that starts N local federation
   members, imports `federation-public.json` into `cdk-cli`, mints with fake paid
   quotes, performs send/swap, melts through the fake successful backend, and

@@ -149,10 +149,21 @@ async fn receive_token(
     let mint_url = token.mint_url()?;
 
     // Check if the mint is already trusted
+    #[cfg(feature = "federation")]
+    let is_trusted = wallet_repository.has_mint(&mint_url).await
+        || crate::utils::is_configured_federation_mint_url(&mint_url)?;
+    #[cfg(not(feature = "federation"))]
     let is_trusted = wallet_repository.has_mint(&mint_url).await;
 
     // If mint is not trusted and we don't allow untrusted, error out
     if !is_trusted && !allow_untrusted {
+        #[cfg(feature = "federation")]
+        return Err(anyhow!(
+            "Mint {} is not trusted or imported as a federation member. Run `cdk-cli federation add --public-config <path>` for federated tokens, or use --allow-untrusted to receive from untrusted standalone mints.",
+            mint_url
+        ));
+
+        #[cfg(not(feature = "federation"))]
         return Err(anyhow!(
             "Mint {} is not trusted. Use --allow-untrusted to receive from untrusted mints.",
             mint_url

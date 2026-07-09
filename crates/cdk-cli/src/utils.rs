@@ -58,7 +58,7 @@ pub async fn get_or_create_wallet(
     unit: &CurrencyUnit,
 ) -> Result<cdk::wallet::Wallet> {
     #[cfg(feature = "federation")]
-    if let Some(federation_wallet) = configured_federation_wallet(mint_url)? {
+    if let Some(federation_wallet) = federation_wallet_for_mint_url(mint_url)? {
         return create_or_replace_federation_wallet(
             wallet_repository,
             mint_url,
@@ -75,6 +75,23 @@ pub async fn get_or_create_wallet(
             .await
             .map_err(Into::into),
     }
+}
+
+#[cfg(feature = "federation")]
+/// Return whether a mint URL maps to an imported federation wallet.
+pub fn is_configured_federation_mint_url(mint_url: &MintUrl) -> Result<bool> {
+    Ok(federation_wallet_for_mint_url(mint_url)?.is_some())
+}
+
+#[cfg(feature = "federation")]
+/// Return the imported federation wallet that matches a local or member mint URL.
+pub fn federation_wallet_for_mint_url(
+    mint_url: &MintUrl,
+) -> Result<Option<StoredFederationWallet>> {
+    let Some(registry) = federation_registry()? else {
+        return Ok(None);
+    };
+    Ok(registry.find_by_mint_url(mint_url).cloned())
 }
 
 #[cfg(feature = "federation")]
@@ -130,14 +147,6 @@ fn federation_registry() -> Result<Option<Arc<FederationWalletRegistry>>> {
         .read()
         .map_err(|_| anyhow!("Federation registry lock is poisoned"))?;
     Ok(guard.clone())
-}
-
-#[cfg(feature = "federation")]
-fn configured_federation_wallet(mint_url: &MintUrl) -> Result<Option<StoredFederationWallet>> {
-    let Some(registry) = federation_registry()? else {
-        return Ok(None);
-    };
-    Ok(registry.find_by_mint_url(mint_url).cloned())
 }
 
 #[cfg(feature = "federation")]

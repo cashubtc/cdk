@@ -438,7 +438,7 @@
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value"><code>cdk-cli --features federation</code> can import a public federation config into a public-only registry, activate a federation-aware wallet at startup, and reuse normal CLI mint/send/receive/melt/balance commands through threshold member fanout. A manual five-member AlephBFT fakewallet run completed mint 20 sat, swap/send 7 sat, receive 7 sat, melt 10 sat plus fee reserve, and ended with every member converged at the same accepted-operation and state digest.</span>
+          <span class="value"><code>cdk-cli --features federation</code> can import a public federation config into a public-only registry, activate a federation-aware wallet at startup, and reuse normal CLI mint/send/receive/melt/balance commands through threshold member fanout. The CLI now also resolves imported federations by any member public mint URL, routes <code>mint-info</code> through the federation connector, and treats imported member URLs as trusted federation metadata during receive.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -699,7 +699,7 @@
             <div>
               <h3>Milestone 25: CLI wallet federation support</h3>
               <p>Objective: make <code>cdk-cli</code> usable as a federation-aware wallet instead of only exposing federation through the wallet library connector.</p>
-              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, startup connector activation, standalone CLI compatibility, and a live AlephBFT mint/send/receive/melt smoke are passing; restore/check-state and adversarial member CLI smokes remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Current checkpoint: public-config import, startup connector activation, federation-aware <code>mint-info</code>, member-URL token resolution, standalone CLI compatibility, and a live AlephBFT mint/send/receive/melt smoke are passing; restore/check-state and adversarial member CLI smokes remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -736,7 +736,7 @@
           </article>
           <article class="item">
             <h3>Wallet federation</h3>
-            <p>The wallet connector discovers federation invites, requires typed member mint-info metadata, filters compatible members through a dedicated validation module, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement. The CLI can now import a public federation config, persist only public federation metadata, activate the connector at startup, and route normal mint, send, receive, melt, and balance commands through the federation wallet path.</p>
+            <p>The wallet connector discovers federation invites, requires typed member mint-info metadata, filters compatible members through a dedicated validation module, fans out requests, handles retries, slow members, mixed final/pending/rejected responses, invalid share responses, and one offline member during key discovery, aggregates threshold-valid mint/swap/melt/restore shares, and requires threshold check-state agreement. The CLI can now import a public federation config, persist only public federation metadata, activate the connector at startup, resolve tokens by local or member mint URL, route <code>mint-info</code> through the federation connector, and route normal mint, send, receive, melt, and balance commands through the federation wallet path.</p>
           </article>
           <article class="item">
             <h3>DKG and rotation path</h3>
@@ -929,7 +929,7 @@
         <div class="stack">
           <article class="item">
             <h3>CLI federation coverage</h3>
-            <p>Script the manual AlephBFT CLI smoke, add restore and check-state CLI assertions, audit direct commands that still perform raw HTTP against one member, and add failure matrices for slow, offline, bad-share, mismatched-keyset, and insufficient-threshold member sets.</p>
+            <p>Script the manual AlephBFT CLI smoke, add restore and check-state CLI assertions, finish the remaining direct-command audit after <code>mint-info</code>, and add failure matrices for slow, offline, bad-share, mismatched-keyset, and insufficient-threshold member sets.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>
