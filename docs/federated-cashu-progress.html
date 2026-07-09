@@ -424,25 +424,26 @@
           <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
           <a class="link-pill" href="./federated-cashu-storage-scope.md">Storage scope</a>
           <a class="link-pill" href="./fedimint_consensus_review.md">Fedimint consensus review</a>
+          <a class="link-pill" href="./federated-cashu-minting-performance-benchmark.md">Minting benchmark</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, one slow fakewallet member outside the fast threshold path, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, reachable standalone members missing federation mint-info metadata failing before proofs exist, and generated configs whose members are all unreachable. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, explicit primary-member request policy, and read-only startup behavior at the CLI boundary. The latest performance pass identifies the CLI CPU delay as repeated BLS aggregate-key validation on the already validated registry path, fixes that hot path, makes AlephBFT backup persistence retry transient SQLite contention, and prevents public federated mint operations from entering consensus before payment observations are locally visible.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, one slow fakewallet member outside the fast threshold path, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, reachable standalone members missing federation mint-info metadata failing before proofs exist, and generated configs whose members are all unreachable. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, explicit primary-member request policy, read-only startup behavior, and immediate mint payment observations at the CLI/mint boundary. The latest performance pass found that federated minting was dominated by three serialized AlephBFT operations plus a removable periodic observer gap; the observer gap is now fixed and the remaining performance work is AlephBFT cadence plus CLI config/key validation cost.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add cli slow-member smoke</span>
+          <span class="value">fix: observe mint payments after quote consensus</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The slow-member CLI smoke now starts a five-member threshold-four AlephBFT fakewallet federation with member 5 configured for a 30-second fakewallet delay, imports the federation with member 1 as primary, mints 12 sat through the fast threshold path, checks the local proofs are unspent, and asserts that exactly one bolt11 mint quote was created. A live run of <code>just fed-regtest-cli-smoke-slow-member</code> passed on 2026-07-09.</span>
+          <span class="value">A fresh five-member threshold-three fakewallet AlephBFT benchmark confirmed every mint still requires <code>mint_quote</code>, <code>mint_quote_payment</code>, and <code>mint</code>, but the pre-fix periodic observer gap was avoidable. The mint quote route now checks the just-created quote once after quote consensus and immediately submits <code>MintQuotePayment</code> when it is already paid, while unpaid quotes continue to rely on later quote checks or the periodic observer. Two full federated mints improved from 27.67s and 24.63s to 12.58s and 8.65s, with all five members converged on six accepted operations and matching order/state digests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add CLI failure matrices for bad shares, non-v3 request-output failures, and mismatched restore/check-state member views, then keep using the successful threshold-style live timing run as the performance baseline.</span>
+          <span class="value">Benchmark and tune AlephBFT proposal/finality cadence, then cache validated federation config and aggregate key material on the CLI path without weakening non-v3/BLS or mismatched-member rejection.</span>
         </div>
       </aside>
     </header>

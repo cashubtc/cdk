@@ -260,7 +260,40 @@ async fn submit_federation_mint_quote_operation(
         mint_quote_response_to_string(response),
     );
     state.submit_federation_envelope(envelope).await?;
+    match submit_federation_mint_quote_payment_observation_for_quote(state, response.quote()).await
+    {
+        Ok(true) => {
+            tracing::debug!(
+                quote = %response.quote(),
+                "Submitted immediate federation mint payment observation"
+            );
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::debug!(
+                quote = %response.quote(),
+                "Immediate federation mint payment observation failed: {}",
+                err
+            );
+        }
+    }
     Ok(())
+}
+
+#[cfg(feature = "federation")]
+async fn submit_federation_mint_quote_payment_observation_for_quote(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> Result<bool, cdk::Error> {
+    let responses = state
+        .mint
+        .check_mint_quotes(std::slice::from_ref(quote_id))
+        .await?;
+    let Some(response) = responses.first() else {
+        return Ok(false);
+    };
+
+    submit_federation_mint_quote_payment_observation(state, response).await
 }
 
 #[cfg(feature = "federation")]
@@ -2340,6 +2373,131 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    struct InstantIncomingPaymentWallet {
+        inner: FakeWallet,
+        incoming_payments:
+            Arc<tokio::sync::Mutex<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
+    }
+
+    #[cfg(feature = "federation")]
+    impl InstantIncomingPaymentWallet {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: FakeWallet::new(
+                    FeeReserve {
+                        min_fee_reserve: 1.into(),
+                        percent_fee_reserve: 0.0,
+                    },
+                    HashMap::default(),
+                    HashSet::default(),
+                    0,
+                    CurrencyUnit::Sat,
+                ),
+                incoming_payments: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            })
+        }
+
+        fn amount_for_incoming_payment(options: &IncomingPaymentOptions) -> Amount<CurrencyUnit> {
+            match options {
+                IncomingPaymentOptions::Bolt11(options) => options.amount.clone(),
+                IncomingPaymentOptions::Bolt12(options) => options
+                    .amount
+                    .clone()
+                    .unwrap_or_else(|| Amount::new(0, CurrencyUnit::Sat)),
+                IncomingPaymentOptions::Custom(options) => options.amount.clone(),
+                IncomingPaymentOptions::Onchain(_) => Amount::new(1, CurrencyUnit::Sat),
+            }
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[async_trait]
+    impl MintPayment for InstantIncomingPaymentWallet {
+        type Err = cdk_payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            let amount = Self::amount_for_incoming_payment(&options);
+            let response = self.inner.create_incoming_payment_request(options).await?;
+            let payment = WaitPaymentResponse {
+                payment_identifier: response.request_lookup_id.clone(),
+                payment_amount: amount,
+                payment_id: response.request_lookup_id.to_string(),
+            };
+            self.incoming_payments
+                .lock()
+                .await
+                .entry(response.request_lookup_id.clone())
+                .or_default()
+                .push(payment);
+
+            Ok(response)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.make_payment(unit, options).await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            self.inner.wait_payment_event().await
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            self.inner.is_payment_event_stream_active()
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            self.inner.cancel_payment_event_stream();
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            if let Some(payments) = self
+                .incoming_payments
+                .lock()
+                .await
+                .get(payment_identifier)
+                .cloned()
+            {
+                return Ok(payments);
+            }
+
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.check_outgoing_payment(payment_identifier).await
+        }
+    }
+
+    #[cfg(feature = "federation")]
     fn test_federation_runtime_config() -> cdk::mint::FederationRuntimeConfig {
         let member = cdk::federation::TrustedDealerMember::new(
             cdk::federation::MemberId::new(1).expect("member id"),
@@ -4193,8 +4351,9 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn post_mint_custom_quote_records_federation_quote_operation() {
-        let state = create_federated_test_state().await;
+    async fn post_mint_custom_quote_records_quote_and_immediate_payment_observation() {
+        let state =
+            create_federated_test_state_with_backend(InstantIncomingPaymentWallet::new()).await;
         let payload = serde_json::to_value(MintQuoteBolt11Request {
             amount: Amount::from(2u64),
             unit: CurrencyUnit::Sat,
@@ -4214,7 +4373,10 @@ mod tests {
         assert!(result.is_ok(), "mint quote creation should succeed");
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuote]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
     }
 
@@ -4250,6 +4412,44 @@ mod tests {
                 .expect("mint quotes lookup")
                 .is_empty(),
             "halted AlephBFT public mint quote route must not persist a local quote"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_mint_custom_quote_skips_immediate_observation_when_unpaid() {
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            60,
+            CurrencyUnit::Sat,
+        );
+        let state = create_federated_test_state_with_backend(Arc::new(fake)).await;
+        let payload = serde_json::to_value(MintQuoteBolt11Request {
+            amount: Amount::from(2u64),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        })
+        .expect("mint quote payload");
+
+        let result = post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_ok(), "unpaid mint quote creation should succeed");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuote],
+            "unpaid mint quote creation should only record the quote operation"
         );
     }
 

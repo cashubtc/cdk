@@ -52,6 +52,32 @@ Current blocking bugs:
 
 - None recorded.
 
+## Recent performance checkpoint
+
+- Latest minting performance checkpoint: a fresh five-member, threshold-three
+  fakewallet AlephBFT benchmark confirmed the pre-fix delay was not direct HTTP,
+  fakewallet settlement, catch-up, or DB contention. Each full mint still
+  requires three serialized accepted operations: `mint_quote`,
+  `mint_quote_payment`, and `mint`. The dominant pre-fix avoidable delay was
+  the periodic mint payment observer tick after a quote was already paid.
+- Implemented fix: after `mint_quote` consensus is accepted, the public mint
+  quote route checks only the just-created quote once and, if it is already
+  paid, submits the existing `mint_quote_payment` observation immediately.
+  Unpaid quotes keep the previous behavior and rely on later quote checks or
+  the periodic observer fallback. The accepted journal sequence remains
+  unchanged.
+- Post-fix benchmark result: two full federated mints dropped from 27.67s and
+  24.63s to 12.58s and 8.65s respectively. All five members converged on the
+  same six accepted operations, latest index 5, matching order digest, and
+  matching state digest. One harmless duplicate submission/waiter join was
+  observed when the immediate observation path raced the periodic observer.
+- Focused tests passed on 2026-07-09:
+  `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
+  `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
+  `cargo test -p cdk-axum --features federation federation_payment_observation_handlers_are_backend_agnostic -- --test-threads 1`,
+  and
+  `cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`.
+
 ## Sources reviewed
 
 CDK source areas:
@@ -2374,6 +2400,7 @@ Implementation checklist:
 - [x] All members persist the same quote after consensus accepts it.
 - [x] Payment observation operations are submitted and processed through consensus.
 - [x] Add an always-on payment observer task per member that watches unpaid quotes and submits mint quote payment observations.
+- [x] After a `MintQuote` operation is accepted, immediately check the just-created quote once and submit a `MintQuotePayment` observation if the backend already reports it paid, while keeping the periodic observer as the fallback for delayed payments.
 - [x] `MintQuotePayment` carries observer, method, state, amount paid, amount issued, and optional payment proof.
 - [x] Add explicit payment ID and observed-time fields if optional payment proof plus journal ordering are insufficient.
 - [x] Mark quote paid only after the configured observation policy is satisfied.
