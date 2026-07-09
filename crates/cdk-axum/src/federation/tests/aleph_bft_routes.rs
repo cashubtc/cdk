@@ -188,8 +188,11 @@ async fn private_aleph_bft_finalized_unit_route_persists_applies_and_records_seq
         .localstore()
         .get_federation_member_sequences()
         .await
-        .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+        .expect("durable sequences");
+    assert!(
+        sequences.is_empty(),
+        "AlephBFT gossip should not persist liveness-only sequence watermarks"
+    );
 }
 
 #[tokio::test]
@@ -747,8 +750,11 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
         .localstore()
         .get_federation_member_sequences()
         .await
-        .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+        .expect("durable sequences");
+    assert!(
+        sequences.is_empty(),
+        "AlephBFT gossip should not persist liveness-only sequence watermarks"
+    );
 }
 
 #[tokio::test]
@@ -798,8 +804,11 @@ async fn private_aleph_bft_network_message_route_rejects_same_sequence_equivocat
         .localstore()
         .get_federation_member_sequences()
         .await
-        .expect("persisted sequences after equivocation");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+        .expect("durable sequences after equivocation");
+    assert!(
+        sequences.is_empty(),
+        "AlephBFT gossip sequence watermarks should remain in memory only"
+    );
 }
 
 #[tokio::test]

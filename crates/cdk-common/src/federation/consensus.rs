@@ -1725,6 +1725,31 @@ impl FederationAlephBftConsensusAdapter {
         Ok(())
     }
 
+    /// Begin a later AlephBFT session and requeue local items from units that
+    /// were dispatched but not finalized before the previous session ended.
+    pub fn begin_session_requeue_pending_finalization(&mut self, session: u64) -> Result<usize> {
+        let pending_items = self
+            .pending_finalization_units
+            .values()
+            .flat_map(|items| items.iter().cloned())
+            .collect::<Vec<_>>();
+
+        self.finalization_handler.begin_session(session)?;
+        self.data_provider.begin_session(session);
+        self.pending_finalization_units.clear();
+        self.pending_finalization_operation_ids.clear();
+        self.pending_finalization_conflict_keys.clear();
+
+        let mut requeued = 0usize;
+        for item in pending_items {
+            if self.data_provider.submit_item(item)? == FederationConsensusItemAdmission::Accepted {
+                requeued = requeued.saturating_add(1);
+            }
+        }
+
+        Ok(requeued)
+    }
+
     /// Queue one operation envelope for AlephBFT unit construction.
     pub fn submit_operation(
         &mut self,
@@ -2220,6 +2245,26 @@ impl FederationConsensusRuntime {
     pub fn begin_aleph_bft_session(&mut self, session: u64) -> Result<()> {
         match &mut self.backend {
             FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.begin_session(session),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Begin a later AlephBFT session, requeueing local units that were not
+    /// finalized before the previous session ended.
+    pub fn begin_aleph_bft_session_requeue_pending_finalization(
+        &mut self,
+        session: u64,
+    ) -> Result<usize> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                adapter.begin_session_requeue_pending_finalization(session)
+            }
             FederationConsensusRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {
                     backend: FederationConsensusBackendKind::AlephBft
@@ -2996,6 +3041,26 @@ impl FederationConsensusBackendAdapterRuntime {
         match &mut self.backend {
             FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
                 adapter.begin_session(session)
+            }
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Begin a later AlephBFT session, requeueing local units that were not
+    /// finalized before the previous session ended.
+    pub fn begin_aleph_bft_session_requeue_pending_finalization(
+        &mut self,
+        session: u64,
+    ) -> Result<usize> {
+        match &mut self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                adapter.begin_session_requeue_pending_finalization(session)
             }
             FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {

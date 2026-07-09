@@ -44,6 +44,7 @@ const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
 const OFFLINE_MEMBER_SMOKE_SEED: [u8; 64] = [10u8; 64];
 const KEYSET_ROTATION_SMOKE_SEED: [u8; 64] = [11u8; 64];
 const MEMBER_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const FEDERATION_SMOKE_MEMBER_TIMEOUT: Duration = Duration::from_secs(60);
 const FEDERATION_SMOKE_RESTORE_BATCH_SIZE: u32 = 8;
 const FEDERATION_SMOKE_RESTORE_MAX_GAP: u32 = 2;
 
@@ -310,12 +311,9 @@ fn validate_smoke_operation_args(args: &FederationSmokeOperationsArgs) -> Result
 
 fn smoke_connector_config(args: &FederationSmokeOperationsArgs) -> FederatedMintConnectorConfig {
     let mut config = FederatedMintConnectorConfig::default();
-    if let Some(timeout_seconds) = args.operation_timeout_seconds {
-        let timeout = Duration::from_secs(timeout_seconds);
-        config.member_fallback_timeout = timeout;
-        config.member_request_timeout = timeout;
-        config.quote_status_member_timeout = timeout;
-    }
+    config.member_fallback_timeout = FEDERATION_SMOKE_MEMBER_TIMEOUT;
+    config.member_request_timeout = FEDERATION_SMOKE_MEMBER_TIMEOUT;
+    config.quote_status_member_timeout = FEDERATION_SMOKE_MEMBER_TIMEOUT;
     config.mint_quote_visibility_attempts = args.quote_retries;
     config.mint_quote_visibility_retry_delay = Duration::from_millis(args.quote_sleep_ms);
     config

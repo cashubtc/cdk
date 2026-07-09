@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 #[cfg(feature = "federation")]
 use std::sync::Mutex;
+#[cfg(feature = "federation")]
+use std::time::Duration;
 
 use anyhow::Result;
 use auth::create_auth_router;
@@ -80,6 +82,11 @@ type FederationAlephBftNetworkInboundState =
 #[cfg(feature = "federation")]
 type FederationAlephBftLiveSessionState =
     Arc<tokio::sync::RwLock<Option<FederationAlephBftLiveSessionTaskHandle>>>;
+
+#[cfg(feature = "federation")]
+pub(crate) const FEDERATION_APPLY_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
+#[cfg(feature = "federation")]
+pub(crate) const FEDERATION_APPLY_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
@@ -2200,6 +2207,18 @@ impl MintState {
                 self.record_federation_sequence(sequence.0, sequence.1)
                     .await;
             }
+            let entries = responses
+                .iter()
+                .map(|response| response.outcome.entry().clone())
+                .collect::<Vec<_>>();
+            let entries_to_apply = accepted_federation_journal_entries(&entries);
+            self.apply_federation_journal_entries(&entries_to_apply)
+                .await?;
+            self.record_federation_state_digest_checkpoint_for_latest_entry(
+                &entries,
+                &entries_to_apply,
+            )
+            .await?;
             let responses = self
                 .federation_submit_responses_with_current_status(&responses)
                 .await;
@@ -2522,18 +2541,27 @@ impl MintState {
         let finality = status.finality;
         let mut retained_items = local_finalized_items;
         retained_items.extend(new_finalized_items.iter().cloned());
+        let target_session =
+            latest_aleph_bft_finalized_session(&retained_items).max(status.session);
         let member_ids = public_config.members.keys().copied();
         let mut next_consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
             public_config.federation_id,
             runtime_config.member_id(),
-            status.session,
+            target_session,
             member_ids,
             public_config.threshold_params.consensus_threshold,
             retained_items,
         )?;
         next_consensus.set_aleph_bft_finality_mode(finality)?;
+        let recovered_entries_before_status_overlay = next_consensus.journal().entries().to_vec();
+        let entries_to_retry_from_local_overlap = stale_local_aleph_bft_entries_to_retry(
+            &local_entries,
+            &recovered_entries_before_status_overlay,
+        );
         for local_entry in &local_entries {
-            next_consensus.update_status(local_entry.operation_id, local_entry.status)?;
+            if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status) {
+                next_consensus.update_status(local_entry.operation_id, local_entry.status)?;
+            }
         }
         let recovered_entries = next_consensus.journal().entries();
         if recovered_entries.len() < local_entries.len() {
@@ -2560,8 +2588,10 @@ impl MintState {
             ));
         }
 
-        let entries_to_apply = accepted_federation_journal_entries(&applied);
+        let mut entries_to_apply = entries_to_retry_from_local_overlap;
+        entries_to_apply.extend(accepted_federation_journal_entries(&applied));
         self.persist_federation_aleph_bft_catch_up(
+            target_session,
             &new_finalized_items,
             &applied,
             &session_outcomes,
@@ -3004,12 +3034,15 @@ impl MintState {
 
     async fn persist_federation_aleph_bft_catch_up(
         &self,
+        active_session: u64,
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
         session_outcomes: &[&FederationSessionOutcome],
     ) -> Result<(), cdk::Error> {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
+        tx.set_federation_aleph_bft_active_session(active_session)
+            .await?;
         tx.add_federation_aleph_bft_finalized_items(finalized_items)
             .await?;
         for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
@@ -3209,17 +3242,45 @@ impl MintState {
         &self,
         entry: &FederationJournalEntry,
     ) -> Result<Option<FederationOperationId>, cdk::Error> {
-        match self.mint.apply_accepted_federation_operation(entry).await {
-            Ok(true) => Ok(Some(entry.operation_id)),
-            Ok(false) => Ok(None),
-            Err(err) => {
-                let status = self
-                    .mark_federation_operation_apply_failure(entry.operation_id, &err)
-                    .await?;
-                if status == FederationOperationStatus::Rejected {
-                    Ok(None)
-                } else {
-                    Err(err)
+        let mut attempts = 0usize;
+        let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+
+        loop {
+            match self.mint.apply_accepted_federation_operation(entry).await {
+                Ok(true) => {
+                    if attempts > 0 {
+                        tracing::info!(
+                            operation_id = %entry.operation_id,
+                            retry_attempts = attempts,
+                            "Federation journal replay apply recovered after transient storage contention"
+                        );
+                    }
+                    return Ok(Some(entry.operation_id));
+                }
+                Ok(false) => return Ok(None),
+                Err(err) if is_retryable_federation_apply_error(&err) => {
+                    attempts = attempts.saturating_add(1);
+                    if attempts == 1 || attempts % 10 == 0 {
+                        tracing::warn!(
+                            operation_id = %entry.operation_id,
+                            retry_attempts = attempts,
+                            retry_delay_ms = retry_delay.as_millis(),
+                            "Federation journal replay apply hit transient storage contention; retrying"
+                        );
+                    }
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = retry_delay
+                        .saturating_mul(2)
+                        .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
+                }
+                Err(err) => {
+                    let status = self
+                        .mark_federation_operation_apply_failure(entry.operation_id, &err)
+                        .await?;
+                    if status == FederationOperationStatus::Rejected {
+                        return Ok(None);
+                    }
+                    return Err(err);
                 }
             }
         }
@@ -3578,11 +3639,69 @@ fn accepted_federation_journal_entries(
 }
 
 #[cfg(feature = "federation")]
+fn should_overlay_local_status_after_aleph_bft_recovery(status: FederationOperationStatus) -> bool {
+    matches!(
+        status,
+        FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+    )
+}
+
+#[cfg(feature = "federation")]
+fn stale_local_aleph_bft_entries_to_retry(
+    local_entries: &[FederationJournalEntry],
+    recovered_entries: &[FederationJournalEntry],
+) -> Vec<FederationJournalEntry> {
+    local_entries
+        .iter()
+        .zip(recovered_entries.iter())
+        .filter_map(|(local_entry, recovered_entry)| {
+            let finalized_entry_is_accepted = matches!(
+                recovered_entry.status,
+                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
+            );
+            let local_entry_needs_retry = matches!(
+                local_entry.status,
+                FederationOperationStatus::Accepted
+                    | FederationOperationStatus::Applying
+                    | FederationOperationStatus::Failed
+            );
+            (finalized_entry_is_accepted && local_entry_needs_retry)
+                .then(|| recovered_entry.clone())
+        })
+        .collect()
+}
+
+#[cfg(feature = "federation")]
 fn federation_operation_status_for_apply_error(error: &cdk::Error) -> FederationOperationStatus {
     if error.is_definitive_failure() {
         FederationOperationStatus::Rejected
     } else {
         FederationOperationStatus::Failed
+    }
+}
+
+#[cfg(feature = "federation")]
+pub(crate) fn is_retryable_federation_apply_error(err: &cdk::Error) -> bool {
+    match err {
+        cdk::Error::ConcurrentUpdate => true,
+        cdk::Error::Database(err) => is_retryable_federation_database_error(err),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "federation")]
+fn is_retryable_federation_database_error(err: &cdk::cdk_database::Error) -> bool {
+    match err {
+        cdk::cdk_database::Error::ConcurrentUpdate | cdk::cdk_database::Error::Locked => true,
+        cdk::cdk_database::Error::Database(source) => {
+            let detail = source.to_string().to_ascii_lowercase();
+            detail.contains("database is locked")
+                || detail.contains("database locked")
+                || detail.contains("database is busy")
+                || detail.contains("database busy")
+                || detail.contains("databasebusy")
+        }
+        _ => false,
     }
 }
 

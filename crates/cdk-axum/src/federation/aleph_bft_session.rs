@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aleph_bft::{
-    create_config, default_config, run_session, Config as AlephBftConfig, DelayConfig, Index,
+    create_config, default_delay_config, run_session, Config as AlephBftConfig, DelayConfig, Index,
     NodeCount, Terminator,
 };
 use cdk::federation::{FederationAlephBftFinalityMode, FederationConsensusBackendKind, MemberId};
@@ -22,12 +22,18 @@ use super::aleph_bft_runtime::{
 };
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
+use crate::{
+    is_retryable_federation_apply_error, FEDERATION_APPLY_RETRY_INITIAL_DELAY,
+    FEDERATION_APPLY_RETRY_MAX_DELAY,
+};
 
 // AlephBFT validates its default delay schedule by summing all configured
 // round delays. Keep production live sessions comfortably bounded; natural
 // completion now rotates into the next session, while longer process-level
 // checkpoint windows remain separate coverage.
 const CDK_ALEPH_BFT_MAX_ROUND: u16 = 3000;
+const CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND: usize = 64;
+const CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -92,13 +98,22 @@ impl FederationAlephBftLiveSessionOptions {
 
     pub(crate) fn after_automatic_rotation(&self) -> Self {
         let mut next = self.clone();
-        if let Some(limit) = next.automatic_rotation_limit.as_mut() {
-            *limit = limit.saturating_sub(1);
-            if *limit == 0 {
+        if let Some(limit) = next.automatic_rotation_limit {
+            let remaining = limit.saturating_sub(1);
+            if remaining == 0 {
                 next.max_round = CDK_ALEPH_BFT_MAX_ROUND;
+                next.automatic_rotation_limit = None;
+            } else {
+                next.automatic_rotation_limit = Some(remaining);
             }
         }
         next
+    }
+
+    fn without_sync_warmup_round_cap(mut self) -> Self {
+        self.max_round = CDK_ALEPH_BFT_MAX_ROUND;
+        self.automatic_rotation_limit = None;
+        self
     }
 }
 
@@ -345,18 +360,26 @@ where
             "AlephBFT active session transaction commit failed: {err}"
         ))
     })?;
-    let session_io =
-        CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&retry_store), session_id)
-            .await?;
-    let reload_persisted_network_retries = retry_store
+    let existing_session_backup_bytes = retry_store
         .get_federation_aleph_bft_backup_bytes(session_id)
         .await
         .map_err(|err| {
             cdk::Error::Custom(format!(
                 "AlephBFT network retry backup lookup failed: {err}"
             ))
-        })?
+        })?;
+    let has_existing_session_backup = existing_session_backup_bytes
+        .as_ref()
         .is_some_and(|bytes| !bytes.is_empty());
+    let options = aleph_bft_live_session_options_for_startup(
+        options,
+        session_id,
+        has_existing_session_backup,
+    );
+    let session_io =
+        CdkAlephBftSessionIo::from_db(Arc::clone(&consensus), Arc::clone(&retry_store), session_id)
+            .await?;
+    let reload_persisted_network_retries = has_existing_session_backup;
     if !reload_persisted_network_retries {
         let orphan_retries = retry_store
             .get_federation_aleph_bft_network_retries(session_id)
@@ -537,15 +560,42 @@ fn aleph_bft_config(
             delay_config,
             options.time_to_reach_max_round,
         ),
-        None => default_config(
+        None => create_config(
             node_count,
             node_index,
             session_id,
             options.max_round,
+            cdk_aleph_bft_delay_config(),
             options.time_to_reach_max_round,
         ),
     };
     config.map_err(|_| cdk::Error::Custom("Invalid AlephBFT live session config".to_string()))
+}
+
+fn aleph_bft_live_session_options_for_startup(
+    options: FederationAlephBftLiveSessionOptions,
+    session_id: u64,
+    has_existing_session_backup: bool,
+) -> FederationAlephBftLiveSessionOptions {
+    if options.automatic_rotation_limit.is_some() && (session_id > 0 || has_existing_session_backup)
+    {
+        return options.without_sync_warmup_round_cap();
+    }
+
+    options
+}
+
+fn cdk_aleph_bft_delay_config() -> DelayConfig {
+    let mut delay_config = default_delay_config();
+    let default_unit_creation_delay = Arc::clone(&delay_config.unit_creation_delay);
+    delay_config.unit_creation_delay = Arc::new(move |round| {
+        if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND {
+            CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
+        } else {
+            default_unit_creation_delay(round)
+        }
+    });
+    delay_config
 }
 
 fn spawn_federation_aleph_bft_session_completion_watcher<T>(
@@ -565,7 +615,7 @@ where
 
     Some(tokio::spawn(async move {
         match session_completed_receiver.await {
-            Ok(()) => {
+            Ok(_) => {
                 let mut state = state;
                 let next_options = options.after_automatic_rotation();
                 if let Err(err) = Box::pin(
@@ -747,9 +797,17 @@ where
                 FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             )
             .map_err(cdk::Error::from)?;
-        consensus
-            .begin_aleph_bft_session(next_session)
+        let requeued_items = consensus
+            .begin_aleph_bft_session_requeue_pending_finalization(next_session)
             .map_err(cdk::Error::from)?;
+        if requeued_items > 0 {
+            tracing::warn!(
+                completed_session,
+                next_session,
+                requeued_items,
+                "AlephBFT completed-session rotation requeued unfinalized local items"
+            );
+        }
         next_session
     };
 
@@ -787,11 +845,142 @@ async fn run_federation_aleph_bft_finalized_unit_apply_loop(
     >,
 ) {
     while let Some(payload) = finalized_units.recv().await {
-        if let Err(err) = state
-            .apply_federation_aleph_bft_finalized_unit(payload)
+        apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await;
+    }
+}
+
+async fn apply_federation_aleph_bft_finalized_unit_with_retry(
+    state: &MintState,
+    payload: cdk::federation::FederationAlephBftUnitPayload,
+) {
+    let mut attempts = 0usize;
+    let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+
+    loop {
+        match state
+            .apply_federation_aleph_bft_finalized_unit(payload.clone())
             .await
         {
-            tracing::warn!("AlephBFT finalized-unit apply loop failed: {}", err);
+            Ok(_) => {
+                if attempts > 0 {
+                    tracing::info!(
+                        retry_attempts = attempts,
+                        "AlephBFT finalized-unit apply recovered after transient storage contention"
+                    );
+                }
+                return;
+            }
+            Err(err) if is_retryable_federation_apply_error(&err) => {
+                attempts = attempts.saturating_add(1);
+                if attempts == 1 || attempts % 10 == 0 {
+                    tracing::warn!(
+                        retry_attempts = attempts,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "AlephBFT finalized-unit apply hit transient storage contention; retrying"
+                    );
+                }
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
+            }
+            Err(err) => {
+                tracing::warn!("AlephBFT finalized-unit apply loop failed: {}", err);
+                return;
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn finalized_unit_apply_retry_predicate_accepts_transient_storage_contention() {
+        let sqlite_locked = cdk::Error::Database(cdk::cdk_database::Error::Database(Box::new(
+            io::Error::new(io::ErrorKind::Other, "database is locked"),
+        )));
+        let sqlite_busy = cdk::Error::Database(cdk::cdk_database::Error::Database(Box::new(
+            io::Error::new(io::ErrorKind::Other, "DatabaseBusy"),
+        )));
+
+        assert!(is_retryable_federation_apply_error(
+            &cdk::Error::ConcurrentUpdate
+        ));
+        assert!(is_retryable_federation_apply_error(&cdk::Error::Database(
+            cdk::cdk_database::Error::Locked
+        )));
+        assert!(is_retryable_federation_apply_error(&sqlite_locked));
+        assert!(is_retryable_federation_apply_error(&sqlite_busy));
+    }
+
+    #[test]
+    fn finalized_unit_apply_retry_predicate_rejects_consensus_validation_errors() {
+        assert!(!is_retryable_federation_apply_error(
+            &cdk::Error::AmountOverflow
+        ));
+        assert!(!is_retryable_federation_apply_error(&cdk::Error::Database(
+            cdk::cdk_database::Error::UnknownQuote
+        )));
+        assert!(!is_retryable_federation_apply_error(&cdk::Error::Database(
+            cdk::cdk_database::Error::InvalidDbResponse
+        )));
+    }
+
+    #[test]
+    fn aleph_bft_live_session_options_restore_unlimited_rotation_after_sync_warmup() {
+        let options = FederationAlephBftLiveSessionOptions::default()
+            .with_max_round(8)
+            .with_automatic_rotation_limit(2);
+
+        let first_rotation = options.after_automatic_rotation();
+        assert_eq!(first_rotation.max_round(), 8);
+        assert_eq!(first_rotation.automatic_rotation_limit(), Some(1));
+
+        let second_rotation = first_rotation.after_automatic_rotation();
+        assert_eq!(second_rotation.max_round(), CDK_ALEPH_BFT_MAX_ROUND);
+        assert_eq!(second_rotation.automatic_rotation_limit(), None);
+
+        let third_rotation = second_rotation.after_automatic_rotation();
+        assert_eq!(third_rotation.max_round(), CDK_ALEPH_BFT_MAX_ROUND);
+        assert_eq!(third_rotation.automatic_rotation_limit(), None);
+    }
+
+    #[test]
+    fn aleph_bft_live_session_startup_round_cap_is_fresh_session_only() {
+        let options = FederationAlephBftLiveSessionOptions::default()
+            .with_max_round(8)
+            .with_automatic_rotation_limit(1);
+
+        let fresh_options = aleph_bft_live_session_options_for_startup(options.clone(), 0, false);
+        assert_eq!(fresh_options.max_round(), 8);
+        assert_eq!(fresh_options.automatic_rotation_limit(), Some(1));
+
+        let backup_recovered_options =
+            aleph_bft_live_session_options_for_startup(options.clone(), 0, true);
+        assert_eq!(
+            backup_recovered_options.max_round(),
+            CDK_ALEPH_BFT_MAX_ROUND
+        );
+        assert_eq!(backup_recovered_options.automatic_rotation_limit(), None);
+
+        let later_session_options = aleph_bft_live_session_options_for_startup(options, 1, false);
+        assert_eq!(later_session_options.max_round(), CDK_ALEPH_BFT_MAX_ROUND);
+        assert_eq!(later_session_options.automatic_rotation_limit(), None);
+    }
+
+    #[test]
+    fn aleph_bft_live_session_default_delay_slows_idle_tail_rounds() {
+        let delay_config = cdk_aleph_bft_delay_config();
+        let early_delay =
+            (delay_config.unit_creation_delay)(CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND);
+        let tail_delay =
+            (delay_config.unit_creation_delay)(CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND + 1);
+
+        assert_eq!(tail_delay, CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY);
+        assert!(tail_delay > early_delay);
     }
 }

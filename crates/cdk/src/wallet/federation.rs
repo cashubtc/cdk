@@ -49,6 +49,8 @@ pub struct FederatedMintConnector {
     member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     primary_member_id: MemberId,
     config: FederatedMintConnectorConfig,
+    valid_member_connectors_cache:
+        Arc<tokio::sync::RwLock<Option<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>>>>,
 }
 
 /// Runtime policy for wallet-side federation member calls.
@@ -256,6 +258,7 @@ impl FederatedMintConnector {
             member_connectors,
             primary_member_id,
             config,
+            valid_member_connectors_cache: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
@@ -496,6 +499,12 @@ impl FederatedMintConnector {
         &self,
     ) -> Result<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        if let Some(cached) = self.valid_member_connectors_cache.read().await.clone() {
+            if cached.len() >= threshold {
+                return Ok(cached);
+            }
+        }
+
         let mut valid_member_connectors = BTreeMap::new();
         let mut valid_members = 0usize;
         let mut failures = Vec::new();
@@ -573,6 +582,8 @@ impl FederatedMintConnector {
                         Err(err) => failures.push(format!("member {}: {}", member_id, err)),
                     }
                 }
+                *self.valid_member_connectors_cache.write().await =
+                    Some(valid_member_connectors.clone());
                 return Ok(valid_member_connectors);
             }
 
@@ -593,6 +604,7 @@ impl FederatedMintConnector {
             )));
         }
 
+        *self.valid_member_connectors_cache.write().await = Some(valid_member_connectors.clone());
         Ok(valid_member_connectors)
     }
 

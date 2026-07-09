@@ -107,9 +107,8 @@ pub(super) async fn post_aleph_bft_network_message(
         .map_err(cdk_error_response)?;
 
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
-        .await
-        .map_err(cdk_error_response)?;
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
 
     Ok(Json(FederationAlephBftNetworkMessageResponse::new(
         federation_id,

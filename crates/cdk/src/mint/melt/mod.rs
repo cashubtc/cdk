@@ -1220,11 +1220,13 @@ impl Mint {
 
         let stored_change_blinded_secrets =
             localstore.get_blinded_secrets_for_quote(quote_id).await?;
-        let request_change_blinded_secrets = melt_request
-            .outputs()
-            .as_deref()
-            .unwrap_or(&[])
+        let request_change_outputs = melt_request.outputs().as_deref().unwrap_or(&[]);
+        if request_change_outputs.len() < stored_change_blinded_secrets.len() {
+            return Err(Error::RequestAlreadyPaid);
+        }
+        let request_change_blinded_secrets = request_change_outputs
             .iter()
+            .take(stored_change_blinded_secrets.len())
             .map(|output| output.blinded_secret)
             .collect::<Vec<_>>();
         if stored_change_blinded_secrets != request_change_blinded_secrets {

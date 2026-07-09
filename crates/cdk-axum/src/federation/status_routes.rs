@@ -29,9 +29,8 @@ pub(super) async fn post_status(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
-        .await
-        .map_err(cdk_error_response)?;
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
     let peer_status = local_peer_order_status(&state)
         .await
         .map_err(anyhow_response)?;
@@ -47,9 +46,8 @@ pub(super) async fn post_local_status(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
-        .await
-        .map_err(cdk_error_response)?;
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
     let (peer_status, materialized_state_rows) = if payload.payload.include_materialized_rows {
         local_peer_status_with_materialized_rows(&state)
             .await

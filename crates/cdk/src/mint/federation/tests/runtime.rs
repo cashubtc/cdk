@@ -287,6 +287,83 @@ async fn apply_accepted_federation_operation_rejects_terminal_local_statuses() {
     }
 }
 
+#[tokio::test]
+async fn apply_accepted_federation_operation_retries_matching_failed_local_status() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+
+    persist_journal_entry(&localstore, &entry).await;
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    tx.update_federation_operation_status(entry.operation_id, FederationOperationStatus::Failed)
+        .await
+        .expect("mark operation failed");
+    tx.commit().await.expect("commit failed status");
+
+    assert!(mint
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("matching accepted operation should retry stale failed local status"));
+
+    assert!(localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .is_some());
+    let persisted = localstore
+        .get_federation_journal_entry_by_operation_id(entry.operation_id)
+        .await
+        .expect("journal lookup")
+        .expect("journal entry");
+    assert_eq!(persisted.status, FederationOperationStatus::Applied);
+}
+
+#[tokio::test]
+async fn apply_accepted_federation_operation_rejects_rejected_local_status_retry() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+
+    persist_journal_entry(&localstore, &entry).await;
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    tx.update_federation_operation_status(entry.operation_id, FederationOperationStatus::Rejected)
+        .await
+        .expect("mark operation rejected");
+    tx.commit().await.expect("commit rejected status");
+
+    let err = mint
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect_err("rejected local status remains terminal");
+    assert!(
+        err.to_string().contains("is not accepted for apply"),
+        "unexpected rejected-status error: {err}"
+    );
+    assert!(localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .is_none());
+}
+
 #[test]
 fn runtime_config_validates_public_and_private_configs() {
     let runtime_config = runtime_config();

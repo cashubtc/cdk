@@ -365,6 +365,9 @@ where
 }
 
 /// Drain failed AlephBFT deliveries and new outbound messages with retry retention.
+///
+/// Successful new outbound messages stay on the fast path and do not touch the
+/// retry store. Only failed deliveries are persisted for crash recovery.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn run_cdk_aleph_bft_network_pump_tick_with_retry_queue<T, D>(
     handle: &mut CdkAlephBftNetworkHandle<D>,
@@ -453,7 +456,6 @@ where
         outcome.messages_drained = outcome.messages_drained.saturating_add(1);
         let delivery = cdk_aleph_bft_network_delivery(keychain, config, outbound)?;
         queue_local_aleph_bft_network_delivery(handle, delivery.local_message)?;
-        persist_retry_delivery(retry_store, &delivery.retry_delivery).await?;
         let mut message_outcome = deliver_cdk_aleph_bft_network_request(
             client,
             config,
@@ -476,8 +478,6 @@ where
         let requeued =
             retry_queue.push_failed(message_outcome.request, message_outcome.remote_failed_peers);
         persist_retry_push_outcome(retry_store, &requeued).await?;
-        remove_obsolete_persisted_retry(retry_store, &delivery.retry_delivery.retry_id, &requeued)
-            .await?;
         outcome.remote_requeued_members.extend(requeued.member_ids);
     }
     outcome.retry_queue_len = retry_queue.len();

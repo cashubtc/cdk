@@ -1154,12 +1154,15 @@ impl Mint {
         {
             match persisted_entry.status {
                 FederationOperationStatus::Applied => return Ok(false),
-                FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
+                FederationOperationStatus::Rejected => {
                     return Err(Error::Custom(format!(
                         "federation operation {} has local status {} and is not accepted for apply",
                         persisted_entry.operation_id,
                         federation_operation_status_label(persisted_entry.status)
                     )));
+                }
+                FederationOperationStatus::Failed => {
+                    ensure_same_federation_journal_entry_for_retry(&persisted_entry, entry)?;
                 }
                 FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
             }
@@ -2090,6 +2093,31 @@ fn federation_operation_status_label(status: FederationOperationStatus) -> &'sta
         FederationOperationStatus::Rejected => "rejected",
         FederationOperationStatus::Failed => "failed",
     }
+}
+
+fn ensure_same_federation_journal_entry_for_retry(
+    persisted: &FederationJournalEntry,
+    accepted: &FederationJournalEntry,
+) -> Result<(), Error> {
+    if persisted.index != accepted.index
+        || persisted.operation_id != accepted.operation_id
+        || persisted.envelope.canonical_bytes()? != accepted.envelope.canonical_bytes()?
+        || persisted.conflict_key != accepted.conflict_key
+        || persisted.conflict_keys != accepted.conflict_keys
+        || persisted.previous_order_digest != accepted.previous_order_digest
+        || persisted.order_digest != accepted.order_digest
+        || persisted.operation_outcome_hash != accepted.operation_outcome_hash
+        || persisted.state_digest != accepted.state_digest
+        || persisted.consensus_evidence != accepted.consensus_evidence
+    {
+        return Err(Error::Custom(format!(
+            "federation operation {} has local status {} but does not match the accepted consensus entry",
+            persisted.operation_id,
+            federation_operation_status_label(persisted.status)
+        )));
+    }
+
+    Ok(())
 }
 
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {

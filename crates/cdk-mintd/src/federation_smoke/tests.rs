@@ -74,15 +74,24 @@ fn smoke_operation_args_reject_zero_timeout() {
 }
 
 #[test]
-fn smoke_connector_config_uses_operation_timeout_for_member_calls() {
+fn smoke_connector_config_uses_bounded_member_timeouts_independent_from_operation_timeout() {
     let mut args = smoke_args();
     args.operation_timeout_seconds = Some(42);
 
     let config = smoke_connector_config(&args);
 
-    assert_eq!(config.member_fallback_timeout, Duration::from_secs(42));
-    assert_eq!(config.member_request_timeout, Duration::from_secs(42));
-    assert_eq!(config.quote_status_member_timeout, Duration::from_secs(42));
+    assert_eq!(
+        config.member_fallback_timeout,
+        FEDERATION_SMOKE_MEMBER_TIMEOUT
+    );
+    assert_eq!(
+        config.member_request_timeout,
+        FEDERATION_SMOKE_MEMBER_TIMEOUT
+    );
+    assert_eq!(
+        config.quote_status_member_timeout,
+        FEDERATION_SMOKE_MEMBER_TIMEOUT
+    );
     assert_eq!(config.mint_quote_visibility_attempts, args.quote_retries);
     assert_eq!(
         config.mint_quote_visibility_retry_delay,

@@ -1669,6 +1669,56 @@ async fn federated_mint_connector_mints_after_threshold_keyset_advertisements() 
 }
 
 #[tokio::test]
+async fn federated_mint_connector_reuses_validated_member_keysets() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+    let mut raw_connectors = Vec::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = Arc::new(MockMintConnector::new());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.push_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+        connector.push_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+        raw_connectors.push(connector.clone());
+        connectors.insert(member_id, connector as Arc<dyn MintConnector + Send + Sync>);
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("first mint response");
+
+    for connector in raw_connectors {
+        connector.set_mint_keys_error("keyset probe should use cache");
+    }
+
+    let response = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote-2".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("second mint response should reuse validated keysets");
+
+    assert_aggregate_response_valid(&bundle, &outputs, &response);
+}
+
+#[tokio::test]
 async fn federated_mint_connector_excludes_bad_keyset_member_from_mint_fanout() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);

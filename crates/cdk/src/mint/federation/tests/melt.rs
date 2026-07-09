@@ -745,6 +745,103 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
 }
 
 #[tokio::test]
+async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(
+        2,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let original_proofs = vec![
+        proof_for_runtime(&runtime_config, "terminal-paid-zero-change-input-one"),
+        proof_for_runtime(&runtime_config, "terminal-paid-zero-change-input-two"),
+    ];
+    let original_input_ys = original_proofs
+        .ys()
+        .expect("terminal-paid zero-change input ys");
+    let mut zero_change =
+        output_for_runtime(&runtime_config, b"terminal-paid zero-change placeholder");
+    zero_change.amount = Amount::ZERO;
+    let original_request = MeltRequest::new(
+        quote.clone(),
+        original_proofs,
+        Some(vec![zero_change.clone()]),
+    );
+    let original_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(original_request)
+            .expect("terminal-paid zero-change melt operation"),
+    );
+    persist_and_apply_entry(&mint, &original_entry).await;
+
+    apply_paid_melt_observation_quorum(
+        &mint,
+        &runtime_config,
+        &mut journal,
+        &quote,
+        "terminal-paid-zero-change-preimage",
+    )
+    .await;
+    let payment_calls_after_paid = make_payment_calls.load(Ordering::Relaxed);
+    assert!(
+        localstore
+            .get_blind_signatures(&[zero_change.blinded_secret])
+            .await
+            .expect("zero-change signature lookup")[0]
+            .is_none(),
+        "zero-change placeholder should not be signed or stored"
+    );
+
+    let mut tx = localstore
+        .begin_transaction()
+        .await
+        .expect("begin failed-status transaction");
+    tx.update_federation_operation_status(
+        original_entry.operation_id,
+        FederationOperationStatus::Failed,
+    )
+    .await
+    .expect("mark original melt failed");
+    tx.commit().await.expect("commit failed-status transaction");
+
+    assert!(mint
+        .apply_accepted_federation_operation(&original_entry)
+        .await
+        .expect("terminal paid zero-change replay should be idempotent"));
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(original_entry.operation_id)
+            .await
+            .expect("zero-change replay journal lookup")
+            .expect("zero-change replay journal entry")
+            .status,
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&original_input_ys)
+            .await
+            .expect("zero-change replay proof states"),
+        vec![Some(State::Spent), Some(State::Spent)]
+    );
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        payment_calls_after_paid,
+        "terminal paid zero-change replay must not attempt another payment"
+    );
+}
+
+#[tokio::test]
 async fn apply_federation_melt_retries_failed_quote_state_with_payment_attempt() {
     let runtime_config = runtime_config();
     let (mint, localstore, make_payment_calls) =
