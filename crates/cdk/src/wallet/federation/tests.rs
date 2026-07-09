@@ -1309,6 +1309,10 @@ fn federated_mint_connector_rejects_invalid_member_call_policy() {
             mint_quote_visibility_retry_delay: Duration::ZERO,
             ..FederatedMintConnectorConfig::default()
         },
+        FederatedMintConnectorConfig {
+            primary_member_id: Some(member_id(99)),
+            ..FederatedMintConnectorConfig::default()
+        },
     ] {
         assert!(FederatedMintConnector::new_with_config(
             bundle.public_config.clone(),
@@ -1325,6 +1329,7 @@ fn federated_mint_connector_builds_http_members_from_invite_code() {
     let invite = FederationInvite::new(bundle.public_config.clone()).expect("invite");
     let invite_code = invite.to_invite_code().expect("invite code");
     let config = FederatedMintConnectorConfig {
+        primary_member_id: Some(member_id(2)),
         fanout_concurrency: 2,
         ..FederatedMintConnectorConfig::default()
     };
@@ -1334,7 +1339,7 @@ fn federated_mint_connector_builds_http_members_from_invite_code() {
 
     assert_eq!(connector.public_config(), &bundle.public_config);
     assert_eq!(connector.connector_config(), config);
-    assert_eq!(connector.primary_member_id, member_id(1));
+    assert_eq!(connector.primary_member_id, member_id(2));
     assert_eq!(
         connector
             .member_connectors
@@ -2723,6 +2728,58 @@ async fn federated_mint_connector_creates_mint_quote_with_first_healthy_member()
     assert_eq!(response.quote(), expected.quote());
     assert_eq!(response.request(), expected.request());
     assert_eq!(response.method(), expected.method());
+}
+
+#[tokio::test]
+async fn federated_mint_connector_uses_configured_primary_for_quote_creation() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let quote_id = QuoteId::new();
+    let expected = bolt11_quote_response(&quote_id, 3);
+    let mut connectors = BTreeMap::new();
+
+    let default_primary_member = MockMintConnector::new();
+    default_primary_member.set_active_keyset(advertised.clone());
+    default_primary_member.set_post_mint_quote_response(Err(crate::Error::InvalidPaymentMethod));
+    set_mint_quote_status_from_response(&default_primary_member, &expected);
+    connectors.insert(
+        member_id(1),
+        Arc::new(default_primary_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let preferred_member = MockMintConnector::new();
+    preferred_member.set_active_keyset(advertised.clone());
+    preferred_member.set_post_mint_quote_response(Ok(expected.clone()));
+    set_mint_quote_status_from_response(&preferred_member, &expected);
+    connectors.insert(
+        member_id(2),
+        Arc::new(preferred_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let third_member = MockMintConnector::new();
+    third_member.set_active_keyset(advertised);
+    set_mint_quote_status_from_response(&third_member, &expected);
+    connectors.insert(
+        member_id(3),
+        Arc::new(third_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            primary_member_id: Some(member_id(2)),
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let response = connector
+        .post_mint_quote(bolt11_quote_request(3))
+        .await
+        .expect("mint quote");
+
+    assert_eq!(response.quote(), expected.quote());
+    assert_eq!(connector.primary_member_id, member_id(2));
 }
 
 #[tokio::test]

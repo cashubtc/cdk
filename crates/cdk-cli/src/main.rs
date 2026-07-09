@@ -473,6 +473,8 @@ mod tests {
             "add",
             "--public-config",
             "federation-public.json",
+            "--primary-member-id",
+            "2",
         ]);
 
         assert!(matches!(

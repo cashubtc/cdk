@@ -3101,10 +3101,12 @@ Implementation checklist:
   `check-state` for local wallet proofs or token proofs. Remaining direct HTTP
   or auth-related commands need an explicit federation-aware route or a
   documented standalone behavior.
-- [ ] Add all CLI options for wallet-side federation request policy. The first
-  path now exposes member fallback timeout, member request timeout, quote-status
-  timeout, retry count, fanout concurrency, and mint-quote visibility controls;
-  an explicit primary-member preference for quote creation remains open.
+- [x] Add all CLI options for wallet-side federation request policy. The CLI
+  import path now exposes member fallback timeout, member request timeout,
+  quote-status timeout, retry count, fanout concurrency, mint-quote visibility
+  controls, and `--primary-member-id` for sequential quote-style calls. The
+  persisted policy is validated against the public federation roster before the
+  wallet connector is constructed.
 - [x] Ensure CLI output remains compatible with normal Cashu tokens and proofs
   after threshold aggregation; the first CLI smoke returned an ordinary Cashu
   token after online send/swap, not member-share artifacts.
@@ -3159,7 +3161,14 @@ Latest checkpoint:
   federation units fail before wallet creation, and unrelated mint URLs still use
   the standalone wallet path. A focused receive test now proves unimported
   federation-token mint URLs fail with an actionable import-config error before
-  network receive work starts.
+  network receive work starts. The wallet connector and CLI registry now also
+  persist and validate an explicit primary member preference: the connector
+  tries that member first for sequential quote creation, falls back to the rest
+  of the validated roster when needed, and rejects primary member IDs outside
+  the federation roster. Focused tests passed with `cargo test -p cdk --features
+  federation federated_mint_connector_uses_configured_primary_for_quote_creation
+  -- --test-threads 1` and `cargo test -p cdk-cli --features federation
+  federation -- --test-threads 1`.
 
 Scripted local CLI smoke command:
 
@@ -3178,6 +3187,7 @@ just fed-regtest-start target/cdk-cli-fed-smoke-aleph-live 5 3 62705
 
 target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive \
   federation add --public-config target/cdk-cli-fed-smoke-aleph-live/federation-public.json \
+  --primary-member-id 1 \
   --member-request-timeout-secs 60 \
   --member-fallback-timeout-secs 60 \
   --quote-status-member-timeout-secs 60
@@ -3211,7 +3221,8 @@ Tests and success criteria:
   stale public-config protocol versions, mismatched rosters, inactive keysets,
   and non-v3/BLS federation metadata before constructing a wallet connector.
   Focused tests also cover valid public config persistence, member public mint
-  URL resolution, connector construction, and CLI parse shape.
+  URL resolution, connector construction, explicit primary-member request-policy
+  persistence, unknown primary-member rejection, and CLI parse shape.
 - [ ] CLI invite-code import parsing tests remain open until invite import is
   wired into `cdk-cli federation add` or a dedicated import command.
 - [x] CLI command tests prove `cdk-cli federation add --public-config

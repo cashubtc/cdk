@@ -11,7 +11,7 @@ use cdk::wallet::{
     FederatedMintConnector, FederatedMintConnectorConfig, MintConnector, WalletConfig,
     WalletRepository,
 };
-use cdk_common::federation::{FederationConfig, FederationId};
+use cdk_common::federation::{FederationConfig, FederationId, MemberId};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +49,9 @@ pub struct FederationAddSubCommand {
     /// Cashu token mint-url semantics unchanged during the first CLI milestone.
     #[arg(long)]
     local_mint_url: Option<MintUrl>,
+    /// Preferred federation member for quote creation and other sequential calls.
+    #[arg(long)]
+    primary_member_id: Option<u16>,
     /// Timeout in seconds for sequential first-healthy-member calls.
     #[arg(long, default_value_t = 10)]
     member_fallback_timeout_secs: u64,
@@ -73,8 +76,10 @@ pub struct FederationAddSubCommand {
 }
 
 impl FederationAddSubCommand {
-    fn connector_policy(&self) -> StoredFederationConnectorPolicy {
-        StoredFederationConnectorPolicy {
+    fn connector_policy(&self) -> Result<StoredFederationConnectorPolicy> {
+        let primary_member_id = self.primary_member_id.map(MemberId::new).transpose()?;
+        Ok(StoredFederationConnectorPolicy {
+            primary_member_id,
             member_fallback_timeout_secs: self.member_fallback_timeout_secs,
             member_request_timeout_secs: self.member_request_timeout_secs,
             member_request_max_retries: self.member_request_max_retries,
@@ -82,7 +87,7 @@ impl FederationAddSubCommand {
             fanout_concurrency: self.fanout_concurrency,
             mint_quote_visibility_attempts: self.mint_quote_visibility_attempts,
             mint_quote_visibility_retry_delay_ms: self.mint_quote_visibility_retry_delay_ms,
-        }
+        })
     }
 }
 
@@ -192,6 +197,15 @@ impl StoredFederationWallet {
     pub fn validate(&self) -> Result<()> {
         self.public_config.validate()?;
         self.connector_policy.connector_config().validate()?;
+        if let Some(primary_member_id) = self.connector_policy.primary_member_id {
+            if !self.public_config.members.contains_key(&primary_member_id) {
+                bail!(
+                    "Federation {} does not contain primary member {}",
+                    self.public_config.federation_id,
+                    primary_member_id
+                );
+            }
+        }
 
         if self.active_units().is_empty() {
             bail!(
@@ -263,6 +277,9 @@ impl StoredFederationWallet {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StoredFederationConnectorPolicy {
+    /// Preferred member for sequential first-healthy calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_member_id: Option<MemberId>,
     /// Timeout in seconds for sequential first-healthy-member calls.
     pub member_fallback_timeout_secs: u64,
     /// Per-member timeout in seconds for fanout requests.
@@ -289,6 +306,7 @@ impl StoredFederationConnectorPolicy {
     /// Convert a runtime connector policy into the persisted CLI form.
     pub fn from_connector_config(config: FederatedMintConnectorConfig) -> Self {
         Self {
+            primary_member_id: config.primary_member_id,
             member_fallback_timeout_secs: config.member_fallback_timeout.as_secs(),
             member_request_timeout_secs: config.member_request_timeout.as_secs(),
             member_request_max_retries: config.member_request_max_retries,
@@ -304,6 +322,7 @@ impl StoredFederationConnectorPolicy {
     /// Convert the persisted CLI policy into the runtime connector policy.
     pub fn connector_config(&self) -> FederatedMintConnectorConfig {
         FederatedMintConnectorConfig {
+            primary_member_id: self.primary_member_id,
             member_fallback_timeout: Duration::from_secs(self.member_fallback_timeout_secs),
             member_request_timeout: Duration::from_secs(self.member_request_timeout_secs),
             member_request_max_retries: self.member_request_max_retries,
@@ -340,7 +359,7 @@ async fn add(
         Some(local_mint_url) => local_mint_url.clone(),
         None => primary_member_mint_url(&public_config)?,
     };
-    let wallet = registry.upsert(public_config, local_mint_url, args.connector_policy())?;
+    let wallet = registry.upsert(public_config, local_mint_url, args.connector_policy()?)?;
     registry.save(work_dir)?;
     set_federation_registry(registry)?;
     activate_federation_wallet(wallet_repository, &wallet).await?;
@@ -353,6 +372,9 @@ async fn add(
         wallet.public_config.threshold_params.signature_threshold,
         wallet.public_config.threshold_params.consensus_threshold
     );
+    if let Some(primary_member_id) = wallet.connector_policy.primary_member_id {
+        println!("  Preferred primary member: {}", primary_member_id);
+    }
     println!("  Active units: {}", display_units(&wallet.active_units()));
     println!("  Config digest: {}", wallet.config_digest()?);
 
@@ -376,6 +398,9 @@ fn list(work_dir: &Path) -> Result<()> {
             wallet.public_config.threshold_params.signature_threshold,
             wallet.public_config.threshold_params.consensus_threshold
         );
+        if let Some(primary_member_id) = wallet.connector_policy.primary_member_id {
+            println!("  Preferred primary member: {}", primary_member_id);
+        }
         println!("  Active units: {}", display_units(&wallet.active_units()));
         println!("  Config digest: {}", wallet.config_digest()?);
     }
@@ -659,11 +684,40 @@ mod tests {
         let wallet = StoredFederationWallet {
             local_mint_url,
             public_config,
-            connector_policy: StoredFederationConnectorPolicy::default(),
+            connector_policy: StoredFederationConnectorPolicy {
+                primary_member_id: Some(member_id(2)),
+                ..StoredFederationConnectorPolicy::default()
+            },
         };
 
         wallet.wallet_config().expect("wallet config");
         assert!(wallet.supports_unit(&CurrencyUnit::Sat));
+        assert_eq!(
+            wallet.connector_policy.connector_config().primary_member_id,
+            Some(member_id(2))
+        );
+    }
+
+    #[test]
+    fn registry_rejects_unknown_primary_member_preference() {
+        let public_config = valid_public_config();
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let mut registry = FederationWalletRegistry::default();
+
+        let err = registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy {
+                    primary_member_id: Some(member_id(99)),
+                    ..StoredFederationConnectorPolicy::default()
+                },
+            )
+            .expect_err("unknown primary member rejected");
+
+        assert!(err
+            .to_string()
+            .contains("does not contain primary member 99"));
     }
 
     #[test]

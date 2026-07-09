@@ -56,6 +56,8 @@ pub struct FederatedMintConnector {
 /// Runtime policy for wallet-side federation member calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederatedMintConnectorConfig {
+    /// Preferred member for sequential first-healthy calls such as quote creation.
+    pub primary_member_id: Option<MemberId>,
     /// Timeout for sequential first-healthy-member calls such as quote creation.
     pub member_fallback_timeout: Duration,
     /// Per-attempt timeout for fanout calls to individual federation members.
@@ -75,6 +77,7 @@ pub struct FederatedMintConnectorConfig {
 impl Default for FederatedMintConnectorConfig {
     fn default() -> Self {
         Self {
+            primary_member_id: None,
             member_fallback_timeout: Duration::from_secs(10),
             member_request_timeout: Duration::from_secs(10),
             member_request_max_retries: 0,
@@ -246,12 +249,24 @@ impl FederatedMintConnector {
             }
         }
 
-        let primary_member_id = public_config
+        let default_primary_member_id = public_config
             .members
             .keys()
             .next()
             .copied()
             .ok_or_else(|| Error::InvalidMintResponse("empty federation roster".to_string()))?;
+        let primary_member_id = match config.primary_member_id {
+            Some(primary_member_id) => {
+                if !public_config.members.contains_key(&primary_member_id) {
+                    return Err(FederationError::UnknownMember {
+                        member_id: primary_member_id,
+                    }
+                    .into());
+                }
+                primary_member_id
+            }
+            None => default_primary_member_id,
+        };
 
         Ok(Self {
             public_config,
@@ -320,12 +335,19 @@ impl FederatedMintConnector {
     {
         let mut failures = Vec::new();
 
+        let mut ordered_connectors = Vec::with_capacity(member_connectors.len());
+        if let Some(connector) = member_connectors.get(&self.primary_member_id) {
+            ordered_connectors.push((self.primary_member_id, connector.clone()));
+        }
         for (member_id, connector) in member_connectors {
-            match tokio::time::timeout(
-                self.config.member_fallback_timeout,
-                call_member(connector.clone()),
-            )
-            .await
+            if *member_id != self.primary_member_id {
+                ordered_connectors.push((*member_id, connector.clone()));
+            }
+        }
+
+        for (member_id, connector) in ordered_connectors {
+            match tokio::time::timeout(self.config.member_fallback_timeout, call_member(connector))
+                .await
             {
                 Err(_) => failures.push(format!(
                     "member {}: timed out after {}s",
