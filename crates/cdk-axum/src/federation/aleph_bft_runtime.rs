@@ -517,13 +517,23 @@ impl DataProvider for CdkAlephBftDataProvider {
         self.activity_hint.set_local_pending(pending_after > 0);
 
         match payload {
-            Some(payload) => match CdkAlephBftData::try_from_payload(payload) {
-                Ok(data) => Some(data),
-                Err(err) => {
-                    tracing::warn!("AlephBFT data provider rejected CDK unit encoding: {}", err);
-                    None
+            Some(payload) => {
+                #[cfg(test)]
+                crate::federation::aleph_bft_latency::record(
+                    crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::DataProviderYielded,
+                    payload.operation_ids.iter().copied(),
+                );
+                match CdkAlephBftData::try_from_payload(payload) {
+                    Ok(data) => Some(data),
+                    Err(err) => {
+                        tracing::warn!(
+                            "AlephBFT data provider rejected CDK unit encoding: {}",
+                            err
+                        );
+                        None
+                    }
                 }
-            },
+            }
             None => None,
         }
     }
@@ -548,6 +558,11 @@ impl CdkAlephBftFinalizationHandler {
 
 impl FinalizationHandler<CdkAlephBftData> for CdkAlephBftFinalizationHandler {
     fn data_finalized(&mut self, data: CdkAlephBftData) {
+        #[cfg(test)]
+        crate::federation::aleph_bft_latency::record(
+            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::FinalizedDataReceived,
+            data.payload().operation_ids.iter().copied(),
+        );
         if self.finalized_units.send(data.into_payload()).is_err() {
             tracing::warn!("AlephBFT finalized CDK unit receiver is closed");
         }

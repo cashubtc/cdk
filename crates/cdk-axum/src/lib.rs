@@ -1869,6 +1869,11 @@ impl MintState {
         drop(consensus);
         if accepted_admission {
             self.mark_aleph_bft_consensus_activity().await;
+            #[cfg(test)]
+            crate::federation::aleph_bft_latency::record(
+                crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
+                [operation_id],
+            );
         }
         if let Some((sender, sequence)) = sequence {
             self.remember_federation_aleph_bft_pending_sequence(operation_id, sender, sequence)
@@ -1887,14 +1892,20 @@ impl MintState {
         wait_registration: FederationOperationWaitRegistration<'_>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         let wait_timeout = sync_config.operation_submission_timeout;
-        tokio::time::timeout(wait_timeout, wait_registration.wait())
+        let response = tokio::time::timeout(wait_timeout, wait_registration.wait())
             .await
             .map_err(|_| {
                 cdk::Error::from(FederationError::OperationPendingFinalization {
                     operation_id,
                     timeout_ms: duration_millis_u64_saturating(wait_timeout),
                 })
-            })
+            })?;
+        #[cfg(test)]
+        crate::federation::aleph_bft_latency::record(
+            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::WaiterReturned,
+            [operation_id],
+        );
+        Ok(response)
     }
 
     pub(crate) async fn submit_federation_payment_observation_envelope(
@@ -2026,6 +2037,11 @@ impl MintState {
 
     async fn notify_federation_operation(&self, response: FederationSubmitOperationResponse) {
         if let Some(notifications) = &self.federation_notifications {
+            #[cfg(test)]
+            crate::federation::aleph_bft_latency::record(
+                crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::OperationNotified,
+                [response.operation_id],
+            );
             let response_cache_limit = self
                 .federation_peer_sync_config
                 .unwrap_or_default()
@@ -2285,6 +2301,11 @@ impl MintState {
             .federation_submit_responses_with_current_status(&responses)
             .await;
         self.record_federation_sequences(&sequences).await;
+        #[cfg(test)]
+        crate::federation::aleph_bft_latency::record(
+            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
+            responses.iter().map(|response| response.operation_id),
+        );
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
         }
@@ -2345,6 +2366,11 @@ impl MintState {
             .federation_submit_responses_with_current_status(&responses)
             .await;
         self.record_federation_sequences(&sequences).await;
+        #[cfg(test)]
+        crate::federation::aleph_bft_latency::record(
+            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
+            responses.iter().map(|response| response.operation_id),
+        );
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
         }

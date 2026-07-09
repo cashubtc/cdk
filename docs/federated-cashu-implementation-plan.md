@@ -80,12 +80,21 @@ Current blocking bugs:
   CPU around 0.4-0.5%, with cold full mints at 13.90s and 12.01s. The remaining
   delay is still dominated by three serialized AlephBFT operations plus a
   possible first 2s idle-tail wakeup.
+- Non-production AlephBFT latency probe: a focused two-member live-session test
+  now records the operation-specific stage order for real upstream
+  `run_session` over private REST: submit queued, data-provider yield, network
+  message delivery, finalized data received, apply-loop receive, durable apply,
+  waiter notification, and waiter return. With fast in-process test delays the
+  probe measured one mint-quote operation at roughly 70ms end to end, which
+  confirms the remaining 12-14s fakewallet process mint delay is not caused by
+  the local apply or waiter-notification path alone.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation federation_payment_observation_handlers_are_backend_agnostic -- --test-threads 1`,
+  `cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`,
   and
-  `cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`.
+  `cargo test -p cdk-axum --features federation aleph_bft_live_session_latency_probe_records_end_to_end_stage_order -- --test-threads 1 --nocapture`.
 
 ## Sources reviewed
 
@@ -1981,6 +1990,19 @@ AlephBFT and consensus unit tests:
   idle creator cadence cools to about 2s and member CPU drops below 1%; cold
   mints still measured 13.90s and 12.01s because three serialized consensus
   operations remain on the critical path.
+- [x] Non-production AlephBFT latency instrumentation records stage timing
+  without changing production protocol behavior. The scoped test-only recorder
+  captures operation-specific submit queueing, upstream data-provider yield,
+  private REST network-message delivery, upstream finalization, apply-loop
+  receive, durable apply, response-cache notification, and waiter return. The
+  focused live-session test passed with a fast in-process timeline of
+  `SubmitQueued@1ms`, `DataProviderYielded@20ms`,
+  `NetworkMessageDelivered@24ms`, `FinalizedDataReceived@68ms`,
+  `ApplyLoopReceived@68ms`, `ApplyCompleted@70ms`,
+  `OperationNotified@70ms`, and `WaiterReturned@70ms`; the duplicate later
+  finalization/apply events come from the second live member applying the same
+  accepted operation. This gives future cadence and batching work a stable
+  non-production benchmark surface.
 - [x] Public federated mint signing waits for mint-quote payment observation to
   be locally visible before submitting the mint operation to consensus.
   Benchmark traces showed an ordering race where an unpaid mint operation could

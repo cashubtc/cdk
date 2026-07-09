@@ -910,6 +910,11 @@ async fn run_federation_aleph_bft_finalized_unit_apply_loop(
     >,
 ) {
     while let Some(payload) = finalized_units.recv().await {
+        #[cfg(test)]
+        crate::federation::aleph_bft_latency::record(
+            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyLoopReceived,
+            payload.operation_ids.iter().copied(),
+        );
         apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await;
     }
 }

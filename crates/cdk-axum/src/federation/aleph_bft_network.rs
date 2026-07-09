@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 
 use aleph_bft::Recipient;
+#[cfg(test)]
+use cdk::federation::FederationOperationId;
 use cdk::federation::{
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkRetryRecord,
     MemberConfigPublic, MemberId,
@@ -687,7 +689,14 @@ where
     });
     for (peer, result) in join_all(attempts).await {
         match result {
-            Ok(_) => outcome.remote_accepted_members.push(peer.member_id),
+            Ok(_) => {
+                #[cfg(test)]
+                crate::federation::aleph_bft_latency::record(
+                    crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::NetworkMessageDelivered,
+                    aleph_bft_network_request_operation_ids(request),
+                );
+                outcome.remote_accepted_members.push(peer.member_id);
+            }
             Err(err) => {
                 tracing::warn!(
                     member_id = %peer.member_id,
@@ -793,6 +802,24 @@ fn hex_encode(bytes: &[u8]) -> String {
     }
 
     encoded
+}
+
+#[cfg(test)]
+fn aleph_bft_network_request_operation_ids(
+    request: &FederationAlephBftNetworkMessageRequest,
+) -> Vec<FederationOperationId> {
+    let Ok(message_bytes) = request.message_bytes() else {
+        return Vec::new();
+    };
+    let mut bytes = message_bytes.as_slice();
+    match CdkAlephBftNetworkData::decode(&mut bytes) {
+        Ok(message) => message
+            .included_data()
+            .iter()
+            .flat_map(|data| data.payload().operation_ids.iter().copied())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 #[cfg(test)]

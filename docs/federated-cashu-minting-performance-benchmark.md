@@ -338,8 +338,18 @@ Test plan:
   active tail delays, local pending clearing after finalization drains, inbound
   private REST gossip carrying consensus data waking the hint, idle inbound
   messages not waking the hint, and a live private-REST AlephBFT finality smoke.
-- Still needed: add a non-production benchmark harness for AlephBFT operation latency:
-  - one operation
+- Done for the first non-production AlephBFT latency harness: a focused
+  two-member live-session test records operation-specific stage timing for real
+  upstream `run_session` over private REST. With fast in-process test delays,
+  one mint-quote operation recorded:
+
+  `SubmitQueued@1ms -> DataProviderYielded@20ms -> NetworkMessageDelivered@24ms -> FinalizedDataReceived@68ms -> ApplyLoopReceived@68ms -> ApplyCompleted@70ms -> OperationNotified@70ms -> WaiterReturned@70ms`.
+
+  The duplicate later finalization/apply events in that test come from the
+  second live member applying the same operation. This is not a full process
+  fakewallet timing number; it proves the local apply and waiter-notification
+  path is not the 12-14s dominant delay under fast consensus options.
+- Still needed: extend the non-production benchmark harness for AlephBFT operation latency:
   - three sequential operations
   - duplicate fanout submissions
   - 5-member and 7-member federations
@@ -449,6 +459,8 @@ This totals about 6-8s in the fakewallet happy path. If the protocol remains at 
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
 2. Add AlephBFT latency instrumentation in a non-production benchmark harness.
+   Current checkpoint: single-operation live-session stage timing is implemented
+   and proves fast in-process finality/apply/waiter completion around 70ms.
 3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
    checkpoint: selective pending-work-aware tail cadence is implemented,
    behavior-tested, and process-verified for idle cooling; cold mints are still

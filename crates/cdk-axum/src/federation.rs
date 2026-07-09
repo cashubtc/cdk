@@ -27,6 +27,8 @@ use uuid::Uuid;
 use crate::MintState;
 
 mod aleph_bft_driver;
+#[cfg(test)]
+pub(crate) mod aleph_bft_latency;
 mod aleph_bft_network;
 mod aleph_bft_routes;
 mod aleph_bft_runtime;
