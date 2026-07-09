@@ -485,6 +485,25 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "federation")]
+    #[test]
+    fn parses_federation_add_invite_code_command() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "federation",
+            "add",
+            "--invite-code",
+            "cashufedAexample",
+        ]);
+
+        assert!(matches!(
+            cli.command,
+            Commands::Federation(sub_commands::federation::FederationCommand {
+                command: sub_commands::federation::FederationSubCommand::Add(_)
+            })
+        ));
+    }
+
     #[test]
     fn parses_check_state_token_command() {
         let cli = Cli::parse_from(["cdk-cli", "check-state", "--token", "cashuAexample"]);

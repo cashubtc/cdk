@@ -3077,8 +3077,10 @@ Implementation checklist:
   case by accepting a federation public config file and persisting it as a
   public-metadata sidecar in the CLI work directory.
 - [x] Add an explicit CLI import command for the first test path:
-  `cdk-cli federation add --public-config <federation-public.json>`. Invite-code
-  import remains a later extension.
+  `cdk-cli federation add --public-config <federation-public.json>` or
+  `cdk-cli federation add --invite-code <cashufed...>`. The invite-code path
+  decodes the same public federation config carried by `FederationInvite`, then
+  reuses the existing registry validation and connector policy path.
 - [x] Define how the first CLI path identifies a federation wallet in local
   state and token workflows: it maps the federation to the first member's public
   mint URL by default, with an override for the local wallet mint URL. A later
@@ -3175,7 +3177,10 @@ Latest checkpoint:
   imported member public mint URLs resolve to the imported federation metadata
   path before wallet construction: `cargo test -p cdk-cli --features federation
   receive_token -- --test-threads 1` passed both the unimported actionable-error
-  test and the imported-member URL resolution test.
+  test and the imported-member URL resolution test. The invite-code CLI import
+  checkpoint now accepts either `--public-config` or `--invite-code`, rejects
+  bad invite codes before registry mutation, and passed `cargo test -p cdk-cli
+  --features federation federation -- --test-threads 1` with 18 focused tests.
 
 Scripted local CLI smoke command:
 
@@ -3230,8 +3235,10 @@ Tests and success criteria:
   Focused tests also cover valid public config persistence, member public mint
   URL resolution, connector construction, explicit primary-member request-policy
   persistence, unknown primary-member rejection, and CLI parse shape.
-- [ ] CLI invite-code import parsing tests remain open until invite import is
-  wired into `cdk-cli federation add` or a dedicated import command.
+- [x] CLI invite-code import parsing tests prove `cdk-cli federation add
+  --invite-code <cashufed...>` reaches the federation add command, a valid
+  `FederationInvite` decodes to the expected public config, and malformed
+  invite codes fail closed before registry mutation.
 - [x] CLI command tests prove `cdk-cli federation add --public-config
   <federation-public.json>` stores only public federation metadata and never
   persists member private configs or mint-side private material.

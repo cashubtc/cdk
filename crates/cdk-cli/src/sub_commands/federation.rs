@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use cdk::wallet::{
     FederatedMintConnector, FederatedMintConnectorConfig, MintConnector, WalletConfig,
     WalletRepository,
 };
-use cdk_common::federation::{FederationConfig, FederationId, MemberId};
+use cdk_common::federation::{FederationConfig, FederationId, FederationInvite, MemberId};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -41,8 +42,19 @@ pub enum FederationSubCommand {
 #[derive(Args)]
 pub struct FederationAddSubCommand {
     /// Path to federation-public.json.
-    #[arg(long)]
-    public_config: PathBuf,
+    #[arg(
+        long,
+        conflicts_with = "invite_code",
+        required_unless_present = "invite_code"
+    )]
+    public_config: Option<PathBuf>,
+    /// Federation invite code containing a public federation config.
+    #[arg(
+        long,
+        conflicts_with = "public_config",
+        required_unless_present = "public_config"
+    )]
+    invite_code: Option<String>,
     /// Local wallet mint URL to map this federation to.
     ///
     /// Defaults to the first member's public mint URL. This keeps existing
@@ -354,7 +366,7 @@ async fn add(
     args: &FederationAddSubCommand,
 ) -> Result<()> {
     let mut registry = FederationWalletRegistry::load(work_dir)?;
-    let public_config = load_public_config(&args.public_config)?;
+    let public_config = load_imported_public_config(args)?;
     let local_mint_url = match &args.local_mint_url {
         Some(local_mint_url) => local_mint_url.clone(),
         None => primary_member_mint_url(&public_config)?,
@@ -413,6 +425,18 @@ fn load_public_config(path: &Path) -> Result<FederationConfig> {
     let config: FederationConfig = serde_json::from_str(&contents)?;
     config.validate()?;
     Ok(config)
+}
+
+fn load_imported_public_config(args: &FederationAddSubCommand) -> Result<FederationConfig> {
+    match (&args.public_config, &args.invite_code) {
+        (Some(path), None) => load_public_config(path),
+        (None, Some(invite_code)) => {
+            let invite = FederationInvite::from_str(invite_code)?;
+            Ok(invite.config)
+        }
+        (None, None) => bail!("Provide either --public-config or --invite-code"),
+        (Some(_), Some(_)) => bail!("Provide either --public-config or --invite-code, not both"),
+    }
 }
 
 fn primary_member_mint_url(config: &FederationConfig) -> Result<MintUrl> {
@@ -532,6 +556,25 @@ mod tests {
         path
     }
 
+    fn add_args_with_import_source(
+        public_config: Option<PathBuf>,
+        invite_code: Option<String>,
+    ) -> FederationAddSubCommand {
+        FederationAddSubCommand {
+            public_config,
+            invite_code,
+            local_mint_url: None,
+            primary_member_id: None,
+            member_fallback_timeout_secs: 10,
+            member_request_timeout_secs: 10,
+            member_request_max_retries: 0,
+            quote_status_member_timeout_secs: 10,
+            fanout_concurrency: usize::MAX,
+            mint_quote_visibility_attempts: 100,
+            mint_quote_visibility_retry_delay_ms: 50,
+        }
+    }
+
     #[test]
     fn registry_stores_only_public_federation_metadata() {
         let work_dir = temp_work_dir();
@@ -582,6 +625,29 @@ mod tests {
 
         assert!(!err.to_string().is_empty());
         fs::remove_dir_all(work_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn imported_public_config_loader_accepts_invite_code() {
+        let public_config = valid_public_config();
+        let invite_code = FederationInvite::new(public_config.clone())
+            .expect("invite")
+            .to_invite_code()
+            .expect("invite code");
+        let args = add_args_with_import_source(None, Some(invite_code));
+
+        let loaded = load_imported_public_config(&args).expect("load invite config");
+
+        assert_eq!(loaded, public_config);
+    }
+
+    #[test]
+    fn imported_public_config_loader_rejects_bad_invite_code() {
+        let args = add_args_with_import_source(None, Some("cashuAunsupported".to_string()));
+
+        let err = load_imported_public_config(&args).expect_err("bad invite rejected");
+
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]
