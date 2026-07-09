@@ -7,8 +7,9 @@ AlephBFT federations and fresh CLI wallets. The first run identified why
 federated minting took tens of seconds. The second run verifies the immediate
 post-quote payment-observation fix and keeps the remaining delay classified.
 The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip
-was excluded from the activity hint. The latest fresh process run rechecks the
-current code and keeps consensus cadence as the dominant remaining mint delay.
+was excluded from the activity hint. The latest run accepts a 100ms active-only
+cadence, deduplicates replayed consensus-data wakeups, and verifies both faster
+minting and low idle CPU.
 The next benchmark target is receiver-side token receive, which redeems a
 received token by performing a federated swap.
 
@@ -42,7 +43,11 @@ The measurements below are development-environment measurements. Absolute values
   - `mint_quote_payment`
   - `mint`
 
-Each mint currently requires three serialized consensus operations. For two mints, all members converged on six accepted journal operations in the same order:
+Each mint currently requires three ordered consensus operations. Quote and
+payment observation can share one AlephBFT data unit when both are queued in
+time, but the accepted journal still contains all three operations. For two
+mints, all members converged on six accepted journal operations in the same
+order:
 
 1. `mint_quote`
 2. `mint_quote_payment`
@@ -52,6 +57,58 @@ Each mint currently requires three serialized consensus operations. For two mint
 6. `mint`
 
 Finalized item count was higher than accepted operation count because wallet/member fanout causes duplicate finalizations. The duplicates did not change the accepted journal order.
+
+## Accepted 100ms Active Cadence and Idle CPU Fix
+
+CDK now uses a 100ms unit-creation delay only while the existing activity hint
+reports local pending work or a newly seen inbound CDK consensus payload. Early
+idle rounds keep the upstream delay and cooled tail rounds still use 2s. This
+does not change consensus thresholds, operation ordering, journal semantics,
+signing rules, or network message formats.
+
+The first process attempt exposed a replay bug: AlephBFT idle gossip can keep
+carrying old CDK data, and every replay refreshed the 10s network-activity
+window. After a mint, members remained around 45-82% CPU after 15s, with one
+member still at 24.8% in a later direct sample. The accepted fix tracks CDK
+unit-body hashes already seen by each live session. A new body wakes active
+cadence once; duplicate gossip is still delivered to AlephBFT but cannot extend
+the activity deadline. The tracker has a hard 16,384-entry cap and is reset on
+session rotation or restart. If the cap is reached, new payloads stop granting
+fast-cadence wakeups while consensus remains live on the safe idle cadence.
+
+Final fresh five-member, no-trace results:
+
+| Check | Result |
+| --- | ---: |
+| full mint #1 | 8.45s wall |
+| full mint #2 | 8.75s wall |
+| member 1 idle CPU after 15s cool-down | 0.4% |
+| member 2 idle CPU after 15s cool-down | 0.3% |
+| member 3 idle CPU after 15s cool-down | 0.7% |
+| member 4 idle CPU after 15s cool-down | 0.4% |
+| member 5 idle CPU after 15s cool-down | 0.4% |
+
+The traced 500ms baseline was 14.36s and 10.13s, so the accepted active cadence
+removed about 5.91s from the first mint and 1.38s from the second. A cold
+operation can still wait for an already-scheduled 2s idle sleep; that is the
+intentional cost of keeping inactive members cold.
+
+The default-cadence in-process probe measured cold submit-to-waiter completion
+at about 2.53s and immediate warm completion at about 0.50s. A five-member
+threshold-three operation returned its local waiter in about 0.83s.
+
+Restart and catch-up gate:
+
+- A mint with one of five members offline completed in 9.22s.
+- The offline member restarted and reached strict ready/converged status on the
+  third status attempt.
+- All five members converged on nine accepted operations, latest index 8, and
+  identical order and state digests.
+- Pending mempool and waiter counts returned to zero and no digest or invalid
+  operation alerts were reported.
+
+This closes the observed post-work CPU issue and accepts the active-only cadence
+change. The next performance target is receiver-side receive/swap.
 
 ## Lifecycle-Traced 500ms Active-Cadence Baseline
 
@@ -92,7 +149,7 @@ Classification from the process trace:
 This evidence supports testing a faster active-only unit-creation cadence while
 retaining the existing 2s idle cadence and pending-work activity hint.
 
-## Current Fresh Process Verification Run
+## Pre-Active-Cadence Fresh Process Verification Run
 
 A fresh five-member, threshold-three fakewallet AlephBFT federation and fresh
 wallet were started from scratch and measured end to end. This run did not add
@@ -167,13 +224,14 @@ Current classification:
 - The payment observer tick is no longer the dominant happy-path delay for
   fakewallet minting because the route submits an immediate paid observation as
   soon as quote consensus returns.
-- CPU is still a follow-up risk: after the mint benchmark, all members were
+- At this earlier checkpoint CPU was still a follow-up risk: after the mint benchmark, all members were
   healthy and converged, but AlephBFT continued producing idle units and member
   processes were observed with nontrivial CPU usage while the task queue still
   carried dozens of `UnitBroadcast` tasks. Treat the earlier CPU issue as
-  improved, not fully closed, until an idle-after-work CPU test passes.
+  improved, not fully closed. The accepted active-cadence section above records
+  the later replay-deduplication fix and passing idle-after-work CPU gate.
 
-Smallest clean next fix candidate:
+Fix candidate recorded at that checkpoint:
 
 - Add low-noise, production-safe timing diagnostics around the existing
   AlephBFT lifecycle stages: submit queued, data provider yielded, network
@@ -185,6 +243,9 @@ Smallest clean next fix candidate:
 - Re-run this same process benchmark plus an idle-after-work CPU check before
   considering larger protocol changes such as merging payment observation and
   mint signing.
+
+The accepted active-cadence and replay-deduplication section above completes
+this candidate and records the passing process gate.
 
 ## Pre-Fix Command Timing Summary
 
@@ -439,6 +500,11 @@ Checkpoint update:
   marks inbound messages whose decoded AlephBFT network message includes CDK
   consensus data. After an idle wait past the tail threshold, creator cadence
   slowed to about 2s and each member sat around 0.4-0.5% CPU.
+- Final correction: messages containing old CDK data can also be replayed by
+  idle gossip. The inbound session now refreshes activity only for a previously
+  unseen CDK unit-body hash. This preserves the first-arrival wakeup while
+  preventing old consensus-data replay from keeping the 100ms active cadence
+  alive indefinitely.
 
 Selective activity-hint command timing:
 
@@ -738,11 +804,11 @@ application.
    2.5-3.3s. Default-cadence cold/warm timing now shows the idle-tail
    data-provider wait directly: about 2.0s before the cold operation yields,
    versus about 0.48s for the immediate follow-up.
-3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Current
-   checkpoint: selective pending-work-aware tail cadence is implemented,
-   behavior-tested, and process-verified for idle cooling; cold mints are still
-   12-14s because they need three serialized consensus operations and can wait
-   on the 2s idle tail before the first active proposal.
+3. Tune AlephBFT proposal/finality intervals and verify no CPU spin. Completed:
+   active work uses 100ms unit creation, duplicate consensus-data gossip cannot
+   refresh activity, fresh mints complete in about 8-9s, idle members cool to
+   0.3-0.7% CPU, and one-member offline restart/catch-up converges exactly. Cold
+   work can still wait on one already-scheduled 2s idle interval.
 4. Cache validated federation configs and aggregate keysets in the wallet/CLI.
    Current checkpoint: startup activation now builds one federated connector per
    imported federation and reuses it across all active units in that command

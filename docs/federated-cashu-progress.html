@@ -431,19 +431,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes now cover the happy path, one-offline-member restart catch-up, one slow fakewallet member outside the fast threshold path, insufficient-threshold mint failure without proofs, both melt branches, one reachable wrong-metadata member tolerated by a threshold-valid subset, too many wrong-metadata members failing before proofs exist, reachable standalone members missing federation mint-info metadata failing before proofs exist, and generated configs whose members are all unreachable. Focused unit tests now cover malformed, stale, mismatched-roster, inactive-keyset, non-v3/BLS metadata rejection, wallet-repository activation with multi-unit connector reuse, missing-federation-metadata receive errors, imported member-URL receive resolution, invite-code import, explicit primary-member request policy, read-only startup behavior, immediate mint payment observations at the CLI/mint boundary, selective pending-work-aware AlephBFT tail pacing, and single-operation, three-operation, duplicate-fanout, five-member, seven-member, plus default-cadence cold/warm live AlephBFT latency probes. The same lifecycle stages are now available as opt-in process traces without changing normal log volume. The latest performance pass found that federated minting is dominated by three serialized AlephBFT operations; the observer gap is fixed, federated <code>mint-info</code> no longer reproduces the old 36s CPU burn, and fresh fakewallet mints are currently about 13-16s.</span>
+          <span class="value">Milestone 25 is bringing the existing federation wallet connector into <code>cdk-cli</code> so a normal CLI wallet can import a federation public config or invite code, construct a threshold member connector, and run mint, swap, melt, receive, and balance flows against a real AlephBFT fakewallet federation. The live AlephBFT CLI smokes cover the happy path, one-offline-member restart catch-up, slow and unreachable members, insufficient thresholds, both melt branches, metadata disagreement, and strict pre-proof failures. Focused tests cover federation metadata/keyset validation, wallet connector reuse, receive resolution, pending-work-aware AlephBFT pacing, duplicate consensus-data replay cooling, and two-, five-, and seven-member lifecycle probes. Active work now uses a 100ms cadence while idle tail rounds remain at 2s; fresh five-member mints complete in about 8-9s, all members cool to 0.3-0.7% CPU, and an offline member catches up to identical journal and state digests after restart.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: honor mintd trace filters</span>
+          <span class="value">fix: bound active AlephBFT cadence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT now exposes opt-in per-operation process traces for queue admission, data-provider yield, private REST delivery, finality, apply-loop receipt, durable apply, notification, and waiter return. A fresh traced five-member baseline completed two mints in 14.36s and 10.13s with all members converged on six accepted operations. First-mint submit-to-finality measured 2.281s for quote, 3.007s for payment observation, and 2.430s for mint, while private REST delivery took tens of milliseconds and quote/payment apply took 5-6ms, proving active consensus cadence is dominant.</span>
+          <span class="value">The accepted 100ms active-only cadence reduced fresh no-trace mints to 8.45s and 8.75s from a traced 500ms baseline of 14.36s and 10.13s. Replayed old consensus payloads no longer refresh activity, so a 15s idle gate measured 0.3-0.7% CPU per member. A 9.22s mint succeeded with one member offline; after restart, all five converged on nine operations, index 8, and identical order/state digests with no alerts.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Compare the traced 500ms baseline against a Fedimint-inspired 100ms active cadence while retaining the 2s idle cooling path, and accept the timing change only if mint latency improves without reviving idle CPU, catch-up, or convergence problems.</span>
+          <span class="value">Benchmark receiver-side token receive/swap with the accepted cadence, then measure federated swap and melt lifecycle stages under warm, cold, slow-member, and one-member-offline conditions while preserving the passing idle CPU and catch-up gates.</span>
         </div>
       </aside>
     </header>
@@ -791,7 +791,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known blocking-call issues are fixed, the old CPU spin path is improved but remains under idle-after-work verification, successful AlephBFT gossip stays on the no-write fast path with clean ticks logged at trace, high-frequency status/local-status/network-message routes keep REST sequence watermarks in memory, peer sync has backoff and timeout knobs, operation admission is size bounded, catching-up members fail closed before value-route consensus mutation and resume when healthy, federated wallet startup avoids repeated full BLS aggregate config validation on read-only CLI commands, AlephBFT backup persistence retries transient locked/busy storage contention instead of terminating the backup saver, public federated mint signing waits for federation-visible payment observation instead of ordering an unpaid mint before the observation, concurrent duplicate public value routes are member-local idempotent for mint, swap, and melt, concurrent all-member wallet mint, swap, and melt fanout returns identical aggregate-verifiable responses while leaving one accepted operation per member, mint and swap keep one response cache entry per member, swap fanout spends each input once per member, melt fanout converges through matching paid observations while making only one elected development-backend payment attempt, duplicate AlephBFT peer entries cannot inflate quorum or skipped-member telemetry, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
+            <p>Known blocking-call issues and the post-work CPU spin path are fixed. Active AlephBFT work uses a bounded 100ms cadence, replayed consensus-data gossip cannot refresh the activity window, and a five-process idle gate cools members to 0.3-0.7% CPU. Successful gossip stays on the no-write fast path, high-frequency routes keep sequence watermarks in memory, peer sync has backoff and timeout knobs, operation admission is bounded, catching-up members fail closed before value mutations and resume when healthy, backup persistence retries transient storage contention, value routes remain consensus-gated and idempotent, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -854,12 +854,13 @@
           configurable generated auto-rotation smoke, and collision-free
           generated post-crash operation smoke, followed by
           larger wallet-operation smoke repetitions, storage-backed 4-member
-          and 5-member partition windows, and compile gates. The previous CPU issue is improved but
-          not fully closed until an idle-after-work CPU check passes. The latest wallet-startup performance check confirms
+          and 5-member partition windows, and compile gates. The previous CPU issue is fixed: replayed
+          consensus-data gossip no longer refreshes activity, and the five-process idle gate passes at
+          0.3-0.7% CPU per member. The latest wallet-startup performance check confirms
           federated <code>mint-info</code> is no longer CPU-bound by repeated full
-          config validation. Opt-in process lifecycle traces now cover queue,
-          network, finality, apply, and waiter stages; remaining mint latency
-          work should use them to verify active-cadence tuning.
+          config validation. Opt-in process lifecycle traces cover queue,
+          network, finality, apply, and waiter stages; the next latency target is
+          receiver-side receive/swap plus swap and melt fault conditions.
         </p>
       </section>
 
@@ -945,8 +946,8 @@
             <p>Repeat the now-passing SQLite and Postgres federation smokes against larger rosters to catch any storage contention, quorum edge, or slow catch-up path that the focused tests cannot show.</p>
           </article>
           <article class="item">
-            <h3>Mint-side latency profiling</h3>
-            <p>Use the completed live-session probes and opt-in process lifecycle traces to compare the current 500ms active cadence with a 100ms active cadence that preserves 2s idle cooling, then verify mint latency, idle CPU, convergence, and catch-up before retaining the change.</p>
+            <h3>Receiver and value-operation latency</h3>
+            <p>Benchmark receiver-side receive/swap plus direct swap and melt under warm, cold, slow-member, and one-member-offline conditions, using the accepted 100ms active cadence and retaining the passing idle CPU, restart, catch-up, and convergence gates.</p>
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>

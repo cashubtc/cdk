@@ -2,6 +2,7 @@ use core::fmt;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 use aleph_bft::Recipient;
 use cdk::federation::FederationOperationId;
@@ -23,16 +24,48 @@ use super::aleph_bft_runtime::{
 use super::peer_client::FederationRestPeerClient;
 
 pub(crate) const CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT: usize = 4096;
+const CDK_ALEPH_BFT_SEEN_CONSENSUS_ACTIVITY_LIMIT: usize = 16_384;
+
+#[derive(Debug, Default)]
+struct CdkAlephBftSeenConsensusActivity {
+    ids: BTreeSet<[u8; 32]>,
+    limit_reported: bool,
+}
+
+impl CdkAlephBftSeenConsensusActivity {
+    fn mark_new(&mut self, activity_ids: Vec<[u8; 32]>, limit: usize) -> (bool, bool) {
+        let mut marks_activity = false;
+        let mut report_limit = false;
+        for activity_id in activity_ids {
+            if self.ids.contains(&activity_id) {
+                continue;
+            }
+            if self.ids.len() >= limit {
+                if !self.limit_reported {
+                    self.limit_reported = true;
+                    report_limit = true;
+                }
+                continue;
+            }
+            self.ids.insert(activity_id);
+            marks_activity = true;
+        }
+        (marks_activity, report_limit)
+    }
+}
 
 /// Classifies inbound AlephBFT messages that should wake active proposal cadence.
 pub(crate) trait CdkAlephBftNetworkActivityMarker {
-    /// Return true when this message carries consensus data, not only idle protocol chatter.
-    fn marks_consensus_activity(&self) -> bool;
+    /// Return stable IDs for consensus payloads carried by this message.
+    fn consensus_activity_ids(&self) -> Vec<[u8; 32]>;
 }
 
 impl CdkAlephBftNetworkActivityMarker for CdkAlephBftNetworkData {
-    fn marks_consensus_activity(&self) -> bool {
-        !self.included_data().is_empty()
+    fn consensus_activity_ids(&self) -> Vec<[u8; 32]> {
+        self.included_data()
+            .into_iter()
+            .map(|data| data.payload().body_hash.to_bytes())
+            .collect()
     }
 }
 
@@ -53,6 +86,7 @@ pub(crate) struct CdkAlephBftNetworkInboundHandle<D> {
     session_id: u64,
     incoming: mpsc::UnboundedSender<D>,
     activity_hint: CdkAlephBftActivityHint,
+    seen_consensus_activity: Arc<Mutex<CdkAlephBftSeenConsensusActivity>>,
     _message: PhantomData<fn() -> D>,
 }
 
@@ -81,7 +115,29 @@ impl<D> CdkAlephBftNetworkInboundHandle<D> {
             session_id,
             incoming: handle.incoming_sender(),
             activity_hint,
+            seen_consensus_activity: Arc::new(Mutex::new(
+                CdkAlephBftSeenConsensusActivity::default(),
+            )),
             _message: PhantomData,
+        }
+    }
+
+    fn mark_new_consensus_activity(&self, activity_ids: Vec<[u8; 32]>) {
+        let (marks_activity, report_limit) = match self.seen_consensus_activity.lock() {
+            Ok(mut seen) => {
+                seen.mark_new(activity_ids, CDK_ALEPH_BFT_SEEN_CONSENSUS_ACTIVITY_LIMIT)
+            }
+            Err(_) => (false, false),
+        };
+        if report_limit {
+            tracing::warn!(
+                session_id = self.session_id,
+                limit = CDK_ALEPH_BFT_SEEN_CONSENSUS_ACTIVITY_LIMIT,
+                "AlephBFT consensus-activity wakeup tracker reached its bound"
+            );
+        }
+        if marks_activity {
+            self.activity_hint.mark_network_activity();
         }
     }
 }
@@ -127,13 +183,11 @@ where
                 },
             ));
         }
-        let marks_activity = message.marks_consensus_activity();
+        let activity_ids = message.consensus_activity_ids();
         self.incoming.send(message).map_err(|_| {
             cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())
         })?;
-        if marks_activity {
-            self.activity_hint.mark_network_activity();
-        }
+        self.mark_new_consensus_activity(activity_ids);
 
         Ok(actual)
     }
@@ -141,8 +195,10 @@ where
 
 #[cfg(test)]
 impl CdkAlephBftNetworkActivityMarker for u64 {
-    fn marks_consensus_activity(&self) -> bool {
-        true
+    fn consensus_activity_ids(&self) -> Vec<[u8; 32]> {
+        let mut activity_id = [0u8; 32];
+        activity_id[..8].copy_from_slice(&self.to_be_bytes());
+        vec![activity_id]
     }
 }
 
@@ -843,8 +899,19 @@ mod tests {
     struct IdleNetworkMessage(u64);
 
     impl CdkAlephBftNetworkActivityMarker for IdleNetworkMessage {
-        fn marks_consensus_activity(&self) -> bool {
-            false
+        fn consensus_activity_ids(&self) -> Vec<[u8; 32]> {
+            Vec::new()
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Decode, Encode)]
+    struct ActiveNetworkMessage(u64);
+
+    impl CdkAlephBftNetworkActivityMarker for ActiveNetworkMessage {
+        fn consensus_activity_ids(&self) -> Vec<[u8; 32]> {
+            let mut activity_id = [0u8; 32];
+            activity_id[..8].copy_from_slice(&self.0.to_be_bytes());
+            vec![activity_id]
         }
     }
 
@@ -865,5 +932,41 @@ mod tests {
         );
         assert_eq!(network.next_event().await, Some(IdleNetworkMessage(42)));
         assert!(!activity_hint.is_active());
+    }
+
+    #[tokio::test]
+    async fn inbound_replayed_consensus_data_does_not_refresh_activity_hint() {
+        let (mut network, handle) = CdkAlephBftNetwork::<ActiveNetworkMessage>::new_pair();
+        let activity_hint = CdkAlephBftActivityHint::default();
+        let inbound =
+            CdkAlephBftNetworkInboundHandle::with_activity_hint(7, &handle, activity_hint.clone());
+        let first =
+            FederationAlephBftNetworkMessageRequest::new(7, ActiveNetworkMessage(42).encode());
+
+        inbound.queue_request(&first).expect("first request");
+        assert_eq!(network.next_event().await, Some(ActiveNetworkMessage(42)));
+        assert!(activity_hint.is_active());
+
+        activity_hint.clear_network_activity();
+        inbound.queue_request(&first).expect("replayed request");
+        assert_eq!(network.next_event().await, Some(ActiveNetworkMessage(42)));
+        assert!(!activity_hint.is_active());
+
+        let second =
+            FederationAlephBftNetworkMessageRequest::new(7, ActiveNetworkMessage(43).encode());
+        inbound.queue_request(&second).expect("new request");
+        assert_eq!(network.next_event().await, Some(ActiveNetworkMessage(43)));
+        assert!(activity_hint.is_active());
+    }
+
+    #[test]
+    fn seen_consensus_activity_stops_waking_after_its_bound() {
+        let mut seen = CdkAlephBftSeenConsensusActivity::default();
+
+        assert_eq!(seen.mark_new(vec![[1u8; 32]], 1), (true, false));
+        assert_eq!(seen.mark_new(vec![[1u8; 32]], 1), (false, false));
+        assert_eq!(seen.mark_new(vec![[2u8; 32]], 1), (false, true));
+        assert_eq!(seen.mark_new(vec![[3u8; 32]], 1), (false, false));
+        assert_eq!(seen.ids.len(), 1);
     }
 }

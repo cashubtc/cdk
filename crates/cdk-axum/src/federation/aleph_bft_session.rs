@@ -33,6 +33,7 @@ use crate::{
 // checkpoint windows remain separate coverage.
 const CDK_ALEPH_BFT_MAX_ROUND: u16 = 3000;
 const CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND: usize = 64;
+const CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY: Duration = Duration::from_millis(100);
 const CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
@@ -652,7 +653,9 @@ fn cdk_aleph_bft_delay_config_with_activity(activity_hint: CdkAlephBftActivityHi
     let mut delay_config = default_delay_config();
     let default_unit_creation_delay = Arc::clone(&delay_config.unit_creation_delay);
     delay_config.unit_creation_delay = Arc::new(move |round| {
-        if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND && !activity_hint.is_active() {
+        if activity_hint.is_active() {
+            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+        } else if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND {
             CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
         } else {
             default_unit_creation_delay(round)
@@ -1057,8 +1060,8 @@ mod tests {
     fn aleph_bft_live_session_activity_hint_keeps_tail_rounds_on_active_cadence() {
         let activity_hint = CdkAlephBftActivityHint::default();
         let delay_config = cdk_aleph_bft_delay_config_with_activity(activity_hint.clone());
-        let early_delay =
-            (delay_config.unit_creation_delay)(CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND);
+        let early_round = CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND;
+        let idle_early_delay = (delay_config.unit_creation_delay)(early_round);
         let tail_round = CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND + 1;
 
         assert_eq!(
@@ -1067,7 +1070,15 @@ mod tests {
         );
 
         activity_hint.mark_local_pending();
-        assert_eq!((delay_config.unit_creation_delay)(tail_round), early_delay);
+        assert_eq!(
+            (delay_config.unit_creation_delay)(early_round),
+            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+        );
+        assert_eq!(
+            (delay_config.unit_creation_delay)(tail_round),
+            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+        );
+        assert!(CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY < idle_early_delay);
 
         activity_hint.set_local_pending(false);
         assert_eq!(
@@ -1076,6 +1087,9 @@ mod tests {
         );
 
         activity_hint.mark_network_activity();
-        assert_eq!((delay_config.unit_creation_delay)(tail_round), early_delay);
+        assert_eq!(
+            (delay_config.unit_creation_delay)(tail_round),
+            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+        );
     }
 }

@@ -456,6 +456,13 @@ impl CdkAlephBftActivityHint {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_network_activity(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.active_until = None;
+        }
+    }
+
     /// Return whether this session should use active proposal cadence.
     pub(crate) fn is_active(&self) -> bool {
         let Ok(mut state) = self.state.lock() else {

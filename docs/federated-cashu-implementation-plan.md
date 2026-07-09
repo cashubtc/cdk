@@ -98,10 +98,11 @@ Current blocking bugs:
   two-operation probe now records the idle-tail shape directly: after an idle
   pause the cold operation yielded data after about 2.0s and returned its local
   waiter at about 4.0-4.5s, while the immediate follow-up yielded after about
-  0.48s and returned at about 2.5s. This confirms the remaining 12-14s
-  fakewallet process mint delay is driven by default AlephBFT cadence across
-  three serialized operations, not by the local apply, duplicate-waiter, or
-  waiter-notification path alone.
+  0.48s and returned at about 2.5s. This confirmed that the then-current 12-14s
+  fakewallet process mint delay was driven by default AlephBFT cadence across
+  three ordered operations, not by the local apply, duplicate-waiter, or
+  waiter-notification path alone; the accepted active-cadence result below
+  reduces fresh mints to about 8-9s.
 - Opt-in process diagnostics now emit the same operation-specific lifecycle
   stages at `trace` through the dedicated
   `cdk_axum::federation::aleph_bft_latency` target. Normal logging stays quiet,
@@ -123,6 +124,24 @@ Current blocking bugs:
   mint signing/materialization took about 430ms. The second mint batched quote
   and payment observation into one finalized unit and was correspondingly
   faster. This makes active AlephBFT cadence the proven next tuning boundary.
+- Accepted active-cadence fix: while local work is queued/awaiting finality or a
+  newly seen peer CDK payload arrives, unit creation uses 100ms; early idle
+  rounds retain the upstream schedule and cooled tail rounds retain 2s. A first
+  attempt revealed that idle gossip can replay old units containing CDK data
+  and refresh the activity window forever, leaving members around 45-82% CPU.
+  Inbound live sessions now remember seen CDK unit-body hashes, wake once for a
+  new body, and deliver duplicate gossip without refreshing activity. The
+  performance-only tracker is capped at 16,384 entries per session; after the
+  cap, consensus remains live at idle cadence without allocating more entries
+  or granting new fast-cadence wakeups.
+- Final process verification: fresh no-trace mints completed in 8.45s and 8.75s
+  versus the traced 500ms baseline at 14.36s and 10.13s. After a 15s cool-down,
+  direct CPU samples across the five members were 0.4%, 0.3%, 0.7%, 0.4%, and
+  0.4%. A mint with one member offline completed in 9.22s; the restarted member
+  caught up on the third strict status attempt, and all five members converged
+  on nine operations, latest index 8, identical order/state digests, zero
+  pending work, and no digest or invalid-operation alerts. The observed CPU
+  issue is fixed and covered by duplicate-replay plus process idle checks.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -131,7 +150,10 @@ Current blocking bugs:
   and
   `cargo test -p cdk-axum --features federation aleph_bft_live_session_latency_probe_records_ -- --test-threads 1 --nocapture`.
   The process-diagnostics checkpoint also passed
-  `cargo check -p cdk-axum --features federation`.
+  `cargo check -p cdk-axum --features federation`. Active-cadence coverage also
+  passed `inbound_replayed_consensus_data_does_not_refresh_activity_hint`,
+  `inbound_idle_network_message_does_not_mark_activity_hint`, the default
+  cold/warm latency probe, and the five-member latency probe.
 
 ## Sources reviewed
 
@@ -356,10 +378,13 @@ Current confirmed shape:
   `payment_observations` materialized rows at equal accepted height are reported
   as redacted materialized row diffs, including missing members and stable row
   variants without leaking quote IDs, operation IDs, or payment proof material.
-- Resolved CPU-spin checkpoint: the previously observed 100 percent CPU issue is
-  considered fixed by the bounded AlephBFT data-provider/driver behavior and
-  smoke-argument busy-polling guards. It is no longer tracked as active work
-  unless it reappears in testing or runtime observation.
+- Resolved CPU-spin checkpoint: the previously observed 100 percent CPU issue
+  reappeared when 100ms active rounds exposed old consensus-data gossip
+  repeatedly refreshing the activity window. Live sessions now wake once per
+  previously unseen unit-body hash, cap the tracker at 16,384 entries, and do
+  not refresh activity for replayed payloads. A five-process post-work gate
+  measured every member at 0.3-0.7% CPU, and duplicate-replay coverage proves
+  replays still reach AlephBFT without extending the wakeup window.
 - Resolved wallet startup performance checkpoint: the later slow
   `cdk-cli mint-info` and first federated mint request delay were isolated to
   repeated full wallet-side federation validation and eager CLI federation wallet
