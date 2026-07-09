@@ -703,6 +703,116 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
 fed-regtest-cli-smoke-offline dir="target/cdk-fed-regtest-cli-offline" wallet_dir="target/cdk-fed-regtest-cli-offline-wallet" members="5" threshold="3" port_start="64885" offline_member="5":
   just fed-regtest-cli-smoke "{{dir}}" "{{wallet_dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{offline_member}}"
 
+# Run the CLI federation smoke with one reachable slow fakewallet member outside the fast threshold path
+fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_dir="target/cdk-fed-regtest-cli-slow-wallet" members="5" threshold="4" port_start="58885" slow_member="5" slow_delay_secs="30":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
+  export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
+  wait_for_fast_status() {
+    local attempt
+    local status_args=()
+    local member
+    for member in $(seq 1 "{{members}}"); do
+      if [[ "$member" == "{{slow_member}}" ]]; then
+        continue
+      fi
+      status_args+=(--member "$member")
+    done
+    for attempt in $(seq 1 60); do
+      if target/debug/cdk-mintd federation status \
+        --public-config "{{dir}}/federation-public.json" \
+        --private-config "{{dir}}/member-1/federation-private.json" \
+        "${status_args[@]}" \
+        --require-ready \
+        --require-converged \
+        --require-session-outcome-quorum \
+        --require-no-digest-alerts \
+        --require-no-invalid-operation-alerts >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'fast federation members did not become ready for slow-member CLI smoke\n' >&2
+    target/debug/cdk-mintd federation status \
+      --public-config "{{dir}}/federation-public.json" \
+      --private-config "{{dir}}/member-1/federation-private.json" \
+      "${status_args[@]}" || true
+    return 1
+  }
+  wait_for_member_info() {
+    local member="$1"
+    local mint_url="http://127.0.0.1:$(({{port_start}} + member - 1))"
+    local attempt
+    for attempt in $(seq 1 30); do
+      if curl -fsS "$mint_url/v1/info" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'member %s did not expose mint info at %s\n' "$member" "$mint_url" >&2
+    return 1
+  }
+  start_slow_member() {
+    local member="{{slow_member}}"
+    local work_dir="{{dir}}/member-${member}/work"
+    local config="{{dir}}/member-${member}/config.toml"
+    local pid_file="${work_dir}/mintd.pid"
+    mkdir -p "$work_dir"
+    CDK_MINTD_FAKE_WALLET_MIN_DELAY="{{slow_delay_secs}}" \
+    CDK_MINTD_FAKE_WALLET_MAX_DELAY="{{slow_delay_secs}}" \
+      nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+    echo "$!" > "$pid_file"
+    echo "started slow member ${member} with pid $(cat "$pid_file")"
+  }
+  cargo build -p cdk-cli --features federation
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  trap 'just fed-regtest-stop "{{dir}}"' EXIT
+  for member in $(seq 1 "{{members}}"); do
+    if [[ "$member" == "{{slow_member}}" ]]; then
+      start_slow_member
+    else
+      just fed-regtest-start-member "$member" "{{dir}}" "0"
+    fi
+  done
+  for member in $(seq 1 "{{members}}"); do
+    wait_for_member_info "$member"
+  done
+  wait_for_fast_status
+  if ! grep -Fq "min_delay_time: {{slow_delay_secs}}" "{{dir}}/member-{{slow_member}}/work/logs"/cdk-mintd.log.*; then
+    printf 'slow member did not log the expected fakewallet delay configuration\n' >&2
+    exit 1
+  fi
+  rm -rf -- "{{wallet_dir}}"
+  mint_url="http://127.0.0.1:{{port_start}}"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --primary-member-id 1 \
+    --member-request-timeout-secs 45 \
+    --member-fallback-timeout-secs 45 \
+    --quote-status-member-timeout-secs 45 \
+    --mint-quote-visibility-attempts 20 \
+    --mint-quote-visibility-retry-delay-ms 250 \
+    --fanout-concurrency "{{members}}"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    mint "$mint_url" 12 --wait-duration 90
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-slow-member.out"
+  grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' "{{wallet_dir}}/check-slow-member.out"
+  new_quote_count="$(grep -Rh 'New bolt11 mint quote' "{{dir}}"/member-*/work/logs/cdk-mintd.log.* | wc -l | tr -d ' ')"
+  if [[ "$new_quote_count" != "1" ]]; then
+    printf 'expected exactly one quote creation, found %s\n' "$new_quote_count" >&2
+    exit 1
+  fi
+  wait_for_fast_status
+  printf 'cdk-cli slow-member smoke passed\n'
+
 # Run the CLI federation smoke until threshold is unavailable and require mint failure without proofs
 fed-regtest-cli-smoke-insufficient-threshold dir="target/cdk-fed-regtest-cli-insufficient" wallet_dir="target/cdk-fed-regtest-cli-insufficient-wallet" members="5" threshold="3" port_start="63885" offline_members="4 5":
   #!/usr/bin/env bash
