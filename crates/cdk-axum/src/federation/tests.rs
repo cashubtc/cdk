@@ -9287,6 +9287,59 @@ async fn aleph_bft_live_session_latency_probe_records_three_serial_operations() 
 }
 
 #[tokio::test]
+async fn aleph_bft_live_session_latency_probe_duplicate_fanout_joins_one_operation() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 128,
+        max_peer_deliveries_per_message: 128,
+    };
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        pump_config,
+        500,
+    ))
+    .await
+    .expect("start live session");
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+
+    let operation_id = submit_duplicate_latency_probe_mint_quote(&session.first_state).await;
+    wait_for_applied_operation(&session.first_state, operation_id).await;
+    wait_for_applied_operation(&session.second_state, operation_id).await;
+
+    let operation_events = latency.events_for_operation(operation_id);
+    assert_latency_stage_order(&operation_events, LATENCY_EXPECTED_STAGES);
+    assert_eq!(
+        latency_stage_count(&operation_events, CdkAlephBftLatencyStage::SubmitQueued),
+        1,
+        "duplicate fanout must queue one local AlephBFT operation: {}",
+        format_latency_events(&operation_events)
+    );
+    assert_eq!(
+        latency_stage_count(
+            &operation_events,
+            CdkAlephBftLatencyStage::DataProviderYielded
+        ),
+        1,
+        "duplicate fanout must produce one CDK data payload: {}",
+        format_latency_events(&operation_events)
+    );
+    assert_eq!(
+        latency_stage_count(&operation_events, CdkAlephBftLatencyStage::WaiterReturned),
+        2,
+        "duplicate fanout must return both waiters: {}",
+        format_latency_events(&operation_events)
+    );
+    let stats = session
+        .first_state
+        .federation_operation_notification_stats();
+    assert_eq!(stats.duplicate_pending_waiter_joins, 1);
+    assert_eq!(stats.duplicate_submissions, 1);
+    eprintln!(
+        "AlephBFT duplicate fanout latency probe for {operation_id}: {}",
+        format_latency_events(&operation_events)
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
     let second_url = MintUrl::from_str("http://fed2.test").expect("second federation api url");
@@ -12793,6 +12846,43 @@ async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperati
     operation_id
 }
 
+async fn submit_duplicate_latency_probe_mint_quote(state: &MintState) -> FederationOperationId {
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let first_state = state.clone();
+    let first_envelope = envelope.clone();
+    let first = tokio::spawn(async move {
+        first_state
+            .submit_federation_envelope_with_sequence(first_envelope, None)
+            .await
+    });
+    let second_state = state.clone();
+    let second = tokio::spawn(async move {
+        second_state
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await
+    });
+
+    let (first_response, second_response) = tokio::join!(first, second);
+    let first_response = first_response
+        .expect("first submit task")
+        .expect("first live AlephBFT operation response");
+    let second_response = second_response
+        .expect("second submit task")
+        .expect("second live AlephBFT operation response");
+
+    for response in [first_response, second_response] {
+        assert_eq!(response.operation_id, operation_id);
+        assert_eq!(
+            response.outcome.entry().status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    operation_id
+}
+
 async fn wait_for_latency_stage(
     recorder: &CdkAlephBftLatencyRecorder,
     operation_id: FederationOperationId,
@@ -12850,6 +12940,13 @@ fn latency_stage_delta(
         .map(|event| event.elapsed)?;
 
     end_elapsed.checked_sub(start_elapsed)
+}
+
+fn latency_stage_count(
+    events: &[CdkAlephBftLatencyEvent],
+    stage: CdkAlephBftLatencyStage,
+) -> usize {
+    events.iter().filter(|event| event.stage == stage).count()
 }
 
 fn format_latency_events(events: &[CdkAlephBftLatencyEvent]) -> String {

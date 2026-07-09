@@ -87,8 +87,11 @@ Current blocking bugs:
   waiter notification, and waiter return. With fast in-process test delays the
   probe measured one mint-quote operation at roughly 65-85ms end to end, and a
   three-operation serial probe measured submit-to-waiter deltas in the roughly
-  50-70ms range. This confirms the remaining 12-14s fakewallet process mint
-  delay is not caused by the local apply or waiter-notification path alone.
+  50-70ms range. A duplicate-fanout probe submits the same operation twice
+  concurrently and proves both waiters return from one queued AlephBFT operation
+  with one data-provider yield and one duplicate-pending waiter join. This
+  confirms the remaining 12-14s fakewallet process mint delay is not caused by
+  the local apply, duplicate-waiter, or waiter-notification path alone.
 - Focused tests passed on 2026-07-09:
   `cargo test -p cdk-axum --features federation post_mint_custom_quote_ -- --test-threads 1`,
   `cargo test -p cdk-axum --features federation mint_payment_observer_round -- --test-threads 1`,
@@ -2004,9 +2007,11 @@ AlephBFT and consensus unit tests:
   finalization/apply events come from the second live member applying the same
   accepted operation. The same harness now also covers three serial mint-quote
   operations, with submit-to-waiter deltas around 50-70ms under fast in-process
-  options. Recorder installation is exclusive so parallel tests cannot overwrite
-  the scoped active recorder. This gives future cadence and batching work a
-  stable non-production benchmark surface.
+  options, and duplicate fanout, which records one `SubmitQueued`, one
+  `DataProviderYielded`, two `WaiterReturned` events, and one
+  duplicate-pending waiter join. Recorder installation is exclusive so parallel
+  tests cannot overwrite the scoped active recorder. This gives future cadence
+  and batching work a stable non-production benchmark surface.
 - [x] Public federated mint signing waits for mint-quote payment observation to
   be locally visible before submitting the mint operation to consensus.
   Benchmark traces showed an ordering race where an unpaid mint operation could
