@@ -690,6 +690,63 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
 fed-regtest-cli-smoke-offline dir="target/cdk-fed-regtest-cli-offline" wallet_dir="target/cdk-fed-regtest-cli-offline-wallet" members="5" threshold="3" port_start="64885" offline_member="5":
   just fed-regtest-cli-smoke "{{dir}}" "{{wallet_dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{offline_member}}"
 
+# Run the CLI federation smoke until threshold is unavailable and require mint failure without proofs
+fed-regtest-cli-smoke-insufficient-threshold dir="target/cdk-fed-regtest-cli-insufficient" wallet_dir="target/cdk-fed-regtest-cli-insufficient-wallet" members="5" threshold="3" port_start="63885" offline_members="4 5":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
+  export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-8}"
+  wait_for_cli_smoke_status() {
+    local attempt
+    for attempt in $(seq 1 60); do
+      if just fed-regtest-status "{{dir}}" "1"; then
+        return 0
+      fi
+      sleep 1
+    done
+    printf 'federation did not become ready for insufficient-threshold CLI smoke\n' >&2
+    return 1
+  }
+  cargo build -p cdk-cli --features federation
+  just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
+  just fed-regtest-start "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  trap 'just fed-regtest-stop "{{dir}}"' EXIT
+  wait_for_cli_smoke_status
+  for member in {{offline_members}}; do
+    just fed-regtest-stop-member "$member" "{{dir}}"
+  done
+  rm -rf -- "{{wallet_dir}}"
+  mint_url="http://127.0.0.1:{{port_start}}"
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
+    federation add --public-config "{{dir}}/federation-public.json" \
+    --member-request-timeout-secs 3 \
+    --member-fallback-timeout-secs 3 \
+    --quote-status-member-timeout-secs 3 \
+    --mint-quote-visibility-attempts 5 \
+    --mint-quote-visibility-retry-delay-ms 100
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
+  set +e
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    mint "$mint_url" 20 --wait-duration 8 > "{{wallet_dir}}/mint-insufficient.out" 2>&1
+  mint_status="$?"
+  set -e
+  cat "{{wallet_dir}}/mint-insufficient.out"
+  if [[ "$mint_status" == "0" ]]; then
+    printf 'mint unexpectedly succeeded while threshold was unavailable\n' >&2
+    exit 1
+  fi
+  if grep -Eq 'Minted [1-9][0-9]*|Received [1-9][0-9]*' "{{wallet_dir}}/mint-insufficient.out"; then
+    printf 'mint output indicates spendable proofs were produced despite unavailable threshold\n' >&2
+    exit 1
+  fi
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    check-state --mint-url "$mint_url" | tee "{{wallet_dir}}/check-insufficient.out"
+  grep -Fq 'No local proofs found' "{{wallet_dir}}/check-insufficient.out"
+  printf 'cdk-cli insufficient-threshold smoke passed\n'
+
 # Run generated local federation smoke with a longer offline operation window
 fed-regtest-long-partition dir="target/cdk-fed-regtest-long-partition" members="5" threshold="3" port_start="25885" offline_batches="8":
   #!/usr/bin/env bash

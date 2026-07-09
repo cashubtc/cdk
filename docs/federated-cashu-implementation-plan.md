@@ -3141,13 +3141,19 @@ Latest checkpoint:
   while member 5 is offline, restarts that member without rebuilding mintd,
   waits until the member's public API is reachable, and requires catch-up to the
   same 6 accepted operations plus matching order and state digests before
-  passing.
+  passing. The `just fed-regtest-cli-smoke-insufficient-threshold` target now
+  stops two members in the same five-member setup, verifies CLI minting fails
+  while consensus threshold is unavailable, and checks that the wallet has no
+  local proofs afterward. The CLI mint command now also exits with an error when
+  its proof stream surfaces an error before completion, instead of silently
+  reporting a zero-value receive.
 
 Scripted local CLI smoke command:
 
 ```bash
 just fed-regtest-cli-smoke
 just fed-regtest-cli-smoke-offline
+just fed-regtest-cli-smoke-insufficient-threshold
 ```
 
 Manual local CLI smoke command shape:
@@ -3230,7 +3236,8 @@ Tests and success criteria:
   final signed convergence status.
 - [x] Repeat the fakewallet CLI smoke with one member stopped when the configured member count and thresholds can still make progress. `just fed-regtest-cli-smoke-offline` now stops one member during CLI mint, check-state, send/receive, spent-token check-state, melt, balance, and copied-seed restore, then restarts it and requires final signed convergence.
 - [ ] CLI tests prove one offline member, one slow member, or one invalid-share member is tolerated when the configured threshold remains reachable. Current process smoke proves the one-offline-member path, including restart/catch-up; slow-member and invalid-share CLI process coverage remain open.
-- [ ] CLI tests prove insufficient threshold, missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs.
+- [x] CLI tests prove insufficient threshold fails before wallet fanout can produce spendable proofs. `just fed-regtest-cli-smoke-insufficient-threshold` stops two members, expects CLI mint quote creation to fail, rejects any output claiming minted or received positive value, and verifies `check-state` finds no local proofs.
+- [ ] CLI tests prove missing federation mint-info metadata, mismatched aggregate keysets, and non-v3 output requests fail before wallet fanout can produce spendable proofs.
 - [x] First-test success criterion: a developer can run generated fakewallet
   federation mints and complete `mint -> send/swap -> melt` using only
   `cdk-cli`, without calling the Rust wallet connector test harness directly.

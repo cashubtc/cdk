@@ -181,6 +181,7 @@ pub async fn mint(
     // inside the loop so that the progress task below is always stopped cleanly.
     let wait_duration = sub_command_args.wait_duration;
     let mut timed_out = false;
+    let mut proof_stream_error = None;
 
     loop {
         let next = proof_streams.next();
@@ -200,6 +201,7 @@ pub async fn mint(
             // The stream surfaced an error.
             Ok(Some(Err(err))) => {
                 tracing::error!("Proof streams ended with {:?}", err);
+                proof_stream_error = Some(err);
                 break;
             }
             // The stream ended normally.
@@ -222,6 +224,9 @@ pub async fn mint(
 
     if timed_out && amount_minted == Amount::ZERO {
         bail!("Timed out after {wait_duration}s waiting for the mint quote to be paid");
+    }
+    if let Some(err) = proof_stream_error {
+        bail!("Mint proof stream ended with an error before completion: {err}");
     }
 
     println!("Received {amount_minted} from mint {mint_url}");
