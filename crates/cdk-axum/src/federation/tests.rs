@@ -23,17 +23,17 @@ use cdk::federation::{
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
     FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMemberStatusKind,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationPaymentTrustModel,
-    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
-    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationConsensusRuntime, FederationDkgCeremonyId, FederationDkgSetupMethod,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
+    FederationError, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
+    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservationPolicy,
+    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
+    FederationPaymentTrustModel, FederationRestMessageKind, FederationRestoreOperation,
+    FederationSignedRequest, InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -1948,6 +1948,7 @@ fn dkg_reveal(
 ) -> cdk::federation::FederationDkgParticipantCommitmentReveal {
     cdk::federation::FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        ceremony_id: cdk::federation::FederationDkgCeremonyId::from_bytes([55; 32]),
         member_id,
         keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
@@ -1994,6 +1995,7 @@ fn dkg_secret_share_request(
 ) -> FederationDkgSecretShareRequest {
     FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        cdk::federation::FederationDkgCeremonyId::from_bytes([55; 32]),
         sender,
         receiver,
         BTreeMap::from([(

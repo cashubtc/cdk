@@ -15,9 +15,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAlephBftFinalizedItem, FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload,
-    FederationConfig, FederationConsensusBackendKind, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationConfig, FederationConsensusBackendKind, FederationDkgCeremonyId,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
@@ -655,6 +655,8 @@ impl FederationDkgRevealRequest {
 pub struct FederationDkgSecretShareRequest {
     /// Federation whose DKG round this contribution belongs to.
     pub federation_id: FederationId,
+    /// Unique DKG ceremony this private contribution belongs to.
+    pub ceremony_id: FederationDkgCeremonyId,
     /// Participant that generated the secret-share contributions.
     pub sender: MemberId,
     /// Member that must receive and store these local secret contributions.
@@ -668,12 +670,14 @@ impl FederationDkgSecretShareRequest {
     #[must_use]
     pub fn new(
         federation_id: FederationId,
+        ceremony_id: FederationDkgCeremonyId,
         sender: MemberId,
         receiver: MemberId,
         secret_shares: BTreeMap<Amount, BlsSecretKeyShare>,
     ) -> Self {
         Self {
             federation_id,
+            ceremony_id,
             sender,
             receiver,
             secret_shares,
@@ -1862,6 +1866,10 @@ mod tests {
         FederationId::from_bytes([11; 32])
     }
 
+    fn dkg_ceremony_id() -> FederationDkgCeremonyId {
+        FederationDkgCeremonyId::from_bytes([12; 32])
+    }
+
     fn member_id() -> MemberId {
         MemberId::new(1).expect("member id")
     }
@@ -1953,6 +1961,7 @@ mod tests {
     ) -> FederationDkgParticipantCommitmentReveal {
         FederationDkgParticipantCommitmentReveal {
             federation_id: public_config.federation_id,
+            ceremony_id: dkg_ceremony_id(),
             member_id,
             keyset_spec: FederationDkgKeysetSpec::new(
                 CurrencyUnit::Sat,
@@ -3035,6 +3044,7 @@ mod tests {
         let receiver = roster_member_id(2);
         let payload = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            dkg_ceremony_id(),
             first_private.member_id,
             receiver,
             BTreeMap::from([(Amount::from(1), dkg_secret_share(receiver, 11))]),
@@ -3071,12 +3081,14 @@ mod tests {
         let receiver = roster_member_id(2);
         let sender_mismatch = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            dkg_ceremony_id(),
             second_private.member_id,
             receiver,
             BTreeMap::from([(Amount::from(1), dkg_secret_share(receiver, 11))]),
         );
         let receiver_mismatch = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            dkg_ceremony_id(),
             first_private.member_id,
             first_private.member_id,
             BTreeMap::from([(
@@ -3086,6 +3098,7 @@ mod tests {
         );
         let signer_mismatch = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            dkg_ceremony_id(),
             first_private.member_id,
             receiver,
             BTreeMap::from([(

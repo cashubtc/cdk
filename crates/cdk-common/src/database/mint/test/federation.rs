@@ -10,14 +10,14 @@ use crate::federation::{
     FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationConsensusItem, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -138,6 +138,10 @@ fn bls_key(byte: u8) -> BlsSecretKey {
     BlsSecretKey::from_reduced_bytes(&[byte; 32])
 }
 
+fn dkg_ceremony_id() -> FederationDkgCeremonyId {
+    FederationDkgCeremonyId::from_bytes([33; 32])
+}
+
 fn dkg_reveal(
     public_config: &FederationConfig,
     member_id: MemberId,
@@ -145,6 +149,7 @@ fn dkg_reveal(
 ) -> FederationDkgParticipantCommitmentReveal {
     FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        ceremony_id: dkg_ceremony_id(),
         member_id,
         keyset_spec: FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
@@ -257,6 +262,7 @@ fn dkg_secret_share_request(
 ) -> FederationDkgSecretShareRequest {
     FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        dkg_ceremony_id(),
         sender,
         receiver,
         BTreeMap::from([(

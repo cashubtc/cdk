@@ -144,6 +144,47 @@ async fn private_dkg_secret_share_route_rejects_wrong_receiver_before_sequence()
 }
 
 #[tokio::test]
+async fn private_dkg_secret_share_route_rejects_cross_ceremony_before_sequence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let commitment = dkg_commitment_request(&public_config, peer_private.member_id, 21);
+    let commitment_request =
+        signed_dkg_commitment_request(&public_config, &peer_private, local_member, 1, commitment);
+    let _ = post_dkg_commitment(State(state.clone()), Json(commitment_request))
+        .await
+        .expect("commitment accepted");
+
+    let mut payload =
+        dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
+    payload.ceremony_id = FederationDkgCeremonyId::from_bytes([56; 32]);
+    let request =
+        signed_dkg_secret_share_request(&public_config, &peer_private, local_member, 2, payload);
+    let response = post_dkg_secret_share(State(state.clone()), Json(request))
+        .await
+        .expect_err("cross-ceremony secret share must fail");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+    let secret_shares = state
+        .mint
+        .localstore()
+        .get_federation_dkg_secret_share_contributions()
+        .await
+        .expect("persisted secret-share contributions");
+    assert!(secret_shares.is_empty());
+}
+
+#[tokio::test]
 async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persistence() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
@@ -151,6 +192,12 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
         .federation_config()
         .expect("federation config")
         .member_id();
+    let commitment = dkg_commitment_request(&public_config, peer_private.member_id, 21);
+    let commitment_request =
+        signed_dkg_commitment_request(&public_config, &peer_private, local_member, 1, commitment);
+    let _ = post_dkg_commitment(State(state.clone()), Json(commitment_request))
+        .await
+        .expect("commitment accepted");
     let first_payload =
         dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
     let conflicting_payload =
@@ -159,14 +206,14 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
         &public_config,
         &peer_private,
         local_member,
-        1,
+        2,
         first_payload.clone(),
     );
     let conflicting_request = signed_dkg_secret_share_request(
         &public_config,
         &peer_private,
         local_member,
-        2,
+        3,
         conflicting_payload,
     );
 
@@ -184,7 +231,7 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
         .get_federation_member_sequences()
         .await
         .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
     let secret_shares = state
         .mint
         .localstore()

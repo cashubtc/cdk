@@ -2842,6 +2842,20 @@ impl MintState {
             ));
         }
         let setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
+        let ceremony_id = setup_state.ceremony_id.ok_or_else(|| {
+            cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
+                member_id: contribution.sender,
+                reason: "missing commitment ceremony before secret contribution".to_string(),
+            })
+        })?;
+        if contribution.ceremony_id != ceremony_id {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgCommitmentMismatch {
+                    member_id: contribution.sender,
+                    reason: "secret contribution belongs to another ceremony".to_string(),
+                },
+            ));
+        }
         let completed_keyset_share = self
             .derive_federation_dkg_member_keyset_share_if_ready(
                 &public_config,
@@ -3005,10 +3019,8 @@ impl MintState {
                 contribution.sender,
                 local_member,
             )?;
-            match participant_secret_shares
-                .insert(contribution.sender, contribution.secret_shares.clone())
-            {
-                Some(existing) if existing != contribution.secret_shares => {
+            match participant_secret_shares.insert(contribution.sender, contribution.clone()) {
+                Some(existing) if existing != contribution.clone() => {
                     return Err(cdk::Error::Federation(
                         FederationError::DkgCommitmentMismatch {
                             member_id: contribution.sender,
@@ -3028,10 +3040,8 @@ impl MintState {
                 contribution.sender,
                 local_member,
             )?;
-            match participant_secret_shares
-                .insert(contribution.sender, contribution.secret_shares.clone())
-            {
-                Some(existing) if existing != contribution.secret_shares => {
+            match participant_secret_shares.insert(contribution.sender, contribution.clone()) {
+                Some(existing) if existing != contribution.clone() => {
                     return Err(cdk::Error::Federation(
                         FederationError::DkgCommitmentMismatch {
                             member_id: contribution.sender,

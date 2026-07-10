@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a real local dealer-free DKG participant: each member generates only its own BLS polynomials, commits to the complete keyset policy, persists restartable per-recipient contributions, and independently derives the same aggregate v3 keyset. Live ceremony orchestration, a unique ceremony ID, complete signed ceremony transcript, and confidential production share transport remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a real local dealer-free DKG participant and strict ceremony domain separation: each member generates only its own BLS polynomials, commits to one keyset policy and ceremony ID, persists restartable per-recipient contributions, and independently derives the same aggregate v3 keyset. Live ceremony orchestration, the complete signed ceremony transcript, and confidential production share transport remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add dealer-free DKG participant state</span>
+          <span class="value">feat: domain-separate federation DKG ceremonies</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The dealer-free DKG core now follows Fedimint's cooperative G2 hash-commit, reveal, and private-share model without central custody. Keyset unit, activation, fee, expiry, and denominations are committed before reveal and repeated in the final derived-key transcript. A five-member threshold-three simulation reloads every participant's private state and proves all receivers derive one identical v3 keyset; tampered shares and policy disagreement fail closed. The full 366-test cdk-common federation suite and 31 focused Axum, mintd, and SQLite DKG tests pass.</span>
+          <span class="value">Every DKG commitment, reveal, private contribution, restartable participant state, and setup phase now carries one unique 32-byte ceremony ID. The ID is inside the pre-reveal hash; mixed-ceremony records fail before setup mutation, private-share persistence, or authenticated sender-sequence advancement. Record and hash versions moved forward without an old-federation compatibility path. The focused checkpoint covers 25 cdk-common, 18 Axum, 10 mintd, and 4 SQLite tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add a unique ceremony ID and complete signed ceremony transcript, then wire the restartable participant state into a bounded authenticated REST driver that can run one member at a time and resume safely after process or network interruption.</span>
+          <span class="value">Bind the ceremony ID and complete public commitment/reveal record into the identity-signed transcript and startup verification. Then wire the restartable participant state into a bounded authenticated REST driver that can run one member at a time and resume safely after process or network interruption.</span>
         </div>
       </aside>
     </header>
@@ -835,7 +835,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core now adds an explicit keyset specification and a versioned private participant state to the existing commitments, reveals, authenticated private-share routes, durable setup records, local keyset-share derivation, transcript signatures, final config assembly, startup activation, status tooling, and key-rotation path. Each participant independently creates only its own random BLS polynomials, converts them to per-recipient shares, drops the original coefficients, validates state on reload, and redacts secret material from debug output. A five-member threshold-three simulation proves every receiver derives the same aggregate v3 keyset for multiple denominations after reload; mismatched policy and tampered contributions fail closed. Existing route-probe process smokes still cover SQLite and Postgres. Remaining work is a unique ceremony ID, complete commitment/reveal binding in the signed transcript, confidential production secret-share transport, and a live resumable per-member REST driver.</p>
+            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, and a unique 32-byte ceremony ID to the existing commitments, reveals, authenticated private-share routes, durable setup records, local keyset-share derivation, transcript signatures, final config assembly, startup activation, status tooling, and key-rotation path. Each participant independently creates only its own random BLS polynomials, converts them to ceremony-scoped per-recipient shares, drops the original coefficients, validates state on reload, and redacts secret material from debug output. A five-member threshold-three simulation proves every receiver derives the same aggregate v3 keyset for multiple denominations after reload; mixed ceremonies, mismatched policy, and tampered contributions fail closed. Existing route-probe process smokes still cover SQLite and Postgres. Remaining work is complete commitment/reveal binding in the signed transcript, confidential production secret-share transport, and a live resumable per-member REST driver.</p>
           </article>
         </div>
       </section>
@@ -851,7 +851,10 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: broaden generated process-level
+          Current verification target: bind the full public DKG ceremony into
+          the identity-signed transcript and startup verification, then drive
+          that ceremony over bounded, resumable authenticated REST. The wider
+          process baseline continues to broaden generated process-level
           AlephBFT coverage into larger member matrices, longer partition
           windows, and repeated runs now that five-member AlephBFT DKG process
           smokes pass on SQLite and Postgres through setup route probes,
@@ -977,7 +980,7 @@
           </article>
           <article class="item">
             <h3>Distributed key generation</h3>
-            <p>Bind a unique ceremony ID and the full commitment/reveal record into the identity-signed transcript, require confidential non-local share delivery, and connect the restartable local participant state to bounded authenticated REST fanout with explicit phase and operator status gates.</p>
+            <p>Bind the ceremony ID and full commitment/reveal record into the identity-signed transcript, require confidential non-local share delivery, and connect the restartable local participant state to bounded authenticated REST fanout with explicit phase and operator status gates.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

@@ -2664,11 +2664,12 @@ Implementation checklist:
   - [x] Add an explicit DKG keyset specification binding unit, activation, input fee, expiry, and denomination set into every participant commitment/reveal and the final derived-key transcript.
   - [x] Add a versioned, restartable private participant state that generates only the local member's random polynomials, emits per-recipient contributions, drops and zeroizes the original coefficients, validates its own reload, and redacts secret material from `Debug`.
   - [x] Simulate five independent members at threshold three and prove every receiver derives the same v3 aggregate keyset after private-state serialization/reload.
-  - [ ] Add a unique ceremony ID and bind the complete participant commitment/reveal record into the final identity-signed transcript so records cannot be replayed across same-roster ceremonies.
+  - [x] Add a unique 32-byte ceremony ID to every participant commitment, reveal, private contribution, restartable participant state, and setup-state phase gate. The ID is inside the pre-reveal commitment hash, cross-ceremony records fail before setup mutation or authenticated sender-sequence advancement, and the undeployed v1 experimental record shape is intentionally unsupported.
+  - [ ] Bind the ceremony ID and complete participant commitment/reveal record into the final identity-signed transcript so a completed public ceremony can be audited and cannot be substituted across same-roster ceremonies.
   - [ ] Add the live per-member ceremony driver with durable local state, phase gates, authenticated REST fanout, bounded retries, restart/resume, and operator-visible progress.
   - [ ] Require confidential transport for private secret-share contributions in production (HTTPS/mTLS or recipient-encrypted envelopes), while retaining explicit localhost development support.
 - [x] Run DKG over authenticated private REST setup routes, accepting DKG messages only from identity public keys in the federation roster.
-- [ ] Include federation ID, unique ceremony ID, member roster, member identity public keys, participant order, commitments/reveals, keyset policy, BLS public shares, and aggregate public keys in the final DKG transcript. The current transcript now binds the roster, participant order, full keyset policy, public shares, and aggregate keys; complete ceremony commitments/reveals and the ceremony ID remain to be added.
+- [ ] Include federation ID, unique ceremony ID, member roster, member identity public keys, participant order, commitments/reveals, keyset policy, BLS public shares, and aggregate public keys in the final DKG transcript. Setup messages and durable setup state now enforce one ceremony ID, while the current identity-signed transcript binds the roster, participant order, full keyset policy, public shares, and aggregate keys; the ceremony ID and complete commitment/reveal record still need to be added to that transcript.
 - [x] Require each participant to sign the final DKG transcript with its federation identity key. Private REST transcript-signature acceptance now also requires the receiver to have a locally derived DKG keyset-share record, rejects transcript hashes that do not match that local final public config before advancing the sender sequence, and rejects alternate valid randomized signatures for an already accepted signer/transcript pair before private REST sequence persistence.
 - [x] Commit hash of polynomial commitments before revealing commitments.
 - [x] Verify secret shares against public commitments.
@@ -2690,6 +2691,7 @@ Tests and success criteria:
 - [x] Invalid share is detected and setup fails.
 - [x] Reloaded private participant state rejects a contribution that no longer matches its public polynomial commitments and does not expose secret scalar bytes through `Debug`.
 - [x] Participants that commit to different unit/fee/expiry/activation/denomination policies cannot complete one DKG round.
+- [x] Commitments, reveals, and private contributions from another ceremony fail before setup-state mutation; the authenticated private contribution route also proves rejection does not advance the sender sequence or persist secret material.
 - [x] Restart during setup can resume or safely restart.
 - [x] Key rotation creates a new aggregate keyset accepted by all members.
 - [x] Old keysets remain verifiable until final expiry.
@@ -2703,6 +2705,13 @@ Verified dealer-free participant checkpoint:
 - `cargo check -p cdk-axum --features federation` and `cargo check -p cdk-mintd --features federation,fakewallet`: passed.
 - `cargo check -p cashu -p cdk-common` and the standalone `test_generate_bls_is_canonical_and_non_zero` regression: passed without federation features.
 - `cargo clippy -p cdk-common --features federation --lib --no-deps -- -D warnings` remains blocked by 19 pre-existing federation lint findings; the DKG panic surfaced in this checkpoint was removed, and no new participant/spec lint remains.
+
+Verified ceremony-domain checkpoint:
+
+- `cargo test -p cdk-common --features federation dkg -- --test-threads=1`: 25 focused DKG tests passed.
+- `cargo test -p cdk-axum --features federation dkg -- --test-threads=1`: 18 focused DKG tests passed, including cross-ceremony rejection before sender-sequence persistence.
+- `cargo test -p cdk-mintd --features federation,fakewallet dkg -- --test-threads=1`: 10 focused DKG tests passed.
+- `cargo test -p cdk-sqlite --features federation dkg -- --test-threads=1`: 4 focused DKG persistence tests passed.
 
 ## Milestone 21: key rotation and federation upgrades
 

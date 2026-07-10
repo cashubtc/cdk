@@ -18,13 +18,14 @@ use bitcoin::hashes::{sha256, Hash};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
     generate_trusted_dealer_configs_with_options, FederatedKeyset, FederationConfig,
-    FederationDkgCommitmentRequest, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
-    MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-    TrustedDealerGenerationOptions, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
+    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
+    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberId,
+    ThresholdParams, TrustedDealerConfigBundle, TrustedDealerGenerationOptions,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 #[cfg(feature = "federation")]
 use cdk_common::mint_url::MintUrl;
@@ -752,12 +753,19 @@ fn write_dkg_setup_route_probe_requests(
     )?;
     let coefficients =
         dkg_probe_coefficients(public_config, threshold, amounts, deterministic_test_seed)?;
+    let ceremony_id = dkg_probe_ceremony_id(public_config, &keyset_spec, deterministic_test_seed)?;
     let reveals = coefficients
         .keys()
         .map(|member_id| {
             Ok((
                 *member_id,
-                dkg_probe_reveal(public_config, *member_id, &keyset_spec, &coefficients)?,
+                dkg_probe_reveal(
+                    public_config,
+                    ceremony_id,
+                    *member_id,
+                    &keyset_spec,
+                    &coefficients,
+                )?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
@@ -783,6 +791,7 @@ fn write_dkg_setup_route_probe_requests(
             let secret_share_payload = dkg_probe_secret_share_request(
                 public_config,
                 &coefficients,
+                ceremony_id,
                 sender_id,
                 receiver_id,
             )?;
@@ -1047,8 +1056,29 @@ fn dkg_probe_coefficients(
 }
 
 #[cfg(feature = "federation")]
+fn dkg_probe_ceremony_id(
+    public_config: &FederationConfig,
+    keyset_spec: &FederationDkgKeysetSpec,
+    deterministic_test_seed: Option<&str>,
+) -> Result<FederationDkgCeremonyId> {
+    let entropy = match deterministic_test_seed {
+        Some(seed) => seed.as_bytes().to_vec(),
+        None => SecretKey::generate().public_key().to_bytes(),
+    };
+    let mut material = Vec::new();
+    material.extend_from_slice(b"cdk-federation-dkg-route-probe-ceremony-v1");
+    material.extend_from_slice(&public_config.federation_id.to_bytes());
+    material.extend_from_slice(&serde_json::to_vec(keyset_spec)?);
+    material.extend_from_slice(&entropy);
+    Ok(FederationDkgCeremonyId::from_bytes(
+        sha256::Hash::hash(&material).to_byte_array(),
+    ))
+}
+
+#[cfg(feature = "federation")]
 fn dkg_probe_reveal(
     public_config: &FederationConfig,
+    ceremony_id: FederationDkgCeremonyId,
     member_id: MemberId,
     keyset_spec: &FederationDkgKeysetSpec,
     coefficients: &BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>,
@@ -1070,6 +1100,7 @@ fn dkg_probe_reveal(
         .collect();
     Ok(FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        ceremony_id,
         member_id,
         keyset_spec: keyset_spec.clone(),
         coefficient_commitments,
@@ -1080,6 +1111,7 @@ fn dkg_probe_reveal(
 fn dkg_probe_secret_share_request(
     public_config: &FederationConfig,
     coefficients: &BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>,
+    ceremony_id: FederationDkgCeremonyId,
     sender_id: MemberId,
     receiver_id: MemberId,
 ) -> Result<FederationDkgSecretShareRequest> {
@@ -1098,6 +1130,7 @@ fn dkg_probe_secret_share_request(
         .collect::<Result<BTreeMap<_, _>>>()?;
     Ok(FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        ceremony_id,
         sender_id,
         receiver_id,
         secret_shares,

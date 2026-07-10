@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederatedKeyset, FederationDkgKeysetSpec,
-    FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederatedKeyset, FederationDkgCeremonyId,
+    FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
@@ -44,6 +44,10 @@ fn bls_key(byte: u8) -> BlsSecretKey {
     BlsSecretKey::from_reduced_bytes(&[byte; 32])
 }
 
+fn dkg_ceremony_id() -> FederationDkgCeremonyId {
+    FederationDkgCeremonyId::from_bytes([44; 32])
+}
+
 fn dkg_reveal_for_status(
     public_config: &FederationConfig,
     member_id: MemberId,
@@ -54,6 +58,7 @@ fn dkg_reveal_for_status(
         .collect::<Vec<_>>();
     FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        ceremony_id: dkg_ceremony_id(),
         member_id,
         keyset_spec: FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
@@ -78,6 +83,7 @@ fn dkg_secret_share_request_for_status(
         .collect::<Vec<_>>();
     FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        dkg_ceremony_id(),
         sender,
         receiver,
         BTreeMap::from([(
