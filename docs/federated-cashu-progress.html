@@ -453,7 +453,7 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          The implementation plan has 27 milestone points, including the
+          The implementation plan has 28 milestone points, including the
           explicit Milestone 16A convergence certification gate. The ordered
           list below names the milestone points one by one with status derived
           from the latest implementation plan; milestones with any remaining
@@ -487,6 +487,7 @@
           <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status progress">In progress</span></li>
           <li>Milestone 24: security review checklist. <span class="status progress">In progress</span></li>
           <li>Milestone 25: CLI wallet federation support. <span class="status done">Done</span></li>
+          <li>Milestone 26: unified federated wallet errors and recovery. <span class="status progress">In progress</span></li>
         </ol>
         <ul class="milestones" aria-label="Implementation plan milestone points">
           <li class="milestone">
@@ -704,6 +705,14 @@
               <p class="test-gate"><strong>Test gate:</strong> CLI config accepts valid federation invites/configs and rejects malformed or non-v3 metadata; CLI mint, swap, melt, restore, and check-state work through threshold member responses; one offline, slow, or bad-share member is tolerated when threshold remains reachable; insufficient threshold and mismatched member metadata fail before spendable proofs are produced; standalone CLI behavior remains unchanged. Complete: public-config and invite-code import, connector activation/reuse, federation-aware mint-info and token-member alias resolution, v3/BLS validation, mint/swap/melt/restore/check-state flows, invalid-share and no-quorum command regressions, live happy/offline/slow/unreachable/mismatched-member smokes, and the command-by-command routing audit. Direct mint interaction uses the federation connector; local-only commands avoid needless activation, while undefined federation authentication and mint-URL mutation commands fail closed.</p>
             </div>
             <span class="status done">Done</span>
+          </li>
+          <li class="milestone">
+            <div>
+              <h3>Milestone 26: unified federated wallet errors and recovery</h3>
+              <p>Objective: preserve normal Cashu wallet errors and saga recovery after a threshold-consensus business outcome, while keeping unavailable quorum, pending finalization, timeouts, invalid shares, and inconsistent member views explicitly ambiguous.</p>
+              <p class="test-gate"><strong>Test gate:</strong> threshold-consistent business rejections round-trip through public federation HTTP as existing wallet errors; mint, receive/swap, and melt sagas reuse normal recovery behavior; one member cannot determine a definitive error; standalone error behavior stays unchanged.</p>
+            </div>
+            <span class="status progress">In progress</span>
           </li>
         </ul>
       </section>
