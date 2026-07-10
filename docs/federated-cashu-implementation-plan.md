@@ -52,6 +52,28 @@ Current blocking bugs:
 
 - None recorded.
 
+## Recent consensus checkpoint
+
+- Milestone 4 is complete. The selected AlephBFT backend is no longer an
+  adapter-only placeholder: router startup reconstructs durable adapter state,
+  launches upstream `aleph_bft::run_session`, installs the roster-authenticated
+  private-REST network pump, and routes finalized units through one persistent
+  deterministic apply loop before notifying public request waiters.
+- The Milestone 4A production-backend, live data-provider, live finalization,
+  durable accepted-evidence, and startup-recovery parent items are now certified
+  complete from current code and tests. Focused verification passed 8 bounded
+  data-provider tests, 7 strict finalization-handler tests, live two- and
+  four-member private-REST finality, a five-member reorder/duplicate/delay fault
+  matrix, pre-backup restart replay, post-backup continuation, and startup
+  fail-closed/reopen behavior.
+- AlephBFT startup status now says the precise condition, live network finality
+  is not active yet, instead of the obsolete claim that the backend is not
+  production-ready in the build. The fail-closed behavior is unchanged.
+- Milestone 4A remains in progress for explicitly unchecked work such as deeper
+  bounded retry/backpressure certification, round/consensus-height observability,
+  atomic failure-injection coverage for value-operation apply, and the full
+  self-partition/below-quorum/above-quorum catch-up certification matrix.
+
 ## Recent performance checkpoint
 
 - Fresh post-routing rebaseline: direct `/v1/info` completed in 0.92s,
@@ -1280,12 +1302,21 @@ Objective: add an ordered log before integrating with mint business logic.
 Implementation checklist:
 
 - [x] Add a consensus abstraction in `cdk-common::federation::consensus` with submit, journal, catch-up, and state-digest boundaries.
-- [ ] Extract to a separate `cdk-federation` crate or add exact `await_operation`/`accepted_stream` APIs only if future integration needs that boundary.
+- [x] Keep the consensus boundary in `cdk-common::federation::consensus` rather
+  than adding a separate crate. The runtime submit API, durable journal,
+  response-waiter registry, finalized-item stream, and catch-up interface supply
+  the exact boundaries used by Axum without introducing another workspace crate.
 - [x] Add `ConsensusItem::{Operation(FederatedMintOperation), ModuleFact(...), SessionSignature(...), Default(...)}`.
 - [x] Add an in-memory single-node consensus engine for deterministic unit tests.
 - [x] Add an in-memory multi-node test engine that can reorder, duplicate, and delay messages.
 - [x] Add AlephBFT backend selector/configuration and an explicit `UnsupportedConsensusBackend` error.
-- [ ] Implement the AlephBFT-backed engine for multi-member BFT ordering.
+- [x] Implement the AlephBFT-backed engine for multi-member BFT ordering.
+  `FederationAlephBftConsensusAdapter` owns canonical pending/finalized state,
+  while router startup wires the adapter through upstream `aleph_bft::run_session`,
+  the roster keychain, private-REST network pump, durable backup IO, and the
+  single ordered apply loop. Live two-, four-, five-, and seven-member tests plus
+  process smokes prove actual multi-member finality rather than adapter-only
+  simulation.
 - [x] Add a `DataProvider` equivalent that batches pending items, deduplicates operation hashes, and enforces max item size.
 - [x] Add a `FinalizationHandler` equivalent that applies ordered items to the DB transactionally.
 - [x] Add session outcomes signed by member identity keys.
@@ -1340,13 +1371,18 @@ Fedimint lessons to adopt:
 
 Architecture checklist:
 
-- [ ] Add a production `AlephBftFederationConsensus` backend behind the existing
+- [x] Add a production `AlephBftFederationConsensus` backend behind the existing
   consensus abstraction, using Fedimint's AlephBFT integration as the reference
   for data provider, finalization handler, keychain, network, session outcome,
-  crash recovery, and catch-up design.
-- [ ] Keep Cashu/CDK simpler than Fedimint where possible: CDK needs strict
+  crash recovery, and catch-up design. CDK names the concrete adapter
+  `FederationAlephBftConsensusAdapter`; `FederationConsensusRuntime` selects it
+  by backend kind, and Axum owns the upstream live-session tasks and durable
+  recovery boundary.
+- [x] Keep Cashu/CDK simpler than Fedimint where possible: CDK needs strict
   operation ordering and deterministic mint execution, not Fedimint's full module
-  system or wallet state-machine stack.
+  system or wallet state-machine stack. The implementation uses one canonical
+  federation operation stream and CDK's existing mint/wallet sagas instead of a
+  general module framework.
 - [x] Define the AlephBFT unit payload as canonical CDK consensus items:
   `Operation(FederationOperation)`, payment observation facts, session
   signatures, default/compatibility items, and future module facts. This is now
@@ -1392,18 +1428,17 @@ Architecture checklist:
   from the local roster before it signs any request, with focused AlephBFT
   finalized-unit tests proving no request is emitted for unknown or mismatched
   peers.
-- [ ] Add a Fedimint-like data-provider loop that drains a bounded pending queue,
+- [x] Add a Fedimint-like data-provider loop that drains a bounded pending queue,
   deduplicates operation hashes locally per session, enforces max byte limits,
   and batches items without busy loops. The synchronous
   `FederationAlephBftUnitDataProvider` primitive now performs bounded,
   byte-limited, duplicate-aware unit construction; non-destructive previews; and
   exact-match draining so transient broadcast failures do not force a driver to
   consume the queue before it has actually finalized or durably handed off the
-  proposal. Router-created AlephBFT federation state now starts the bounded CDK
-  driver loop, which calls this primitive through the safe preview/broadcast/
-  exact-drain path; the remaining production work is broader process-level
-  restart, reorder, and private-REST fault coverage around the live AlephBFT
-  path.
+  proposal. `CdkAlephBftDataProvider` implements upstream AlephBFT's async
+  `DataProvider`, drains canonical units from that runtime, waits on an activity
+  notification instead of busy-looping when idle, and is passed through
+  `LocalIO` into router-owned `run_session` tasks.
   `FederationAlephBftConsensusAdapter` now wires the primitive to the CDK-side
   operation submission boundary so tests can verify queued operations become
   canonical unit payloads. The backend adapter runtime can now select the
@@ -1415,13 +1450,15 @@ Architecture checklist:
   batched finalized unit carrying multiple operation responses through driver
   accounting, finalized-item persistence, accepted-journal order, and
   materialized quote apply.
-- [ ] Add a Fedimint-like finalization handler that converts finalized AlephBFT
+- [x] Add a Fedimint-like finalization handler that converts finalized AlephBFT
   units into an ordered stream consumed by exactly one deterministic CDK apply
   loop. The `FederationAlephBftFinalizationHandler` primitive now verifies
   finalized unit payloads, assigns accepted item indexes, preserves
   session/unit metadata, rejects wrong federation/session/replayed units, and
-  flags duplicate operation IDs; the production AlephBFT adapter still needs to
-  feed this stream from the live network task. The current
+  flags duplicate operation IDs. `CdkAlephBftFinalizationHandler` implements
+  upstream AlephBFT's data and unit finalization traits and feeds the finalized
+  payload channel consumed by exactly one router-owned async apply task. The
+  current
   `FederationAlephBftConsensusAdapter` accepts externally finalized units,
   validates them, appends operation outcomes to the in-memory accepted-operation
   journal, and records finalized item metadata. Axum now exposes a controlled
@@ -1436,13 +1473,13 @@ Architecture checklist:
   storage succeeds.
   Generic dispatch-and-finalize calls for the AlephBFT adapter fail closed with
   an external-finalization-required error so local queueing cannot be mistaken
-  for BFT acceptance. A guarded production-facing Axum state hook now lets the
-  future live AlephBFT task mark network finality as available only after
+  for BFT acceptance. A guarded production-facing Axum state hook lets the live
+  AlephBFT task mark network finality as available only after
   validating federation config, the `aleph_bft` backend selection, and the
   consensus runtime. Focused tests prove that activation opens queue admission
   but still returns retryable pending-finalization and does not persist quote or
   journal state until the exact finalized unit is delivered.
-- [ ] Store accepted session number, item index, operation hash, operation
+- [x] Store accepted session number, item index, operation hash, operation
   outcome hash, state digest, and signed session outcome in the federation
   journal before considering an item durable. `FederationJournalEntry` now
   stores operation outcome hashes, post-append state digests, and optional
@@ -1458,8 +1495,9 @@ Architecture checklist:
   reopening readiness. Startup replay now checks persisted contiguous
   session-outcome quorum height after materializing durable entries, blocks
   public value-changing routes when evidence is missing, and restores healthy
-  status when quorum evidence already covers the replayed height. A final audit
-  remains once the production BFT backend owns durable finalized-item recovery.
+  status when quorum evidence already covers the replayed height. Production
+  startup now owns durable finalized-item recovery and validates the recovered
+  journal before enabling the live session.
 - [x] Persist enough AlephBFT unit state and accepted item state to recover after
   crashes without replaying an item twice or losing a finalized item. The
   in-memory adapter now has a tested recovery constructor from retained
@@ -1553,7 +1591,7 @@ Architecture checklist:
   and wait for every member to report an auto-rotated AlephBFT session before
   wallet operation batches; actually running the longer external partition
   smoke with that gate remains open.
-- [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
+- [x] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
   routes. The in-memory path already restores persisted journal/session evidence
@@ -1569,8 +1607,9 @@ Architecture checklist:
   network-finality guard. Peer fetch now uses both
   accepted-operation lag and finalized-item cursor lag, requests finalized-item
   suffixes by cursor, and rejects incomplete whole-unit pages before durable
-  mutation; remaining production work is stronger process-level restart,
-  reorder, and fault coverage before relying on this path as production-ready.
+  mutation. Live pre-backup, post-backup, finalized-before-local-apply, and
+  five-member restart tests plus SQLite/Postgres process smokes cover restart,
+  reorder, offline catch-up, and readiness reopening after convergence.
 - [x] If a configured consensus backend is unavailable, fail startup or keep
   federation routes in a not-ready state; never silently fall back to local
   signing or single-member processing. `cdk-mintd` now accepts both available

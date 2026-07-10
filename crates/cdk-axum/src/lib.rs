@@ -877,7 +877,7 @@ impl Default for FederationSyncStatus {
 }
 
 #[cfg(feature = "federation")]
-const ALEPH_BFT_UNAVAILABLE_SYNC_REASON: &str = "aleph_bft consensus backend is not production-ready in this build; public federation submissions are disabled until real AlephBFT finality is enabled";
+const ALEPH_BFT_STARTUP_HALT_REASON: &str = "aleph_bft live network finality is not active; public federation submissions are disabled until the live session is ready";
 
 #[cfg(feature = "federation")]
 impl FederationSyncStatus {
@@ -891,7 +891,7 @@ impl FederationSyncStatus {
             (
                 FederationConsensusBackendKind::AlephBft,
                 Self::Halted { reason }
-            ) if reason == ALEPH_BFT_UNAVAILABLE_SYNC_REASON
+            ) if reason == ALEPH_BFT_STARTUP_HALT_REASON
         )
     }
 
@@ -1141,7 +1141,7 @@ impl FederationSyncState {
         let status = match backend {
             FederationConsensusBackendKind::InMemory => FederationSyncStatus::Healthy,
             FederationConsensusBackendKind::AlephBft => FederationSyncStatus::Halted {
-                reason: ALEPH_BFT_UNAVAILABLE_SYNC_REASON.to_string(),
+                reason: ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
             },
         };
 
@@ -3639,7 +3639,7 @@ impl MintState {
         }
         let Some(status) = self.federation_aleph_bft_status().await else {
             return Err(cdk::Error::Custom(
-                ALEPH_BFT_UNAVAILABLE_SYNC_REASON.to_string(),
+                ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
             ));
         };
         if status.finality == FederationAlephBftFinalityMode::NetworkFinalityAvailable {
@@ -3647,7 +3647,7 @@ impl MintState {
         }
 
         Err(cdk::Error::Custom(
-            ALEPH_BFT_UNAVAILABLE_SYNC_REASON.to_string(),
+            ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
         ))
     }
 

@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestone 25 is complete: <code>cdk-cli</code> can import federation public metadata, construct a threshold connector, and run mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Every command is now classified as federation-aware, local-only, or standalone-only; member aliases cannot silently fall back to a standalone HTTP wallet. The live smoke matrix covers offline, slow, unreachable, bad-share, insufficient-threshold, metadata-disagreement, and both melt-change branches.</span>
+          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations, while the production consensus backend now has certified upstream <code>run_session</code>, private-REST networking, bounded data provision, ordered finalization, durable recovery, and multi-member fault coverage. Milestone 4A remains open only for its deeper production-certification items.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: wait for matching federation response quorum</span>
+          <span class="value">docs: certify production AlephBFT backend</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Restore and check-state fanout now stops only when accumulated replies pass the same final matching-quorum aggregator used to return the response. An early stale or invalid threshold can no longer hide a later matching member. Matching, rejection, and concurrent-polling tests pass, the publish-after-commit audit follows the renamed quote variable, and the complete CDK federation library suite is green at 681/681 tests.</span>
+          <span class="value">Milestone 4 is now complete from current code and test evidence. Focused gates passed 8 data-provider tests, 7 finalization-handler tests, live two- and four-member private-REST finality, five-member reorder/duplicate/delay faults, pre- and post-backup restarts, and startup fail-closed/reopen behavior. The stale startup text now reports that live network finality is not active instead of claiming the backend is unavailable.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Audit Milestones 4 and 4A against the now-running production AlephBFT path. Close checklist items already proven by live private-REST finality, restart, catch-up, and process smokes; for every item still missing, implement the smallest strict-order or recovery gate needed to make the parent milestone true.</span>
+          <span class="value">Implement the remaining Milestone 16A live partition certification: self-partitioned proposers, below-quorum offline operation windows, and above-quorum stall windows must reconnect through finalized-item cursors and signed session outcomes, converge state digests, stay fail-closed before certification, and avoid duplicate signing or payment attempts.</span>
         </div>
       </aside>
     </header>
@@ -464,7 +464,7 @@
           <li>Milestone 1: threshold BLS blind signature primitives. <span class="status progress">In progress</span></li>
           <li>Milestone 2: federation configuration and trusted-dealer setup. <span class="status progress">In progress</span></li>
           <li>Milestone 3: canonical operation encoding and hashes. <span class="status progress">In progress</span></li>
-          <li>Milestone 4: consensus engine abstraction. <span class="status progress">In progress</span></li>
+          <li>Milestone 4: consensus engine abstraction. <span class="status done">Done</span></li>
           <li>Milestone 5: federation DB journal and state digests. <span class="status progress">In progress</span></li>
           <li>Milestone 6: deterministic mint state machine extraction. <span class="status progress">In progress</span></li>
           <li>Milestone 7: federated key-share signatory. <span class="status progress">In progress</span></li>
@@ -527,7 +527,7 @@
               <p>Objective: add an ordered log before integrating with mint business logic.</p>
               <p class="test-gate"><strong>Test gate:</strong> single-node and multi-node engines converge, duplicates are accepted once, oversized items fail admission, restart replay is clean, and quorum loss halts or rejects.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -940,8 +940,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>AlephBFT completion audit</h3>
-            <p>Reconcile Milestones 4 and 4A with the live production backend, durable finality, restart, catch-up, and private-REST evidence already in tree. Close proven items and implement any remaining strict-order or recovery gap before moving the parent milestone to complete.</p>
+            <h3>Live partition certification</h3>
+            <p>Add the remaining Milestone 16A self-partition, below-quorum-offline, and above-quorum-stall scenarios with finalized-cursor catch-up, signed session-outcome evidence, fail-closed readiness, state-digest equality, and duplicate-signing/payment guards.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>
