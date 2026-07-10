@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: harden federation transport and persistence</span>
+          <span class="value">test: certify below-finality value conflict recovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The federation-enabled Axum gate covers 421 passing tests: 419 run in the managed sandbox and both real-listener wallet tests pass outside it. CDK, common federation, and SQLite suites also pass. The 11-of-8 failure was traced to synchronous unpooled private REST, later amplified by competing SQLite writers and a non-atomic melt-quote insert; pooled async REST, per-database writer serialization, deterministic rollback, and exact idempotent quote persistence now hold all members in sync.</span>
+          <span class="value">The federation-enabled Axum gate covers 422 passing tests: 420 run in the managed sandbox and both real-listener wallet tests pass outside it. A new production-paced five-member test proves conflicting swaps and an independent melt leak no state, signatures, or payment below finality; restored quorum applies one swap, rejects its conflict, pays once, and converges the restarted lagger.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend Milestone 16A into above-quorum stalled value operations and queued conflicts, then add the remaining self-partitioned proposer restart permutation and repeat larger SQLite/Postgres process matrices.</span>
+          <span class="value">Add the remaining self-partitioned proposer restart permutation and crash-window recovery cases, then repeat larger SQLite/Postgres process matrices.</span>
         </div>
       </aside>
     </header>
@@ -629,7 +629,7 @@
             <div>
               <h3>Milestone 16A: state convergence and catch-up certification</h3>
               <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
-              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. Exact self-partition is certified with no pre-finality mutation; the one-member-offline live window now covers mint, swap, restore/check-state, melt, payment quorums, one elected outgoing payment, and non-duplicated share provenance. The basic two-member-offline operation also stalls safely and recovers autonomously. Above-quorum value conflicts and restart variants remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. Exact self-partition is certified with no pre-finality mutation; the one-member-offline live window covers mint, swap, restore/check-state, melt, payment quorums, one elected outgoing payment, and non-duplicated share provenance. With two members offline, conflicting swaps and an independent melt remain side-effect-free below finality, then recover to one accepted swap, one rejected conflict, and one payment when quorum returns. Restart variants remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -810,7 +810,7 @@
         <div class="stack">
           <article class="item">
             <h3>AlephBFT idle wake regression risk</h3>
-            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. Work-bound lease renewal continues only while durable pending rows exist. The intermittent partition test was traced to an unrealistic fixed 10ms cadence plus an in-place task restart that skipped durable runtime reconstruction; production pacing and production-style restart replay now pass repeatedly in isolation and under the full parallel Axum suite. The full one-member-offline value-operation window and a below-finality-then-recover quote are certified. Residual work is above-quorum value/conflict ordering and the self-partitioned proposer restart permutation.</p>
+            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. Work-bound lease renewal continues only while durable pending rows exist. The intermittent partition test was traced to an unrealistic fixed 10ms cadence plus an in-place task restart that skipped durable runtime reconstruction; production pacing and production-style restart replay now pass repeatedly in isolation and under the full parallel Axum suite. The full one-member-offline value-operation window, basic two-offline recovery, and above-quorum stalled value/conflict recovery are certified. Residual work is the self-partitioned proposer restart permutation and the remaining crash windows.</p>
           </article>
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
@@ -878,13 +878,15 @@
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
           forced direct swap and change melt pass with all members live, one member offline, and a
           behaviorally verified 30-second payment delay member. The complete
-          federation-enabled Axum regression gate now covers 421 passing tests,
-          with 419 sandbox-compatible cases plus two real-listener cases verified
+          federation-enabled Axum regression gate now covers 422 passing tests,
+          with 420 sandbox-compatible cases plus two real-listener cases verified
           outside the managed network sandbox. This includes real-HTTP wallet
           aggregation, rotated-keyset restore,
           automatic session rotation, state-digest checkpoints, equivocation,
-          fail-closed stale session-range evidence, and the production-paced
-          five-member live partition/catch-up matrix. The fresh 11-of-8 process
+          fail-closed stale session-range evidence, and production-paced
+          five-member live partition/catch-up matrices that now prove
+          below-finality swap conflicts and melts leak neither signatures nor
+          payment effects. The fresh 11-of-8 process
           gate also converges mint, receive/swap, melt, restart, and catch-up
           without request timeouts, database locks, duplicate quote constraints,
           range mismatches, or HTTP 500 responses.
@@ -962,7 +964,7 @@
         <div class="stack">
           <article class="item">
             <h3>Live partition certification</h3>
-            <p>Expand the now-passing self-partition, full one-offline value-operation, and basic two-offline live matrix into above-quorum queued value conflicts, share-leakage guards, and payment-side-effect guards. Then add self-partitioned-proposer, below-quorum non-proposer, and post-finality lagging-member restart permutations.</p>
+            <p>Add the remaining self-partitioned-proposer restart permutation and complete the unit-creation, finalized-before-apply, and applied-before-response crash windows. The below-quorum non-proposer and post-finality lagging-member restart paths already rebuild durable runtime state and converge.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

@@ -11888,14 +11888,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
         .await
         .expect_err("offline member remains fail-closed before catch-up");
 
-    let (replayed_consensus, replayed_sequences) =
-        crate::create_federation_runtime_state(&session.states[4].mint)
-            .await
-            .expect("replay fifth member runtime after process restart");
-    session.states[4].federation_consensus = replayed_consensus;
-    session.states[4].federation_sequences = replayed_sequences;
-    session.states[4].federation_aleph_bft_pending_sequences =
-        Some(Arc::new(tokio::sync::Mutex::new(HashMap::new())));
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[4]).await;
     let fifth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
         &mut session.states[4],
         session.sync_config,
@@ -12018,14 +12011,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
             .is_none());
     }
 
-    let (replayed_consensus, replayed_sequences) =
-        crate::create_federation_runtime_state(&session.states[3].mint)
-            .await
-            .expect("replay fourth member runtime after process restart");
-    session.states[3].federation_consensus = replayed_consensus;
-    session.states[3].federation_sequences = replayed_sequences;
-    session.states[3].federation_aleph_bft_pending_sequences =
-        Some(Arc::new(tokio::sync::Mutex::new(HashMap::new())));
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[3]).await;
     let fourth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
         &mut session.states[3],
         session.sync_config,
@@ -12061,6 +12047,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
         .await
     );
 
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[4]).await;
     let fifth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
         &mut session.states[4],
         session.sync_config,
@@ -12175,6 +12162,715 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
         idle_activity_requests,
         "activity refresh must become fully idle after durable pending work clears"
     );
+}
+
+#[tokio::test]
+async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leaking_effects() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let live_options = FederationAlephBftLiveSessionOptions::new(pump_config);
+    let payment_policy = FederationPaymentObservationPolicy::member_quorum(
+        4,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let (mut session, make_payment_calls) =
+        start_multi_member_aleph_bft_live_session_with_payment_policy(
+            5,
+            3,
+            live_options.clone(),
+            payment_policy,
+        )
+        .await
+        .expect("five-member below-finality value session");
+    let runtime_config = session.states[0]
+        .mint
+        .federation_config()
+        .expect("below-finality federation config")
+        .clone();
+    let signature_threshold =
+        usize::from(session.public_config.threshold_params.signature_threshold);
+
+    let mint_quote_id = QuoteId::new();
+    let mint_quote_envelope = runtime_config.mint_quote_operation(
+        mint_quote_id.clone(),
+        cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(4),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        }),
+        cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: mint_quote_id.to_string(),
+            request: format!("invoice-{mint_quote_id}"),
+            amount: Some(Amount::from(4)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: Some(10_000),
+            pubkey: None,
+        }),
+    );
+    let mint_quote_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], mint_quote_envelope)
+            .await;
+    for state in &session.states {
+        wait_for_applied_operation_with_context(
+            state,
+            mint_quote_operation_id,
+            "below-finality baseline mint quote",
+        )
+        .await;
+    }
+    for observer in 1..=4 {
+        let observation = mint_payment_observation_envelope_for_member(
+            &session.states[0],
+            &mint_quote_id,
+            observer,
+            4,
+            "below-finality-mint-paid",
+        );
+        let operation_id =
+            submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
+        for state in &session.states {
+            wait_for_applied_operation_with_context(
+                state,
+                operation_id,
+                "below-finality baseline mint payment observation",
+            )
+            .await;
+        }
+    }
+    let keyset = session.public_config.keysets[0].clone();
+    let mint_secrets = (0..4)
+        .map(|index| cdk::secret::Secret::new(format!("below-finality proof {index}")))
+        .collect::<Vec<_>>();
+    let mint_outputs = mint_secrets
+        .iter()
+        .map(|secret| {
+            BlindedMessage::new(
+                Amount::from(1),
+                keyset.id,
+                PublicKey::from(BlsG1PublicKey::hash_to_curve(secret.as_bytes())),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mint_envelope = runtime_config
+        .mint_operation(MintInput::Single(MintRequest {
+            quote: mint_quote_id,
+            outputs: mint_outputs.clone(),
+            signature: None,
+        }))
+        .expect("below-finality baseline mint operation");
+    let mint_operation_id = mint_envelope
+        .operation_id()
+        .expect("below-finality baseline mint operation id");
+    submit_live_operation_allowing_pending_timeout(&session.states[0], mint_envelope).await;
+    for state in &session.states {
+        wait_for_applied_operation_with_context(
+            state,
+            mint_operation_id,
+            "below-finality baseline mint",
+        )
+        .await;
+    }
+    let mut proofs = Vec::new();
+    for (index, (output, secret)) in mint_outputs.iter().zip(mint_secrets).enumerate() {
+        proofs.push(
+            proof_from_accepted_output(
+                &session.states,
+                signature_threshold,
+                mint_operation_id,
+                u32::try_from(index).expect("below-finality mint output index"),
+                output,
+                secret,
+            )
+            .await,
+        );
+    }
+
+    let melt_quote_id = QuoteId::new();
+    let pending_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Pending,
+        check_payment_state: MeltQuoteState::Paid,
+        pay_err: false,
+        check_err: false,
+    };
+    let melt_quote_envelope = runtime_config.melt_quote_operation(
+        melt_quote_id.clone(),
+        cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: create_fake_invoice(
+                1_000,
+                serde_json::to_string(&pending_description)
+                    .expect("below-finality melt description"),
+            ),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        }),
+    );
+    let melt_quote_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], melt_quote_envelope)
+            .await;
+    for state in &session.states {
+        wait_for_applied_operation_with_context(
+            state,
+            melt_quote_operation_id,
+            "below-finality baseline melt quote",
+        )
+        .await;
+    }
+
+    let swap_input = proofs.remove(0);
+    let swap_input_y = swap_input.y().expect("below-finality swap input y");
+    let first_swap_output = swap_output(&session.states[0], "below-finality-swap-first");
+    let second_swap_output = swap_output(&session.states[0], "below-finality-swap-second");
+    let first_swap_envelope = runtime_config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![swap_input.clone()],
+            vec![first_swap_output.clone()],
+        ))
+        .expect("first below-finality swap envelope");
+    let first_swap_operation_id = first_swap_envelope
+        .operation_id()
+        .expect("first below-finality swap operation id");
+    let second_swap_envelope = runtime_config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![swap_input],
+            vec![second_swap_output.clone()],
+        ))
+        .expect("second below-finality swap envelope");
+    let second_swap_operation_id = second_swap_envelope
+        .operation_id()
+        .expect("second below-finality swap operation id");
+
+    let melt_inputs = proofs;
+    let melt_input_ys = melt_inputs
+        .iter()
+        .map(|proof| proof.y().expect("below-finality melt input y"))
+        .collect::<Vec<_>>();
+    let (melt_envelope, melt_change, elected_member) = (0..128)
+        .find_map(|attempt| {
+            let mut change = swap_output(
+                &session.states[0],
+                &format!("below-finality-melt-change-{attempt}"),
+            );
+            change.amount = Amount::ZERO;
+            let envelope = runtime_config
+                .melt_operation(cdk::nuts::MeltRequest::new(
+                    melt_quote_id.clone(),
+                    melt_inputs.clone(),
+                    Some(vec![change.clone()]),
+                ))
+                .expect("below-finality melt envelope");
+            let operation_id = envelope
+                .operation_id()
+                .expect("below-finality melt operation id");
+            let elected_member = elected_melt_payment_member(&session.public_config, operation_id);
+            let elected_index = session
+                .public_config
+                .members
+                .keys()
+                .position(|member_id| *member_id == elected_member)
+                .expect("below-finality elected member index");
+            (elected_index < 3).then_some((envelope, change, elected_member))
+        })
+        .expect("always-live member elected for below-finality melt");
+    let melt_operation_id = melt_envelope
+        .operation_id()
+        .expect("below-finality melt operation id");
+
+    for index in [4_usize, 3] {
+        *session.states[index]
+            .federation_aleph_bft_network_inbound
+            .write()
+            .await = None;
+        *session.states[index]
+            .federation_aleph_bft_live_session
+            .write()
+            .await = None;
+        session.transport.insert(
+            session.federation_api_urls[index].clone(),
+            Router::new()
+                .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+                .with_state(session.states[0].clone()),
+        );
+    }
+    let fifth_handle = session._handles.remove(4);
+    let fourth_handle = session._handles.remove(3);
+    drop(fifth_handle);
+    drop(fourth_handle);
+
+    for index in 0..3 {
+        session.states[index].federation_peer_sync_config = Some(FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_millis(250),
+            ..session.sync_config
+        });
+    }
+    for (index, envelope, operation_id) in [
+        (0_usize, first_swap_envelope, first_swap_operation_id),
+        (1_usize, second_swap_envelope, second_swap_operation_id),
+        (2_usize, melt_envelope, melt_operation_id),
+    ] {
+        let err = session.states[index]
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await
+            .expect_err("below-finality operation must remain pending");
+        assert_pending_finalization_error(&err, operation_id, 250);
+        let pending = session.states[index]
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("below-finality pending operation lookup");
+        assert!(pending
+            .iter()
+            .any(|pending| pending.operation_id == operation_id));
+    }
+
+    let pending_operation_ids = [
+        first_swap_operation_id,
+        second_swap_operation_id,
+        melt_operation_id,
+    ];
+    let pending_blinded_secrets = [
+        first_swap_output.blinded_secret,
+        second_swap_output.blinded_secret,
+        melt_change.blinded_secret,
+    ];
+    for state in &session.states {
+        for operation_id in pending_operation_ids {
+            assert!(state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(operation_id)
+                .await
+                .expect("below-finality journal lookup")
+                .is_none());
+            assert!(state
+                .mint
+                .localstore()
+                .get_completed_operation(&federation_completed_operation_uuid(operation_id))
+                .await
+                .expect("below-finality completed operation lookup")
+                .is_none());
+            assert!(state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(operation_id, 0)
+                .await
+                .expect("below-finality signature share lookup")
+                .is_empty());
+        }
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[swap_input_y])
+                .await
+                .expect("below-finality swap proof state"),
+            vec![None]
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&melt_input_ys)
+                .await
+                .expect("below-finality melt proof states"),
+            vec![None, None, None]
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures(&pending_blinded_secrets)
+            .await
+            .expect("below-finality blind signature lookup")
+            .iter()
+            .all(Option::is_none));
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_melt_quote(&melt_quote_id)
+                .await
+                .expect("below-finality melt quote lookup")
+                .expect("below-finality melt quote")
+                .state,
+            MeltQuoteState::Unpaid
+        );
+    }
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        0,
+        "below-finality melt must not attempt payment"
+    );
+
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[3]).await;
+    let fourth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[3],
+        session.sync_config,
+        live_options.clone(),
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart fourth below-finality member")
+    .expect("fourth below-finality live session handle");
+    session._handles.push(fourth_handle);
+    session.transport.insert(
+        session.federation_api_urls[3].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[3].clone()),
+    );
+    for state in &mut session.states[..4] {
+        state.federation_peer_sync_config = Some(session.sync_config);
+    }
+
+    let first_status =
+        wait_for_terminal_operation(&session.states[0], first_swap_operation_id).await;
+    let second_status =
+        wait_for_terminal_operation(&session.states[0], second_swap_operation_id).await;
+    assert_eq!(
+        [first_status, second_status]
+            .into_iter()
+            .filter(|status| *status == FederationOperationStatus::Applied)
+            .count(),
+        1,
+        "exactly one conflicting swap must apply"
+    );
+    assert_eq!(
+        [first_status, second_status]
+            .into_iter()
+            .filter(|status| *status == FederationOperationStatus::Rejected)
+            .count(),
+        1,
+        "exactly one conflicting swap must be rejected"
+    );
+    assert_eq!(
+        wait_for_terminal_operation(&session.states[0], melt_operation_id).await,
+        FederationOperationStatus::Applied
+    );
+    let (
+        winning_swap_operation_id,
+        winning_swap_output,
+        losing_swap_operation_id,
+        losing_swap_output,
+    ) = match first_status {
+        FederationOperationStatus::Applied => (
+            first_swap_operation_id,
+            first_swap_output.clone(),
+            second_swap_operation_id,
+            second_swap_output.clone(),
+        ),
+        FederationOperationStatus::Rejected => (
+            second_swap_operation_id,
+            second_swap_output.clone(),
+            first_swap_operation_id,
+            first_swap_output.clone(),
+        ),
+        status => panic!("unexpected first swap status: {status}"),
+    };
+
+    for state in &session.states[..4] {
+        assert_eq!(
+            wait_for_terminal_operation(state, first_swap_operation_id).await,
+            first_status
+        );
+        assert_eq!(
+            wait_for_terminal_operation(state, second_swap_operation_id).await,
+            second_status
+        );
+        assert_eq!(
+            wait_for_terminal_operation(state, melt_operation_id).await,
+            FederationOperationStatus::Applied
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(winning_swap_operation_id, 0)
+                .await
+                .expect("winning swap signature share lookup")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(losing_swap_operation_id, 0)
+            .await
+            .expect("losing swap signature share lookup")
+            .is_empty());
+    }
+
+    let elected_index = session
+        .public_config
+        .members
+        .keys()
+        .position(|member_id| *member_id == elected_member)
+        .expect("below-finality elected payment member index");
+    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        1,
+        "recovered melt must elect exactly one payment actor"
+    );
+
+    let mut observation_operation_ids = Vec::new();
+    for observer_index in 0..4 {
+        let observer_config = session.states[observer_index]
+            .mint
+            .federation_config()
+            .expect("below-finality melt observer config");
+        let observation = observer_config.melt_quote_payment_observation(
+            melt_quote_id.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltQuoteState::Paid,
+            Amount::from(1),
+            Amount::from(1),
+            Some(String::new()),
+            None,
+        );
+        let operation_id =
+            submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
+        observation_operation_ids.push(operation_id);
+        for state in &session.states[..4] {
+            wait_for_applied_operation_with_context(
+                state,
+                operation_id,
+                "below-finality melt payment observation",
+            )
+            .await;
+        }
+    }
+
+    session.states[4]
+        .mark_federation_catching_up(member_id(1))
+        .await;
+    session.states[4]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect_err("final below-finality lagger must fail closed");
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[4]).await;
+    let fifth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[4],
+        session.sync_config,
+        live_options,
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart final below-finality lagger")
+    .expect("final below-finality lagger live session handle");
+    session._handles.push(fifth_handle);
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[4].clone()),
+    );
+    let peer = session
+        .public_config
+        .members
+        .get(&member_id(1))
+        .expect("below-finality catch-up peer")
+        .clone();
+    let client = FederationRestPeerClient::new_with_config(
+        session.transport.clone(),
+        &session.public_config,
+        session.private_configs[4].clone(),
+        session.sync_config,
+    )
+    .expect("below-finality catch-up client");
+    sync_and_certify_partitioned_member(&session.states[4], &client, &peer, &session.public_config)
+        .await;
+    session.states[4]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect("caught-up below-finality lagger is ready");
+
+    let expected_entries = session.states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("below-finality expected journal");
+    let expected_operation_ids = expected_entries
+        .iter()
+        .map(|entry| entry.operation_id)
+        .collect::<Vec<_>>();
+    let expected_statuses = expected_entries
+        .iter()
+        .map(|entry| entry.status)
+        .collect::<Vec<_>>();
+    let expected_digest = materialized_state_digest(&session.states[0], &expected_entries)
+        .await
+        .expect("below-finality expected state digest");
+    let expected_cursor = session.states[0]
+        .federation_aleph_bft_status()
+        .await
+        .expect("below-finality expected cursor")
+        .next_item_index;
+
+    for state in &session.states {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("below-finality converged journal");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.operation_id)
+                .collect::<Vec<_>>(),
+            expected_operation_ids
+        );
+        assert_eq!(
+            entries.iter().map(|entry| entry.status).collect::<Vec<_>>(),
+            expected_statuses
+        );
+        assert_eq!(
+            materialized_state_digest(state, &entries)
+                .await
+                .expect("below-finality converged state digest"),
+            expected_digest
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("below-finality converged cursor")
+                .next_item_index,
+            expected_cursor
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[swap_input_y])
+                .await
+                .expect("below-finality final swap proof state"),
+            vec![Some(cdk::nuts::State::Spent)]
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&melt_input_ys)
+                .await
+                .expect("below-finality final melt proof states"),
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[
+                winning_swap_output.blinded_secret,
+                losing_swap_output.blinded_secret,
+                melt_change.blinded_secret,
+            ])
+            .await
+            .expect("below-finality final blind signatures");
+        assert!(signatures[0].is_some());
+        assert!(signatures[1].is_none());
+        assert!(signatures[2].is_some());
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(winning_swap_operation_id, 0)
+                .await
+                .expect("below-finality final winning share")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(losing_swap_operation_id, 0)
+            .await
+            .expect("below-finality final losing share")
+            .is_empty());
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(melt_operation_id, 0)
+                .await
+                .expect("below-finality final melt share")
+                .len(),
+            1
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_completed_operation(&federation_completed_operation_uuid(
+                winning_swap_operation_id,
+            ))
+            .await
+            .expect("below-finality winning completion")
+            .is_some());
+        assert!(state
+            .mint
+            .localstore()
+            .get_completed_operation(&federation_completed_operation_uuid(
+                losing_swap_operation_id,
+            ))
+            .await
+            .expect("below-finality losing completion")
+            .is_none());
+        assert!(state
+            .mint
+            .localstore()
+            .get_completed_operation(&federation_completed_operation_uuid(melt_operation_id))
+            .await
+            .expect("below-finality melt completion")
+            .is_some());
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_melt_quote(&melt_quote_id)
+                .await
+                .expect("below-finality final melt quote lookup")
+                .expect("below-finality final melt quote")
+                .state,
+            MeltQuoteState::Paid
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("below-finality final pending operation lookup")
+            .is_empty());
+    }
+    for operation_id in observation_operation_ids {
+        assert_eq!(
+            wait_for_terminal_operation(&session.states[4], operation_id).await,
+            FederationOperationStatus::Applied
+        );
+    }
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        1,
+        "catch-up must not repeat the recovered melt payment"
+    );
+    assert_eq!(make_payment_calls[4].load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -14445,6 +15141,45 @@ async fn wait_for_recorded_operation(state: &MintState, operation_id: Federation
     })
     .await
     .expect("operation recorded before timeout");
+}
+
+async fn wait_for_terminal_operation(
+    state: &MintState,
+    operation_id: FederationOperationId,
+) -> FederationOperationStatus {
+    time::timeout(Duration::from_secs(30), async {
+        loop {
+            let status = state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(operation_id)
+                .await
+                .expect("terminal operation lookup")
+                .map(|entry| entry.status);
+            if status.is_some_and(|status| {
+                matches!(
+                    status,
+                    FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+                )
+            }) {
+                return status.expect("terminal operation status");
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("operation reached terminal status before timeout")
+}
+
+async fn replay_aleph_bft_runtime_after_test_process_restart(state: &mut MintState) {
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("replay AlephBFT runtime after test process restart");
+    state.federation_consensus = replayed_consensus;
+    state.federation_sequences = replayed_sequences;
+    state.federation_aleph_bft_pending_sequences =
+        Some(Arc::new(tokio::sync::Mutex::new(HashMap::new())));
 }
 
 async fn submit_live_operation_allowing_pending_timeout(
