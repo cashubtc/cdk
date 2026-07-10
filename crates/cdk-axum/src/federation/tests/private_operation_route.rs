@@ -3,10 +3,7 @@ use super::*;
 #[tokio::test]
 async fn private_operation_route_accepts_signed_peer_request() {
     let (state, public_config, peer_private) = federation_route_state().await;
-    let envelope = restore_envelope(
-        public_config.federation_id,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
+    let envelope = restore_envelope_for_state(&state, "accepted private restore output");
     let request = signed_operation_request(
         &public_config,
         &peer_private,
@@ -70,14 +67,8 @@ async fn private_operation_route_rejects_oversized_request_before_mutation() {
 #[tokio::test]
 async fn private_operation_route_rejects_tampered_payload_before_mutation() {
     let (state, public_config, peer_private) = federation_route_state().await;
-    let first = restore_envelope(
-        public_config.federation_id,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
-    let second = restore_envelope(
-        public_config.federation_id,
-        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
-    );
+    let first = restore_envelope_for_state(&state, "signed private restore output");
+    let second = restore_envelope_for_state(&state, "tampered private restore output");
     let mut request = signed_operation_request(
         &public_config,
         &peer_private,
@@ -99,10 +90,7 @@ async fn private_operation_route_rejects_tampered_payload_before_mutation() {
 async fn private_operation_route_rejects_unknown_sender_before_mutation() {
     let (state, public_config, _) = federation_route_state().await;
     let unknown_private = private_member(3);
-    let envelope = restore_envelope(
-        public_config.federation_id,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
+    let envelope = restore_envelope_for_state(&state, "unknown sender restore output");
     let request = signed_operation_request(
         &public_config,
         &unknown_private,
@@ -129,10 +117,7 @@ async fn private_operation_route_rejects_unknown_sender_before_mutation() {
 #[tokio::test]
 async fn private_operation_route_rejects_kind_mismatch_before_mutation() {
     let (state, public_config, peer_private) = federation_route_state().await;
-    let envelope = restore_envelope(
-        public_config.federation_id,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
+    let envelope = restore_envelope_for_state(&state, "wrong message kind restore output");
     let request = signed_operation_request(
         &public_config,
         &peer_private,
@@ -159,14 +144,8 @@ async fn private_operation_route_rejects_kind_mismatch_before_mutation() {
 #[tokio::test]
 async fn private_operation_route_rejects_stale_sequence_before_second_mutation() {
     let (state, public_config, peer_private) = federation_route_state().await;
-    let first = restore_envelope(
-        public_config.federation_id,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
-    let second = restore_envelope(
-        public_config.federation_id,
-        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
-    );
+    let first = restore_envelope_for_state(&state, "first sequenced restore output");
+    let second = restore_envelope_for_state(&state, "stale sequenced restore output");
     let first_request = signed_operation_request(
         &public_config,
         &peer_private,

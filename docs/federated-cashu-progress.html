@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: keep pending AlephBFT work active</span>
+          <span class="value">fix: restore federation regression suite</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The five-member live matrix now certifies a self-partitioned mint, one-offline finality and signed catch-up, and two-offline safe stall plus autonomous recovery. The root cause of intermittent recovery stalls was a single activity lease expiring while a real operation remained pending finalization; durable pending work now renews one bounded operation lease, then becomes completely idle after finality. Eight final stress, cleanup, and deterministic-renewal runs passed, and the broad federation suite improved to 403/412 with nine separately reproduced stale tests remaining.</span>
+          <span class="value">The federation-enabled Axum suite now passes all 412 tests. The recovery records inline-finalization state-digest checkpoints, keeps finalized-unit REST sequence watermarks liveness-only and in memory, updates private routes to configured v3/BLS fixtures, exercises wallet HTTP aggregation and rotated-keyset restore with accepted share provenance, rotates empty sessions only under bounded activity, and preserves the passing five-member partition/catch-up matrix.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend Milestone 16A from the certified basic partition windows to mint, swap, melt, restore/check-state, payment-observation, duplicate-payment, and queued-conflict coverage, then add every listed restart permutation and reconcile the nine broad-suite stale tests without weakening current semantics.</span>
+          <span class="value">Extend Milestone 16A from the certified basic partition windows to mint, swap, melt, restore/check-state, payment-observation, duplicate-payment, and queued-conflict coverage, then add every listed restart permutation.</span>
         </div>
       </aside>
     </header>
@@ -873,7 +873,11 @@
           config validation. Opt-in process lifecycle traces cover queue,
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
           forced direct swap and change melt pass with all members live, one member offline, and a
-          behaviorally verified 30-second payment delay member.
+          behaviorally verified 30-second payment delay member. The complete
+          federation-enabled Axum regression gate now passes 412 of 412 tests,
+          including real-HTTP wallet aggregation, rotated-keyset restore,
+          automatic session rotation, state-digest checkpoints, equivocation,
+          and the five-member live partition/catch-up matrix.
         </p>
       </section>
 

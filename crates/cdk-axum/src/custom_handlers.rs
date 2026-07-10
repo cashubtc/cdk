@@ -2157,6 +2157,7 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            federation_isolated_member_test: false,
         }
     }
 
@@ -2694,6 +2695,7 @@ mod tests {
             ))),
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            federation_isolated_member_test: false,
         }
     }
 
@@ -2878,6 +2880,7 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            federation_isolated_member_test: false,
         }
     }
 
@@ -3427,9 +3430,12 @@ mod tests {
     ) -> Vec<tokio::task::JoinHandle<()>> {
         let mut handles = Vec::new();
         for (mint, listener) in mints.iter().cloned().zip(listeners) {
-            let router = crate::create_mint_router(mint, vec![KnownMethod::Bolt11.to_string()])
-                .await
-                .expect("mint router");
+            let router = crate::create_mint_router_without_federation_peer_sync(
+                mint,
+                vec![KnownMethod::Bolt11.to_string()],
+            )
+            .await
+            .expect("mint router without peer sync");
             handles.push(tokio::spawn(async move {
                 axum::serve(listener, router).await.expect("member router");
             }));
@@ -3477,6 +3483,7 @@ mod tests {
                 .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            federation_isolated_member_test: false,
         }
     }
 
@@ -3915,38 +3922,6 @@ mod tests {
         mint.apply_federation_journal_entries(std::slice::from_ref(entry))
             .await
             .expect("apply journal entry");
-    }
-
-    #[cfg(feature = "federation")]
-    async fn add_restore_signature_share_to_mint(
-        mint: &Mint,
-        public_config: &FederationConfig,
-        private_config: &MemberConfigPrivate,
-        operation_id: FederationOperationId,
-        output: &BlindedMessage,
-    ) {
-        let share_set = private_config
-            .sign_blinded_messages(public_config, operation_id, std::slice::from_ref(output))
-            .expect("restore signature share set");
-        let signatures = share_set
-            .shares
-            .into_iter()
-            .map(|share| BlindSignature {
-                amount: share.amount,
-                keyset_id: share.keyset_id,
-                c: cdk::nuts::PublicKey::from(share.share.signature()),
-                dleq: None,
-            })
-            .collect::<Vec<_>>();
-        let mut tx = mint
-            .localstore()
-            .begin_transaction()
-            .await
-            .expect("begin tx");
-        tx.add_blind_signatures(&[output.blinded_secret], &signatures, None)
-            .await
-            .expect("add restore signature share");
-        tx.commit().await.expect("commit restore signature share");
     }
 
     #[cfg(feature = "federation")]
@@ -8827,9 +8802,9 @@ mod tests {
         let old_keyset = active_keyset(&bundle);
         let new_keyset = activated_rotation_keyset(&bundle);
         let new_mint_quote_id = QuoteId::new();
+        let old_restore_quote_id = QuoteId::new();
         let old_restore_output =
             blinded_output(&old_keyset, 2, "axum-http-rotated-old-restore-output");
-        let old_restore_operation_id = FederationOperationId::from_bytes([42; 32]);
 
         let mut mints = Vec::new();
         for member_id in [1, 2, 3].map(threshold_member_id) {
@@ -8841,20 +8816,21 @@ mod tests {
             let mint =
                 build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
             add_paid_bolt11_quote_to_mint(&mint, &new_mint_quote_id, 3).await;
-            add_restore_signature_share_to_mint(
-                &mint,
-                &bundle.public_config,
-                bundle
-                    .private_configs
-                    .get(&member_id)
-                    .expect("private member config"),
-                old_restore_operation_id,
-                &old_restore_output,
-            )
-            .await;
+            add_paid_bolt11_quote_to_mint(&mint, &old_restore_quote_id, 2).await;
 
             let config = mint.federation_config().expect("federation config").clone();
             let mut journal = InMemoryFederationJournal::new();
+            let old_mint_entry = appended_entry(
+                &mut journal,
+                config
+                    .mint_operation(cdk::mint::MintInput::Single(MintRequest {
+                        quote: old_restore_quote_id.clone(),
+                        outputs: vec![old_restore_output.clone()],
+                        signature: None,
+                    }))
+                    .expect("old-keyset mint operation"),
+            );
+            persist_and_apply_entry(&mint, &old_mint_entry).await;
             let rotation_entry = appended_entry(
                 &mut journal,
                 config.operation_envelope(FederationOperation::KeysetRotation(

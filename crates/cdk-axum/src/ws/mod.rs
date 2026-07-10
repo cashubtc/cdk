@@ -266,6 +266,8 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "federation")]
+            federation_isolated_member_test: false,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

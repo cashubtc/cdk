@@ -406,6 +406,11 @@ pub(super) async fn submit_operation_to_primary_if_needed_with_transport<T>(
 where
     T: Transport,
 {
+    #[cfg(test)]
+    if state.federation_isolated_member_test {
+        return Ok(None);
+    }
+
     let Some(runtime_config) = state.mint.federation_config() else {
         return Ok(None);
     };

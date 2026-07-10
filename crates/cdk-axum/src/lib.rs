@@ -1497,6 +1497,8 @@ pub struct MintState {
     federation_aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     #[cfg(feature = "federation")]
     federation_aleph_bft_live_session: FederationAlephBftLiveSessionState,
+    #[cfg(all(test, feature = "federation"))]
+    federation_isolated_member_test: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -2016,6 +2018,8 @@ impl MintState {
             self.mark_federation_operations_applied(&[entry.operation_id])
                 .await?;
         }
+        self.record_federation_state_digest_checkpoint(&entry)
+            .await?;
         self.notify_federation_operation(response.clone()).await;
 
         Ok(response)
@@ -3926,8 +3930,14 @@ pub async fn create_mint_router_with_custom_cache(
     }
     #[cfg(not(feature = "federation"))]
     {
-        create_mint_router_with_custom_cache_inner(mint, cache, custom_methods, enable_info_page)
-            .await
+        create_mint_router_with_custom_cache_inner(
+            mint,
+            cache,
+            custom_methods,
+            enable_info_page,
+            true,
+        )
+        .await
     }
 }
 
@@ -3947,7 +3957,28 @@ pub async fn create_mint_router_with_custom_cache_and_federation_peer_sync_confi
         cache,
         custom_methods,
         enable_info_page,
+        true,
         federation_peer_sync_config,
+    )
+    .await
+}
+
+#[cfg(all(test, feature = "federation"))]
+/// Builds member HTTP routes without starting cross-member synchronization.
+///
+/// Wallet route tests use independent in-memory member stores; AlephBFT networking and
+/// convergence are exercised by the federation integration tests.
+pub(crate) async fn create_mint_router_without_federation_peer_sync(
+    mint: Arc<Mint>,
+    custom_methods: Vec<String>,
+) -> Result<Router> {
+    create_mint_router_with_custom_cache_inner(
+        mint,
+        HttpCache::default(),
+        custom_methods,
+        false,
+        false,
+        FederationPeerSyncConfig::default(),
     )
     .await
 }
@@ -3958,6 +3989,7 @@ async fn create_mint_router_with_custom_cache_inner(
     cache: HttpCache,
     custom_methods: Vec<String>,
     enable_info_page: bool,
+    spawn_federation_peer_sync: bool,
     #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
 ) -> Result<Router> {
     #[cfg(feature = "federation")]
@@ -4011,6 +4043,8 @@ async fn create_mint_router_with_custom_cache_inner(
         federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
         #[cfg(feature = "federation")]
         federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+        #[cfg(all(test, feature = "federation"))]
+        federation_isolated_member_test: !spawn_federation_peer_sync,
     };
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();
@@ -4023,9 +4057,13 @@ async fn create_mint_router_with_custom_cache_inner(
         .await?;
     }
     #[cfg(feature = "federation")]
-    state.restore_federation_sync_status().await;
+    if spawn_federation_peer_sync {
+        state.restore_federation_sync_status().await;
+    }
     #[cfg(feature = "federation")]
-    state.restore_federation_startup_readiness().await;
+    if spawn_federation_peer_sync {
+        state.restore_federation_startup_readiness().await;
+    }
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
@@ -4042,10 +4080,12 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     if state.federation_consensus.is_some() {
         custom_handlers::spawn_federation_mint_payment_observer_loop(state.clone());
-        federation::spawn_federation_peer_sync_loop_with_config(
-            state.clone(),
-            federation_peer_sync_config,
-        );
+        if spawn_federation_peer_sync {
+            federation::spawn_federation_peer_sync_loop_with_config(
+                state.clone(),
+                federation_peer_sync_config,
+            );
+        }
         federation::spawn_federation_aleph_bft_driver_loop_with_config(
             state.clone(),
             federation_peer_sync_config,

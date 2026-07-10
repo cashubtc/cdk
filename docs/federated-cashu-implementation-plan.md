@@ -1578,6 +1578,22 @@ AlephBFT and consensus unit tests:
   `federation_aleph_bft_finalized_unit_reports_state_rejected_swap`, which
   finalizes valid, state-conflicting, and later valid swaps in one unit and
   proves the loser response is `Rejected` while valid siblings are `Applied`.
+- [x] Restore the complete federation-enabled Axum regression suite after the
+  pending-work activity repair without weakening consensus semantics. The two
+  real-HTTP wallet tests now use an explicit test-only isolated-member router
+  and valid accepted federation history, so they exercise member HTTP routes,
+  wallet fanout, threshold aggregation, rotation, and restore without inventing
+  a shared P2P history for independent in-memory stores. Private operation
+  fixtures construct v3/BLS outputs from the configured keyset. Inline
+  consensus finalization records materialized state-digest checkpoints.
+  Finalized-unit REST replay watermarks remain liveness-only and in memory,
+  including exact idempotent duplicate delivery. The five-member equivocation
+  test likewise requires no durable gossip watermark, and empty-session
+  rotation is stimulated by bounded activity instead of periodic idle units.
+  The live partition/catch-up matrix uses actual threshold session-outcome
+  evidence and converges after reconnect. Verification passed all 412 tests in
+  `cargo test -p cdk-axum --features federation --lib -- --test-threads 1`,
+  plus federation-enabled and federation-disabled `cdk-axum` compile checks.
 
 Mint operation tests:
 

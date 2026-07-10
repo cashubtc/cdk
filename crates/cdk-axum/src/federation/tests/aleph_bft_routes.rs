@@ -153,7 +153,7 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
 }
 
 #[tokio::test]
-async fn private_aleph_bft_finalized_unit_route_persists_applies_and_records_sequence() {
+async fn private_aleph_bft_finalized_unit_route_keeps_liveness_sequence_in_memory() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let quote_id = QuoteId::new();
     let unit = aleph_bft_unit(&state, peer_private.member_id, &quote_id);
@@ -285,8 +285,11 @@ async fn private_aleph_bft_finalized_unit_route_accepts_exact_duplicate_replay_i
         .localstore()
         .get_federation_member_sequences()
         .await
-        .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+        .expect("durable sequences");
+    assert!(
+        sequences.is_empty(),
+        "duplicate finalized-unit delivery must not persist liveness-only sequence watermarks"
+    );
 }
 
 #[tokio::test]

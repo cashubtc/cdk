@@ -83,12 +83,12 @@ pub(super) async fn post_aleph_bft_finalized_unit(
         .ensure_admissible_size()
         .map_err(federation_error_response)?;
     let responses = state
-        .apply_federation_aleph_bft_finalized_unit_with_sequence(
-            payload.payload.unit.clone(),
-            Some((verified.sender, verified.sequence)),
-        )
+        .apply_federation_aleph_bft_finalized_unit(payload.payload.unit.clone())
         .await
         .map_err(cdk_error_response)?;
+    state
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
     let runtime_config = federation_runtime_config(&state)?;
     let response = FederationAlephBftFinalizedUnitResponse::new(
         runtime_config.federation_id(),

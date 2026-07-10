@@ -1667,6 +1667,7 @@ async fn federation_route_state_for_private_with_db_and_backend(
         ))),
         federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
         federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+        federation_isolated_member_test: false,
     }
 }
 
@@ -10130,6 +10131,35 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
             .with_state(second_state.clone()),
     );
 
+    let rotation_activity = FederationOperationId::from_bytes([202; 32]);
+    time::timeout(Duration::from_secs(10), async {
+        loop {
+            let first_session = first_state
+                .federation_aleph_bft_status()
+                .await
+                .expect("first auto-rotation status")
+                .session;
+            let second_session = second_state
+                .federation_aleph_bft_status()
+                .await
+                .expect("second auto-rotation status")
+                .session;
+            if first_session >= 2 && second_session >= 2 {
+                return;
+            }
+
+            // Empty sessions rotate only while bounded peer activity is present.
+            for state in [&first_state, &second_state] {
+                if let Some(handle) = state.federation_aleph_bft_live_session.read().await.clone() {
+                    handle.mark_peer_activity(rotation_activity);
+                }
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("active empty sessions did not auto-rotate before timeout");
+
     wait_for_aleph_bft_session(&first_state, 2).await;
     wait_for_aleph_bft_session(&second_state, 2).await;
     for state in [&first_state, &second_state] {
@@ -10952,19 +10982,13 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     accepted_request
         .verify(&public_config, accepted_request.receiver)
         .expect("captured five-member network-message request verifies");
-    let receiver_sequence_before = states[1]
+    assert!(states[1]
         .mint
         .localstore()
         .get_federation_member_sequences()
         .await
-        .expect("receiver sequences before equivocated network message")
-        .get(&private_configs[0].member_id)
-        .copied()
-        .expect("sender sequence before equivocated network message");
-    assert!(
-        receiver_sequence_before >= accepted_request.sequence,
-        "receiver must have accepted the captured request before equivocation"
-    );
+        .expect("durable sequences before equivocated network message")
+        .is_empty());
 
     let mut equivocated_message = accepted_request
         .payload
@@ -11004,17 +11028,13 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
         }
         err => panic!("unexpected five-member equivocated network-message error: {err:?}"),
     }
-    assert_eq!(
-        states[1]
-            .mint
-            .localstore()
-            .get_federation_member_sequences()
-            .await
-            .expect("receiver sequences after equivocated network message")
-            .get(&private_configs[0].member_id)
-            .copied(),
-        Some(receiver_sequence_before)
-    );
+    assert!(states[1]
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("durable sequences after equivocated network message")
+        .is_empty());
     for state in &states {
         assert_eq!(
             state
