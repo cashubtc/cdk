@@ -5,7 +5,6 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::rand::rngs::OsRng;
-use bitcoin::secp256k1::rand::RngCore;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Keypair, Message, Scalar, Secp256k1, XOnlyPublicKey};
 use serde::de::Visitor;
@@ -80,17 +79,7 @@ impl SecretKey {
     /// bytes would bias the distribution and could yield the forbidden zero
     /// blinding factor.
     pub fn generate_bls() -> Self {
-        loop {
-            let mut bytes = [0u8; 32];
-            OsRng.fill_bytes(&mut bytes);
-            // `bls_from_slice` only succeeds when the value is canonical (< order);
-            // reject the all-zero scalar so `r` is always in `Fr*`.
-            if bytes != [0u8; 32] {
-                if let Ok(secret_key) = Self::bls_from_slice(&bytes) {
-                    return secret_key;
-                }
-            }
-        }
+        Self::Bls(BlsSecretKey::generate())
     }
 
     /// Get secret key as `hex` string.

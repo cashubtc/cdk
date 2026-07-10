@@ -18,7 +18,7 @@ use bitcoin::hashes::{sha256, Hash};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
     generate_trusted_dealer_configs_with_options, FederatedKeyset, FederationConfig,
-    FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
+    FederationDkgCommitmentRequest, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -743,6 +743,13 @@ fn write_dkg_setup_route_probe_requests(
     force: bool,
 ) -> Result<BTreeMap<MemberId, PathBuf>> {
     let deterministic_test_signatures = deterministic_test_seed.is_some();
+    let keyset_spec = FederationDkgKeysetSpec::new(
+        unit.clone(),
+        true,
+        input_fee_ppk,
+        final_expiry,
+        amounts.iter().copied().map(Amount::from).collect(),
+    )?;
     let coefficients =
         dkg_probe_coefficients(public_config, threshold, amounts, deterministic_test_seed)?;
     let reveals = coefficients
@@ -750,7 +757,7 @@ fn write_dkg_setup_route_probe_requests(
         .map(|member_id| {
             Ok((
                 *member_id,
-                dkg_probe_reveal(public_config, *member_id, &coefficients)?,
+                dkg_probe_reveal(public_config, *member_id, &keyset_spec, &coefficients)?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
@@ -785,14 +792,7 @@ fn write_dkg_setup_route_probe_requests(
     }
 
     let route_probe_keyset = round
-        .derive_federated_keyset(
-            public_config,
-            &reveals,
-            unit.clone(),
-            true,
-            input_fee_ppk,
-            final_expiry,
-        )
+        .derive_federated_keyset(public_config, &reveals)
         .context("generated DKG route-probe final keyset is invalid")?;
     for (receiver_id, receiver_payloads) in &secret_share_payloads {
         let participant_secret_shares = receiver_payloads
@@ -1050,6 +1050,7 @@ fn dkg_probe_coefficients(
 fn dkg_probe_reveal(
     public_config: &FederationConfig,
     member_id: MemberId,
+    keyset_spec: &FederationDkgKeysetSpec,
     coefficients: &BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>,
 ) -> Result<FederationDkgParticipantCommitmentReveal> {
     let member_coefficients = coefficients
@@ -1070,6 +1071,7 @@ fn dkg_probe_reveal(
     Ok(FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
         member_id,
+        keyset_spec: keyset_spec.clone(),
         coefficient_commitments,
     })
 }

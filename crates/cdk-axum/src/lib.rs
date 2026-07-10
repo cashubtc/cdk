@@ -3058,10 +3058,6 @@ impl MintState {
             &setup_state.reveals,
             local_member,
             &participant_secret_shares,
-            cdk::nuts::CurrencyUnit::Sat,
-            true,
-            0,
-            None,
         )?;
         Ok(Some(keyset_share))
     }

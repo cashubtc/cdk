@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::rand::rngs::OsRng;
+use bitcoin::secp256k1::rand::RngCore;
 use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
 use bls12_381::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Gt, Scalar};
 use group::Curve;
@@ -33,6 +35,21 @@ impl fmt::Debug for BlsSecretKey {
 }
 
 impl BlsSecretKey {
+    /// Generate a uniformly distributed non-zero BLS scalar.
+    pub fn generate() -> Self {
+        loop {
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            if bytes != [0u8; 32] {
+                if let Ok(secret_key) = Self::from_bytes(&bytes) {
+                    bytes.zeroize();
+                    return secret_key;
+                }
+            }
+            bytes.zeroize();
+        }
+    }
+
     /// Derive a scalar by reducing 32-byte input modulo the BLS12-381 scalar field.
     pub fn from_reduced_bytes(bytes: &[u8; 32]) -> Self {
         let mut wide = [0u8; 64];

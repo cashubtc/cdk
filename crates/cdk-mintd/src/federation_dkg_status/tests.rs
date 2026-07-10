@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederatedKeyset, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    generate_trusted_dealer_configs, FederatedKeyset, FederationDkgKeysetSpec,
+    FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
@@ -55,6 +55,14 @@ fn dkg_reveal_for_status(
     FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
         member_id,
+        keyset_spec: FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1)].into_iter().collect(),
+        )
+        .expect("DKG keyset spec"),
         coefficient_commitments: BTreeMap::from([(Amount::from(1), commitments)]),
     }
 }

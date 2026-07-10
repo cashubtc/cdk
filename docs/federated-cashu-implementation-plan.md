@@ -2661,8 +2661,14 @@ Implementation checklist:
 
 - [x] Add DKG setup phases, commitments/reveals, secret-share contributions, transcript signatures, and local member keyset-share derivation.
 - [ ] Complete a production-ready dealer-free Pedersen DKG replacement for BLS G2, using Fedimint's DKG as a reference.
+  - [x] Add an explicit DKG keyset specification binding unit, activation, input fee, expiry, and denomination set into every participant commitment/reveal and the final derived-key transcript.
+  - [x] Add a versioned, restartable private participant state that generates only the local member's random polynomials, emits per-recipient contributions, drops and zeroizes the original coefficients, validates its own reload, and redacts secret material from `Debug`.
+  - [x] Simulate five independent members at threshold three and prove every receiver derives the same v3 aggregate keyset after private-state serialization/reload.
+  - [ ] Add a unique ceremony ID and bind the complete participant commitment/reveal record into the final identity-signed transcript so records cannot be replayed across same-roster ceremonies.
+  - [ ] Add the live per-member ceremony driver with durable local state, phase gates, authenticated REST fanout, bounded retries, restart/resume, and operator-visible progress.
+  - [ ] Require confidential transport for private secret-share contributions in production (HTTPS/mTLS or recipient-encrypted envelopes), while retaining explicit localhost development support.
 - [x] Run DKG over authenticated private REST setup routes, accepting DKG messages only from identity public keys in the federation roster.
-- [x] Include federation ID, member roster, member identity public keys, participant order, commitments, BLS public shares, and aggregate public keys in the DKG transcript.
+- [ ] Include federation ID, unique ceremony ID, member roster, member identity public keys, participant order, commitments/reveals, keyset policy, BLS public shares, and aggregate public keys in the final DKG transcript. The current transcript now binds the roster, participant order, full keyset policy, public shares, and aggregate keys; complete ceremony commitments/reveals and the ceremony ID remain to be added.
 - [x] Require each participant to sign the final DKG transcript with its federation identity key. Private REST transcript-signature acceptance now also requires the receiver to have a locally derived DKG keyset-share record, rejects transcript hashes that do not match that local final public config before advancing the sender sequence, and rejects alternate valid randomized signatures for an already accepted signer/transcript pair before private REST sequence persistence.
 - [x] Commit hash of polynomial commitments before revealing commitments.
 - [x] Verify secret shares against public commitments.
@@ -2682,9 +2688,21 @@ Tests and success criteria:
 - [x] Private REST DKG setup conflicts for commitments, reveals, secret shares, and transcript signatures fail before advancing the sender sequence or replacing the accepted setup record.
 - [x] Partial database-backed DKG setup status reports visible commitment, reveal, and secret-share progress without marking finalization ready or leaking secret material.
 - [x] Invalid share is detected and setup fails.
+- [x] Reloaded private participant state rejects a contribution that no longer matches its public polynomial commitments and does not expose secret scalar bytes through `Debug`.
+- [x] Participants that commit to different unit/fee/expiry/activation/denomination policies cannot complete one DKG round.
 - [x] Restart during setup can resume or safely restart.
 - [x] Key rotation creates a new aggregate keyset accepted by all members.
 - [x] Old keysets remain verifiable until final expiry.
+
+Verified dealer-free participant checkpoint:
+
+- `cargo test -p cdk-common --features federation -- --test-threads=1`: 366 passed, plus 3 ignored documentation examples.
+- `cargo test -p cdk-axum --features federation dkg -- --test-threads=1`: 17 passed.
+- `cargo test -p cdk-mintd --features federation,fakewallet dkg -- --test-threads=1`: 10 passed.
+- `cargo test -p cdk-sqlite --features federation dkg -- --test-threads=1`: 4 passed.
+- `cargo check -p cdk-axum --features federation` and `cargo check -p cdk-mintd --features federation,fakewallet`: passed.
+- `cargo check -p cashu -p cdk-common` and the standalone `test_generate_bls_is_canonical_and_non_zero` regression: passed without federation features.
+- `cargo clippy -p cdk-common --features federation --lib --no-deps -- -D warnings` remains blocked by 19 pre-existing federation lint findings; the DKG panic surfaced in this checkpoint was removed, and no new participant/spec lint remains.
 
 ## Milestone 21: key rotation and federation upgrades
 

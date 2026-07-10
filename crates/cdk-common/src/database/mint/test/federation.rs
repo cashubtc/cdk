@@ -10,13 +10,14 @@ use crate::federation::{
     FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationConsensusItem, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -145,6 +146,14 @@ fn dkg_reveal(
     FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
         member_id,
+        keyset_spec: FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1)].into_iter().collect(),
+        )
+        .expect("DKG keyset spec"),
         coefficient_commitments: BTreeMap::from([(
             Amount::from(1),
             vec![

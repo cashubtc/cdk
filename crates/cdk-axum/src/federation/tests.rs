@@ -1949,6 +1949,14 @@ fn dkg_reveal(
     cdk::federation::FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
         member_id,
+        keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1)].into_iter().collect(),
+        )
+        .expect("DKG keyset spec"),
         coefficient_commitments: BTreeMap::from([(
             Amount::from(1),
             vec![
