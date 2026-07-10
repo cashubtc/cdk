@@ -23,8 +23,8 @@ use cdk::federation::{
     FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
     FederationConsensusRuntime, FederationDkgSetupMethod, FederationDkgTranscript,
     FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
+    FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMemberStatusKind,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
@@ -14194,6 +14194,36 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
             .expect("pending operation lookup after restarted finality")
             .is_empty());
     }
+
+    let expected_entries = states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("unit-creation crash-window journal");
+    assert_eq!(expected_entries.len(), 1);
+    assert_eq!(expected_entries[0].operation_id, operation_id);
+    let expected_digest = materialized_state_digest(&states[0], &expected_entries)
+        .await
+        .expect("unit-creation crash-window state digest");
+    for state in &states {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("converged unit-creation crash-window journal");
+        assert_eq!(
+            journal_convergence_projection(&entries),
+            journal_convergence_projection(&expected_entries)
+        );
+        assert_eq!(
+            materialized_state_digest(state, &entries)
+                .await
+                .expect("converged unit-creation crash-window state digest"),
+            expected_digest
+        );
+    }
 }
 
 #[tokio::test]
@@ -14579,6 +14609,24 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
         .expect("journal after backup-only recovery");
     assert_eq!(recovered_entries.len(), 1);
     assert_eq!(recovered_entries[0].operation_id, first_operation_id);
+    let peer_entries = second_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("peer journal after backup-only recovery");
+    assert_eq!(
+        journal_convergence_projection(&recovered_entries),
+        journal_convergence_projection(&peer_entries)
+    );
+    assert_eq!(
+        materialized_state_digest(&recovered_first_state, &recovered_entries)
+            .await
+            .expect("recovered backup-only state digest"),
+        materialized_state_digest(&second_state, &peer_entries)
+            .await
+            .expect("peer backup-only state digest")
+    );
 
     let second_quote_id = QuoteId::new();
     let second_envelope = mint_quote_envelope(&recovered_first_state, &second_quote_id);
@@ -14617,6 +14665,31 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
             2
         );
     }
+    let expected_entries = second_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("peer journal after backup-only continuation");
+    let expected_digest = materialized_state_digest(&second_state, &expected_entries)
+        .await
+        .expect("peer state digest after backup-only continuation");
+    let recovered_entries = recovered_first_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("recovered journal after backup-only continuation");
+    assert_eq!(
+        journal_convergence_projection(&recovered_entries),
+        journal_convergence_projection(&expected_entries)
+    );
+    assert_eq!(
+        materialized_state_digest(&recovered_first_state, &recovered_entries)
+            .await
+            .expect("recovered state digest after backup-only continuation"),
+        expected_digest
+    );
 }
 
 #[tokio::test]
@@ -15203,6 +15276,29 @@ async fn wait_for_recorded_operation(state: &MintState, operation_id: Federation
     })
     .await
     .expect("operation recorded before timeout");
+}
+
+fn journal_convergence_projection(
+    entries: &[FederationJournalEntry],
+) -> Vec<(
+    u64,
+    FederationOperationId,
+    FederationJournalDigest,
+    FederationJournalDigest,
+    FederationOperationStatus,
+)> {
+    entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.index,
+                entry.operation_id,
+                entry.previous_order_digest,
+                entry.order_digest,
+                entry.status,
+            )
+        })
+        .collect()
 }
 
 async fn wait_for_terminal_operation(
@@ -18011,6 +18107,15 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
         .await
         .expect("quote lookup after no-waiter apply")
         .is_some());
+    let applied_entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after no-waiter apply");
+    let applied_digest = materialized_state_digest(&state, &applied_entries)
+        .await
+        .expect("state digest after no-waiter apply");
     drop(state);
     drop(db);
 
@@ -18083,6 +18188,22 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
         .await
         .expect("pending operations after duplicate restart")
         .is_empty());
+    let restarted_entries = restarted_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after applied-without-response restart");
+    assert_eq!(
+        journal_convergence_projection(&restarted_entries),
+        journal_convergence_projection(&applied_entries)
+    );
+    assert_eq!(
+        materialized_state_digest(&restarted_state, &restarted_entries)
+            .await
+            .expect("state digest after applied-without-response restart"),
+        applied_digest
+    );
 }
 
 #[tokio::test]

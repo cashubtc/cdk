@@ -1418,7 +1418,7 @@ AlephBFT and consensus unit tests:
   federation is below finality and restarts the final lagger after finality but
   before signed catch-up certification. Every path converges on journal order,
   finalized cursor, materialized state digest, and empty pending rows.
-- [ ] Restart during unit creation, after finalization before apply, and after
+- [x] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.
   Storage-backed AlephBFT coverage now proves restart after local unit creation
@@ -1449,7 +1449,11 @@ AlephBFT and consensus unit tests:
   finalizes a later operation. SQLite-backed apply-without-response coverage
   now also proves a timed-out submit can be finalized and applied after its
   waiter is gone, survive restart with no response cache, and return the
-  durable duplicate response without requeueing. Live empty-session rotation
+  durable duplicate response without requeueing. These three focused windows
+  now compare consensus index, operation ID, previous/order digest, and terminal
+  status across recovery, plus the complete materialized state digest; the
+  recovered state is therefore proven identical rather than inferred from one
+  quote row. Live empty-session rotation
   now has Axum wrapper coverage for shutting down the old task set, persisting
   the next active session, restarting the pump, and refusing non-empty pending
   mempools; post-finality rotation coverage now proves two live members can
@@ -1463,12 +1467,9 @@ AlephBFT and consensus unit tests:
   batch to drive natural session completion, align wallet-member and mint-side
   operation timeouts, shift later deterministic smoke-wallet seed windows past
   that warm-up range, and expose the flow through `just
-  fed-regtest-aleph-rotation`. A small live process run now reaches AlephBFT
-  startup and initial collection without the previous short timeout, but still
-  exposes a process-level finality progression gap: the warm-up operation can
-  remain pending with zero finalized items across members. Repairing generated
-  process-level AlephBFT network-message finality is the next prerequisite
-  before the longer external process partition run can pass with that gate.
+  fed-regtest-aleph-rotation`. The generated rotation process gate now proves
+  target session 2 before wallet batches and continues through the standard
+  convergence checks.
 - [x] Catch-up from signed session outcomes and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
