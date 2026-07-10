@@ -122,18 +122,15 @@ Resolved blocking bugs:
   production-ready in the build. The fail-closed behavior is unchanged.
 - Milestone 4A remains in progress for explicitly unchecked work such as deeper
   bounded retry/backpressure certification, round/consensus-height observability,
-  atomic failure-injection coverage for value-operation apply, and the broad
-  all-operation plus restart variants of the below-quorum/above-quorum catch-up
-  certification matrix. The exact self-partitioned proposer case is complete.
+  atomic failure-injection coverage for value-operation apply, and the
+  above-quorum plus restart variants of the catch-up certification matrix. The
+  exact self-partitioned proposer and below-quorum value-operation windows are
+  complete.
 - Current verification is explicit: all focused activity-wake tests, the
   default-cadence probe, mintd/CLI feature checks, and the fresh five-process
-  gate pass. The broader single-threaded `cdk-axum` federation run now passes
-  403 of 412 tests, including the full live partition matrix. Its nine remaining
-  failures are separately reproduced test debt in wallet catch-up timing,
-  obsolete private-operation route expectations, liveness-only sequence
-  persistence assertions, idle auto-rotation, and in-memory state-digest
-  checkpoint expectations; they were not hidden or relaxed as part of this
-  pending-work liveness repair.
+  gate pass. The single-threaded `cdk-axum` federation run passes all 413 tests,
+  including the self-partition, below-quorum full value-operation, and
+  above-quorum basic recovery matrices.
 
 ## Recent performance checkpoint
 
@@ -1348,7 +1345,7 @@ AlephBFT and consensus unit tests:
   accepted operation, every member has the same ordered journal, finalized
   cursor, and materialized state digest, all pending rows clear, and activity
   traffic stays flat after durable work disappears.
-- [ ] Add live private-REST AlephBFT below-quorum-offline coverage for a
+- [x] Add live private-REST AlephBFT below-quorum-offline coverage for a
   federation size/threshold where the number of offline members remains within
   the tolerated fault budget. Submit mint, swap, melt, restore/check-state, and
   payment-observation operations through still-connected members, prove they
@@ -1357,13 +1354,20 @@ AlephBFT and consensus unit tests:
   materialized mint state, payment observations, completed-operation rows,
   signature-share provenance, accepted-order digests, and state digests without
   duplicate signing or duplicate outgoing payment attempts.
-  Partial coverage in the same live matrix proves a mint-quote operation
-  finalizes with four of five members, the offline member refuses authoritative
-  reads before certification, finalized-item catch-up plus signed session
-  outcomes restore it, and all five journal cursors and state digests converge.
-  The combined mint/swap/melt/restore/check-state/payment-observation window and
-  duplicate-payment assertions remain open, so this item is intentionally not
-  checked.
+  Covered by
+  `aleph_bft_live_one_member_offline_value_window_catches_up_without_duplicate_payment`.
+  Member five goes offline before a 14-operation window containing mint quote,
+  four-observer incoming-payment quorum, mint issuance, swap, restore,
+  check-state, melt quote, melt reservation/change, and four-observer outgoing
+  payment quorum. Four connected members finalize every operation, aggregate
+  accepted mint shares into ordinary proofs, restore the accepted swap share,
+  and elect exactly one fakewallet outgoing payment actor. The lagging member
+  refuses authoritative reads, then replays whole finalized AlephBFT units and
+  obtains signed session-outcome certification. All five members converge on
+  journal order, finalized cursor, materialized state digest, proof states,
+  payment observations, completed-operation rows, and exactly one provenance
+  row per mint, swap, and melt-change share. Catch-up leaves the total outgoing
+  payment call count at one.
 - [ ] Add live private-REST AlephBFT above-quorum-offline coverage where too
   many members are disconnected for consensus finality. Submit valid operations
   to reachable members and to an isolated proposer, prove every request fails
@@ -1591,7 +1595,7 @@ AlephBFT and consensus unit tests:
   test likewise requires no durable gossip watermark, and empty-session
   rotation is stimulated by bounded activity instead of periodic idle units.
   The live partition/catch-up matrix uses actual threshold session-outcome
-  evidence and converges after reconnect. Verification passed all 412 tests in
+  evidence and converges after reconnect. Verification passed all 413 tests in
   `cargo test -p cdk-axum --features federation --lib -- --test-threads 1`,
   plus federation-enabled and federation-disabled `cdk-axum` compile checks.
 
@@ -2382,14 +2386,15 @@ Tests and success criteria:
   behavior before certification, no duplicate signing, no duplicate outgoing
   payment attempts, and deterministic handling of any queued operations that
   were accepted locally while connectivity was unavailable.
-  The exact self-partitioned mint case and basic one-operation one-offline and
-  two-offline windows are now covered by the repeated five-member live matrix,
-  including autonomous pending finalization, fail-closed pre-certification
-  reads, finalized-item replay, signed session-outcome certification, cursor,
-  journal, and state-digest convergence, deterministic duplicate retry, and
-  zero post-finality activity refresh. This parent remains open until the same
-  matrix spans mint, swap, melt, restore/check-state, payment observations,
-  duplicate outgoing-payment guards, and every listed restart permutation.
+  The exact self-partitioned mint case, full one-member-offline value-operation
+  window, and basic two-member-offline stall/recovery window are now covered by
+  the five-member live matrix. Coverage includes autonomous pending finality,
+  fail-closed pre-certification reads, finalized-item replay, signed
+  session-outcome certification, cursor/journal/state-digest convergence,
+  mint/swap/melt share provenance, payment-observation replay, deterministic
+  duplicate retry, one elected outgoing payment attempt, and zero post-finality
+  activity refresh. This parent remains open for the above-quorum queued
+  value/conflict matrix and every listed restart permutation.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.

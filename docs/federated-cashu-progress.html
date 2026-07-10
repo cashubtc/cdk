@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Idle and healed-partition pending-work liveness are fixed without periodic idle unit creation; the exact self-partition case is certified while the broader all-operation and restart convergence matrix remains open.</span>
+          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Idle and healed-partition pending-work liveness are fixed without periodic idle unit creation; exact self-partition and one-member-offline full value-operation catch-up are certified while above-quorum conflict and restart matrices remain open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: restore federation regression suite</span>
+          <span class="value">test: certify offline value-operation catch-up</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The federation-enabled Axum suite now passes all 412 tests. The recovery records inline-finalization state-digest checkpoints, keeps finalized-unit REST sequence watermarks liveness-only and in memory, updates private routes to configured v3/BLS fixtures, exercises wallet HTTP aggregation and rotated-keyset restore with accepted share provenance, rotates empty sessions only under bounded activity, and preserves the passing five-member partition/catch-up matrix.</span>
+          <span class="value">The federation-enabled Axum suite now passes all 413 tests. A five-member BFT federation keeps one member offline for a 14-operation mint, swap, restore/check-state, melt, and payment-observation window; four members finalize, exactly one fakewallet member attempts payment, and signed catch-up restores the lagging member to identical journal order, cursor, state digest, completed rows, proof state, and non-duplicated signature-share provenance.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend Milestone 16A from the certified basic partition windows to mint, swap, melt, restore/check-state, payment-observation, duplicate-payment, and queued-conflict coverage, then add every listed restart permutation.</span>
+          <span class="value">Extend Milestone 16A into the above-quorum stalled value-operation and queued-conflict matrix, then add the self-partitioned proposer, below-quorum non-proposer, and post-finality lagging-member restart permutations.</span>
         </div>
       </aside>
     </header>
@@ -629,7 +629,7 @@
             <div>
               <h3>Milestone 16A: state convergence and catch-up certification</h3>
               <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
-              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. The exact self-partitioned proposer case now passes with no pre-finality quote mutation, finalized item, completed operation, or share; one-offline catch-up and two-offline autonomous recovery also converge in the live matrix. Broader value-operation and restart variants remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. Exact self-partition is certified with no pre-finality mutation; the one-member-offline live window now covers mint, swap, restore/check-state, melt, payment quorums, one elected outgoing payment, and non-duplicated share provenance. The basic two-member-offline operation also stalls safely and recovers autonomously. Above-quorum value conflicts and restart variants remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -806,7 +806,7 @@
         <div class="stack">
           <article class="item">
             <h3>AlephBFT idle wake regression risk</h3>
-            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. A second intermittent case showed that one accepted recovery wake could expire before exact-quorum AlephBFT caught up after a partition; work-bound lease renewal now continues only while durable pending rows exist. Five consecutive matrix stress runs, two cleanup runs, and a deterministic 63.98-second renewal run passed; the last run held the federation below finality through a full refresh interval, proved state remained untouched while activity renewed, and proved traffic stayed flat after finality. Residual work is the all-operation and restart expansion, not the basic self-partition or autonomous recovery path.</p>
+            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. A second intermittent case showed that one accepted recovery wake could expire before exact-quorum AlephBFT caught up after a partition; work-bound lease renewal now continues only while durable pending rows exist. Five consecutive matrix stress runs, two cleanup runs, and a deterministic 63.98-second renewal run passed; the last run held the federation below finality through a full refresh interval, proved state remained untouched while activity renewed, and proved traffic stayed flat after finality. The full one-member-offline value-operation window is now certified; residual work is above-quorum queued conflicts and restart permutations.</p>
           </article>
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
@@ -874,7 +874,7 @@
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
           forced direct swap and change melt pass with all members live, one member offline, and a
           behaviorally verified 30-second payment delay member. The complete
-          federation-enabled Axum regression gate now passes 412 of 412 tests,
+          federation-enabled Axum regression gate now passes 413 of 413 tests,
           including real-HTTP wallet aggregation, rotated-keyset restore,
           automatic session rotation, state-digest checkpoints, equivocation,
           and the five-member live partition/catch-up matrix.
@@ -952,7 +952,7 @@
         <div class="stack">
           <article class="item">
             <h3>Live partition certification</h3>
-            <p>Expand the now-passing self-partition, one-offline, and two-offline live matrix across mint, swap, melt, restore/check-state, payment observations, queued conflicts, duplicate signing, and duplicate outgoing-payment guards. Then add self-partitioned-proposer, below-quorum non-proposer, and post-finality lagging-member restart permutations.</p>
+            <p>Expand the now-passing self-partition, full one-offline value-operation, and basic two-offline live matrix into above-quorum queued value conflicts, share-leakage guards, and payment-side-effect guards. Then add self-partitioned-proposer, below-quorum non-proposer, and post-finality lagging-member restart permutations.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

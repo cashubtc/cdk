@@ -1,12 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aleph_bft::{default_delay_config, Network, NodeIndex, Recipient};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::cdk_database::MintDatabase;
-use cdk::cdk_payment::PaymentIdentifier;
+use cdk::cdk_payment::{
+    self, CreateIncomingPaymentResponse, DynMintPayment, Event, IncomingPaymentOptions,
+    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    PaymentQuoteResponse, SettingsResponse, WaitPaymentResponse,
+};
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
     FederationAlephBftConsensusAdapter, FederationAlephBftFinalityMode,
@@ -29,7 +35,10 @@ use cdk::federation::{
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::nut01::{evaluate_secret_key_coefficients, BlsG1PublicKey, BlsSecretKey};
+use cdk::nuts::nut01::{
+    aggregate_blind_signature_shares, evaluate_secret_key_coefficients, BlsG1PublicKey,
+    BlsSecretKey,
+};
 use cdk::nuts::nut22::AuthToken;
 use cdk::nuts::{
     BlindedMessage, CheckStateRequest, CurrencyUnit, Id, MeltQuoteBolt11Request, MeltQuoteState,
@@ -41,6 +50,7 @@ use cdk::Amount;
 use cdk_common::database::DynMintDatabase;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use cdk_http_client::HttpError;
+use futures::Stream;
 use parity_scale_codec::{Decode, Encode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -1523,6 +1533,96 @@ fn transport_config_five_with_threshold(
     (bundle.public_config, private_configs)
 }
 
+#[derive(Debug)]
+struct CountingFakeWallet {
+    inner: FakeWallet,
+    make_payment_calls: Arc<AtomicUsize>,
+}
+
+impl CountingFakeWallet {
+    fn with_call_counter() -> (DynMintPayment, Arc<AtomicUsize>) {
+        let make_payment_calls = Arc::new(AtomicUsize::new(0));
+        let wallet = Self {
+            inner: FakeWallet::new(
+                FeeReserve {
+                    min_fee_reserve: 1.into(),
+                    percent_fee_reserve: 0.0,
+                },
+                HashMap::default(),
+                HashSet::default(),
+                0,
+                CurrencyUnit::Sat,
+            ),
+            make_payment_calls: Arc::clone(&make_payment_calls),
+        };
+
+        (Arc::new(wallet), make_payment_calls)
+    }
+}
+
+#[async_trait]
+impl MintPayment for CountingFakeWallet {
+    type Err = cdk_payment::Error;
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        self.inner.get_settings().await
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        self.inner.create_incoming_payment_request(options).await
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        self.inner.get_payment_quote(unit, options).await
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.make_payment_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.make_payment(unit, options).await
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        self.inner.wait_payment_event().await
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        self.inner.is_payment_event_stream_active()
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        self.inner.cancel_payment_event_stream();
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        self.inner
+            .check_incoming_payment_status(payment_identifier)
+            .await
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.inner.check_outgoing_payment(payment_identifier).await
+    }
+}
+
 async fn federation_route_state_with_local_private() -> (
     MintState,
     FederationConfig,
@@ -1594,6 +1694,35 @@ async fn federation_route_state_for_private_with_db_and_backend(
     seed: &[u8],
     consensus_backend: FederationConsensusBackendKind,
 ) -> MintState {
+    let fake: DynMintPayment = Arc::new(FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 0.0,
+        },
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    ));
+    federation_route_state_for_private_with_db_backend_and_payment_processor(
+        public_config,
+        local_private,
+        db,
+        seed,
+        consensus_backend,
+        fake,
+    )
+    .await
+}
+
+async fn federation_route_state_for_private_with_db_backend_and_payment_processor(
+    public_config: FederationConfig,
+    local_private: MemberConfigPrivate,
+    db: Arc<cdk_sqlite::MintSqliteDatabase>,
+    seed: &[u8],
+    consensus_backend: FederationConsensusBackendKind,
+    payment_processor: DynMintPayment,
+) -> MintState {
     let runtime_config = cdk::mint::FederationRuntimeConfig::new_with_consensus_backend(
         public_config.clone(),
         local_private.clone(),
@@ -1603,22 +1732,12 @@ async fn federation_route_state_for_private_with_db_and_backend(
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config.clone());
-    let fake = FakeWallet::new(
-        FeeReserve {
-            min_fee_reserve: 1.into(),
-            percent_fee_reserve: 0.0,
-        },
-        HashMap::default(),
-        HashSet::default(),
-        0,
-        CurrencyUnit::Sat,
-    );
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
-            Arc::new(fake),
+            payment_processor,
         )
         .await
         .expect("payment processor");
@@ -2270,6 +2389,50 @@ fn proof_for_amount(state: &MintState, amount: u64, label: &str) -> cdk::nuts::P
         secret,
         PublicKey::from(signature),
     )
+}
+
+async fn proof_from_accepted_output(
+    states: &[MintState],
+    signature_threshold: usize,
+    operation_id: FederationOperationId,
+    output_index: u32,
+    output: &BlindedMessage,
+    secret: cdk::secret::Secret,
+) -> cdk::nuts::Proof {
+    let mut shares = Vec::with_capacity(signature_threshold);
+    for state in states.iter().take(signature_threshold) {
+        let records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, output_index)
+            .await
+            .expect("accepted output signature share lookup");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].blinded_secret, output.blinded_secret);
+        assert!(records[0].accepted_operation_index.is_some());
+        shares.push(records[0].share);
+    }
+    let signature = aggregate_blind_signature_shares(signature_threshold, &shares)
+        .expect("accepted output aggregate signature");
+
+    cdk::nuts::Proof::new(
+        output.amount,
+        output.keyset_id,
+        secret,
+        PublicKey::from(signature),
+    )
+}
+
+fn elected_melt_payment_member(
+    public_config: &FederationConfig,
+    operation_id: FederationOperationId,
+) -> MemberId {
+    let members = public_config.members.keys().copied().collect::<Vec<_>>();
+    let operation_bytes = operation_id.to_bytes();
+    let mut selector_bytes = [0_u8; 8];
+    selector_bytes.copy_from_slice(&operation_bytes[..8]);
+    let selector = u64::from_be_bytes(selector_bytes);
+    members[(selector % members.len() as u64) as usize]
 }
 
 fn swap_output(state: &MintState, label: &str) -> BlindedMessage {
@@ -11805,6 +11968,606 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
 }
 
 #[tokio::test]
+async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_duplicate_payment() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
+    let payment_policy = FederationPaymentObservationPolicy::member_quorum(
+        4,
+        FederationPaymentTrustModel::SharedBackendReadOnly,
+    );
+    let (mut session, make_payment_calls) =
+        start_multi_member_aleph_bft_live_session_with_payment_policy(
+            5,
+            3,
+            live_options.clone(),
+            payment_policy,
+        )
+        .await
+        .expect("five-member live value-operation session");
+    let runtime_config = session.states[0]
+        .mint
+        .federation_config()
+        .expect("value-operation federation config")
+        .clone();
+    let signature_threshold =
+        usize::from(session.public_config.threshold_params.signature_threshold);
+    let mut expected_operation_ids = Vec::new();
+
+    let offline_index = 4usize;
+    let offline_member = session.private_configs[offline_index].member_id;
+    *session.states[offline_index]
+        .federation_aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *session.states[offline_index]
+        .federation_aleph_bft_live_session
+        .write()
+        .await = None;
+    session.transport.insert(
+        session.federation_api_urls[offline_index].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(session.states[0].clone()),
+    );
+    let offline_handle = session._handles.remove(offline_index);
+    drop(offline_handle);
+
+    let mint_quote_id = QuoteId::new();
+    let mint_quote_envelope = runtime_config.mint_quote_operation(
+        mint_quote_id.clone(),
+        cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(4),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        }),
+        cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: mint_quote_id.to_string(),
+            request: format!("invoice-{mint_quote_id}"),
+            amount: Some(Amount::from(4)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: Some(10_000),
+            pubkey: None,
+        }),
+    );
+    let mint_quote_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], mint_quote_envelope)
+            .await;
+    for state in &session.states[..offline_index] {
+        wait_for_applied_operation_with_context(
+            state,
+            mint_quote_operation_id,
+            "one-offline mint quote",
+        )
+        .await;
+    }
+    expected_operation_ids.push(mint_quote_operation_id);
+
+    for observer in 1..=4 {
+        let observation = mint_payment_observation_envelope_for_member(
+            &session.states[0],
+            &mint_quote_id,
+            observer,
+            4,
+            "live-value-window-paid",
+        );
+        let operation_id =
+            submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
+        for state in &session.states[..offline_index] {
+            wait_for_applied_operation_with_context(
+                state,
+                operation_id,
+                &format!("one-offline mint payment observation {observer}"),
+            )
+            .await;
+        }
+        expected_operation_ids.push(operation_id);
+    }
+
+    let keyset = session.public_config.keysets[0].clone();
+    let mint_secrets = (0..4)
+        .map(|index| cdk::secret::Secret::new(format!("live value proof {index}")))
+        .collect::<Vec<_>>();
+    let mint_outputs = mint_secrets
+        .iter()
+        .map(|secret| {
+            BlindedMessage::new(
+                Amount::from(1),
+                keyset.id,
+                PublicKey::from(BlsG1PublicKey::hash_to_curve(secret.as_bytes())),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mint_envelope = runtime_config
+        .mint_operation(MintInput::Single(MintRequest {
+            quote: mint_quote_id.clone(),
+            outputs: mint_outputs.clone(),
+            signature: None,
+        }))
+        .expect("baseline mint operation");
+    let mint_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], mint_envelope).await;
+    expected_operation_ids.push(mint_operation_id);
+    for state in &session.states[..offline_index] {
+        wait_for_applied_operation_with_context(state, mint_operation_id, "baseline mint").await;
+    }
+
+    let mut proofs = Vec::new();
+    for (index, (output, secret)) in mint_outputs.iter().zip(mint_secrets).enumerate() {
+        proofs.push(
+            proof_from_accepted_output(
+                &session.states[..offline_index],
+                signature_threshold,
+                mint_operation_id,
+                u32::try_from(index).expect("mint output index"),
+                output,
+                secret,
+            )
+            .await,
+        );
+    }
+
+    let swap_input = proofs.remove(0);
+    let swap_input_y = swap_input.y().expect("live swap input y");
+    let swap_blinded_output = swap_output(&session.states[0], "one-offline-value-window");
+    let swap_envelope = runtime_config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![swap_input],
+            vec![swap_blinded_output.clone()],
+        ))
+        .expect("live swap operation");
+    let swap_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], swap_envelope).await;
+    expected_operation_ids.push(swap_operation_id);
+    for state in &session.states[..offline_index] {
+        wait_for_applied_operation_with_context(state, swap_operation_id, "one-offline swap").await;
+    }
+
+    let restore_envelope = runtime_config.operation_envelope(FederationOperation::Restore(
+        FederationRestoreOperation {
+            request: RestoreRequest {
+                outputs: vec![swap_blinded_output.clone()],
+            },
+        },
+    ));
+    let restore_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], restore_envelope).await;
+    expected_operation_ids.push(restore_operation_id);
+    for state in &session.states[..offline_index] {
+        wait_for_recorded_operation(state, restore_operation_id).await;
+        let restored = state
+            .mint
+            .restore(RestoreRequest {
+                outputs: vec![swap_blinded_output.clone()],
+            })
+            .await
+            .expect("connected member restore");
+        assert_eq!(restored.outputs, vec![swap_blinded_output.clone()]);
+        assert_eq!(restored.signatures.len(), 1);
+        let checked = state
+            .mint
+            .check_state(&CheckStateRequest {
+                ys: vec![swap_input_y],
+            })
+            .await
+            .expect("connected member check-state");
+        assert_eq!(checked.states.len(), 1);
+        assert_eq!(checked.states[0].state, cdk::nuts::State::Spent);
+    }
+
+    let melt_quote_id = QuoteId::new();
+    let pending_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Pending,
+        check_payment_state: MeltQuoteState::Paid,
+        pay_err: false,
+        check_err: false,
+    };
+    let melt_quote_request = cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        request: create_fake_invoice(
+            1_000,
+            serde_json::to_string(&pending_description).expect("pending melt description"),
+        ),
+        unit: CurrencyUnit::Sat,
+        options: None,
+    });
+    let melt_quote_envelope =
+        runtime_config.melt_quote_operation(melt_quote_id.clone(), melt_quote_request);
+    let melt_quote_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], melt_quote_envelope)
+            .await;
+    for state in &session.states[..offline_index] {
+        wait_for_applied_operation_with_context(
+            state,
+            melt_quote_operation_id,
+            "one-offline melt quote",
+        )
+        .await;
+    }
+    expected_operation_ids.push(melt_quote_operation_id);
+
+    let melt_input_ys = proofs
+        .iter()
+        .map(|proof| proof.y().expect("live melt input y"))
+        .collect::<Vec<_>>();
+    let (melt_envelope, melt_change, elected_member) = (0..128)
+        .find_map(|attempt| {
+            let mut change = swap_output(
+                &session.states[0],
+                &format!("one-offline-melt-change-{attempt}"),
+            );
+            change.amount = Amount::ZERO;
+            let envelope = runtime_config
+                .melt_operation(cdk::nuts::MeltRequest::new(
+                    melt_quote_id.clone(),
+                    proofs.clone(),
+                    Some(vec![change.clone()]),
+                ))
+                .expect("live melt operation");
+            let operation_id = envelope.operation_id().expect("live melt operation id");
+            let elected_member = elected_melt_payment_member(&session.public_config, operation_id);
+            (elected_member != offline_member).then_some((envelope, change, elected_member))
+        })
+        .expect("connected member elected for live melt payment");
+    let melt_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], melt_envelope).await;
+    expected_operation_ids.push(melt_operation_id);
+    for state in &session.states[..offline_index] {
+        wait_for_applied_operation_with_context(state, melt_operation_id, "one-offline melt").await;
+    }
+
+    let elected_index = session
+        .public_config
+        .members
+        .keys()
+        .position(|member_id| *member_id == elected_member)
+        .expect("elected melt member index");
+    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        1,
+        "accepted melt must elect exactly one outgoing payment actor"
+    );
+    assert_eq!(make_payment_calls[offline_index].load(Ordering::SeqCst), 0);
+
+    let mut melt_payment_operation_ids = Vec::new();
+    for observer_index in 0..4 {
+        let observer_config = session.states[observer_index]
+            .mint
+            .federation_config()
+            .expect("melt observer federation config");
+        let observation = observer_config.melt_quote_payment_observation(
+            melt_quote_id.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltQuoteState::Paid,
+            Amount::from(1),
+            Amount::from(1),
+            Some(String::new()),
+            None,
+        );
+        let operation_id =
+            submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
+        for state in &session.states[..offline_index] {
+            wait_for_applied_operation_with_context(
+                state,
+                operation_id,
+                &format!("one-offline melt payment observation {observer_index}"),
+            )
+            .await;
+        }
+        expected_operation_ids.push(operation_id);
+        melt_payment_operation_ids.push(operation_id);
+    }
+
+    for state in &session.states[..offline_index] {
+        for operation_id in &melt_payment_operation_ids {
+            wait_for_applied_operation_with_context(
+                state,
+                *operation_id,
+                "one-offline melt payment observation",
+            )
+            .await;
+        }
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&melt_quote_id)
+            .await
+            .expect("connected melt quote lookup")
+            .expect("connected melt quote");
+        assert_eq!(quote.state, MeltQuoteState::Paid);
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&melt_input_ys)
+                .await
+                .expect("connected melt proof states"),
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_payment_observations(
+                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                    &melt_quote_id.to_string(),
+                )
+                .await
+                .expect("connected melt payment observations")
+                .len(),
+            4
+        );
+    }
+
+    assert!(session.states[offline_index]
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(swap_operation_id)
+        .await
+        .expect("offline swap journal lookup")
+        .is_none());
+    session.states[offline_index]
+        .mark_federation_catching_up(member_id(1))
+        .await;
+    session.states[offline_index]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect_err("offline value-operation member must remain fail-closed");
+
+    let offline_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[offline_index],
+        session.sync_config,
+        live_options,
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart offline value-operation member")
+    .expect("offline value-operation live session handle");
+    session._handles.push(offline_handle);
+    session.transport.insert(
+        session.federation_api_urls[offline_index].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[offline_index].clone()),
+    );
+    let peer = session
+        .public_config
+        .members
+        .get(&member_id(1))
+        .expect("value-operation catch-up peer")
+        .clone();
+    let client = FederationRestPeerClient::new_with_config(
+        session.transport.clone(),
+        &session.public_config,
+        session.private_configs[offline_index].clone(),
+        session.sync_config,
+    )
+    .expect("value-operation catch-up client");
+    sync_and_certify_partitioned_member(
+        &session.states[offline_index],
+        &client,
+        &peer,
+        &session.public_config,
+    )
+    .await;
+
+    for operation_id in &expected_operation_ids {
+        wait_for_recorded_operation(&session.states[offline_index], *operation_id).await;
+    }
+    session.states[offline_index]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect("caught-up value-operation member is ready");
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        1,
+        "catch-up replay must not duplicate the elected outgoing payment"
+    );
+    assert_eq!(
+        make_payment_calls[offline_index].load(Ordering::SeqCst),
+        0,
+        "non-elected lagging member must not pay while replaying melt history"
+    );
+
+    let caught_up = &session.states[offline_index];
+    let restored = caught_up
+        .mint
+        .restore(RestoreRequest {
+            outputs: vec![swap_blinded_output.clone()],
+        })
+        .await
+        .expect("caught-up member restore");
+    assert_eq!(restored.outputs, vec![swap_blinded_output.clone()]);
+    assert_eq!(restored.signatures.len(), 1);
+    let checked = caught_up
+        .mint
+        .check_state(&CheckStateRequest {
+            ys: vec![swap_input_y],
+        })
+        .await
+        .expect("caught-up member check-state");
+    assert_eq!(checked.states.len(), 1);
+    assert_eq!(checked.states[0].state, cdk::nuts::State::Spent);
+    assert_eq!(
+        caught_up
+            .mint
+            .localstore()
+            .get_proofs_states(&melt_input_ys)
+            .await
+            .expect("caught-up melt proof states"),
+        vec![
+            Some(cdk::nuts::State::Spent),
+            Some(cdk::nuts::State::Spent),
+            Some(cdk::nuts::State::Spent),
+        ]
+    );
+    assert_eq!(
+        caught_up
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                cdk::federation::FederationPaymentObservationContext::MintQuote,
+                &mint_quote_id.to_string(),
+            )
+            .await
+            .expect("caught-up mint payment observations")
+            .len(),
+        4
+    );
+    assert_eq!(
+        caught_up
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                &melt_quote_id.to_string(),
+            )
+            .await
+            .expect("caught-up melt payment observations")
+            .len(),
+        4
+    );
+    assert_eq!(
+        caught_up
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(swap_operation_id, 0)
+            .await
+            .expect("caught-up swap share provenance")
+            .len(),
+        1
+    );
+    assert_eq!(
+        caught_up
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(melt_operation_id, 0)
+            .await
+            .expect("caught-up melt change share provenance")
+            .first()
+            .map(|record| record.blinded_secret),
+        Some(melt_change.blinded_secret)
+    );
+    for operation_id in [mint_operation_id, swap_operation_id, melt_operation_id] {
+        assert!(caught_up
+            .mint
+            .localstore()
+            .get_completed_operation(&federation_completed_operation_uuid(operation_id))
+            .await
+            .expect("caught-up completed operation lookup")
+            .is_some());
+    }
+
+    let expected_entries = session.states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("expected value-operation journal");
+    assert_eq!(
+        expected_entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>(),
+        expected_operation_ids
+    );
+    let expected_digest = materialized_state_digest(&session.states[0], &expected_entries)
+        .await
+        .expect("expected value-operation state digest");
+    let expected_cursor = session.states[0]
+        .federation_aleph_bft_status()
+        .await
+        .expect("expected value-operation cursor")
+        .next_item_index;
+    for state in &session.states {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("converged value-operation journal");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.operation_id)
+                .collect::<Vec<_>>(),
+            expected_operation_ids
+        );
+        assert_eq!(
+            materialized_state_digest(state, &entries)
+                .await
+                .expect("converged value-operation digest"),
+            expected_digest
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("converged value-operation cursor")
+                .next_item_index,
+            expected_cursor
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(swap_operation_id, 0)
+                .await
+                .expect("converged swap share provenance")
+                .len(),
+            1,
+            "restore and catch-up must not duplicate swap signing shares"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(melt_operation_id, 0)
+                .await
+                .expect("converged melt share provenance")
+                .len(),
+            1,
+            "catch-up must not duplicate melt change signing shares"
+        );
+        for output_index in 0..4 {
+            assert_eq!(
+                state
+                    .mint
+                    .localstore()
+                    .get_federation_signature_shares_for_output(mint_operation_id, output_index,)
+                    .await
+                    .expect("converged mint share provenance")
+                    .len(),
+                1,
+                "catch-up must regenerate exactly one mint share per output"
+            );
+        }
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("converged pending operations")
+            .is_empty());
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_member() {
     let federation_api_urls = vec![
         MintUrl::from_str("http://fed1.test").expect("first federation api url"),
@@ -13454,6 +14217,42 @@ async fn wait_for_applied_operation(state: &MintState, operation_id: FederationO
     );
 }
 
+async fn wait_for_recorded_operation(state: &MintState, operation_id: FederationOperationId) {
+    time::timeout(Duration::from_secs(15), async {
+        loop {
+            let recorded = state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(operation_id)
+                .await
+                .expect("recorded operation lookup")
+                .is_some();
+            if recorded {
+                return;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("operation recorded before timeout");
+}
+
+async fn submit_live_operation_allowing_pending_timeout(
+    state: &MintState,
+    envelope: FederationOperationEnvelope,
+) -> FederationOperationId {
+    let operation_id = envelope.operation_id().expect("live operation id");
+    match state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+    {
+        Ok(response) => assert_eq!(response.operation_id, operation_id),
+        Err(err) => assert_pending_finalization_error(&err, operation_id, 10_000),
+    }
+
+    operation_id
+}
+
 async fn wait_for_applied_operation_with_context(
     state: &MintState,
     operation_id: FederationOperationId,
@@ -13657,30 +14456,54 @@ async fn start_multi_member_aleph_bft_live_session(
     signature_threshold: u16,
     live_options: FederationAlephBftLiveSessionOptions,
 ) -> Result<MultiMemberAlephBftLiveSession, cdk::Error> {
+    let (session, _) = start_multi_member_aleph_bft_live_session_with_payment_policy(
+        member_count,
+        signature_threshold,
+        live_options,
+        FederationPaymentObservationPolicy::default(),
+    )
+    .await?;
+
+    Ok(session)
+}
+
+async fn start_multi_member_aleph_bft_live_session_with_payment_policy(
+    member_count: u16,
+    signature_threshold: u16,
+    live_options: FederationAlephBftLiveSessionOptions,
+    payment_observation_policy: FederationPaymentObservationPolicy,
+) -> Result<(MultiMemberAlephBftLiveSession, Vec<Arc<AtomicUsize>>), cdk::Error> {
     let federation_api_urls = (1..=member_count)
         .map(|value| {
             MintUrl::from_str(&format!("http://fed{value}.test")).expect("federation api url")
         })
         .collect::<Vec<_>>();
-    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+    let (mut public_config, private_configs) = transport_config_with_member_federation_api_urls(
         ThresholdParams::with_bft_consensus(member_count, signature_threshold)
             .expect("threshold params"),
         federation_api_urls.clone(),
     );
+    public_config.payment_observation_policy = payment_observation_policy;
+    public_config.validate()?;
     let mut states = Vec::new();
+    let mut make_payment_calls = Vec::new();
     for private_config in private_configs.iter().cloned() {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let (payment_processor, member_make_payment_calls) =
+            CountingFakeWallet::with_call_counter();
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_backend_and_payment_processor(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
                 FederationConsensusBackendKind::AlephBft,
+                payment_processor,
             )
             .await,
         );
+        make_payment_calls.push(member_make_payment_calls);
     }
     let transport = RouterFederationTransportRegistry::default();
     let sync_config = FederationPeerSyncConfig {
@@ -13708,15 +14531,18 @@ async fn start_multi_member_aleph_bft_live_session(
         );
     }
 
-    Ok(MultiMemberAlephBftLiveSession {
-        states,
-        transport,
-        federation_api_urls,
-        public_config,
-        private_configs,
-        sync_config,
-        _handles: handles,
-    })
+    Ok((
+        MultiMemberAlephBftLiveSession {
+            states,
+            transport,
+            federation_api_urls,
+            public_config,
+            private_configs,
+            sync_config,
+            _handles: handles,
+        },
+        make_payment_calls,
+    ))
 }
 
 async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperationId {
