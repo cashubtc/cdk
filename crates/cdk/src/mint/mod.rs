@@ -1783,7 +1783,7 @@ mod tests {
         let federation = source_before_cfg_tests(include_str!("federation.rs"));
         assert_contains_in_order(
             federation,
-            "tx.commit().await?;\n\n        self.publish_federation_mint_quote_created(&quote)?;",
+            "tx.commit().await?;\n\n        self.publish_federation_mint_quote_created(&published_quote)?;",
             "Ok(())",
         );
         assert_contains_in_order(

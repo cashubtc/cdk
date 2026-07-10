@@ -50,14 +50,7 @@ A blocker is only resolved when the fix is tested and the code is clean: no debu
 
 Current blocking bugs:
 
-- The federation wallet restore and check-state collectors currently stop after
-  any `signature_threshold` successful member replies. If those early replies
-  disagree, a later reply that would complete a matching threshold can be
-  discarded. The deterministic matching-view tests now expose this as
-  `insufficient matching federation ... responses`. Change the collector stop
-  predicates to require an aggregatable/matching threshold, then rerun the full
-  federation wallet suite before treating restore and check-state routing as
-  complete.
+- None recorded.
 
 ## Recent performance checkpoint
 
@@ -97,6 +90,15 @@ Current blocking bugs:
   10.39s/6.51s. Both topologies converged after exactly six accepted operations
   (`mint_quote`, `mint_quote_payment`, `mint` twice), with identical order and
   state digests, no pending work, and no invalid-operation alerts.
+- The broad post-batch test exposed an early-stop correctness bug in restore and
+  check-state fanout: any successful response threshold could stop collection
+  before a matching threshold arrived. Both collectors now use their final
+  aggregator as the stop predicate, so disagreeing or invalid early replies are
+  retained while later members are queried. Matching, mismatching, no-quorum,
+  and concurrent-polling regressions pass, and the full CDK federation library
+  suite is green at 681/681 tests. The same checkpoint refreshed a stale
+  publish-after-commit source marker after the production quote variable had
+  been renamed; production event ordering was unchanged.
 - Latest minting performance checkpoint: a fresh five-member, threshold-three
   fakewallet AlephBFT benchmark confirmed the pre-fix delay was not direct HTTP,
   fakewallet settlement, catch-up, or DB contention. Each full mint still

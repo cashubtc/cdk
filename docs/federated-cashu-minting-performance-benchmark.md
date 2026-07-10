@@ -270,11 +270,13 @@ Focused gates cover valid batch/scalar equivalence, mixed public keys,
 single-share and aggregate-signature corruption, malformed lengths and signer
 IDs, metadata rejection before point parsing, slow/offline/bad-share member
 continuation, and standalone v3/BLS issue with federation disabled. The broad
-CDK federation run passed 678 of 681 tests and exposed two existing collector
+CDK federation run initially passed 678 of 681 tests and exposed two collector
 bugs where restore/check-state stopped after any successful threshold instead
-of a matching threshold, plus one stale source-order test marker. Those failures
-are tracked for the next correctness checkpoint and are not batch-verification
-failures.
+of a matching threshold, plus one stale source-order test marker. The collectors
+now use the final restore/check-state aggregators as their early-stop predicates,
+the marker follows the renamed `published_quote` variable, and the complete
+repeat passed all 681 tests. These were correctness/audit failures discovered by
+the broad gate, not batch-verification failures.
 
 ## Accepted 100ms Active Cadence and Idle CPU Fix
 

@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: batch BLS federation verification</span>
+          <span class="value">fix: wait for matching federation response quorum</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Transcript-weighted batch verification now covers member blind-signature shares, aggregate blind signatures, and final v3 proofs without removing a verification layer. Failed member batches retain scalar bad-member attribution. Mixed-keyset 14-output verification is about 2.1x faster and 64-output verification about 3.15x faster; fresh real AlephBFT mints completed in 7.87s/5.05s for 3-of-5 and 10.39s/6.51s for 5-of-7, with exact six-operation journals and full digest convergence.</span>
+          <span class="value">Restore and check-state fanout now stops only when accumulated replies pass the same final matching-quorum aggregator used to return the response. An early stale or invalid threshold can no longer hide a later matching member. Matching, rejection, and concurrent-polling tests pass, the publish-after-commit audit follows the renamed quote variable, and the complete CDK federation library suite is green at 681/681 tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Fix restore and check-state fanout so collection stops only after a matching response threshold, not merely any successful threshold. Refresh the stale publish-order source marker and rerun the broad federation suite to turn the current 678/681 result fully green.</span>
+          <span class="value">Audit Milestones 4 and 4A against the now-running production AlephBFT path. Close checklist items already proven by live private-REST finality, restart, catch-up, and process smokes; for every item still missing, implement the smallest strict-order or recovery gate needed to make the parent milestone true.</span>
         </div>
       </aside>
     </header>
@@ -940,8 +940,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Matching response quorum</h3>
-            <p>Restore and check-state fanout must continue past an early disagreeing threshold until one response view reaches the signature threshold or every member is exhausted. Add deterministic early-disagreement tests and rerun the full federation wallet suite.</p>
+            <h3>AlephBFT completion audit</h3>
+            <p>Reconcile Milestones 4 and 4A with the live production backend, durable finality, restart, catch-up, and private-REST evidence already in tree. Close proven items and implement any remaining strict-order or recovery gap before moving the parent milestone to complete.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

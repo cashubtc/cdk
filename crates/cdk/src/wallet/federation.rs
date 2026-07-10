@@ -776,6 +776,7 @@ impl FederatedMintConnector {
     async fn collect_restore_responses<F, Fut>(
         &self,
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        requested_outputs: &[BlindedMessage],
         mut call_member: F,
     ) -> Result<Vec<(MemberId, RestoreResponse)>, Error>
     where
@@ -790,7 +791,12 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "restore request",
-                |responses| responses.len() >= threshold,
+                |responses| {
+                    responses.len() >= threshold
+                        && self
+                            .aggregate_restore_response(requested_outputs, responses)
+                            .is_ok()
+                },
             )
             .await;
 
@@ -926,6 +932,7 @@ impl FederatedMintConnector {
     async fn collect_check_state_responses<F, Fut>(
         &self,
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        request: &CheckStateRequest,
         mut call_member: F,
     ) -> Result<Vec<(MemberId, CheckStateResponse)>, Error>
     where
@@ -940,7 +947,12 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "check-state request",
-                |responses| responses.len() >= threshold,
+                |responses| {
+                    responses.len() >= threshold
+                        && self
+                            .aggregate_check_state_response(request, responses)
+                            .is_ok()
+                },
             )
             .await;
 
@@ -1927,7 +1939,7 @@ impl MintConnector for FederatedMintConnector {
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_check_state_responses(&member_connectors, |connector| {
+            .collect_check_state_responses(&member_connectors, &request, |connector| {
                 let request = request.clone();
                 async move { connector.post_check_state(request).await }
             })
@@ -1943,7 +1955,7 @@ impl MintConnector for FederatedMintConnector {
         let member_connectors = self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_restore_responses(&member_connectors, |connector| {
+            .collect_restore_responses(&member_connectors, &request.outputs, |connector| {
                 let request = request.clone();
                 async move { connector.post_restore(request).await }
             })
