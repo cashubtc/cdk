@@ -40,6 +40,8 @@ The interface to existing CDK code should be as small and thin as practical. Pre
 
 Commit changes to Git regularly after each coherent section, milestone, or independently testable checkpoint. Each commit should leave the repository in a reconstructable state: code, migrations, tests, documentation, and test results should make it clear what changed and how to verify it. Prefer small conventional commits over large mixed changes so federation development can be audited, bisected, reverted, or resumed cleanly.
 
+Performance and correctness investigations may add narrowly scoped code instrumentation when existing logs and external profiling do not provide enough evidence. Capture an uninstrumented baseline first whenever practical, keep temporary timing spans, counters, and probes isolated from protocol behavior, and remove them before finalizing the checkpoint. Instrumentation may remain only when it is useful as opt-in, low-overhead production diagnostics with focused tests and documentation; do not retain noisy logging or measurement-only behavior on normal code paths.
+
 Never commit secrets, generated private member configs, private key shares, machine-specific paths, or personally identifiable local environment details. Test fixtures may include deterministic fake keys only when they are clearly marked as non-production material.
 
 ## Blocking bugs
@@ -50,7 +52,21 @@ A blocker is only resolved when the fix is tested and the code is clean: no debu
 
 Current blocking bugs:
 
-- None recorded.
+- AlephBFT idle data-provider liveness is open. A fresh five-member,
+  threshold-three process benchmark completed one mint in 7.78s, then left a
+  second member's locally queued `mint_quote` and already-paid
+  `mint_quote_payment` operations without a `data_provider_yielded` event for
+  exactly the 90-second wallet member-fallback timeout. A fallback quote from
+  another member yielded immediately; its data-bearing unit woke the stalled
+  member, whose two older operations then yielded within 10ms and finalized.
+  Upstream creator tracing confirms that `run_session` creates a preunit and
+  awaits `DataProvider::get_data()` before sending that unit. CDK's indefinite
+  inactive wait can therefore hold parent units needed by creators that are
+  not themselves waiting in `get_data`; waking only the local submitter is not
+  a sufficient distributed liveness mechanism. This is separate from the
+  fixed 100-percent/periodic idle-CPU issue. The blocker is resolved only when
+  repeated fresh and post-idle process mints make progress without member
+  fallback or extra quotes, while idle CPU and DAG growth remain bounded.
 
 ## Recent consensus checkpoint
 
@@ -76,6 +92,19 @@ Current blocking bugs:
 
 ## Recent performance checkpoint
 
+- Fresh liveness rebenchmark: direct `/v1/info` completed in 0.91s,
+  standalone CLI `mint-info` in 4.91s with only 0.03s user CPU, federation
+  import in 1.44s/1.41s user CPU, federated `mint-info` in 1.58s/0.60s user
+  CPU, and the first full mint in 7.78s. The second mint took 94.84s because
+  its primary member held a quote and payment observation in the AlephBFT
+  mempool until the 90-second wallet fallback created a new quote elsewhere.
+  Once consensus data was yielded, private REST delivery, finality, durable
+  apply, signature-share return, and wallet aggregation were all sub-second to
+  low-single-second stages. Every member converged, but on eight operations
+  rather than the expected six because the timed-out paid quote remained valid
+  consensus material. This proves the dominant delay is the CDK/AlephBFT idle
+  data-provider wake integration, not fakewallet, catch-up, ordinary finality,
+  signing, DB contention, or wallet validation CPU.
 - Fresh post-routing rebaseline: direct `/v1/info` completed in 0.92s,
   standalone CLI `mint-info` in 2.28s, federated CLI `mint-info` in 1.56s,
   and two full five-member threshold-three mints in 9.15s and 6.05s. The old
@@ -2230,7 +2259,8 @@ AlephBFT and consensus unit tests:
   as retryable. Process benchmarking exposed a backup-saver termination after
   SQLite storage contention; the runtime now retries backup-byte persistence
   with bounded backoff and has focused retry-classification coverage.
-- [x] AlephBFT live-session tail pacing is pending-work aware. The fixed
+- [ ] Repair AlephBFT live-session tail pacing so it is both pending-work aware
+  and live from every quiescent creator phase. The fixed
   always-fast delay experiment was rejected because it reached the 2s idle tail
   before normal wallet traffic and reproduced high CPU. The live session now
   keeps the 2s idle tail while inactive, marks the shared activity hint when a
@@ -2247,7 +2277,18 @@ AlephBFT and consensus unit tests:
   finality still completes. Fresh process verification measured a sleeping
   full mint at 8.20s and a warm post-restart mint at 5.45s. Fresh idle CPU is
   about 0.9%; post-work debug CPU is about 4-5% after replacing peer status's
-  full finalized-item scan with the maintained runtime cursor.
+  full finalized-item scan with the maintained runtime cursor. A later fresh
+  process benchmark disproved the liveness assumption behind the direct
+  data-provider wake test: one primary member queued a quote and payment
+  observation for 90 seconds without yielding either, then yielded both within
+  10ms of a fallback member's data-bearing unit. Upstream creator traces show
+  why: AlephBFT awaits the data provider after creating a preunit, so an
+  indefinite empty-queue wait can withhold parent units while another creator
+  is waiting for parents and cannot observe its local activity hint. Keep the
+  CPU and replay fixes, replace the unsafe indefinite wait with a distributed
+  liveness mechanism compatible with upstream creator semantics, and add
+  repeated post-idle process gates proving exact three-operation mints with no
+  fallback quote churn.
 - [x] Non-production AlephBFT latency instrumentation records stage timing
   without changing production protocol behavior. The scoped test-only recorder
   captures operation-specific submit queueing, upstream data-provider yield,

@@ -1,6 +1,6 @@
 # Federated Cashu Minting and Receive Performance Benchmark
 
-Date: 2026-07-09
+Date: 2026-07-09; updated 2026-07-10
 
 This note records benchmark results from fresh 5-member, threshold-3 fakewallet
 AlephBFT federations and fresh CLI wallets. The first run identified why
@@ -10,7 +10,10 @@ The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip
 was excluded from the activity hint. Later runs accept a 100ms active-only
 cadence, deduplicate replayed consensus-data wakeups, stop empty-unit creation
 when no operation is active, and remove an O(history) finalized-item scan from
-peer status. A receiver-side token receive benchmark is also complete.
+peer status. A receiver-side token receive benchmark is also complete. The
+latest rebenchmark reopens idle scheduling as a liveness issue: an indefinite
+inactive data-provider wait can strand a queued operation until another member
+proposes data, even though the earlier CPU and history-scan bugs remain fixed.
 
 The measurements below are development-environment measurements. Absolute values will vary by machine, but the stage ordering and relative delays are the important result.
 
@@ -59,6 +62,159 @@ order:
 6. `mint`
 
 Finalized item count was higher than accepted operation count because wallet/member fanout causes duplicate finalizations. The duplicates did not change the accepted journal order.
+
+## Current Rebenchmark: Phase-Dependent Idle Wake Stall
+
+On 2026-07-10 a new isolated five-member, threshold-three federation and fresh
+wallet were measured with the existing opt-in lifecycle trace. No production
+code was changed before or during the run. The first mint was healthy, but the
+second exposed a phase-dependent liveness failure hidden by earlier successful
+samples.
+
+### Command timings
+
+| Command | Wall | User | System |
+| --- | ---: | ---: | ---: |
+| direct `curl /v1/info` | 0.91s | 0.00s | 0.00s |
+| non-federated CLI `mint-info` | 4.91s | 0.03s | 0.02s |
+| `federation add` | 1.44s | 1.41s | 0.02s |
+| federated CLI `mint-info` | 1.58s | 0.60s | 0.01s |
+| federated mint 1, 50 sat | 7.78s | 1.98s | 0.03s |
+| federated mint 2, 50 sat | 94.84s | 1.19s | 0.02s |
+
+The old 31-second local-CPU symptom did not reproduce: federated `mint-info`
+used 0.60s of user CPU, and the stalled mint used only 1.19s. The 94.84-second
+wall time was therefore waiting rather than wallet-side computation.
+
+### Mint 1 timeline
+
+| Stage | UTC timestamp | Delta/evidence |
+| --- | --- | ---: |
+| CLI start | 08:35:02.465 | - |
+| quote request admitted on member 1 | 08:35:06.904 | 4.439s after CLI start |
+| `mint_quote` data-provider yield | 08:35:06.905 | 0.001s after admission |
+| backend paid observation | 08:35:06 | persisted in the same clock second as quote admission |
+| `mint_quote` accepted and waiter returned | 08:35:07.426 | 0.522s after admission |
+| payment observation submitted | 08:35:07.429 | 0.003s after quote acceptance |
+| `mint_quote_payment` accepted | 08:35:08.044 | 0.615s after submission |
+| `mint` submitted by member fanout | 08:35:08.130 | 0.086s after paid acceptance |
+| threshold member waiters returned shares | 08:35:08.980-08.984 | about 0.85s after submission |
+| wallet aggregation, verification, persistence done | 08:35:10.263 | about 1.28s after shares |
+
+This mint appended exactly `mint_quote -> mint_quote_payment -> mint`. Direct
+private REST delivery after each data-provider yield took milliseconds to tens
+of milliseconds. Consensus finality and quote/payment apply were sub-second;
+accepted mint signing/materialization was the largest mint-side apply stage at
+about 0.43s.
+
+### Mint 2 timeline
+
+| Stage | UTC timestamp | Delta/evidence |
+| --- | --- | ---: |
+| CLI start | 08:35:10.270 | - |
+| original quote admitted on member 1 | 08:35:11.827 | 1.557s after CLI start |
+| original backend paid observation | 08:35:11 | paid in the same clock second as admission |
+| original payment observation submitted | 08:35:15.682 | 3.854s after quote admission |
+| fallback quote admitted on member 2 | 08:36:41.820 | 89.993s after original admission |
+| fallback quote data-provider yield | 08:36:41.821 | 0.001s after fallback admission |
+| original quote and payment finally yield | 08:36:41.831 | 90.003s after original quote admission |
+| fallback quote accepted | 08:36:42.296 | 0.476s after fallback admission |
+| original quote and payment accepted | 08:36:42.403 | both drained in one later unit |
+| fallback payment accepted | 08:36:42.913 | 0.607s after its submission |
+| `mint` submitted by member fanout | 08:36:44.087 | - |
+| threshold member waiters returned shares | 08:36:44.593-08:36:44.595 | about 0.51s after submission |
+| wallet aggregation, verification, persistence done | 08:36:45.131 | about 0.54s after shares |
+
+The original member had two durable pending operations and two waiters but no
+`data_provider_yielded` event. The delay ended at the configured 90-second
+member-fallback timeout, not at an AlephBFT round, payment-observer tick, DB
+timeout, or signing boundary. The fallback member yielded its new quote in
+under 1ms; that data-bearing unit woke member 1, which yielded both older
+operations about 10ms later.
+
+All members ultimately converged with matching order and state digests, zero
+pending work, and no invalid-operation alert. They converged on eight accepted
+operations rather than six:
+
+1. first `mint_quote`
+2. first `mint_quote_payment`
+3. first `mint`
+4. fallback `mint_quote`
+5. timed-out original `mint_quote`
+6. timed-out original `mint_quote_payment`
+7. fallback `mint_quote_payment`
+8. second `mint`
+
+The successful path still requires exactly three operations. The extra two are
+a distinct paid quote lifecycle abandoned by wallet fallback, not duplicate
+acceptance of one operation ID.
+
+### Confirmed cause
+
+The dominant delay is the CDK/AlephBFT idle data-provider integration. Upstream
+`run_session` creates a preunit, then awaits `DataProvider::get_data()`, and only
+after that await packs and sends the unit. CDK currently lets `get_data()` wait
+indefinitely when local and tracked peer activity are empty. A local activity
+hint wakes the data provider only if that creator is currently inside the
+provider wait. If the creator is instead waiting for parent units, other
+members can be holding those parent preunits inside their own inactive data
+provider waits.
+
+A separate no-code diagnostic run enabled upstream `AlephBFT-creator` tracing.
+It directly showed members stopping after `Created a new preunit` with no
+following `Received data` line. The same run also showed why the bug is
+intermittent: when the selected proposer happens to be waiting in
+`get_data()`, local admission wakes it and the mint remains fast. When it is in
+the parent-wait phase, local notification alone cannot make the distributed
+creator set advance. A peer's data-bearing fallback unit supplies the missing
+network-wide wake and immediately restores progress.
+
+Classification:
+
+- **Dominant delay:** AlephBFT integration liveness before data-provider yield.
+- **Wallet/CLI:** about 1.6s to the original quote handler; not the stall.
+- **Fakewallet:** paid in the quote-admission clock second; not the stall.
+- **Payment observer:** added the original observation after about 3.9s, but it
+  stalled in the same queue and did not cause the 90-second delay.
+- **Ordinary AlephBFT finality:** sub-second after data yield; not the stall.
+- **Private REST:** millisecond-scale after yield; not the stall.
+- **Catch-up/sync:** members began converged and ended converged; not the stall.
+- **DB contention:** one roughly 0.36s SQLite lock wait appeared in mint 1; not
+  dominant.
+- **Signing/aggregation:** about 0.5-0.9s for member shares and 0.5-1.3s for
+  wallet aggregation; not the stall.
+
+### Smallest clean fix candidate and gate
+
+Do not rely on an indefinite local `DataProvider` wait as the sole idle-control
+mechanism. The smallest candidate that preserves low idle CPU is a signed,
+session-bound member-wide activity wake over the existing private REST
+transport whenever a local AlephBFT operation is newly admitted. Every member
+must validate the federation, sender, session, sequence, and operation-bound
+wake before marking its live session active. Waking all pending providers
+releases held parent preunits and lets creators already waiting for parents
+advance; the wake is control traffic and must not become an accepted mint
+operation. If this cannot be made mechanically reliable, the safe fallback is
+to restore a nonblocking data provider first and solve idle scheduling above
+the upstream creator rather than withholding its units.
+
+Required regression gate before accepting a fix:
+
+1. Deterministically place a five-member live session in asymmetric
+   creator/data-provider phases and prove one local submission yields and
+   finalizes without fallback.
+2. Run repeated fixed-primary and rotating-primary post-idle submissions with
+   randomized idle gaps; no operation may remain queued without a yield.
+3. Run two full fresh-wallet mints repeatedly and require exactly six accepted
+   operations, no extra quotes, no pending work, and matching digests.
+4. Preserve one-offline-member progress and below-quorum fail-closed behavior.
+5. Measure at least 30 seconds of true idle CPU and finalized-unit cursor
+   growth; the previous periodic empty-unit/DAG-growth regression must not
+   return.
+6. Reject unknown-member, wrong-federation, wrong-session, stale-sequence, and
+   replayed activity wakes before they can affect cadence.
+7. Remove temporary creator/provider instrumentation after the fix, retaining
+   only the existing opt-in lifecycle trace or similarly low-noise diagnostics.
 
 ## Fresh CLI and Mint Rebaseline After Command-Routing Audit
 
