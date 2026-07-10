@@ -82,6 +82,26 @@ Resolved blocking bugs:
   pending work, and identical member digests. Over a separate 30-second idle
   sample every DAG stayed at exactly 293 units and each debug member consumed
   only 0.64-0.65 CPU seconds, about 2.1% per process.
+- AlephBFT pending-finalization liveness across healed partitions is fixed.
+  The five-member live partition matrix repeatedly showed the exact operation
+  durably pending after a fourth member returned: all queued private-REST
+  retries to that member had succeeded, and temporary test-only probes proved
+  the submitting member's signed recovery wake reached all three available
+  peers, but one 10-second activity lease could still expire before an
+  exact-quorum DAG caught up. The activity broadcaster now reloads durable
+  pending operation IDs for the active session and renews one representative
+  operation-bound lease halfway through the existing network-activity grace.
+  It performs no timer, database read, REST request, or unit wake while no
+  durable pending work exists, stops refreshing after finality removes the
+  pending rows, and restores pending activity after restart. Temporary probes
+  and the discarded retry-recovery-specific plumbing were removed. Five
+  consecutive full partition-matrix runs passed in 43.41s, 55.72s, 48.01s,
+  46.71s, and 54.64s; final cleanup runs passed in 57.20s and 56.52s, including
+  an assertion that activity traffic remains flat for a full refresh interval
+  after pending work clears. A final deterministic 63.98s run additionally
+  held the federation below finality through one complete refresh interval,
+  proved activity renewed while quote and journal state remained untouched,
+  then restored quorum and converged.
 
 ## Recent consensus checkpoint
 
@@ -102,16 +122,18 @@ Resolved blocking bugs:
   production-ready in the build. The fail-closed behavior is unchanged.
 - Milestone 4A remains in progress for explicitly unchecked work such as deeper
   bounded retry/backpressure certification, round/consensus-height observability,
-  atomic failure-injection coverage for value-operation apply, and the full
-  self-partition/below-quorum/above-quorum catch-up certification matrix.
+  atomic failure-injection coverage for value-operation apply, and the broad
+  all-operation plus restart variants of the below-quorum/above-quorum catch-up
+  certification matrix. The exact self-partitioned proposer case is complete.
 - Current verification is explicit: all focused activity-wake tests, the
   default-cadence probe, mintd/CLI feature checks, and the fresh five-process
-  gate pass. The broader single-threaded `cdk-axum` federation run passed 400
-  of 410 tests. Its ten remaining failures are tracked test debt in wallet
-  catch-up timing, liveness-only sequence persistence assertions, idle
-  auto-rotation, in-memory state-digest checkpoint expectations, and the
-  unfinished partition matrix; they were not hidden or relaxed as part of this
-  narrowly scoped liveness repair.
+  gate pass. The broader single-threaded `cdk-axum` federation run now passes
+  403 of 412 tests, including the full live partition matrix. Its nine remaining
+  failures are separately reproduced test debt in wallet catch-up timing,
+  obsolete private-operation route expectations, liveness-only sequence
+  persistence assertions, idle auto-rotation, and in-memory state-digest
+  checkpoint expectations; they were not hidden or relaxed as part of this
+  pending-work liveness repair.
 
 ## Recent performance checkpoint
 
@@ -1299,11 +1321,16 @@ AlephBFT and consensus unit tests:
   through the same unavailable-member window, verifies no member mutates quote
   or journal state before finality, and then verifies all members apply the
   same accepted operation order after the missing member returns.
+  The live five-member partition matrix now also proves a two-member-offline
+  operation remains durably pending with no materialized quote, then finalizes
+  autonomously and exactly once after a fourth member returns without client
+  resubmission. Durable pending-work activity leases renew only while real work
+  remains and become fully idle after finality.
   Production AlephBFT catch-up across full process restart remains open until
   durable AlephBFT backup/session replay can reconstruct unfinalized units;
   orphan network retry rows without that backup are now deleted at startup
   instead of being replayed unsafely.
-- [ ] Add a live private-REST AlephBFT regression for the exact
+- [x] Add a live private-REST AlephBFT regression for the exact
   self-partitioned proposer case: keep the submitting member's public/client
   route usable while its federation transport to the other members is
   unavailable, submit a valid wallet operation to that isolated member, assert
@@ -1312,6 +1339,15 @@ AlephBFT and consensus unit tests:
   heal the federation transport, and prove the exact same operation ID
   finalizes exactly once across every member with pending rows cleared and
   accepted order plus state digest converged.
+  Covered by
+  `aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_members`:
+  an already-paid mint operation is submitted through a member whose outbound
+  federation links are blocked, remains durably pending while its quote stays
+  paid with no finalized item, completed-operation row, or signature share on
+  any member, then finalizes once after heal. Duplicate retry returns the same
+  accepted operation, every member has the same ordered journal, finalized
+  cursor, and materialized state digest, all pending rows clear, and activity
+  traffic stays flat after durable work disappears.
 - [ ] Add live private-REST AlephBFT below-quorum-offline coverage for a
   federation size/threshold where the number of offline members remains within
   the tolerated fault budget. Submit mint, swap, melt, restore/check-state, and
@@ -1321,6 +1357,13 @@ AlephBFT and consensus unit tests:
   materialized mint state, payment observations, completed-operation rows,
   signature-share provenance, accepted-order digests, and state digests without
   duplicate signing or duplicate outgoing payment attempts.
+  Partial coverage in the same live matrix proves a mint-quote operation
+  finalizes with four of five members, the offline member refuses authoritative
+  reads before certification, finalized-item catch-up plus signed session
+  outcomes restore it, and all five journal cursors and state digests converge.
+  The combined mint/swap/melt/restore/check-state/payment-observation window and
+  duplicate-payment assertions remain open, so this item is intentionally not
+  checked.
 - [ ] Add live private-REST AlephBFT above-quorum-offline coverage where too
   many members are disconnected for consensus finality. Submit valid operations
   to reachable members and to an isolated proposer, prove every request fails
@@ -1330,6 +1373,13 @@ AlephBFT and consensus unit tests:
   queued operations either finalize once in deterministic order or are safely
   rejected by consensus-visible conflict rules with all honest members
   converging to the same journal/state digest.
+  Partial coverage in the same live matrix proves a mint-quote operation with
+  two of five members offline times out as retryably pending, creates no quote
+  or accepted journal entry anywhere, finalizes autonomously once one member
+  returns, and later catches the final member up to identical order, cursor,
+  and state digest. Broader value operations, conflict ordering, share leakage,
+  and outgoing-payment side effects remain open, so this item is intentionally
+  not checked.
 - [ ] Extend the partition matrix above with restart/catch-up variants: restart
   the self-partitioned proposer before reconnect, restart at least one
   non-proposer member while below quorum is offline, and restart one lagging
@@ -2316,6 +2366,14 @@ Tests and success criteria:
   behavior before certification, no duplicate signing, no duplicate outgoing
   payment attempts, and deterministic handling of any queued operations that
   were accepted locally while connectivity was unavailable.
+  The exact self-partitioned mint case and basic one-operation one-offline and
+  two-offline windows are now covered by the repeated five-member live matrix,
+  including autonomous pending finalization, fail-closed pre-certification
+  reads, finalized-item replay, signed session-outcome certification, cursor,
+  journal, and state-digest convergence, deterministic duplicate retry, and
+  zero post-finality activity refresh. This parent remains open until the same
+  matrix spans mint, swap, melt, restore/check-state, payment observations,
+  duplicate outgoing-payment guards, and every listed restart permutation.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.

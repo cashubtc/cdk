@@ -8,23 +8,23 @@ use bip39::Mnemonic;
 use cdk::cdk_database::MintDatabase;
 use cdk::cdk_payment::PaymentIdentifier;
 use cdk::federation::{
-    generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
-    FederationAlephBftFinalityMode, FederationAlephBftFinalizedUnitRequest,
-    FederationAlephBftFinalizedUnitResponse, FederationAlephBftNetworkMessageRequest,
-    FederationAlephBftNetworkMessageResponse, FederationAlephBftNetworkRetryRecord,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitBodyHash,
-    FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusBackendKind,
-    FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
+    generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
+    FederationAlephBftConsensusAdapter, FederationAlephBftFinalityMode,
+    FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
+    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
+    FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
+    FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationKeysetRotationOperation, FederationMemberStatusKind,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationReportAction, FederationPaymentTrustModel,
     FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
-    InMemoryFederationConsensus, MemberConfigPrivate, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -58,6 +58,7 @@ use super::aleph_bft_network::{
     CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
     CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT,
 };
+use super::aleph_bft_runtime::CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE;
 use super::aleph_bft_runtime::{CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork};
 use super::*;
 
@@ -364,6 +365,8 @@ struct RouterFederationTransportRegistry {
     missing_router_wait: Duration,
     faults: Arc<Mutex<RouterFederationTransportFaults>>,
     held_aleph_bft_network_message: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    aleph_bft_activity_requests:
+        Arc<Mutex<Vec<FederationSignedRequest<FederationAlephBftActivityRequest>>>>,
     aleph_bft_network_message_requests:
         Arc<Mutex<Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>>>,
 }
@@ -374,6 +377,7 @@ struct RouterFederationTransportFaults {
     aleph_bft_network_message_duplicate_replays: usize,
     aleph_bft_network_message_reorder_once: bool,
     aleph_bft_network_message_reorders_completed: usize,
+    blocked_federation_links: BTreeSet<(MemberId, MemberId)>,
 }
 
 enum AlephBftNetworkMessageReorderDecision {
@@ -411,6 +415,7 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                             faults.aleph_bft_network_message_duplicate_replays,
                             faults.aleph_bft_network_message_reorder_once,
                             faults.aleph_bft_network_message_reorders_completed,
+                            faults.blocked_federation_links.len(),
                         )
                     })
                     .unwrap_or_default(),
@@ -421,6 +426,14 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                     .held_aleph_bft_network_message
                     .lock()
                     .map(|held| held.is_some())
+                    .unwrap_or_default(),
+            )
+            .field(
+                "aleph_bft_activity_requests",
+                &self
+                    .aleph_bft_activity_requests
+                    .lock()
+                    .map(|requests| requests.len())
                     .unwrap_or_default(),
             )
             .field(
@@ -495,6 +508,13 @@ impl RouterFederationTransportRegistry {
             .clone()
     }
 
+    fn aleph_bft_activity_request_count(&self) -> usize {
+        self.aleph_bft_activity_requests
+            .lock()
+            .expect("router transport activity requests lock")
+            .len()
+    }
+
     fn insert(&self, url: MintUrl, router: Router) {
         let endpoint = url::Url::parse(&url.to_string())
             .expect("federation api url")
@@ -504,6 +524,35 @@ impl RouterFederationTransportRegistry {
             .lock()
             .expect("router registry lock")
             .insert(endpoint, router);
+    }
+
+    fn set_member_outbound_partition(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+        partitioned: bool,
+    ) {
+        let mut faults = self.faults.lock().expect("router transport faults lock");
+        for receiver in public_config
+            .members
+            .keys()
+            .copied()
+            .filter(|receiver| *receiver != sender)
+        {
+            if partitioned {
+                faults.blocked_federation_links.insert((sender, receiver));
+            } else {
+                faults.blocked_federation_links.remove(&(sender, receiver));
+            }
+        }
+    }
+
+    fn federation_link_is_blocked(&self, sender: MemberId, receiver: MemberId) -> bool {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .blocked_federation_links
+            .contains(&(sender, receiver))
     }
 
     fn pop_aleph_bft_network_message_delay(&self) -> Duration {
@@ -1078,6 +1127,7 @@ impl Transport for RouterFederationTransportRegistry {
     {
         let endpoint = url.origin().ascii_serialization();
         let path = url.path().to_string();
+        let is_aleph_bft_activity = path.ends_with("/federation/v1/aleph-bft/activity");
         let is_aleph_bft_network_message = path.ends_with("/federation/v1/aleph-bft/messages");
         let deadline = tokio::time::Instant::now() + self.missing_router_wait;
         let router = loop {
@@ -1099,6 +1149,23 @@ impl Transport for RouterFederationTransportRegistry {
         };
 
         let payload_bytes = serde_json::to_vec(payload)?;
+        let signed_request =
+            serde_json::from_slice::<FederationSignedRequest<serde_json::Value>>(&payload_bytes)?;
+        if self.federation_link_is_blocked(signed_request.sender, signed_request.receiver) {
+            return Err(HttpError::Other(format!(
+                "federation link {} -> {} is partitioned",
+                signed_request.sender, signed_request.receiver
+            )));
+        }
+        if is_aleph_bft_activity {
+            let signed_request = serde_json::from_slice::<
+                FederationSignedRequest<FederationAlephBftActivityRequest>,
+            >(&payload_bytes)?;
+            self.aleph_bft_activity_requests
+                .lock()
+                .expect("router transport activity requests lock")
+                .push(signed_request);
+        }
         if is_aleph_bft_network_message {
             let signed_request = serde_json::from_slice::<
                 FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
@@ -2120,6 +2187,31 @@ fn paid_observation_envelope(state: &MintState, quote_id: &QuoteId) -> Federatio
         Amount::ZERO,
         Some(format!("paid-{quote_id}")),
     )
+}
+
+fn mint_operation_envelope(
+    state: &MintState,
+    quote_id: &QuoteId,
+    output_label: &[u8],
+) -> (FederationOperationEnvelope, BlindedMessage) {
+    let config = state.mint.federation_config().expect("federation config");
+    let keyset = &config.public_config().keysets[0];
+    let output = BlindedMessage::new(
+        Amount::from(1),
+        keyset.id,
+        PublicKey::from(BlsG1PublicKey::hash_to_curve(output_label)),
+    );
+    let envelope = config.operation_envelope(FederationOperation::Mint(
+        cdk::federation::FederationMintOperation {
+            request: cdk::federation::FederationMintRequest::Single(MintRequest {
+                quote: quote_id.to_string(),
+                outputs: vec![output.clone()],
+                signature: None,
+            }),
+        },
+    ));
+
+    (envelope, output)
 }
 
 fn mint_payment_observation_envelope_for_member(
@@ -11233,6 +11325,466 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
 }
 
 #[tokio::test]
+async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_members() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
+    let mut session = start_five_member_aleph_bft_live_session(live_options.clone())
+        .await
+        .expect("five-member live partition session");
+
+    let quote_id = QuoteId::new();
+    let quote_envelope = mint_quote_envelope(&session.states[0], &quote_id);
+    let quote_operation_id = quote_envelope.operation_id().expect("quote operation id");
+    session.states[0]
+        .submit_federation_envelope_with_sequence(quote_envelope, None)
+        .await
+        .expect("baseline mint quote finality");
+    let paid_envelope = paid_observation_envelope(&session.states[0], &quote_id);
+    let paid_operation_id = paid_envelope.operation_id().expect("paid operation id");
+    session.states[0]
+        .submit_federation_envelope_with_sequence(paid_envelope, None)
+        .await
+        .expect("baseline paid observation finality");
+    for state in &session.states {
+        wait_for_applied_operation_with_context(
+            state,
+            paid_operation_id,
+            "baseline paid observation",
+        )
+        .await;
+    }
+
+    let (mint_envelope, mint_output) = mint_operation_envelope(
+        &session.states[4],
+        &quote_id,
+        b"self-partitioned live mint output",
+    );
+    let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
+    session.transport.set_member_outbound_partition(
+        &session.public_config,
+        session.private_configs[4].member_id,
+        true,
+    );
+    session.states[4].federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(250),
+        ..session.sync_config
+    });
+    let err = session.states[4]
+        .submit_federation_envelope_with_sequence(mint_envelope.clone(), None)
+        .await
+        .expect_err("self-partitioned proposer must time out locally");
+    assert_pending_finalization_error(&err, mint_operation_id, 250);
+
+    for state in &session.states {
+        assert!(
+            !operation_applied_within(state, mint_operation_id, Duration::from_millis(100)).await,
+            "self-partitioned operation must not apply before outbound links heal"
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_mint_quote(&quote_id)
+                .await
+                .expect("mint quote lookup before partition heal")
+                .expect("baseline mint quote before partition heal")
+                .state(),
+            MintQuoteState::Paid
+        );
+        assert!(!state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_finalized_items()
+            .await
+            .expect("finalized item lookup before partition heal")
+            .iter()
+            .any(|item| item.operation_id == Some(mint_operation_id)));
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(mint_operation_id, 0)
+            .await
+            .expect("signature share lookup before partition heal")
+            .is_empty());
+        assert!(state
+            .mint
+            .localstore()
+            .get_completed_operation(&federation_completed_operation_uuid(mint_operation_id))
+            .await
+            .expect("completed operation lookup before partition heal")
+            .is_none());
+    }
+    let pending = session.states[4]
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(0)
+        .await
+        .expect("self-partitioned pending operation");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation_id, mint_operation_id);
+
+    session.transport.set_member_outbound_partition(
+        &session.public_config,
+        session.private_configs[4].member_id,
+        false,
+    );
+    for state in &session.states {
+        wait_for_applied_operation_with_context(state, mint_operation_id, "self-partition heal")
+            .await;
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("pending operation lookup after partition heal")
+            .is_empty());
+    }
+
+    session.states[4].federation_peer_sync_config = Some(session.sync_config);
+    let duplicate = session.states[4]
+        .submit_federation_envelope_with_sequence(mint_envelope, None)
+        .await
+        .expect("healed mint retry returns durable response");
+    assert_eq!(duplicate.operation_id, mint_operation_id);
+
+    let shares = session.states[4]
+        .mint
+        .localstore()
+        .get_federation_signature_shares_for_output(mint_operation_id, 0)
+        .await
+        .expect("healed mint share lookup");
+    assert_eq!(shares.len(), 1);
+    assert_eq!(shares[0].blinded_secret, mint_output.blinded_secret);
+
+    *session.states[4]
+        .federation_aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *session.states[4]
+        .federation_aleph_bft_live_session
+        .write()
+        .await = None;
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(session.states[0].clone()),
+    );
+    let fifth_handle = session._handles.remove(4);
+    drop(fifth_handle);
+
+    let below_quorum_quote_id = QuoteId::new();
+    let below_quorum_envelope = mint_quote_envelope(&session.states[0], &below_quorum_quote_id);
+    let below_quorum_operation_id = below_quorum_envelope
+        .operation_id()
+        .expect("below-quorum operation id");
+    let response = session.states[0]
+        .submit_federation_envelope_with_sequence(below_quorum_envelope, None)
+        .await
+        .expect("four connected members retain BFT finality");
+    assert_eq!(response.operation_id, below_quorum_operation_id);
+    for state in &session.states[..4] {
+        wait_for_applied_operation_with_context(
+            state,
+            below_quorum_operation_id,
+            "one-member-offline finality",
+        )
+        .await;
+    }
+    assert!(
+        !operation_applied_within(
+            &session.states[4],
+            below_quorum_operation_id,
+            Duration::from_millis(250),
+        )
+        .await
+    );
+    session.states[4]
+        .mark_federation_catching_up(member_id(1))
+        .await;
+    session.states[4]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect_err("offline member remains fail-closed before catch-up");
+
+    let fifth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[4],
+        session.sync_config,
+        live_options.clone(),
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart below-quorum member")
+    .expect("below-quorum member live session handle");
+    session._handles.push(fifth_handle);
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[4].clone()),
+    );
+    let peer = session
+        .public_config
+        .members
+        .get(&member_id(1))
+        .expect("catch-up peer")
+        .clone();
+    let client = FederationRestPeerClient::new_with_config(
+        session.transport.clone(),
+        &session.public_config,
+        session.private_configs[4].clone(),
+        session.sync_config,
+    )
+    .expect("partition catch-up client");
+    sync_and_certify_partitioned_member(&session.states[4], &client, &peer, &session.public_config)
+        .await;
+    wait_for_applied_operation_with_context(
+        &session.states[4],
+        below_quorum_operation_id,
+        "one-member-offline catch-up",
+    )
+    .await;
+    assert!(session.states[4]
+        .mint
+        .localstore()
+        .get_mint_quote(&below_quorum_quote_id)
+        .await
+        .expect("caught-up below-quorum quote lookup")
+        .is_some());
+
+    for index in [4_usize, 3] {
+        *session.states[index]
+            .federation_aleph_bft_network_inbound
+            .write()
+            .await = None;
+        *session.states[index]
+            .federation_aleph_bft_live_session
+            .write()
+            .await = None;
+        session.transport.insert(
+            session.federation_api_urls[index].clone(),
+            Router::new()
+                .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+                .with_state(session.states[0].clone()),
+        );
+    }
+    let fifth_handle = session._handles.remove(4);
+    let fourth_handle = session._handles.remove(3);
+    drop(fifth_handle);
+    drop(fourth_handle);
+
+    let stalled_quote_id = QuoteId::new();
+    let stalled_envelope = mint_quote_envelope(&session.states[0], &stalled_quote_id);
+    let stalled_operation_id = stalled_envelope
+        .operation_id()
+        .expect("stalled operation id");
+    session.states[0].federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(250),
+        ..session.sync_config
+    });
+    let err = session.states[0]
+        .submit_federation_envelope_with_sequence(stalled_envelope.clone(), None)
+        .await
+        .expect_err("two offline members must stall five-member finality");
+    assert_pending_finalization_error(&err, stalled_operation_id, 250);
+    for state in &session.states {
+        assert!(
+            !operation_applied_within(state, stalled_operation_id, Duration::from_millis(100),)
+                .await
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&stalled_quote_id)
+            .await
+            .expect("stalled quote lookup")
+            .is_none());
+    }
+
+    session.states[4]
+        .mark_federation_catching_up(member_id(1))
+        .await;
+    session.states[4]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect_err("offline member remains fail-closed");
+
+    let activity_requests_before_refresh = session.transport.aleph_bft_activity_request_count();
+    time::sleep(CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE / 2 + Duration::from_millis(250)).await;
+    assert!(
+        session.transport.aleph_bft_activity_request_count() > activity_requests_before_refresh,
+        "durable pending work must renew activity before its lease expires"
+    );
+    for state in &session.states {
+        assert!(
+            !operation_applied_within(state, stalled_operation_id, Duration::from_millis(100))
+                .await
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&stalled_quote_id)
+            .await
+            .expect("stalled quote lookup after activity refresh")
+            .is_none());
+    }
+
+    let fourth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[3],
+        session.sync_config,
+        live_options.clone(),
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart fourth live session")
+    .expect("fourth live session handle");
+    session._handles.push(fourth_handle);
+    session.transport.insert(
+        session.federation_api_urls[3].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[3].clone()),
+    );
+
+    session.states[0].federation_peer_sync_config = Some(session.sync_config);
+    for state in &session.states[..4] {
+        wait_for_applied_operation_with_context(
+            state,
+            stalled_operation_id,
+            "above-quorum recovery",
+        )
+        .await;
+    }
+    assert!(
+        !operation_applied_within(
+            &session.states[4],
+            stalled_operation_id,
+            Duration::from_millis(250),
+        )
+        .await
+    );
+
+    let fifth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[4],
+        session.sync_config,
+        live_options,
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart fifth live session")
+    .expect("fifth live session handle");
+    session._handles.push(fifth_handle);
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[4].clone()),
+    );
+    sync_and_certify_partitioned_member(&session.states[4], &client, &peer, &session.public_config)
+        .await;
+    wait_for_applied_operation_with_context(
+        &session.states[4],
+        stalled_operation_id,
+        "above-quorum lagging-member catch-up",
+    )
+    .await;
+
+    session.states[4].federation_peer_sync_config = Some(session.sync_config);
+    let duplicate = session.states[4]
+        .submit_federation_envelope_with_sequence(stalled_envelope, None)
+        .await
+        .expect("caught-up stalled operation retry");
+    assert_eq!(duplicate.operation_id, stalled_operation_id);
+
+    let expected_operation_ids = vec![
+        quote_operation_id,
+        paid_operation_id,
+        mint_operation_id,
+        below_quorum_operation_id,
+        stalled_operation_id,
+    ];
+    let expected_entries = session.states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("expected partition journal");
+    let expected_digest = materialized_state_digest(&session.states[0], &expected_entries)
+        .await
+        .expect("expected partition state digest");
+    let expected_next_item_index = session.states[0]
+        .federation_aleph_bft_status()
+        .await
+        .expect("expected AlephBFT cursor")
+        .next_item_index;
+
+    for state in &session.states {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("partition journal");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.operation_id)
+                .collect::<Vec<_>>(),
+            expected_operation_ids
+        );
+        assert_eq!(
+            materialized_state_digest(state, &entries)
+                .await
+                .expect("partition state digest"),
+            expected_digest
+        );
+        assert_eq!(
+            state
+                .federation_aleph_bft_status()
+                .await
+                .expect("partition AlephBFT cursor")
+                .next_item_index,
+            expected_next_item_index
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("partition pending operation lookup")
+            .is_empty());
+    }
+
+    let certified_outcomes = session.states[4]
+        .mint
+        .localstore()
+        .get_federation_session_outcomes()
+        .await
+        .expect("certified session outcomes");
+    let certified_signers = certified_outcomes
+        .iter()
+        .map(|outcome| outcome.signer)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        certified_signers.len()
+            >= usize::from(session.public_config.threshold_params.consensus_threshold)
+    );
+
+    time::sleep(Duration::from_millis(250)).await;
+    let idle_activity_requests = session.transport.aleph_bft_activity_request_count();
+    time::sleep(CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE / 2 + Duration::from_millis(250)).await;
+    assert_eq!(
+        session.transport.aleph_bft_activity_request_count(),
+        idle_activity_requests,
+        "activity refresh must become fully idle after durable pending work clears"
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_member() {
     let federation_api_urls = vec![
         MintUrl::from_str("http://fed1.test").expect("first federation api url"),
@@ -12882,6 +13434,98 @@ async fn wait_for_applied_operation(state: &MintState, operation_id: FederationO
     );
 }
 
+async fn wait_for_applied_operation_with_context(
+    state: &MintState,
+    operation_id: FederationOperationId,
+    context: &str,
+) {
+    if operation_applied_within(state, operation_id, Duration::from_secs(15)).await {
+        return;
+    }
+
+    let member_id = state
+        .mint
+        .federation_config()
+        .expect("contextual apply wait federation config")
+        .member_id();
+    let status = state.federation_aleph_bft_status().await;
+    let journal_operation_ids = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("contextual apply wait journal")
+        .into_iter()
+        .map(|entry| entry.operation_id)
+        .collect::<Vec<_>>();
+    let pending_operation_ids = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(0)
+        .await
+        .expect("contextual apply wait pending operations")
+        .into_iter()
+        .map(|operation| operation.operation_id)
+        .collect::<Vec<_>>();
+    let network_retry_targets = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_network_retries(0)
+        .await
+        .expect("contextual apply wait network retries")
+        .into_iter()
+        .map(|retry| retry.peer_member_ids)
+        .collect::<Vec<_>>();
+
+    panic!(
+        "{context}: operation {operation_id} did not apply on member {member_id} before timeout; status={status:?}; journal_operation_ids={journal_operation_ids:?}; pending_operation_ids={pending_operation_ids:?}; network_retry_targets={network_retry_targets:?}"
+    );
+}
+
+async fn sync_and_certify_partitioned_member(
+    state: &MintState,
+    client: &FederationRestPeerClient<RouterFederationTransportRegistry>,
+    peer: &MemberConfigPublic,
+    public_config: &FederationConfig,
+) {
+    let catch_up_deadline = time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match client.sync_once_from_member(state, peer).await {
+            Ok(_) => break,
+            Err(_) if time::Instant::now() < catch_up_deadline => {
+                time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => panic!("partitioned member finalized-item catch-up: {err}"),
+        }
+    }
+    if state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .is_err()
+    {
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("partitioned member federation config")
+            .member_id();
+        let peers = public_config
+            .members
+            .values()
+            .filter(|member| member.member_id != local_member)
+            .cloned()
+            .collect::<Vec<_>>();
+        let synced = run_federation_peer_sync_round(state, client, &peers).await;
+        assert!(
+            synced >= usize::from(public_config.threshold_params.consensus_threshold) - 1,
+            "session-outcome certification must reach a remote BFT quorum"
+        );
+    }
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect("certified caught-up member is ready");
+}
+
 const LATENCY_EXPECTED_STAGES: &[CdkAlephBftLatencyStage] = &[
     CdkAlephBftLatencyStage::SubmitQueued,
     CdkAlephBftLatencyStage::DataProviderYielded,
@@ -12902,6 +13546,11 @@ struct TwoMemberAlephBftLiveSession {
 
 struct MultiMemberAlephBftLiveSession {
     states: Vec<MintState>,
+    transport: RouterFederationTransportRegistry,
+    federation_api_urls: Vec<MintUrl>,
+    public_config: FederationConfig,
+    private_configs: Vec<MemberConfigPrivate>,
+    sync_config: FederationPeerSyncConfig,
     _handles: Vec<Arc<FederationAlephBftLiveSessionHandle>>,
 }
 
@@ -12999,7 +13648,7 @@ async fn start_multi_member_aleph_bft_live_session(
         federation_api_urls.clone(),
     );
     let mut states = Vec::new();
-    for private_config in private_configs {
+    for private_config in private_configs.iter().cloned() {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
@@ -13041,6 +13690,11 @@ async fn start_multi_member_aleph_bft_live_session(
 
     Ok(MultiMemberAlephBftLiveSession {
         states,
+        transport,
+        federation_api_urls,
+        public_config,
+        private_configs,
+        sync_config,
         _handles: handles,
     })
 }

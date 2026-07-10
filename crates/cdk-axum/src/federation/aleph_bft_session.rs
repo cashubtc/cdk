@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftFinalityMode,
     FederationConsensusBackendKind, FederationOperationId, MemberConfigPublic, MemberId,
 };
+use cdk_common::database::DynMintDatabase;
 use cdk_http_client::{Async, Transport};
 use futures::channel::oneshot;
 use futures::future::join_all;
@@ -23,7 +25,7 @@ use super::aleph_bft_network::{
 };
 use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
-    CdkAlephBftSessionIo, CdkAlephBftTokioSpawnHandle,
+    CdkAlephBftSessionIo, CdkAlephBftTokioSpawnHandle, CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE,
 };
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
@@ -474,6 +476,8 @@ where
             );
         }
     }
+    let pending_activity_operation_ids =
+        pending_aleph_bft_operation_ids(&retry_store, session_id).await?;
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
     let inbound = CdkAlephBftNetworkInboundHandle::with_activity_hint(
@@ -527,6 +531,9 @@ where
         client.clone(),
         activity_peers,
         session_id,
+        Arc::clone(&retry_store),
+        activity_hint.clone(),
+        pending_activity_operation_ids,
         activity_receiver,
     ));
     let pump_keychain = keychain.clone();
@@ -645,46 +652,186 @@ where
     Ok(Some(handle))
 }
 
+async fn pending_aleph_bft_operation_ids(
+    db: &DynMintDatabase,
+    session_id: u64,
+) -> Result<BTreeSet<FederationOperationId>, cdk::Error> {
+    Ok(db
+        .get_federation_aleph_bft_pending_operations(session_id)
+        .await?
+        .into_iter()
+        .map(|operation| operation.operation_id)
+        .collect())
+}
+
 async fn run_aleph_bft_activity_broadcast_loop<T>(
     client: FederationRestPeerClient<T>,
     peers: Vec<MemberConfigPublic>,
     session_id: u64,
+    db: DynMintDatabase,
+    activity_hint: CdkAlephBftActivityHint,
+    mut pending_operation_ids: BTreeSet<FederationOperationId>,
     mut activity_receiver: mpsc::UnboundedReceiver<FederationOperationId>,
 ) where
     T: Transport + 'static,
 {
-    while let Some(operation_id) = activity_receiver.recv().await {
-        let request = FederationAlephBftActivityRequest::new(session_id, operation_id);
-        let outcomes = join_all(
-            peers
-                .iter()
-                .map(|peer| client.submit_aleph_bft_activity(peer, &request)),
+    if !pending_operation_ids.is_empty() {
+        refresh_aleph_bft_operation_activity(
+            &client,
+            &peers,
+            session_id,
+            &activity_hint,
+            &pending_operation_ids,
+            false,
         )
         .await;
-        let mut accepted = 0usize;
-        let mut failed = 0usize;
-        for outcome in outcomes {
-            match outcome {
-                Ok(_) => accepted = accepted.saturating_add(1),
-                Err(_) => failed = failed.saturating_add(1),
+    }
+
+    loop {
+        if pending_operation_ids.is_empty() {
+            let Some(operation_id) = activity_receiver.recv().await else {
+                return;
+            };
+            pending_operation_ids.insert(operation_id);
+            refresh_aleph_bft_operation_activity(
+                &client,
+                &peers,
+                session_id,
+                &activity_hint,
+                &BTreeSet::from([operation_id]),
+                true,
+            )
+            .await;
+            continue;
+        }
+
+        tokio::select! {
+            operation_id = activity_receiver.recv() => {
+                let Some(operation_id) = operation_id else {
+                    return;
+                };
+                pending_operation_ids.insert(operation_id);
+                refresh_aleph_bft_operation_activity(
+                    &client,
+                    &peers,
+                    session_id,
+                    &activity_hint,
+                    &BTreeSet::from([operation_id]),
+                    true,
+                )
+                .await;
+            }
+            () = tokio::time::sleep(aleph_bft_activity_refresh_interval()) => {
+                match pending_aleph_bft_operation_ids(&db, session_id).await {
+                    Ok(durable_operation_ids) => {
+                        pending_operation_ids = durable_operation_ids;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            session_id,
+                            "AlephBFT activity refresh could not load pending operations: {}",
+                            err
+                        );
+                    }
+                }
+                if !pending_operation_ids.is_empty() {
+                    refresh_aleph_bft_operation_activity(
+                        &client,
+                        &peers,
+                        session_id,
+                        &activity_hint,
+                        &pending_operation_ids,
+                        false,
+                    )
+                    .await;
+                }
             }
         }
-        if accepted == 0 {
+    }
+}
+
+fn aleph_bft_activity_refresh_interval() -> Duration {
+    let interval = CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE / 2;
+    if interval.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        interval
+    }
+}
+
+async fn refresh_aleph_bft_operation_activity<T>(
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    session_id: u64,
+    activity_hint: &CdkAlephBftActivityHint,
+    operation_ids: &BTreeSet<FederationOperationId>,
+    warn_if_unreachable: bool,
+) where
+    T: Transport,
+{
+    // One operation-bound lease is enough to keep the shared session active.
+    let Some(operation_id) = operation_ids.first().copied() else {
+        return;
+    };
+    activity_hint.mark_local_pending();
+    broadcast_aleph_bft_operation_activity(
+        client,
+        peers,
+        session_id,
+        operation_id,
+        warn_if_unreachable,
+    )
+    .await;
+}
+
+async fn broadcast_aleph_bft_operation_activity<T>(
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    session_id: u64,
+    operation_id: FederationOperationId,
+    warn_if_unreachable: bool,
+) where
+    T: Transport,
+{
+    let request = FederationAlephBftActivityRequest::new(session_id, operation_id);
+    let outcomes = join_all(
+        peers
+            .iter()
+            .map(|peer| client.submit_aleph_bft_activity(peer, &request)),
+    )
+    .await;
+    let mut accepted = 0usize;
+    let mut failed = 0usize;
+    for outcome in outcomes {
+        match outcome {
+            Ok(_) => accepted = accepted.saturating_add(1),
+            Err(_) => failed = failed.saturating_add(1),
+        }
+    }
+    if accepted == 0 {
+        if warn_if_unreachable {
             tracing::warn!(
                 %operation_id,
                 session_id,
                 failed_members = failed,
                 "AlephBFT activity wake reached no remote member"
             );
-        } else if failed > 0 {
+        } else {
             tracing::debug!(
                 %operation_id,
                 session_id,
-                accepted_members = accepted,
                 failed_members = failed,
-                "AlephBFT activity wake reached only part of the federation"
+                "AlephBFT pending-work activity refresh reached no remote member"
             );
         }
+    } else if failed > 0 {
+        tracing::debug!(
+            %operation_id,
+            session_id,
+            accepted_members = accepted,
+            failed_members = failed,
+            "AlephBFT activity wake reached only part of the federation"
+        );
     }
 }
 
@@ -1053,7 +1200,79 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
 mod tests {
     use std::io;
 
+    use cdk::federation::{
+        FederationAlephBftPendingOperationRecord, FederationId, FederationOperation,
+        FederationOperationEnvelope, FederationRestoreOperation,
+    };
+    use cdk::nuts::RestoreRequest;
+
     use super::*;
+
+    #[tokio::test]
+    async fn pending_activity_refresh_loads_only_current_session_operations() {
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("pending activity database"),
+        );
+        assert!(pending_aleph_bft_operation_ids(&db, 7)
+            .await
+            .expect("empty pending activity lookup")
+            .is_empty());
+
+        let envelope = FederationOperationEnvelope::new(
+            FederationId::from_bytes([7; 32]),
+            FederationOperation::Restore(FederationRestoreOperation {
+                request: RestoreRequest {
+                    outputs: Vec::new(),
+                },
+            }),
+        );
+        let operation_id = envelope.operation_id().expect("pending operation id");
+        let pending = FederationAlephBftPendingOperationRecord {
+            operation_id,
+            session_id: 7,
+            envelope,
+        };
+        let other_envelope = FederationOperationEnvelope::new(
+            FederationId::from_bytes([8; 32]),
+            FederationOperation::Restore(FederationRestoreOperation {
+                request: RestoreRequest {
+                    outputs: Vec::new(),
+                },
+            }),
+        );
+        let other_session = FederationAlephBftPendingOperationRecord {
+            operation_id: other_envelope
+                .operation_id()
+                .expect("other pending operation id"),
+            session_id: 8,
+            envelope: other_envelope,
+        };
+        let mut tx = db.begin_transaction().await.expect("pending operation tx");
+        tx.add_federation_aleph_bft_pending_operation(&pending)
+            .await
+            .expect("persist pending operation");
+        tx.add_federation_aleph_bft_pending_operation(&other_session)
+            .await
+            .expect("persist other-session operation");
+        tx.commit().await.expect("commit pending operations");
+
+        assert_eq!(
+            pending_aleph_bft_operation_ids(&db, 7)
+                .await
+                .expect("pending activity lookup"),
+            BTreeSet::from([operation_id])
+        );
+    }
+
+    #[test]
+    fn pending_activity_refresh_renews_before_network_activity_expires() {
+        let refresh_interval = aleph_bft_activity_refresh_interval();
+
+        assert!(!refresh_interval.is_zero());
+        assert!(refresh_interval < CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE);
+    }
 
     #[test]
     fn finalized_unit_apply_retry_predicate_accepts_transient_storage_contention() {

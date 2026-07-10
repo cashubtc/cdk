@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. The phase-dependent idle data-provider liveness blocker is fixed without restoring periodic idle unit creation; Milestone 4A and the broader convergence certification remain open.</span>
+          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Idle and healed-partition pending-work liveness are fixed without periodic idle unit creation; the exact self-partition case is certified while the broader all-operation and restart convergence matrix remains open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record exact-head federation benchmark</span>
+          <span class="value">fix: keep pending AlephBFT work active</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">An independent exact-HEAD reproduction measured direct info at 0.93s, federated CLI info at 1.59s, and fresh 50 sat mints at 7.71s and 4.96s after a deliberate 15-second idle gap. A temporary behavior-neutral fakewallet trace confirmed immediate settlement and 0.52-0.85s consensus stages, then was removed; all five members accepted exactly six operations with no fallback, duplicates, pending work, or digest drift.</span>
+          <span class="value">The five-member live matrix now certifies a self-partitioned mint, one-offline finality and signed catch-up, and two-offline safe stall plus autonomous recovery. The root cause of intermittent recovery stalls was a single activity lease expiring while a real operation remained pending finalization; durable pending work now renews one bounded operation lease, then becomes completely idle after finality. Eight final stress, cleanup, and deterministic-renewal runs passed, and the broad federation suite improved to 403/412 with nine separately reproduced stale tests remaining.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Resume Milestone 16A convergence certification: finish the self-partition, below-quorum halt, above-quorum progress, restart, and catch-up matrix, then reconcile the remaining broad-suite test debt without weakening liveness-only sequence or state-digest semantics.</span>
+          <span class="value">Extend Milestone 16A from the certified basic partition windows to mint, swap, melt, restore/check-state, payment-observation, duplicate-payment, and queued-conflict coverage, then add every listed restart permutation and reconcile the nine broad-suite stale tests without weakening current semantics.</span>
         </div>
       </aside>
     </header>
@@ -629,7 +629,7 @@
             <div>
               <h3>Milestone 16A: state convergence and catch-up certification</h3>
               <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
-              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches.</p>
+              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. The exact self-partitioned proposer case now passes with no pre-finality quote mutation, finalized item, completed operation, or share; one-offline catch-up and two-offline autonomous recovery also converge in the live matrix. Broader value-operation and restart variants remain.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -792,7 +792,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>The post-work CPU spin, history-scan, and phase-dependent inactive-provider liveness paths are fixed. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; cheap peer status uses maintained cursors and O(1) journal tips; and idle members no longer create an unbounded empty-unit DAG. A signed session- and operation-bound private REST activity wake releases held peer preunits when new work is admitted without adding a consensus operation or restoring periodic idle units. Operation admission remains bounded, catching-up members fail closed before value mutations, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
+            <p>The post-work CPU spin, history-scan, phase-dependent inactive-provider stall, and healed-partition pending-finalization stall are fixed. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; cheap peer status uses maintained cursors and O(1) journal tips; and idle members no longer create an unbounded empty-unit DAG. A signed session- and operation-bound private REST activity wake releases held peer preunits when new work is admitted. While a durable operation remains pending, one representative lease renews halfway through the existing grace window; after finality clears pending rows the task blocks with no timer, database read, REST request, or unit wake. Operation admission remains bounded, catching-up members fail closed before value mutations, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -806,7 +806,7 @@
         <div class="stack">
           <article class="item">
             <h3>AlephBFT idle wake regression risk</h3>
-            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. Focused route, replay, provider, finalization-tail, and live five-member tests pass; two independent process runs completed post-idle mints in about five seconds with exactly three accepted operations per mint, while a 30-second idle sample showed stable DAG size and bounded debug CPU. Residual work is repeated fault-matrix certification across self-partition, one-offline progress, above-quorum halt, restart, and catch-up scenarios so future liveness changes cannot reintroduce either the stall or periodic idle work.</p>
+            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. A second intermittent case showed that one accepted recovery wake could expire before exact-quorum AlephBFT caught up after a partition; work-bound lease renewal now continues only while durable pending rows exist. Five consecutive matrix stress runs, two cleanup runs, and a deterministic 63.98-second renewal run passed; the last run held the federation below finality through a full refresh interval, proved state remained untouched while activity renewed, and proved traffic stayed flat after finality. Residual work is the all-operation and restart expansion, not the basic self-partition or autonomous recovery path.</p>
           </article>
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
@@ -948,7 +948,7 @@
         <div class="stack">
           <article class="item">
             <h3>Live partition certification</h3>
-            <p>Add the remaining Milestone 16A self-partition, below-quorum-offline, and above-quorum-stall scenarios with finalized-cursor catch-up, signed session-outcome evidence, fail-closed readiness, state-digest equality, and duplicate-signing/payment guards.</p>
+            <p>Expand the now-passing self-partition, one-offline, and two-offline live matrix across mint, swap, melt, restore/check-state, payment observations, queued conflicts, duplicate signing, and duplicate outgoing-payment guards. Then add self-partitioned-proposer, below-quorum non-proposer, and post-finality lagging-member restart permutations.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>
