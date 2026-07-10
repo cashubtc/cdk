@@ -8799,6 +8799,70 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
             second_responses[2].operation_id,
             conflicting_melt_operation_id
         );
+        assert!(matches!(
+            second_responses[0]
+                .outcome
+                .entry()
+                .rejection
+                .clone()
+                .map(cdk::Error::from),
+            Some(cdk::Error::IssuedQuote)
+        ));
+        assert!(matches!(
+            second_responses[1]
+                .outcome
+                .entry()
+                .rejection
+                .clone()
+                .map(cdk::Error::from),
+            Some(cdk::Error::TokenAlreadySpent)
+        ));
+        assert!(second_responses[2].outcome.entry().rejection.is_none());
+
+        let replay_responses = state
+            .apply_federation_aleph_bft_finalized_unit(second_unit.clone())
+            .await
+            .expect("replay finalized unit");
+        assert!(matches!(
+            crate::validate_federation_submit_response(
+                &replay_responses[0],
+                conflicting_mint_operation_id,
+            ),
+            Err(cdk::Error::IssuedQuote)
+        ));
+        assert!(matches!(
+            crate::validate_federation_submit_response(
+                &replay_responses[1],
+                conflicting_swap_operation_id,
+            ),
+            Err(cdk::Error::TokenAlreadySpent)
+        ));
+        assert!(matches!(
+            crate::validate_federation_submit_response(
+                &replay_responses[2],
+                conflicting_melt_operation_id,
+            ),
+            Err(cdk::Error::Federation(
+                FederationError::RejectedOperation { .. }
+            ))
+        ));
+
+        for operation_id in [
+            conflicting_mint_operation_id,
+            conflicting_swap_operation_id,
+            conflicting_melt_operation_id,
+        ] {
+            assert!(
+                state
+                    .mint
+                    .localstore()
+                    .get_completed_operation(&federation_completed_operation_uuid(operation_id))
+                    .await
+                    .expect("rejected completed-operation lookup")
+                    .is_none(),
+                "rejected federation operation must not be completed"
+            );
+        }
 
         let quote = state
             .mint
@@ -8885,6 +8949,15 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
                 FederationOperationStatus::Rejected,
             ]
         );
+        assert!(matches!(
+            persisted[6].rejection.clone().map(cdk::Error::from),
+            Some(cdk::Error::IssuedQuote)
+        ));
+        assert!(matches!(
+            persisted[7].rejection.clone().map(cdk::Error::from),
+            Some(cdk::Error::TokenAlreadySpent)
+        ));
+        assert!(persisted[8].rejection.is_none());
     }
 
     let first_entries = first_state
@@ -19891,6 +19964,94 @@ async fn local_status_uses_materialized_database_state_digest() {
         "status digest should include applied mint database rows, not only the accepted journal"
     );
     assert_ne!(status.state_digest, FederationStateDigest::genesis());
+}
+
+#[tokio::test]
+async fn materialized_state_digest_tracks_rejection_without_changing_ordering_hash() {
+    let (state, _, _) = federation_route_state().await;
+    let quote_id = QuoteId::new();
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+        .await
+        .expect("submit mint quote");
+
+    let mut spent_entry = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup")
+        .into_iter()
+        .next()
+        .expect("journal entry");
+    spent_entry.status = FederationOperationStatus::Rejected;
+    spent_entry.rejection = Some(cdk_common::error::ErrorResponse::from(
+        cdk::Error::TokenAlreadySpent,
+    ));
+    let mut duplicate_entry = spent_entry.clone();
+    duplicate_entry.rejection = Some(cdk_common::error::ErrorResponse::from(
+        cdk::Error::DuplicateInputs,
+    ));
+
+    assert_eq!(spent_entry.operation_id, duplicate_entry.operation_id);
+    assert_eq!(spent_entry.order_digest, duplicate_entry.order_digest);
+    assert_eq!(
+        spent_entry.operation_outcome_hash,
+        duplicate_entry.operation_outcome_hash
+    );
+
+    let spent_digest = materialized_state_digest(&state, &[spent_entry])
+        .await
+        .expect("spent rejection digest");
+    let duplicate_digest = materialized_state_digest(&state, &[duplicate_entry])
+        .await
+        .expect("duplicate rejection digest");
+
+    assert_ne!(spent_digest, duplicate_digest);
+}
+
+#[tokio::test]
+async fn catch_up_verification_rejects_mismatched_application_rejection() {
+    let (state, _, _) = federation_route_state().await;
+    let quote_id = QuoteId::new();
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+        .await
+        .expect("submit mint quote");
+    let mut peer_entry = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup")
+        .into_iter()
+        .next()
+        .expect("journal entry");
+    let local_rejection = cdk_common::error::ErrorResponse::from(cdk::Error::TokenAlreadySpent);
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin rejection transaction");
+    tx.reject_federation_operation(peer_entry.operation_id, &local_rejection)
+        .await
+        .expect("persist local rejection");
+    tx.commit().await.expect("commit local rejection");
+
+    peer_entry.status = FederationOperationStatus::Rejected;
+    peer_entry.rejection = Some(cdk_common::error::ErrorResponse::from(
+        cdk::Error::DuplicateInputs,
+    ));
+    let error = state
+        .verify_federation_catch_up_rejections(&[peer_entry])
+        .await
+        .expect_err("mismatched catch-up rejection must fail");
+
+    assert!(matches!(
+        error,
+        cdk::Error::Federation(FederationError::SessionOutcomeMismatch { .. })
+    ));
 }
 
 #[tokio::test]

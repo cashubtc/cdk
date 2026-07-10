@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Idle and healed-partition pending-work liveness are fixed without periodic idle unit creation; an 11-member threshold-eight run now completes mint, receive/swap, melt, restart, and catch-up without transport timeouts, SQLite locks, duplicate quotes, or digest divergence.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete. Federated mint, swap/receive, and melt now return threshold-agreed standard Cashu errors through the existing wallet sagas and CLI, while unavailable quorum, timeouts, invalid shares, and inconsistent views remain ambiguous. A fresh five-member AlephBFT CLI run verified typed spent-token rejection, melt, restore, balance, and full convergence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: align federation progress with REST-only plan</span>
+          <span class="value">feat: unify federated wallet errors and recovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The federation-enabled Axum gate covers 422 passing tests: 420 run in the managed sandbox and both real-listener wallet tests pass outside it. The plan now records signed private REST as the sole federation transport, marks completed cache, waiter, backpressure, status, and public-route work done, and leaves only concrete safety, DKG, and error-recovery work open.</span>
+          <span class="value">Milestone 26 verification covers 363 shared-core tests, 81 federation wallet tests, 153 SQLite tests, four receive-recovery tests, and all 424 federation-enabled Axum tests. Exact 4xx response details participate in quorum while HTTP 429/5xx remain infrastructure errors. The live CLI definitive-error smoke and insufficient-threshold ambiguous smoke both pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Implement Milestone 26 persisted consensus business errors and threshold-agreed wallet recovery, then extend atomic failure injection across mint, swap, and melt apply boundaries.</span>
+          <span class="value">Extend deterministic atomic failure injection across mint, swap, and melt apply boundaries, then continue DKG completion and production security review work.</span>
         </div>
       </aside>
     </header>
@@ -487,7 +487,7 @@
           <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status progress">In progress</span></li>
           <li>Milestone 24: security review checklist. <span class="status progress">In progress</span></li>
           <li>Milestone 25: CLI wallet federation support. <span class="status done">Done</span></li>
-          <li>Milestone 26: unified federated wallet errors and recovery. <span class="status progress">In progress</span></li>
+          <li>Milestone 26: unified federated wallet errors and recovery. <span class="status done">Done</span></li>
         </ol>
         <ul class="milestones" aria-label="Implementation plan milestone points">
           <li class="milestone">
@@ -710,9 +710,9 @@
             <div>
               <h3>Milestone 26: unified federated wallet errors and recovery</h3>
               <p>Objective: preserve normal Cashu wallet errors and saga recovery after a threshold-consensus business outcome, while keeping unavailable quorum, pending finalization, timeouts, invalid shares, and inconsistent member views explicitly ambiguous.</p>
-              <p class="test-gate"><strong>Test gate:</strong> threshold-consistent business rejections round-trip through public federation HTTP as existing wallet errors; mint, receive/swap, and melt sagas reuse normal recovery behavior; one member cannot determine a definitive error; standalone error behavior stays unchanged.</p>
+              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by 363 shared-core, 81 wallet-federation, 153 SQLite, four receive-recovery, and 424 Axum tests, plus definitive and ambiguous live CLI smokes.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
         </ul>
       </section>
@@ -972,12 +972,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federated Error Recovery</h3>
-            <p>Implement persisted consensus business rejections, threshold-agreed wallet errors, and existing saga recovery through mint, receive/swap, melt, restore, and check-state without treating unavailable quorum or transport failure as a definitive Cashu error.</p>
-          </article>
-          <article class="item">
             <h3>Atomic apply failure injection</h3>
             <p>Extend deterministic fault injection across mint, swap, and melt accepted-state transactions, including rollback, restart replay, payment-side-effect boundaries, and final journal/state-digest convergence.</p>
+          </article>
+          <article class="item">
+            <h3>Distributed key generation</h3>
+            <p>Complete the remaining DKG ceremony, operator workflow, restart, and adversarial transcript tests while keeping trusted-dealer setup available for development.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

@@ -383,6 +383,9 @@ pub enum Error {
     ///  Unknown error response
     #[error("Unknown error response: `{0}`")]
     UnknownErrorResponse(String),
+    /// Exact Cashu error response retained by a transport aggregator.
+    #[error("{0}")]
+    MintErrorResponse(ErrorResponse),
     /// Invalid proof signature
     #[error("Could not verify proof signature")]
     CouldNotVerifyDleq,
@@ -627,6 +630,18 @@ mod tests {
         assert!(!Error::PendingQuote.is_definitive_failure());
     }
 
+    #[test]
+    fn retained_mint_error_response_preserves_exact_payload_and_classification() {
+        let response = ErrorResponse::new(
+            ErrorCode::TokenAlreadySpent,
+            "exact member response detail".to_string(),
+        );
+        let error = Error::MintErrorResponse(response.clone());
+
+        assert!(error.is_definitive_failure());
+        assert_eq!(ErrorResponse::from(error), response);
+    }
+
     #[cfg(feature = "federation")]
     #[test]
     fn federation_pending_finalization_maps_to_retryable_error_response() {
@@ -794,6 +809,10 @@ impl Error {
                 | crate::federation::FederationError::RejectedOperation { .. },
             ) => true,
 
+            Self::MintErrorResponse(response) => {
+                Self::from(response.clone()).is_definitive_failure()
+            }
+
             // HTTP Errors
             Self::HttpError(Some(status), _) => {
                 // Client errors (400-499) are definitive failures
@@ -939,6 +958,7 @@ fn map_nut11_error(_nut11_error: &crate::nuts::nut11::Error) -> ErrorCode {
 impl From<Error> for ErrorResponse {
     fn from(err: Error) -> ErrorResponse {
         match err {
+            Error::MintErrorResponse(response) => response,
             Error::TokenAlreadySpent => ErrorResponse {
                 code: ErrorCode::TokenAlreadySpent,
                 detail: err.to_string(),

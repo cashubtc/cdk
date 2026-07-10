@@ -689,6 +689,7 @@ fn accepted_entry_without_journal(
         operation_outcome_hash: None,
         state_digest: None,
         consensus_evidence: None,
+        rejection: None,
         status: FederationOperationStatus::Accepted,
     }
 }

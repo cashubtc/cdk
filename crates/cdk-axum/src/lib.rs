@@ -352,6 +352,11 @@ fn validate_federation_submit_response(
     operation_id: FederationOperationId,
 ) -> Result<(), cdk::Error> {
     response.validate(operation_id)?;
+    if response.outcome.entry().status == FederationOperationStatus::Rejected {
+        if let Some(rejection) = response.outcome.entry().rejection.clone() {
+            return Err(cdk::Error::from(rejection));
+        }
+    }
     response.ensure_accepted()?;
     Ok(())
 }
@@ -733,6 +738,20 @@ fn ensure_catch_up_overlap_matches(
                 index: peer_entry.index.saturating_add(1),
                 expected: local_entry.order_digest,
                 found: peer_entry.order_digest,
+            },
+        ));
+    }
+    if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status)
+        && should_overlay_local_status_after_aleph_bft_recovery(peer_entry.status)
+        && (local_entry.status != peer_entry.status
+            || local_entry.rejection != peer_entry.rejection)
+    {
+        return Err(cdk::Error::Federation(
+            FederationError::SessionOutcomeMismatch {
+                reason: format!(
+                    "catch-up application outcome mismatch at operation {}",
+                    peer_entry.operation_id
+                ),
             },
         ));
     }
@@ -2129,12 +2148,12 @@ impl MintState {
         responses
             .iter()
             .map(|response| {
-                let status = consensus
+                let entry = consensus
                     .journal()
                     .entry_by_operation_id(response.operation_id)
-                    .map(|entry| entry.status)
-                    .unwrap_or_else(|| response.outcome.entry().status);
-                federation_submit_response_with_status(response, status)
+                    .cloned()
+                    .unwrap_or_else(|| response.outcome.entry().clone());
+                federation_submit_response_with_entry(response, entry)
             })
             .collect()
     }
@@ -2468,6 +2487,10 @@ impl MintState {
         *consensus = next_consensus;
         drop(consensus);
         self.apply_federation_journal_entries(&applied).await?;
+        if let Some(response_to_apply) = response_to_apply.as_ref() {
+            self.verify_federation_catch_up_rejections(&response_to_apply.entries)
+                .await?;
+        }
 
         Ok(applied)
     }
@@ -2549,6 +2572,10 @@ impl MintState {
         *consensus = next_consensus;
         drop(consensus);
         self.apply_federation_journal_entries(&applied).await?;
+        if let Some(response_to_apply) = response_to_apply.as_ref() {
+            self.verify_federation_catch_up_rejections(&response_to_apply.entries)
+                .await?;
+        }
 
         Ok(applied)
     }
@@ -2667,7 +2694,11 @@ impl MintState {
         );
         for local_entry in &local_entries {
             if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status) {
-                next_consensus.update_status(local_entry.operation_id, local_entry.status)?;
+                next_consensus.update_application_state(
+                    local_entry.operation_id,
+                    local_entry.status,
+                    local_entry.rejection.clone(),
+                )?;
             }
         }
         let recovered_entries = next_consensus.journal().entries();
@@ -2708,6 +2739,10 @@ impl MintState {
         drop(consensus);
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
+        if let Some(response_to_apply) = response_to_apply.as_ref() {
+            self.verify_federation_catch_up_rejections(&response_to_apply.entries)
+                .await?;
+        }
         self.record_federation_state_digest_checkpoint_for_latest_entry(
             &applied,
             &entries_to_apply,
@@ -3347,6 +3382,41 @@ impl MintState {
         Ok(applied)
     }
 
+    async fn verify_federation_catch_up_rejections(
+        &self,
+        peer_entries: &[FederationJournalEntry],
+    ) -> Result<(), cdk::Error> {
+        for peer_entry in peer_entries
+            .iter()
+            .filter(|entry| entry.status == FederationOperationStatus::Rejected)
+        {
+            let local_entry = self
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(peer_entry.operation_id)
+                .await?
+                .ok_or_else(|| {
+                    cdk::Error::Federation(FederationError::UnknownOperation {
+                        operation_id: peer_entry.operation_id.to_string(),
+                    })
+                })?;
+            if local_entry.status != FederationOperationStatus::Rejected
+                || local_entry.rejection != peer_entry.rejection
+            {
+                return Err(cdk::Error::Federation(
+                    FederationError::SessionOutcomeMismatch {
+                        reason: format!(
+                            "catch-up rejection mismatch at operation {}",
+                            peer_entry.operation_id
+                        ),
+                    },
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     async fn apply_federation_journal_entry(
         &self,
         entry: &FederationJournalEntry,
@@ -3354,7 +3424,8 @@ impl MintState {
         match self.mint.apply_accepted_federation_operation(entry).await {
             Ok(applied) => Ok(applied),
             Err(err) => {
-                self.mark_federation_operation_apply_failure(entry.operation_id, &err)
+                let (_, err) = self
+                    .mark_federation_operation_apply_failure(entry.operation_id, err)
                     .await?;
                 Err(err)
             }
@@ -3397,8 +3468,8 @@ impl MintState {
                         .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
                 }
                 Err(err) => {
-                    let status = self
-                        .mark_federation_operation_apply_failure(entry.operation_id, &err)
+                    let (status, err) = self
+                        .mark_federation_operation_apply_failure(entry.operation_id, err)
                         .await?;
                     if status == FederationOperationStatus::Rejected {
                         return Ok(None);
@@ -3495,12 +3566,33 @@ impl MintState {
     async fn mark_federation_operation_apply_failure(
         &self,
         operation_id: FederationOperationId,
-        error: &cdk::Error,
-    ) -> Result<FederationOperationStatus, cdk::Error> {
-        let status = federation_operation_status_for_apply_error(error);
-        self.mark_federation_operation_status(operation_id, status)
+        error: cdk::Error,
+    ) -> Result<(FederationOperationStatus, cdk::Error), cdk::Error> {
+        if !error.is_definitive_failure() {
+            self.mark_federation_operation_status(operation_id, FederationOperationStatus::Failed)
+                .await?;
+            return Ok((FederationOperationStatus::Failed, error));
+        }
+
+        let rejection = cdk::error::ErrorResponse::from(error);
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.reject_federation_operation(operation_id, &rejection)
             .await?;
-        Ok(status)
+        tx.commit().await?;
+
+        if let Some(consensus) = &self.federation_consensus {
+            consensus.lock().await.update_application_state(
+                operation_id,
+                FederationOperationStatus::Rejected,
+                Some(rejection.clone()),
+            )?;
+        }
+
+        Ok((
+            FederationOperationStatus::Rejected,
+            cdk::Error::from(rejection),
+        ))
     }
 
     pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
@@ -3795,15 +3887,6 @@ fn stale_local_aleph_bft_entries_to_retry(
 }
 
 #[cfg(feature = "federation")]
-fn federation_operation_status_for_apply_error(error: &cdk::Error) -> FederationOperationStatus {
-    if error.is_definitive_failure() {
-        FederationOperationStatus::Rejected
-    } else {
-        FederationOperationStatus::Failed
-    }
-}
-
-#[cfg(feature = "federation")]
 pub(crate) fn is_retryable_federation_apply_error(err: &cdk::Error) -> bool {
     match err {
         cdk::Error::ConcurrentUpdate => true,
@@ -3829,15 +3912,15 @@ pub(crate) fn is_retryable_federation_database_error(err: &cdk::cdk_database::Er
 }
 
 #[cfg(feature = "federation")]
-fn federation_submit_response_with_status(
+fn federation_submit_response_with_entry(
     response: &FederationSubmitOperationResponse,
-    status: FederationOperationStatus,
+    current_entry: FederationJournalEntry,
 ) -> FederationSubmitOperationResponse {
     let mut response = response.clone();
     match &mut response.outcome {
         FederationJournalAppendOutcome::Appended(entry)
         | FederationJournalAppendOutcome::Duplicate(entry) => {
-            entry.status = status;
+            *entry = current_entry;
         }
     }
     response
@@ -4223,7 +4306,11 @@ async fn create_federation_runtime_state(
             )?;
             for entry in &persisted_entries {
                 if should_overlay_local_status_after_aleph_bft_recovery(entry.status) {
-                    consensus.update_status(entry.operation_id, entry.status)?;
+                    consensus.update_application_state(
+                        entry.operation_id,
+                        entry.status,
+                        entry.rejection.clone(),
+                    )?;
                 }
             }
             let session_id = consensus.aleph_bft_status()?.session;

@@ -13,11 +13,11 @@ use cdk::federation::{
     FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
     FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationPaymentObservationRecord, FederationPeerStatus, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
-    InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
+    FederationOperationStatus, FederationPaymentObservationRecord, FederationPeerStatus,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationVerifiedOperationAdmission, InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -616,6 +616,21 @@ async fn materialized_state_snapshot(
     let mut keyset_rotations = Vec::new();
 
     for entry in entries {
+        if let Some(rejection) = &entry.rejection {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_operation_rejections",
+                    entry.operation_id.to_string(),
+                )
+                .with_field("operation_index", entry.index.to_string())
+                .with_field("error_code", rejection.code.to_string())
+                .with_field("detail", rejection.detail.clone()),
+            );
+        }
+        if entry.status == FederationOperationStatus::Rejected {
+            continue;
+        }
+
         match &entry.envelope.operation {
             FederationOperation::MintQuote(operation) => {
                 mint_quotes.insert(operation.quote.clone());

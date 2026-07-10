@@ -3181,87 +3181,122 @@ error system.
 
 Implementation checklist:
 
-- [ ] Keep the existing CDK error model as the single authority for error
+- [x] Keep the existing CDK error model as the single authority for error
   classification and wallet behavior. Do not add a federation-specific error
   whitelist, definitive-error classifier, or parallel business-error hierarchy.
-- [ ] Extend the existing federation journal entry's application state with
+- [x] Extend the existing federation journal entry's application state with
   `rejection: Option<ErrorResponse>`. Do not create a separate result journal,
   rejection table, consensus item, or AlephBFT round, and do not use successful
   `completed_operations` rows to store rejected operations.
-- [ ] Enforce one persisted-state invariant: `Rejected` always carries its
-  standard Cashu `ErrorResponse`, while `Accepted`, `Applying`, `Applied`, and
-  `Failed` do not. Persist the status and response atomically through one
-  operation-state transition.
-- [ ] When the existing mint logic durably rejects an ordered operation, store
+- [x] Enforce one persisted-state invariant: a deterministic application
+  rejection carries its standard Cashu `ErrorResponse`, while `Accepted`,
+  `Applying`, `Applied`, and `Failed` cannot carry one. A generic journal-level
+  conflict may remain `Rejected` with no business response. Persist application
+  rejection status and response atomically through one operation-state
+  transition.
+- [x] When the existing mint logic durably rejects an ordered operation, store
   the `ErrorResponse` that the standalone public API would return. A replay or
   duplicate request must return that same response instead of reducing it to
   the generic `RejectedOperation` error.
-- [ ] Reuse the existing `Error -> ErrorResponse` and `ErrorResponse -> Error`
+- [x] Reuse the existing `Error -> ErrorResponse` and `ErrorResponse -> Error`
   conversions unchanged. This includes errors such as `TokenAlreadySpent`,
   `TokenPending`, `BlindedMessageAlreadySigned`, quote and payment errors,
   keyset errors, balance errors, duplicate inputs/outputs, and witness or
   authentication errors whenever the existing non-federated path produces them.
-- [ ] Treat the rejection as post-consensus application metadata, not as part of
+- [x] Treat the rejection as post-consensus application metadata, not as part of
   the immutable operation envelope or original ordering hash. Keep it
   deterministic and include it in existing catch-up data, materialized-state
-  digests, checkpoints, and session outcomes.
-- [ ] Do not increase mint-to-mint consensus traffic for error handling. Wallet
+  digests, checkpoints, and explicit catch-up application-outcome verification.
+- [x] Do not increase mint-to-mint consensus traffic for error handling. Wallet
   fanout may wait for threshold agreement using its existing member requests,
   but rejection persistence must not submit another consensus operation.
-- [ ] Keep federation liveness and consistency conditions distinct from Cashu
+- [x] Keep federation liveness and consistency conditions distinct from Cashu
   business errors: pending AlephBFT finalization, unavailable quorum, catch-up
   gates, timeouts, HTTP `429`/`5xx`, invalid shares, mismatched member views,
   insufficient threshold responses, and non-terminal apply failures remain
   retryable or ambiguous and do not receive a persisted business rejection.
-- [ ] Preserve the existing `OperationPendingFinalization` to pending/retry
+- [x] Preserve the existing `OperationPendingFinalization` to pending/retry
   mapping. Do not reinterpret a timeout or unavailable member as a rejected
   mint, swap, receive, or melt operation.
-- [ ] Update `FederatedMintConnector` fanout collection so it returns an
+- [x] Update `FederatedMintConnector` fanout collection so it returns an
   existing wallet error when a signing threshold returns the same persisted
   `ErrorResponse`, aggregates threshold shares when successful, and
   returns an ambiguous federation-consistency error when neither outcome has
   threshold agreement.
-- [ ] Do not allow a single stale, faulty, or malicious member response to
+- [x] Do not allow a single stale, faulty, or malicious member response to
   determine a consensus-dependent definitive wallet error. Preserve the normal
   direct error path for validation and authentication failures that occur before
   consensus, and preserve existing quote-creation fallback behavior.
-- [ ] Preserve the existing public `ErrorResponse -> Error` route for mint,
+- [x] Preserve the existing public `ErrorResponse -> Error` route for mint,
   swap, melt, and restore. Private member-to-member REST failures remain
   internal transport errors and must not become wallet-facing Cashu errors.
-- [ ] Reuse existing wallet saga recovery rules without federation-only copies:
+- [x] Reuse existing wallet saga recovery rules without federation-only copies:
   definitive business errors may compensate when the standalone saga already
   does so; pending or ambiguous errors retain recoverable state and use the
   existing replay, check-state, quote-status, and restore paths.
-- [ ] Keep the CLI thin: it should surface the wallet's typed error and exit
+- [x] Keep the CLI thin: it should surface the wallet's typed error and exit
   nonzero, with clear text for pending/retryable federation state, rather than
   reimplementing mint, swap, receive, or melt recovery policy.
-- [ ] Keep standalone mint, wallet, and CLI error behavior unchanged.
+- [x] Keep standalone mint, wallet, and CLI error behavior unchanged.
 
 Tests and success criteria:
 
-- [ ] Add end-to-end federation connector and Axum tests showing a threshold
+- [x] Add end-to-end federation connector and Axum tests showing a threshold
   `TokenAlreadySpent` rejection during receive/swap reaches
   `Error::TokenAlreadySpent`, while a spent proof caused by this wallet's own
   interrupted receive follows the existing restore-based recovery path.
-- [ ] Add focused round-trip tests for representative mint, swap/receive, and
+- [x] Add focused round-trip tests for representative mint, swap/receive, and
   melt business errors. Batch mint uses the same mint collection path, and melt
   change remains part of the melt response rather than a separate error system.
-- [ ] Add generic connector tests for threshold success, threshold matching
+- [x] Add generic connector tests for threshold success, threshold matching
   rejection, mixed member errors, insufficient agreement, timeout, and invalid
   shares. Conflicting responses must remain ambiguous without producing
   spendable proofs or prematurely releasing local proofs.
-- [ ] Add tests for `TokenPending`, pending finalization, timeout, unavailable
+- [x] Add tests for `TokenPending`, pending finalization, timeout, unavailable
   quorum, catch-up, and HTTP `429`/`5xx` that prove the existing sagas retain
   recoverable state and do not classify them as definitive failures.
-- [ ] Add only the saga bridge tests needed to prove the connector's ordinary
+- [x] Add only the saga bridge tests needed to prove the connector's ordinary
   CDK errors enter the existing receive, mint, swap, and melt recovery paths;
   do not duplicate the standalone saga test matrix with federation-only copies.
-- [ ] Preserve restore and check-state threshold-view behavior and test that
+- [x] Preserve restore and check-state threshold-view behavior and test that
   mismatched member views remain ambiguous rather than inventing business
   errors for these read paths.
-- [ ] Add one CLI smoke test for a consensus-decided business error and one for
+- [x] Add one CLI smoke test for a consensus-decided business error and one for
   an ambiguous federation condition. Re-run relevant standalone tests with
   federation disabled to prove existing behavior is unchanged.
+
+Verified implementation result:
+
+- `FederationJournalEntry` now stores `rejection: Option<ErrorResponse>` as
+  application metadata. SQLite and Postgres migrations add the nullable JSON
+  column; the shared database contract verifies atomic `Rejected` plus response
+  persistence and round-trip reads. Ordinary status updates clear stale
+  rejection data, and journal validation rejects a payload on a non-rejected
+  state.
+- Deterministic apply failures use the unchanged `Error::is_definitive_failure`
+  decision, persist the unchanged `Error -> ErrorResponse` result, and return
+  through the unchanged `ErrorResponse -> Error` conversion. Replays and
+  duplicates return the stored error; rejected operations never enter
+  `completed_operations`.
+- Rejection metadata does not alter operation IDs, outcome hashes, or the order
+  digest. It does alter materialized-state digests, is restored into runtime
+  state, and is compared exactly during overlap and post-apply catch-up
+  verification.
+- Signing fanout now retains member failures. Mint/swap and melt return valid
+  aggregate responses at signature threshold, return one existing Cashu error
+  only at exact response threshold, and otherwise return ambiguous
+  `InvalidMintResponse`. Federation member HTTP clients preserve the original
+  4xx response for this comparison; same-code/different-detail responses do not
+  combine, and structured HTTP 429/5xx responses remain infrastructure errors.
+  Quote visibility, restore, and check-state retain their established
+  threshold-view and fallback behavior.
+- Verification passed: 363 `cdk-common` tests, 81 complete federation wallet
+  tests, 153 `cdk-sqlite` tests, four receive recovery tests, and all 424
+  federation-enabled Axum tests (422 in the managed sandbox plus the two real
+  loopback-listener tests outside it). A fresh five-member/threshold-three live
+  AlephBFT CLI smoke returned `Token Already Spent` on repeated receive and then
+  completed melt, restore, balance, and full convergence. The paired
+  insufficient-threshold smoke timed out ambiguously and produced no proofs.
 
 ## MVP cut lines
 

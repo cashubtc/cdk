@@ -481,6 +481,7 @@ async fn apply_federation_melt_rejects_pending_quote_reuse_before_payment_attemp
         operation_outcome_hash: None,
         state_digest: None,
         consensus_evidence: None,
+        rejection: None,
         status: FederationOperationStatus::Accepted,
     };
     persist_journal_entry(&localstore, &conflicting_entry).await;

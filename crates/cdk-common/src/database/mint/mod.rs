@@ -644,6 +644,13 @@ pub trait FederationJournalTransaction {
         status: FederationOperationStatus,
     ) -> Result<(), Self::Err>;
 
+    /// Atomically persist a deterministic application rejection and rejected status.
+    async fn reject_federation_operation(
+        &mut self,
+        operation_id: FederationOperationId,
+        rejection: &crate::error::ErrorResponse,
+    ) -> Result<(), Self::Err>;
+
     /// Persist the highest accepted private REST sequence for one federation member.
     async fn set_federation_member_sequence(
         &mut self,

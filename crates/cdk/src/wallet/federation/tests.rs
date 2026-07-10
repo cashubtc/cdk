@@ -3280,6 +3280,261 @@ async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_val
 }
 
 #[tokio::test]
+async fn federated_mint_connector_returns_threshold_matching_cashu_rejection() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+    let rejection = cdk_common::error::ErrorResponse::from(crate::Error::TokenAlreadySpent);
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.set_post_swap_response(Err(crate::Error::MintErrorResponse(rejection.clone())));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let duplicate_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(
+        &duplicate_member,
+        &bundle,
+        member_id(4),
+        advertised.clone(),
+    );
+    duplicate_member.set_post_swap_response(Err(crate::Error::DuplicateInputs));
+    connectors.insert(
+        member_id(4),
+        Arc::new(duplicate_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let unavailable_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(&unavailable_member, &bundle, member_id(5), advertised);
+    unavailable_member.set_post_swap_response(Err(crate::Error::Timeout));
+    connectors.insert(
+        member_id(5),
+        Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_max_retries: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let result = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs))
+        .await;
+
+    assert!(matches!(result, Err(crate::Error::TokenAlreadySpent)));
+}
+
+#[tokio::test]
+async fn federated_mint_connector_keeps_disagreeing_rejections_ambiguous() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    for (member_id, error) in [
+        (member_id(1), crate::Error::TokenAlreadySpent),
+        (member_id(2), crate::Error::TokenAlreadySpent),
+        (member_id(3), crate::Error::DuplicateInputs),
+        (member_id(4), crate::Error::DuplicateInputs),
+        (member_id(5), crate::Error::Timeout),
+    ] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.set_post_swap_response(Err(error));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_max_retries: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let result = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs))
+        .await;
+
+    assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
+}
+
+#[tokio::test]
+async fn federated_mint_connector_requires_exact_error_response_agreement() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let first_rejection = cdk_common::error::ErrorResponse::new(
+        cdk_common::error::ErrorCode::TokenAlreadySpent,
+        "spent in operation one".to_string(),
+    );
+    let second_rejection = cdk_common::error::ErrorResponse::new(
+        cdk_common::error::ErrorCode::TokenAlreadySpent,
+        "spent in operation two".to_string(),
+    );
+    let mut connectors = BTreeMap::new();
+
+    for (id, rejection) in [
+        (member_id(1), first_rejection.clone()),
+        (member_id(2), first_rejection),
+        (member_id(3), second_rejection.clone()),
+        (member_id(4), second_rejection),
+    ] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        connector.set_post_swap_response(Err(crate::Error::MintErrorResponse(rejection)));
+        connectors.insert(
+            id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let unavailable_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(&unavailable_member, &bundle, member_id(5), advertised);
+    unavailable_member.set_post_swap_response(Err(crate::Error::Timeout));
+    connectors.insert(
+        member_id(5),
+        Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_max_retries: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let result = connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs))
+        .await;
+
+    assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
+}
+
+#[tokio::test]
+async fn federated_mint_connector_round_trips_mint_and_melt_cashu_rejections() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.set_post_mint_response(Err(crate::Error::IssuedQuote));
+        connector.set_post_melt_response(Err(crate::Error::TokenAlreadySpent));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let mint_result = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "issued-quote".to_string(),
+                outputs,
+                signature: None,
+            },
+        )
+        .await;
+    assert!(matches!(mint_result, Err(crate::Error::IssuedQuote)));
+
+    let melt_result = connector
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltRequest::new("melt-quote".to_string(), Vec::new(), None),
+        )
+        .await;
+    assert!(matches!(melt_result, Err(crate::Error::TokenAlreadySpent)));
+}
+
+#[tokio::test]
+async fn federated_mint_connector_keeps_timeouts_and_invalid_shares_ambiguous() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut timeout_connectors = BTreeMap::new();
+    let mut invalid_share_connectors = BTreeMap::new();
+
+    for id in [member_id(1), member_id(2), member_id(3)] {
+        let timeout_connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&timeout_connector, &bundle, id, advertised.clone());
+        timeout_connector.set_post_swap_delay(Duration::from_millis(50));
+        timeout_connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: share_response(&bundle, id, &outputs).signatures,
+        }));
+        timeout_connectors.insert(
+            id,
+            Arc::new(timeout_connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let invalid_connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&invalid_connector, &bundle, id, advertised.clone());
+        let wrong_signer = if id == member_id(3) {
+            member_id(1)
+        } else {
+            member_id(3)
+        };
+        invalid_connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: share_response(&bundle, wrong_signer, &outputs).signatures,
+        }));
+        invalid_share_connectors.insert(
+            id,
+            Arc::new(invalid_connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let timeout_connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        timeout_connectors,
+        FederatedMintConnectorConfig {
+            member_request_timeout: Duration::from_millis(1),
+            member_request_max_retries: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("timeout connector");
+    let timeout_result = timeout_connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs.clone()))
+        .await;
+    assert!(matches!(
+        timeout_result,
+        Err(crate::Error::InvalidMintResponse(_))
+    ));
+
+    let invalid_share_connector =
+        FederatedMintConnector::new(bundle.public_config.clone(), invalid_share_connectors)
+            .expect("invalid-share connector");
+    let invalid_share_result = invalid_share_connector
+        .post_swap(SwapRequest::new(Vec::new(), outputs))
+        .await;
+    assert!(matches!(
+        invalid_share_result,
+        Err(crate::Error::InvalidMintResponse(_))
+    ));
+}
+
+#[tokio::test]
 async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members() {
     let bundle = threshold_five_bundle();
     let outputs = blinded_outputs(&bundle);

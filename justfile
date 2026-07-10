@@ -663,6 +663,17 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
   grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' "{{wallet_dir}}/check-local.out"
   token="$(target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat send --mint-url "$mint_url" --amount 7 | tail -n 1)"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat receive "$token"
+  set +e
+  target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
+    receive "$token" > "{{wallet_dir}}/receive-spent.out" 2>&1
+  receive_spent_status="$?"
+  set -e
+  cat "{{wallet_dir}}/receive-spent.out"
+  if [[ "$receive_spent_status" == "0" ]]; then
+    printf 'receiving an already-spent federation token unexpectedly succeeded\n' >&2
+    exit 1
+  fi
+  grep -Fqi 'already spent' "{{wallet_dir}}/receive-spent.out"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
     check-state --token "$token" | tee "{{wallet_dir}}/check-token.out"
   grep -Eq 'Token proof states: total=[0-9]+ .*spent=[1-9][0-9]*' "{{wallet_dir}}/check-token.out"

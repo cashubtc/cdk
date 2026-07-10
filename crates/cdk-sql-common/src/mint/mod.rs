@@ -570,6 +570,11 @@ mod federation_migration_tests {
         let postgres_dkg_transcript_signatures = include_str!(
             "migrations/postgres/20260703153000_add_federation_dkg_transcript_signatures.sql"
         );
+        let sqlite_operation_rejection =
+            include_str!("migrations/sqlite/20260710120000_add_federation_operation_rejection.sql");
+        let postgres_operation_rejection = include_str!(
+            "migrations/postgres/20260710120000_add_federation_operation_rejection.sql"
+        );
 
         for migration in [sqlite_saga, postgres_saga] {
             assert_contains_all(
@@ -596,6 +601,13 @@ mod federation_migration_tests {
                     "member_id",
                     "last_sequence",
                 ],
+            );
+        }
+
+        for migration in [sqlite_operation_rejection, postgres_operation_rejection] {
+            assert_contains_all(
+                migration,
+                &["federation_journal_entries", "rejection_json", "TEXT"],
             );
         }
 

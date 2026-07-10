@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn receive_token_rejects_unimported_federation_member_with_actionable_error() {
+    async fn receive_token_rejects_untrusted_mint_with_actionable_error() {
         let repository = test_repository().await;
         let token = token_for_mint(
             MintUrl::from_str("https://unimported-fed.example.com").expect("mint url"),
@@ -356,7 +356,11 @@ mod tests {
             .expect_err("untrusted federation token rejected");
 
         let err = err.to_string();
+        #[cfg(feature = "federation")]
         assert!(err.contains("not trusted or imported as a federation member"));
+        #[cfg(not(feature = "federation"))]
+        assert!(err.contains("is not trusted"));
+        #[cfg(feature = "federation")]
         assert!(err.contains("cdk-cli federation add --public-config"));
         assert!(err.contains("--allow-untrusted"));
     }

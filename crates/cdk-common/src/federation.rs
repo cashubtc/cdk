@@ -1019,6 +1019,12 @@ pub enum FederationError {
         /// Found state digest.
         found: FederationStateDigest,
     },
+    /// A journal rejection payload appeared on a non-rejected operation.
+    #[error("Federation journal rejection state mismatch at index {index}")]
+    JournalRejectionStateMismatch {
+        /// Journal index whose application state was malformed.
+        index: u64,
+    },
     /// A federation REST body hash must be exactly 32 bytes.
     #[error("Invalid federation REST body hash size: expected={expected}, found={found}")]
     InvalidRestBodyHashSize {

@@ -23,6 +23,8 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::error::ErrorResponse;
+
 const DEFAULT_CATCH_UP_LIMIT: u16 = 100;
 const MAX_CATCH_UP_LIMIT: u16 = 1000;
 
@@ -2070,6 +2072,14 @@ pub trait FederationConsensusEngine: fmt::Debug + Send {
         operation_id: FederationOperationId,
         status: FederationOperationStatus,
     ) -> Result<FederationJournalEntry>;
+
+    /// Update local application status and its optional standard Cashu rejection.
+    fn update_application_state(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+        rejection: Option<ErrorResponse>,
+    ) -> Result<FederationJournalEntry>;
 }
 
 /// Catch-up entries applied after verifying quorum-signed session outcome evidence.
@@ -2614,6 +2624,16 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         status: FederationOperationStatus,
     ) -> Result<FederationJournalEntry> {
         self.journal_mut().update_status(operation_id, status)
+    }
+
+    fn update_application_state(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+        rejection: Option<ErrorResponse>,
+    ) -> Result<FederationJournalEntry> {
+        self.journal_mut()
+            .update_application_state(operation_id, status, rejection)
     }
 }
 
@@ -3670,6 +3690,17 @@ impl InMemoryFederationConsensus {
         self.journal.update_status(operation_id, status)
     }
 
+    /// Update local application status and its optional standard Cashu rejection.
+    pub fn update_application_state(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+        rejection: Option<ErrorResponse>,
+    ) -> Result<FederationJournalEntry> {
+        self.journal
+            .update_application_state(operation_id, status, rejection)
+    }
+
     fn ensure_federation(&self, found: FederationId) -> Result<()> {
         if found != self.federation_id {
             return Err(FederationError::OperationFederationMismatch {
@@ -3770,6 +3801,15 @@ impl FederationConsensusEngine for InMemoryFederationConsensus {
         status: FederationOperationStatus,
     ) -> Result<FederationJournalEntry> {
         Self::update_status(self, operation_id, status)
+    }
+
+    fn update_application_state(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+        rejection: Option<ErrorResponse>,
+    ) -> Result<FederationJournalEntry> {
+        Self::update_application_state(self, operation_id, status, rejection)
     }
 }
 

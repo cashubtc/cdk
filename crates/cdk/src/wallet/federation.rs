@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use cdk_common::error::ErrorResponse;
 use cdk_common::federation::{
     FederationConfig, FederationConfigDigest, FederationError, FederationInvite, MemberId,
 };
@@ -159,6 +160,78 @@ struct MeltQuoteStatusView {
     change: Option<Vec<MeltChangeSignatureView>>,
 }
 
+#[derive(Debug)]
+struct FederationMemberFailure {
+    member_id: MemberId,
+    error: Error,
+    rejection: Option<ErrorResponse>,
+}
+
+fn into_wallet_error(error: Error) -> Error {
+    match error {
+        Error::MintErrorResponse(response) => Error::from(response),
+        error => error,
+    }
+}
+
+impl FederationMemberFailure {
+    fn new(member_id: MemberId, error: Error) -> Self {
+        if let Error::MintErrorResponse(rejection) = error {
+            let error = Error::from(rejection.clone());
+            let rejection = error.is_definitive_failure().then_some(rejection);
+            return Self {
+                member_id,
+                error,
+                rejection,
+            };
+        }
+
+        if error.is_definitive_failure() {
+            let rejection = ErrorResponse::from(error);
+            return Self {
+                member_id,
+                error: Error::from(rejection.clone()),
+                rejection: Some(rejection),
+            };
+        }
+
+        Self {
+            member_id,
+            error,
+            rejection: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FederationMemberResults<R> {
+    responses: Vec<(MemberId, R)>,
+    failures: Vec<FederationMemberFailure>,
+}
+
+impl<R> FederationMemberResults<R> {
+    fn failure_summary(&self) -> String {
+        self.failures
+            .iter()
+            .map(|failure| format!("member {}: {}", failure.member_id, failure.error))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    fn threshold_rejection(&self, threshold: usize) -> Option<ErrorResponse> {
+        self.failures.iter().find_map(|candidate| {
+            let rejection = candidate.rejection.as_ref()?;
+            (self
+                .failures
+                .iter()
+                .filter(|failure| failure.rejection.as_ref() == Some(rejection))
+                .count()
+                >= threshold)
+                .then(|| rejection.clone())
+        })
+    }
+}
+
 impl fmt::Debug for FederatedMintConnector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FederatedMintConnector")
@@ -232,8 +305,10 @@ impl FederatedMintConnector {
             .map(|(member_id, member)| {
                 (
                     *member_id,
-                    Arc::new(HttpClient::new(member.public_mint_url.clone(), None))
-                        as Arc<dyn MintConnector + Send + Sync>,
+                    Arc::new(
+                        HttpClient::new(member.public_mint_url.clone(), None)
+                            .with_preserved_error_responses(),
+                    ) as Arc<dyn MintConnector + Send + Sync>,
                 )
             })
             .collect();
@@ -382,7 +457,9 @@ impl FederatedMintConnector {
                 )),
                 Ok(result) => match result {
                     Ok(response) => return Ok(response),
-                    Err(err) if err.is_definitive_failure() => return Err(err),
+                    Err(err) if err.is_definitive_failure() => {
+                        return Err(into_wallet_error(err));
+                    }
                     Err(err) => failures.push(format!("member {}: {}", member_id, err)),
                 },
             }
@@ -418,7 +495,7 @@ impl FederatedMintConnector {
         max_member_retries: u16,
         timeout_operation: &'static str,
         stop_after: Stop,
-    ) -> (Vec<(MemberId, R)>, Vec<String>, usize)
+    ) -> FederationMemberResults<R>
     where
         F: FnMut(MemberId, Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<R, Error>>,
@@ -443,7 +520,7 @@ impl FederatedMintConnector {
         max_member_retries: u16,
         timeout_operation: &'static str,
         mut stop_after: Stop,
-    ) -> (Vec<(MemberId, R)>, Vec<String>, usize)
+    ) -> FederationMemberResults<R>
     where
         F: FnMut(MemberId, Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<R, Error>>,
@@ -451,7 +528,6 @@ impl FederatedMintConnector {
     {
         let mut responses = Vec::new();
         let mut failures = Vec::new();
-        let mut inactive_keyset_failures = 0usize;
         let mut members = member_connectors.iter();
         let mut pending = FuturesUnordered::new();
         let concurrency = self
@@ -501,21 +577,15 @@ impl FederatedMintConnector {
                         }
                     }
 
-                    if is_inactive_keyset_error(&err) {
-                        inactive_keyset_failures = inactive_keyset_failures.saturating_add(1);
-                    }
-                    failures.push(format!(
-                        "member {} failed after {}/{} attempts: {}",
-                        member_id,
-                        usize::from(attempt) + 1,
-                        usize::from(max_member_retries) + 1,
-                        err
-                    ));
+                    failures.push(FederationMemberFailure::new(member_id, err));
                 }
             }
 
             if stop_after(&responses) {
-                return (responses, failures, inactive_keyset_failures);
+                return FederationMemberResults {
+                    responses,
+                    failures,
+                };
             }
 
             while pending.len() < concurrency {
@@ -530,7 +600,10 @@ impl FederatedMintConnector {
             }
         }
 
-        (responses, failures, inactive_keyset_failures)
+        FederationMemberResults {
+            responses,
+            failures,
+        }
     }
 
     fn active_aggregate_keysets(&self) -> Vec<KeySet> {
@@ -708,7 +781,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MintResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, inactive_keyset_failures) = self
+        let results = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
@@ -724,19 +797,23 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold
+            && self
+                .aggregate_member_responses(outputs, &results.responses, amount_validation)
+                .is_ok()
+        {
+            return Ok(results.responses);
         }
 
-        if inactive_keyset_failures >= threshold {
-            return Err(Error::InactiveKeyset);
+        if let Some(rejection) = results.threshold_rejection(threshold) {
+            return Err(Error::from(rejection));
         }
 
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation signature shares: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -751,7 +828,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MeltQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, inactive_keyset_failures) = self
+        let results = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
@@ -765,19 +842,23 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold
+            && self
+                .aggregate_melt_response(outputs, &results.responses)
+                .is_ok()
+        {
+            return Ok(results.responses);
         }
 
-        if inactive_keyset_failures >= threshold {
-            return Err(Error::InactiveKeyset);
+        if let Some(rejection) = results.threshold_rejection(threshold) {
+            return Err(Error::from(rejection));
         }
 
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation melt responses: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -792,7 +873,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<RestoreResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, _) = self
+        let results = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
@@ -808,15 +889,19 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold
+            && self
+                .aggregate_restore_response(requested_outputs, &results.responses)
+                .is_ok()
+        {
+            return Ok(results.responses);
         }
 
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation restore responses: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -830,7 +915,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MeltQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, _) = self
+        let results = self
             .collect_member_results(
                 |_member_id, connector| call_member(connector),
                 Some(self.config.quote_status_member_timeout),
@@ -840,12 +925,13 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold {
+            return Ok(results.responses);
         }
 
         if allow_primary_fallback {
-            if let Some((_, response)) = responses
+            if let Some((_, response)) = results
+                .responses
                 .iter()
                 .find(|(member_id, _)| *member_id == self.primary_member_id)
             {
@@ -856,8 +942,8 @@ impl FederatedMintConnector {
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation melt quote status responses: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -871,7 +957,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<MintQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, _) = self
+        let results = self
             .collect_member_results(
                 |_member_id, connector| call_member(connector),
                 Some(self.config.quote_status_member_timeout),
@@ -881,12 +967,13 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold {
+            return Ok(results.responses);
         }
 
         if allow_primary_fallback {
-            if let Some((_, response)) = responses
+            if let Some((_, response)) = results
+                .responses
                 .iter()
                 .find(|(member_id, _)| *member_id == self.primary_member_id)
             {
@@ -897,8 +984,8 @@ impl FederatedMintConnector {
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation mint quote status responses: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -911,7 +998,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<Vec<MintQuoteResponse<String>>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, _) = self
+        let results = self
             .collect_member_results(
                 |_member_id, connector| call_member(connector),
                 Some(self.config.quote_status_member_timeout),
@@ -921,11 +1008,12 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold {
+            return Ok(results.responses);
         }
 
-        if let Some((_, response)) = responses
+        if let Some((_, response)) = results
+            .responses
             .iter()
             .find(|(member_id, _)| *member_id == self.primary_member_id)
         {
@@ -935,8 +1023,8 @@ impl FederatedMintConnector {
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation batch mint quote status responses: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -951,7 +1039,7 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<CheckStateResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let (responses, failures, _) = self
+        let results = self
             .collect_member_results_from(
                 member_connectors,
                 |_member_id, connector| call_member(connector),
@@ -967,15 +1055,19 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if responses.len() >= threshold {
-            return Ok(responses);
+        if results.responses.len() >= threshold
+            && self
+                .aggregate_check_state_response(request, &results.responses)
+                .is_ok()
+        {
+            return Ok(results.responses);
         }
 
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation check-state responses: required {}, received {}, failures: {}",
             threshold,
-            responses.len(),
-            failures.join("; ")
+            results.responses.len(),
+            results.failure_summary()
         )))
     }
 
@@ -1115,7 +1207,9 @@ impl FederatedMintConnector {
                         Err(err) => failures.push(format!("member {}: {}", member_id, err)),
                     }
                 }
-                Ok(Err(err)) if err.is_definitive_failure() => return Err(err),
+                Ok(Err(err)) if err.is_definitive_failure() => {
+                    return Err(into_wallet_error(err));
+                }
                 Ok(Err(err)) => {
                     let remaining = self
                         .config
@@ -1168,7 +1262,9 @@ impl FederatedMintConnector {
                         Err(err) => failures.push(format!("member {}: {}", member_id, err)),
                     }
                 }
-                Ok(Err(err)) if err.is_definitive_failure() => return Err(err),
+                Ok(Err(err)) if err.is_definitive_failure() => {
+                    return Err(into_wallet_error(err));
+                }
                 Ok(Err(err)) => {
                     let remaining = self
                         .config
@@ -2286,14 +2382,6 @@ impl MintConnector for FederatedMintConnector {
         }))
         .await;
     }
-}
-
-fn is_inactive_keyset_error(err: &Error) -> bool {
-    matches!(err, Error::InactiveKeyset)
-        || matches!(
-            err,
-            Error::Federation(FederationError::InactiveFederatedKeyset { .. })
-        )
 }
 
 fn map_federation_validation_error(err: FederationError) -> Error {

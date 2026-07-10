@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
+use crate::error::{Error, ErrorResponse};
 use crate::federation::{
     FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
@@ -365,6 +366,10 @@ where
     tx.update_federation_operation_status(first.operation_id, FederationOperationStatus::Applied)
         .await
         .expect("update status");
+    let rejection = ErrorResponse::from(Error::TokenAlreadySpent);
+    tx.reject_federation_operation(second.operation_id, &rejection)
+        .await
+        .expect("reject operation");
     tx.set_federation_member_sequence(member_one, 7)
         .await
         .expect("sequence one");
@@ -402,7 +407,8 @@ where
     assert_eq!(entries[0].consensus_evidence, Some(first_evidence));
     assert_eq!(entries[1].index, 1);
     assert_eq!(entries[1].operation_id, second.operation_id);
-    assert_eq!(entries[1].status, FederationOperationStatus::Accepted);
+    assert_eq!(entries[1].status, FederationOperationStatus::Rejected);
+    assert_eq!(entries[1].rejection, Some(rejection.clone()));
     assert_eq!(entries[1].previous_order_digest, first.order_digest);
     assert_eq!(
         entries[1].operation_outcome_hash,
@@ -445,6 +451,11 @@ where
         second.operation_outcome_hash
     );
     assert_eq!(second_by_operation_id.state_digest, second.state_digest);
+    assert_eq!(
+        second_by_operation_id.status,
+        FederationOperationStatus::Rejected
+    );
+    assert_eq!(second_by_operation_id.rejection, Some(rejection.clone()));
 
     let missing_by_operation_id = db
         .get_federation_journal_entry_by_operation_id(FederationOperationId::from_bytes([99; 32]))
@@ -458,6 +469,7 @@ where
         .expect("catch-up entries");
     assert_eq!(catch_up_entries.len(), 1);
     assert_eq!(catch_up_entries[0].operation_id, second.operation_id);
+    assert_eq!(catch_up_entries[0].rejection, Some(rejection));
 
     let sequences = db
         .get_federation_member_sequences()

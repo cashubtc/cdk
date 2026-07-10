@@ -52,6 +52,7 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    preserve_error_responses: bool,
 }
 
 impl<T> HttpClient<T>
@@ -82,6 +83,21 @@ where
         }
     }
 
+    fn map_http_error_with_policy(&self, err: HttpError) -> Error {
+        if self.preserve_error_responses {
+            if let HttpError::Status { status, message } = &err {
+                if !(400..500).contains(status) || *status == 429 {
+                    return Error::HttpError(Some(*status), message.clone());
+                }
+                if let Ok(response) = serde_json::from_str::<ErrorResponse>(message) {
+                    return Error::MintErrorResponse(response);
+                }
+            }
+        }
+
+        Self::map_http_error(err)
+    }
+
     async fn transport_http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
     where
         R: DeserializeOwned,
@@ -89,7 +105,7 @@ where
         self.transport
             .http_get(url, auth)
             .await
-            .map_err(Self::map_http_error)
+            .map_err(|err| self.map_http_error_with_policy(err))
     }
 
     async fn transport_http_post<P, R>(
@@ -105,7 +121,7 @@ where
         self.transport
             .http_post(url, auth, payload)
             .await
-            .map_err(Self::map_http_error)
+            .map_err(|err| self.map_http_error_with_policy(err))
     }
 
     async fn post_mint_quote_inner(
@@ -200,6 +216,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            preserve_error_responses: false,
         }
     }
 
@@ -210,7 +227,14 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            preserve_error_responses: false,
         }
+    }
+
+    /// Preserve exact Cashu error responses for an outer threshold aggregator.
+    pub(crate) fn with_preserved_error_responses(mut self) -> Self {
+        self.preserve_error_responses = true;
+        self
     }
 
     /// Get auth token for a protected endpoint
@@ -249,6 +273,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(None)),
             cache_support: Default::default(),
+            preserve_error_responses: false,
         })
     }
 
@@ -299,11 +324,11 @@ where
                 nut19::Method::Get => transport
                     .http_get(url, auth_token.clone())
                     .await
-                    .map_err(Self::map_http_error),
+                    .map_err(|err| self.map_http_error_with_policy(err)),
                 nut19::Method::Post => transport
                     .http_post(url, auth_token.clone(), payload)
                     .await
-                    .map_err(Self::map_http_error),
+                    .map_err(|err| self.map_http_error_with_policy(err)),
             };
 
             if result.is_ok() {
@@ -311,6 +336,7 @@ where
             }
 
             match result.as_ref() {
+                Err(Error::MintErrorResponse(_)) => return result,
                 Err(Error::HttpError(status_code, _)) => {
                     let status_code = status_code.to_owned().unwrap_or_default();
                     if (400..=499).contains(&status_code) {
@@ -1391,6 +1417,80 @@ mod tests {
             1,
             "requests without NUT-19 replay support must not spin on retryable errors"
         );
+    }
+
+    #[tokio::test]
+    async fn federation_http_client_preserves_exact_cashu_error_response() {
+        let response = ErrorResponse::new(
+            cdk_common::error::ErrorCode::TokenAlreadySpent,
+            "exact persisted rejection detail".to_string(),
+        );
+        let standalone_transport = MockTransport {
+            post_error: Arc::new(Mutex::new(Some((
+                400,
+                serde_json::to_string(&response).expect("serialize error response"),
+            )))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let standalone_client = HttpClient::with_transport(mint_url, standalone_transport, None);
+        let standalone_result = standalone_client
+            .retriable_http_request::<_, serde_json::Value>(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+        assert!(matches!(standalone_result, Err(Error::TokenAlreadySpent)));
+
+        let transport = MockTransport {
+            post_error: Arc::new(Mutex::new(Some((
+                400,
+                serde_json::to_string(&response).expect("serialize error response"),
+            )))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client =
+            HttpClient::with_transport(mint_url, transport, None).with_preserved_error_responses();
+
+        let result = client
+            .retriable_http_request::<_, serde_json::Value>(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::MintErrorResponse(found)) if found == response
+        ));
+
+        for status in [429, 503] {
+            let transport = MockTransport {
+                post_error: Arc::new(Mutex::new(Some((
+                    status,
+                    serde_json::to_string(&response).expect("serialize error response"),
+                )))),
+                ..Default::default()
+            };
+            let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+            let client = HttpClient::with_transport(mint_url, transport, None)
+                .with_preserved_error_responses();
+            let result = client
+                .retriable_http_request::<_, serde_json::Value>(
+                    nut19::Method::Post,
+                    nut19::Path::Swap,
+                    None,
+                    &serde_json::json!({}),
+                )
+                .await;
+
+            assert!(matches!(result, Err(Error::HttpError(Some(found), _)) if found == status));
+        }
     }
 
     #[tokio::test(start_paused = true)]

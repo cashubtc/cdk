@@ -129,6 +129,7 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
             operation_outcome_hash,
             state_digest,
             consensus_evidence_json,
+            rejection_json,
             status
         ) = row
     );
@@ -168,6 +169,10 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         &consensus_evidence_json,
         "journal consensus evidence",
     )?;
+    let rejection = optional_json::<cdk_common::error::ErrorResponse>(
+        &rejection_json,
+        "federation operation rejection",
+    )?;
     let status = status_from_str(&column_as_string!(&status))?;
 
     Ok(FederationJournalEntry {
@@ -181,6 +186,7 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         operation_outcome_hash,
         state_digest,
         consensus_evidence,
+        rejection,
         status,
     })
 }
@@ -752,9 +758,9 @@ where
         query(
             r#"
             INSERT INTO federation_journal_entries
-            (operation_index, operation_id, envelope_json, conflict_key_json, conflict_keys_json, previous_order_digest, order_digest, operation_outcome_hash, state_digest, consensus_evidence_json, status)
+            (operation_index, operation_id, envelope_json, conflict_key_json, conflict_keys_json, previous_order_digest, order_digest, operation_outcome_hash, state_digest, consensus_evidence_json, rejection_json, status)
             VALUES
-            (:operation_index, :operation_id, :envelope_json, :conflict_key_json, :conflict_keys_json, :previous_order_digest, :order_digest, :operation_outcome_hash, :state_digest, :consensus_evidence_json, :status)
+            (:operation_index, :operation_id, :envelope_json, :conflict_key_json, :conflict_keys_json, :previous_order_digest, :order_digest, :operation_outcome_hash, :state_digest, :consensus_evidence_json, :rejection_json, :status)
             "#,
         )?
         .bind("operation_index", entry.index as i64)
@@ -795,6 +801,14 @@ where
                 .map(serde_json::to_string)
                 .transpose()?,
         )
+        .bind(
+            "rejection_json",
+            entry
+                .rejection
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
         .bind("status", status_to_str(entry.status))
         .execute(&self.inner)
         .await?;
@@ -810,12 +824,33 @@ where
         query(
             r#"
             UPDATE federation_journal_entries
-            SET status = :status
+            SET status = :status, rejection_json = NULL
             WHERE operation_id = :operation_id
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
         .bind("status", status_to_str(status))
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn reject_federation_operation(
+        &mut self,
+        operation_id: FederationOperationId,
+        rejection: &cdk_common::error::ErrorResponse,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            UPDATE federation_journal_entries
+            SET status = :status, rejection_json = :rejection_json
+            WHERE operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .bind("status", status_to_str(FederationOperationStatus::Rejected))
+        .bind("rejection_json", serde_json::to_string(rejection)?)
         .execute(&self.inner)
         .await?;
 
@@ -1487,6 +1522,7 @@ where
                 operation_outcome_hash,
                 state_digest,
                 consensus_evidence_json,
+                rejection_json,
                 status
             FROM federation_journal_entries
             ORDER BY operation_index ASC
@@ -1541,6 +1577,7 @@ where
                 operation_outcome_hash,
                 state_digest,
                 consensus_evidence_json,
+                rejection_json,
                 status
             FROM federation_journal_entries
             WHERE operation_id = :operation_id
@@ -1575,6 +1612,7 @@ where
                 operation_outcome_hash,
                 state_digest,
                 consensus_evidence_json,
+                rejection_json,
                 status
             FROM federation_journal_entries
             WHERE operation_index >= :next_index
