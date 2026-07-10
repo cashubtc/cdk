@@ -436,11 +436,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: wake idle AlephBFT federation members</span>
+          <span class="value">docs: record exact-head federation benchmark</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The signed member-wide activity wake passed provider, route, replay, finalization-tail, and live five-member tests. Fresh 50 sat mints completed in 7.76s and 4.95s after a deliberate 15-second idle gap, with exactly six accepted operations, no fallback quote, no duplicates, no pending work, and matching state and order digests.</span>
+          <span class="value">An independent exact-HEAD reproduction measured direct info at 0.93s, federated CLI info at 1.59s, and fresh 50 sat mints at 7.71s and 4.96s after a deliberate 15-second idle gap. A temporary behavior-neutral fakewallet trace confirmed immediate settlement and 0.52-0.85s consensus stages, then was removed; all five members accepted exactly six operations with no fallback, duplicates, pending work, or digest drift.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -792,7 +792,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>The post-work CPU spin and history-scan paths are fixed, but the inactive data-provider wait has a separate open liveness bug. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; cheap peer status uses maintained cursors and O(1) journal tips; and idle members no longer create an unbounded empty-unit DAG. However, an indefinite local data-provider wait can hold a preunit needed by a creator waiting for parents, and a local activity hint cannot wake that creator phase. The next fix must add distributed wakeup without restoring periodic idle work. Operation admission remains bounded, catching-up members fail closed before value mutations, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
+            <p>The post-work CPU spin, history-scan, and phase-dependent inactive-provider liveness paths are fixed. Active AlephBFT work uses a bounded 100ms cadence; replayed consensus-data gossip cannot refresh activity; cheap peer status uses maintained cursors and O(1) journal tips; and idle members no longer create an unbounded empty-unit DAG. A signed session- and operation-bound private REST activity wake releases held peer preunits when new work is admitted without adding a consensus operation or restoring periodic idle units. Operation admission remains bounded, catching-up members fail closed before value mutations, backup persistence retries transient storage contention, and wallet fanout tolerates slow, offline, rate-limited, pending-finalization, rejecting, and bad-share peers while threshold remains reachable.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>
@@ -805,8 +805,8 @@
         <h2>Open Problems And Risks</h2>
         <div class="stack">
           <article class="item">
-            <h3>AlephBFT idle wake liveness</h3>
-            <p>A traced five-member process run queued a mint quote and paid observation on one member for exactly the 90-second wallet fallback timeout without a data-provider yield. A fallback member then yielded a new quote immediately, and the original member yielded both older operations about 10ms later. Upstream creator tracing confirms that a preunit is not sent until <code>DataProvider::get_data()</code> returns, so CDK's indefinite inactive wait is phase-dependent and cannot be made live by notifying only the local submitter. The fix gate requires repeated post-idle exact three-operation mints with no fallback quotes, bounded idle CPU and DAG growth, one-offline progress, and below-quorum refusal.</p>
+            <h3>AlephBFT idle wake regression risk</h3>
+            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. Focused route, replay, provider, finalization-tail, and live five-member tests pass; two independent process runs completed post-idle mints in about five seconds with exactly three accepted operations per mint, while a 30-second idle sample showed stable DAG size and bounded debug CPU. Residual work is repeated fault-matrix certification across self-partition, one-offline progress, above-quorum halt, restart, and catch-up scenarios so future liveness changes cannot reintroduce either the stall or periodic idle work.</p>
           </article>
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
@@ -864,10 +864,10 @@
           creation, and the peer-status hot path no longer reparses the finalized-item history merely
           to count it. Order-only peer sync also uses an O(1) durable journal-tip query instead of
           deserializing every accepted BLS operation; on the same 17-entry traced databases this cut
-          CPU from 15.45-17.05% to 3.85-3.95%. A separate phase-dependent
-          liveness regression is now open because the indefinite inactive
-          provider wait can withhold parent preunits until another member
-          proposes data.
+          CPU from 15.45-17.05% to 3.85-3.95%. The separate phase-dependent
+          inactive-provider liveness regression is also fixed: a signed
+          session- and operation-bound member-wide activity wake releases held
+          parent preunits without adding accepted journal work or periodic idle units.
           The latest wallet-startup performance check confirms
           federated <code>mint-info</code> is no longer CPU-bound by repeated full
           config validation. Opt-in process lifecycle traces cover queue,

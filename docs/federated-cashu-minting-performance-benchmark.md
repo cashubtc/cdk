@@ -10,10 +10,12 @@ The third run verifies pending-work-aware AlephBFT tail pacing after idle gossip
 was excluded from the activity hint. Later runs accept a 100ms active-only
 cadence, deduplicate replayed consensus-data wakeups, stop empty-unit creation
 when no operation is active, and remove an O(history) finalized-item scan from
-peer status. A receiver-side token receive benchmark is also complete. The
-latest rebenchmark reopens idle scheduling as a liveness issue: an indefinite
-inactive data-provider wait can strand a queued operation until another member
-proposes data, even though the earlier CPU and history-scan bugs remain fixed.
+peer status. A receiver-side token receive benchmark is also complete. A later
+rebenchmark exposed a phase-dependent idle scheduling bug where an indefinite
+inactive data-provider wait could strand a queued operation until another
+member proposed data. The signed member-wide activity wake closes that bug,
+and the latest exact-HEAD process reproduction below independently confirms
+the repaired path.
 
 The measurements below are development-environment measurements. Absolute values will vary by machine, but the stage ordering and relative delays are the important result.
 
@@ -34,6 +36,12 @@ The measurements below are development-environment measurements. Absolute values
   behavior. Remove temporary instrumentation before finishing the checkpoint;
   retain it only when it has focused tests and is intentionally useful as
   normal low-noise production diagnostics.
+- "Do not change production code first" is a sequencing requirement, not a
+  blanket ban on instrumentation. Establish the unmodified baseline, add the
+  smallest behavior-neutral probe needed to answer a specific missing timing
+  question, compare the instrumented run with the baseline, and remove the
+  probe before closing the checkpoint unless it meets the permanent diagnostic
+  bar above.
 - Process lifecycle traces are available without changing normal log volume by
   setting
   `RUST_LOG=info,cdk_axum::federation::aleph_bft_latency=trace` and
@@ -266,6 +274,131 @@ DAG remained exactly at 293 units for the whole sample. CPU-time deltas were
 0.64-0.65 seconds per debug member, about 2.1% per process, rather than a busy
 loop. No temporary source instrumentation was needed or retained; the existing
 opt-in lifecycle trace remains the diagnostic path.
+
+## Independent Exact-HEAD Reproduction
+
+On 2026-07-10, the liveness-fix commit was rebuilt before measurement and run
+in a new five-member, threshold-three fakewallet AlephBFT federation with new
+SQLite databases and a new CLI wallet. Member request, fallback, and quote
+status timeouts were 90 seconds. The second mint followed a deliberate
+15-second idle gap.
+
+### Untouched baseline
+
+| Command | Wall | User | System |
+| --- | ---: | ---: | ---: |
+| direct `curl /v1/info` | 0.93s | 0.00s | 0.00s |
+| non-federated CLI `mint-info` | 2.31s | 0.03s | 0.02s |
+| `federation add` | 1.45s | 1.43s | 0.01s |
+| federated CLI `mint-info` | 1.59s | 0.61s | 0.01s |
+| full federated mint 1, 50 sat | 7.71s | 2.01s | 0.03s |
+| full federated mint 2 after 15s idle, 50 sat | 4.96s | 1.18s | 0.02s |
+
+The old 31-second user-CPU `mint-info`, 46-second pre-handler wait, and
+fallback-driven mint delay did not reproduce. In particular, federated
+`mint-info` consumed only 0.61 seconds of user CPU, and the post-idle mint was
+the faster of the two.
+
+The baseline logs already contained operation-specific AlephBFT lifecycle
+events. They lacked only an exact fakewallet notification-emission timestamp,
+because the durable payment record is second-resolution. After the untouched
+baseline, a single identifier-free trace event was temporarily placed after
+the fakewallet successfully enqueued an incoming payment notification. A
+second independent fresh federation measured 7.86s and 4.93s, within 0.15s and
+0.03s of the baseline. The temporary trace was then removed completely.
+
+### Mint 1 timeline
+
+| Stage | UTC timestamp | Delta from previous stage |
+| --- | --- | ---: |
+| CLI start | 09:57:30.878844 | - |
+| quote request admitted by member 1 | 09:57:35.409945 | 4.531s |
+| fakewallet notification emitted | 09:57:35.409982 | 0.000037s |
+| `mint_quote` applied | 09:57:35.934717 | 0.525s |
+| payment observation submitted | 09:57:35.936877 | 0.002s |
+| `mint_quote_payment` applied | 09:57:36.547350 | 0.610s |
+| `mint` submitted by member fanout | 09:57:36.616787 | 0.069s |
+| `mint` applied and signing response persisted | 09:57:37.469858 | 0.853s |
+| threshold member handlers returned shares | 09:57:37.476513 | 0.007s |
+| wallet aggregation, verification, persistence, and CLI completion | 09:57:38.750849 | 1.274s |
+
+### Mint 2 timeline after 15 seconds idle
+
+| Stage | UTC timestamp | Delta from previous stage |
+| --- | --- | ---: |
+| CLI start | 09:57:53.799596 | - |
+| fakewallet notification emitted | 09:57:55.297119 | 1.498s |
+| quote request admitted by member 1 | 09:57:55.314997 | 0.018s |
+| `mint_quote` applied | 09:57:55.893263 | 0.578s |
+| payment observation submitted | 09:57:55.905002 | 0.012s |
+| `mint_quote_payment` applied | 09:57:56.489981 | 0.585s |
+| `mint` submitted by member fanout | 09:57:57.631598 | 1.142s |
+| `mint` applied and signing response persisted | 09:57:58.236233 | 0.605s |
+| threshold member handlers returned shares | 09:57:58.239201 | 0.003s |
+| wallet aggregation, verification, persistence, and CLI completion | 09:57:58.747092 | 0.508s |
+
+The fakewallet task can emit just before or just after consensus admission,
+depending on scheduler order, but both samples prove settlement is immediate
+and not the delay. The immediate post-quote observation path was used in both
+mints; the periodic observer tick was not on the critical path.
+
+### Classification
+
+Each mint still required exactly three accepted operations. Across the two
+instrumented confirmation mints, submit-to-apply latency was:
+
+| Consensus operation | Mint 1 | Mint 2 |
+| --- | ---: | ---: |
+| `mint_quote` | 0.525s | 0.578s |
+| `mint_quote_payment` | 0.610s | 0.585s |
+| `mint` including signing/materialization | 0.853s | 0.605s |
+
+- **Wallet/library and CLI:** the largest first-mint stage was 4.53 seconds
+  before quote admission. The warm post-idle mint reached admission in 1.52
+  seconds. This matches the earlier probe that attributed cold first use to
+  online metadata/keyset loading plus ordinary registry/command startup; it is
+  not an AlephBFT stall. The cost is partly wallet-library work, not solely CLI
+  presentation code.
+- **Mint handler and fakewallet:** payment notification was immediate. Quote
+  handler admission and observation dispatch added milliseconds around the
+  serialized consensus stages.
+- **AlephBFT consensus:** all six operations applied in 0.52-0.85 seconds.
+  There was no post-idle data-provider stall.
+- **Private REST:** first operation-bearing deliveries followed data-provider
+  yield by roughly 6-29ms.
+- **Payment observer:** the immediate observation path submitted 2-12ms after
+  quote apply; the 5-second periodic loop was only a fallback.
+- **Catch-up/sync:** all five members were healthy before the run and stayed in
+  one converged digest group afterward.
+- **Database contention:** one 361ms SQLite `BEGIN IMMEDIATE` wait occurred
+  during the larger first mint and 64-66ms waits occurred during the second;
+  they were visible but not dominant.
+- **Duplicate submissions/fallback:** both runs ended with zero duplicate
+  submissions, zero pending items or waiters, and no fallback quote.
+
+Every member accepted exactly:
+
+1. `mint_quote`
+2. `mint_quote_payment`
+3. `mint`
+4. `mint_quote`
+5. `mint_quote_payment`
+6. `mint`
+
+All five members reported matching order and state digests, two paid payment
+reports, and no payment conflicts, unresolved observations, digest alerts, or
+invalid-operation alerts.
+
+No production fix is justified by this reproduction: the pathological delay
+is already repaired and the current debug-build result is inside the 5-10s
+target. If further startup optimization becomes a priority, the smallest clean
+candidate remains a tamper-bound cache or validated wrapper for repeated
+federation config/keyset validation. Its gate must separately benchmark CLI
+dispatch, wallet repository load, connector validation, and first online
+metadata discovery; reject changed, mismatched, or non-v3 configs even when a
+cache exists; and preserve standalone behavior. Reducing three consensus
+operations to two could save more wall time, but that is a protocol redesign,
+not a performance bug fix.
 
 ## Fresh CLI and Mint Rebaseline After Command-Routing Audit
 

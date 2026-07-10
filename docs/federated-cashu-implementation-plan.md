@@ -116,6 +116,22 @@ Resolved blocking bugs:
 
 ## Recent performance checkpoint
 
+- Independent exact-HEAD reproduction: rebuilt mintd and CLI binaries were run
+  against two new five-member, threshold-three fakewallet AlephBFT federations
+  and new wallets. The untouched baseline measured direct `/v1/info` at 0.93s,
+  non-federated CLI `mint-info` at 2.31s/0.03s user CPU, federation import at
+  1.45s/1.43s user CPU, federated `mint-info` at 1.59s/0.61s user CPU, and two
+  50 sat mints at 7.71s and 4.96s with a deliberate 15-second idle gap. A
+  behavior-neutral, identifier-free fakewallet trace was added only after the
+  baseline, reproduced mints at 7.86s and 4.93s, and was removed completely.
+  Fakewallet notification was immediate, private REST delivery followed data
+  yield by 6-29ms, and the six submit-to-apply consensus stages took 0.52-0.85s.
+  The first mint's largest stage was 4.53s of cold wallet/library and CLI work
+  before quote admission; the warm mint reached admission in 1.52s. All five
+  members accepted exactly `mint_quote -> mint_quote_payment -> mint` twice,
+  reported zero pending items, waiters, duplicates, conflicts, or alerts, and
+  converged on identical order and state digests. No further production fix is
+  justified by this reproduction.
 - Accepted idle-liveness fix rebenchmark: direct `/v1/info` completed in 0.92s,
   standalone CLI `mint-info` in 2.00s/0.03s user CPU, federation import in
   1.42s/1.41s user CPU, and federated CLI `mint-info` in 1.56s/0.61s user CPU.
