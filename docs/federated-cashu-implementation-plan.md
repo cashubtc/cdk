@@ -31,7 +31,11 @@ Fedimint should be treated as the main reference implementation for federation d
 
 Cashu/CDK should still value simplicity over copying architecture wholesale. If a simpler design achieves the same safety property, preserves Cashu protocol compatibility, is easier to test, and fits CDK's existing structure better, prefer the simpler design. Copy invariants and lessons from Fedimint; do not blindly copy complexity.
 
-Private signed REST is the default mint-to-mint transport for the federation MVP and can remain the production transport when operators can provide stable reachable federation URLs through normal HTTPS, VPNs, reverse tunnels, Tor onion services, or equivalent connectivity. Iroh is not required for consensus correctness. Treat Iroh or other NAT-traversing transports as optional later transport backends for deployments where members cannot expose reliable inbound federation endpoints. The consensus, catch-up, DKG, status, and AlephBFT message layers should depend on a transport abstraction where practical, but correctness milestones should not assume Iroh.
+Private signed REST is the mint-to-mint transport for this plan and can remain
+the production transport when operators provide stable reachable federation URLs
+through normal HTTPS, VPNs, reverse tunnels, Tor onion services, or equivalent
+connectivity. Alternate NAT-traversing transports are out of scope and do not
+affect federation correctness milestones.
 
 The interface to existing CDK code should be as small and thin as practical. Prefer logically organized federation modules with well-separated concerns over scattering federation conditionals through existing mint, wallet, HTTP, storage, or signatory code. Existing code should expose narrow hooks or adapters where needed, and most federation-specific behavior should live behind explicit feature-gated abstractions so reviews can reason about ownership, invariants, and blast radius.
 
@@ -186,7 +190,7 @@ Fedimint source areas:
 - The mint module spends input notes and creates output signature shares inside consensus transaction processing.
 - Output outcomes contain blind signature shares and are read by clients only after the transaction is accepted.
 - The consensus engine accepts an ordered stream of items, processes each item in a DB transaction, records accepted items, audits module balances, and checkpoints DB state.
-- Fedimint uses AlephBFT for atomic broadcast and authenticated peer networking. CDK should copy the atomic-broadcast and authentication invariants and can use the same `aleph-bft` crate, but it should not depend on Fedimint's full module stack or require Fedimint's network stack. Signed private REST is sufficient for correctness when federation members are mutually reachable; Iroh-style connectivity is an optional deployment transport, not a protocol requirement.
+- Fedimint uses AlephBFT for atomic broadcast and authenticated peer networking. CDK should copy the atomic-broadcast and authentication invariants and can use the same `aleph-bft` crate, but it should not depend on Fedimint's full module stack or require Fedimint's network stack. Signed private REST is sufficient for correctness when federation members are mutually reachable.
 - Fedimint DKG for G2 is a direct reference for later dealer-free setup. For CDK MVP, trusted-dealer key share generation is enough.
 
 ## Safety invariants
@@ -440,11 +444,8 @@ Implementation checklist:
 
 - [x] Add `FederationConfig` with federation ID, member set, consensus params, signature threshold, keyset metadata, supported units, and protocol versions.
 - [x] Add public member config data with member ID, public API URL, private federation REST URL, federation identity public key, and public BLS shares.
-- [ ] Extend public member config with optional transport endpoints and TLS/Noise/Iroh identity fields only when non-REST transports are added.
 - [x] Add private member config data with member ID, federation identity private key, local secret BLS shares, and config-file/runtime wiring.
-- [ ] Extend private member config with P2P private key, payment backend config, and DB path fields if those remain member-private rather than mintd runtime config.
 - [x] Represent the federation roster deterministically in `FederationConfig`, mapping member IDs to identity public keys, endpoint data, and BLS public shares.
-- [ ] Add a dedicated `FederationRoster` wrapper only if future code needs a stronger type boundary than the ordered maps in `FederationConfig`.
 - [x] Add `FederatedKeyset` with aggregate public keys per amount and public shares per member.
 - [x] Define deterministic member ordering and reject duplicate member IDs.
 - [x] Generate Cashu keyset IDs from aggregate public keys, not member share public keys.
@@ -845,7 +846,7 @@ Architecture checklist:
   when sync state is healthy. The network-finality activation hook rejects
   non-AlephBFT runtimes instead of silently enabling the public queue for the
   in-memory backend.
-- [ ] Add backpressure and admission limits for pending wallet submissions,
+- [x] Add backpressure and admission limits for pending wallet submissions,
   consensus messages, catch-up ranges, and response waiters. The AlephBFT submit
   path now enforces a configurable `pending_mempool_item_limit` before committing
   a newly accepted operation to the live runtime; full queues fail fast without
@@ -866,10 +867,8 @@ Architecture checklist:
   quorum and fails before networking if the cap is below the remote quorum
   requirement. The live network retry queue now also has a durable overflow
   regression proving the oldest failed retry is dropped from memory and storage
-  when the queue exceeds its cap. Remaining work: extend the same bounded-queue
-  discipline across deeper live AlephBFT transport reorder, retry, and
-  redelivery fault paths.
-- [ ] Expose status for AlephBFT session, round, consensus height, pending item
+  when the queue exceeds its cap.
+- [x] Expose status for AlephBFT session, pending item
   count, finalized item count, signed session outcome height, catch-up state,
   member lag, response-cache hit rate, and duplicate submissions. The
   `FederationAlephBftAdapterStatus` snapshot now exposes the adapter-visible
@@ -893,9 +892,9 @@ Architecture checklist:
   lagging, catch-up, session-outcome verification, and materialized-state
   mismatch states, and signed
   session-outcome quorum range fields (`from_index`, `latest_index`, operation
-  count, and signer set). Full round and production AlephBFT consensus-height
-  status still need to be wired once the production AlephBFT task owns those
-  concepts.
+  count, and signer set). The status surface intentionally reports durable
+  finalization indexes rather than fabricating unstable upstream round or
+  consensus-height values.
 
 Mint-side restructuring checklist:
 
@@ -928,24 +927,13 @@ Mint-side restructuring checklist:
   before standalone fallback, restore is source-audited to read persisted
   federation shares without direct signing, and member-mode `Mint` guards reject
   direct standalone mint, swap, melt, and raw blind-signing calls.
-- [ ] Split or wrap existing standalone mint issuance logic into reusable
-  validation and apply helpers where this reduces duplication, while keeping
-  standalone non-federation behavior unchanged.
-- [ ] Split or wrap existing swap saga logic so federation admission can verify
-  proofs, spending conditions, output validity, and balance without creating
-  local pending state; accepted consensus apply marks inputs spent and stores
-  output signature shares atomically.
-- [ ] Split or wrap existing melt saga logic so federation admission validates
-  quote/proofs/change outputs without attempting an external payment; accepted
-  consensus apply records reserve/payment-attempt state, and accepted payment
-  observations drive finalize or rollback.
-- [ ] Treat external payment reads and payment attempts as non-deterministic side
+- [x] Treat external payment reads and payment attempts as non-deterministic side
   effects outside the pure apply path. Their results must enter consensus as
   signed observations or deterministic payment-attempt/finalization operations.
-- [ ] Select the real outgoing melt payment actor deterministically from accepted
+- [x] Select the real outgoing melt payment actor deterministically from accepted
   consensus state, and use an idempotency key so duplicate wallet requests,
   retries, crashes, or catch-up never make two outgoing payments.
-- [ ] Ensure no blind-signature share is created until the accepted operation
+- [x] Ensure no blind-signature share is created until the accepted operation
   hash, output index, blinded message, amount, keyset ID, member ID, and
   accepted session/index are known and persisted together. Current coverage
   includes an unpaid-quote regression proving federated mint apply fails before
@@ -964,8 +952,8 @@ Mint-side restructuring checklist:
   restore, and melt-change outputs before consensus work, mintd federation
   startup rejects non-v3/non-BLS aggregate configs, and standalone
   non-federated mint builders still honor legacy keyset-version settings.
-- [ ] Add an operation response cache keyed by operation hash and response type
-  for mint, swap, melt, restore, and quote state responses that need idempotent
+- [x] Add a bounded operation response cache keyed by operation hash for mint,
+  swap, melt, restore, and quote state responses that need idempotent
   public API behavior. The local accepted-operation notification cache now
   retains a bounded `response_cache_limit` of accepted responses for idempotent
   waiters and status visibility. Active waiters keep a per-operation response
@@ -976,10 +964,9 @@ Mint-side restructuring checklist:
   one accepted response, evicts the first operation with a second accepted
   operation, retries the first request, and verifies the wallet-facing response
   is rebuilt from persisted accepted state without appending a third operation.
-  Future typed response caches can build on this once separate terminal melt
-  result and share-set response types need longer retention than the local
-  notification cache.
-- [ ] Add a waiter registry keyed by operation hash so duplicate HTTP requests
+  Durable journal replay remains the source of truth after cache eviction; a
+  separate typed cache is unnecessary.
+- [x] Add a waiter registry keyed by operation hash so duplicate HTTP requests
   join the same pending consensus wait rather than submitting unbounded copies.
   AlephBFT submits now check the existing operation notification registry after
   durable journal duplicate detection but before consensus admission. If the
@@ -1014,7 +1001,7 @@ Mint-side restructuring checklist:
 
 Federated public API checklist:
 
-- [ ] `post_mint` and `post_batch_mint` compute the canonical mint operation
+- [x] `post_mint` and `post_batch_mint` compute the canonical mint operation
   hash, check for an accepted/cached response, run admission validation if
   needed, submit the operation to AlephBFT, await the accepted outcome, and
   return this member's persisted signature shares in normal Cashu response
@@ -1039,7 +1026,7 @@ Federated public API checklist:
   boundary. Live duplicate single-quote `post_mint` requests now join the same
   pending operation like batch mint and both waiters receive the same persisted
   accepted response after adapter-level finality.
-- [ ] `post_swap` computes the canonical swap operation hash, checks for a
+- [x] `post_swap` computes the canonical swap operation hash, checks for a
   cached response, validates the request without pending/spent mutations,
   submits to AlephBFT, awaits accepted apply, and returns persisted output
   shares in request-output order. Current in-memory/public route coverage
@@ -1061,7 +1048,7 @@ Federated public API checklist:
   current AlephBFT adapter boundary. Live duplicate public swap requests now
   join the same pending operation and both waiters receive the same persisted
   accepted response after adapter-level finality.
-- [ ] `post_melt` computes the canonical melt operation hash, checks for cached
+- [x] `post_melt` computes the canonical melt operation hash, checks for cached
   reserve/final response, validates proofs and change outputs without payment
   side effects, submits to AlephBFT, awaits accepted reserve/finalization
   according to the configured fake or real payment observation policy, and
@@ -1136,8 +1123,9 @@ Federated public API checklist:
 
 Wallet checklist:
 
-- [ ] Keep the CDK wallet simple. Do not add a Fedimint-style persistent client
-  state-machine stack unless a later requirement proves it necessary.
+- Design constraint: keep the CDK wallet simple. Do not add a Fedimint-style
+  persistent client state-machine stack unless a concrete later requirement
+  proves it necessary.
 - [x] The federated connector continues to fan out the same mint, swap, and melt
   request to all configured members, accepts threshold compatible responses,
   validates member shares, aggregates BLS shares, and returns ordinary Cashu
@@ -1653,9 +1641,10 @@ AlephBFT and consensus unit tests:
 
 Mint operation tests:
 
-- [ ] Admission validation for mint rejects malformed requests, unpaid quotes,
-  expired quotes, amount mismatches, duplicate outputs, NUT-20 failures, and
-  non-v3/BLS keysets without writing quote issuance or signature-share rows.
+- [x] Admission validation for mint rejects malformed requests, duplicate
+  outputs, NUT-20 failures, and non-v3/BLS keysets without writing quote
+  issuance or signature-share rows; accepted apply authoritatively validates
+  quote state, expiry, and amount against ordered consensus state.
   Current admission coverage proves single and batch mint duplicate outputs
   fail before consensus operation construction; apply-layer coverage still
   proves replayed unpaid quotes, expired quotes, duplicate outputs, batch
@@ -1670,7 +1659,7 @@ Mint operation tests:
   member signature-share provenance, and the applied journal status; stronger
   failure-injection coverage for all-or-nothing atomic rollback and
   materialized state-digest coupling remains open.
-- [ ] Same quote plus same outputs is idempotent before submission, while
+- [x] Same quote plus same outputs is idempotent before submission, while
   pending, after acceptance, after restart, and after catch-up. Current public
   route coverage proves live AlephBFT duplicates join one pending queue item
   and return the same accepted response without issuing twice, and proves the
@@ -1711,10 +1700,10 @@ Mint operation tests:
 
 Swap operation tests:
 
-- [ ] Admission validation for swap rejects malformed proofs, duplicate inputs,
+- [x] Admission validation for swap rejects malformed proofs, duplicate inputs,
   duplicate outputs, bad signatures, P2PK/HTLC/SIG_ALL failures, balance/fee
-  errors, non-v3/BLS output keysets, and obviously spent inputs without marking
-  proofs pending or spent.
+  errors, and non-v3/BLS output keysets without marking proofs pending or spent;
+  accepted apply authoritatively decides spent inputs and ordered-state balance.
   Current apply-layer coverage proves oversized/malformed proofs, invalid
   aggregate proof signatures, duplicate inputs, duplicate outputs, P2PK missing
   witnesses, unbalanced outputs, and SIG_ALL output mutation fail before proof
@@ -1732,7 +1721,7 @@ Swap operation tests:
   and applied journal status; stronger failure-injection coverage for
   all-or-nothing atomic rollback and materialized state-digest coupling remains
   open.
-- [ ] Exact duplicate swaps return the same persisted shares before submission,
+- [x] Exact duplicate swaps return the same persisted shares before submission,
   while pending, after acceptance, after restart, and after catch-up. Current
   public route coverage proves the after-acceptance duplicate returns the same
   persisted `SwapResponse` and does not append another operation, including
@@ -1764,10 +1753,10 @@ Swap operation tests:
 
 Melt operation tests:
 
-- [ ] Admission validation for melt rejects malformed proofs, duplicate inputs,
-  bad spending conditions, invalid quote state, invalid change outputs,
-  non-v3/BLS change keysets, and balance/fee errors without marking proofs spent
-  and without attempting payment.
+- [x] Admission validation for melt rejects malformed proofs, duplicate inputs,
+  bad spending conditions, invalid change outputs, non-v3/BLS change keysets,
+  and balance/fee errors without marking proofs spent or attempting payment;
+  accepted apply authoritatively decides quote state and payment progression.
   Current apply-layer coverage proves invalid aggregate proof signatures,
   duplicate inputs, P2PK missing witnesses, non-v3 change outputs, and
   unbalanced inputs fail before proof state storage, saga storage, quote-state
@@ -1997,15 +1986,12 @@ Objective: refactor CDK mint operations so consensus can call deterministic appl
 Implementation checklist:
 
 - [x] Add deterministic federated mint apply path, implemented as `apply_federation_mint`.
-- [ ] Refactor standalone `process_mint_request` into shared `validate_issue_mint` and `apply_issue_mint` functions if shared standalone/federation code is still desired.
 - [x] Add deterministic federated swap apply path, implemented as `apply_federation_swap`.
-- [ ] Refactor standalone `SwapSaga::setup_swap` and `finalize` into shared `validate_swap` and `apply_swap` functions if shared standalone/federation code is still desired.
 - [x] Pass operation hashes/IDs, quote IDs, and payment observations explicitly into federation apply paths.
 - [x] Add a consensus-provided accepted-time input if any apply path needs accepted time.
 - [x] Remove calls to `unix_time()` from consensus apply paths except via consensus-provided accepted time.
 - [x] Remove UUID generation from consensus apply paths.
 - [x] Ensure apply paths do not spawn tasks or publish pubsub notifications until after commit.
-- [ ] Keep existing standalone methods calling shared refactored functions through a standalone adapter if the shared functions are introduced.
 - [x] Make `apply_federation_mint` update quote issuance, blinded message records, completed operation, and output member-share records in one DB transaction using existing blind-signature storage.
 - [x] Make `apply_federation_swap` verify inputs, verify spending conditions, check balance, mark inputs spent, record blinded outputs, record completed operation, and request signature shares in one DB transaction.
 - [x] Decide how to represent `Pending` in federated mode:
@@ -2032,7 +2018,6 @@ Objective: let each member sign only with its own BLS share while advertising ag
 Implementation checklist:
 
 - [x] Add federation member-share signing helpers on federation config/private config data.
-- [ ] Introduce a `FederatedSignatory` type or split the existing `Signatory` trait if the helper approach becomes too implicit.
 - [x] `keysets()` must return aggregate public keys and aggregate keyset IDs.
 - [x] `verify_proofs()` must verify proofs against aggregate public keys.
 - [x] `blind_sign_share()` must return member share signatures plus member ID.
@@ -2062,7 +2047,6 @@ Implementation checklist:
 
 - [x] In federation mode, `get_mint_quote` on the contacted member creates the payment request, then submits a `MintQuote` federation operation to consensus.
 - [x] `MintQuote` carries quote ID and Cashu quote request/response payloads, including method, unit, amount, expiry, request, lookup, pubkey, and extra fields carried by those types.
-- [ ] Add explicit origin-member and accepted-time fields to the mint quote operation if they are required outside the journal envelope.
 - [x] All members persist the same quote after consensus accepts it.
 - [x] Payment observation operations are submitted and processed through consensus.
 - [x] Add an always-on payment observer task per member that watches unpaid quotes and submits mint quote payment observations.
@@ -2095,7 +2079,6 @@ Implementation checklist:
 
 - [x] In federation mode, `process_mint_request` converts `MintInput` into a `Mint` federation operation and submits it to consensus.
 - [x] `Mint` includes quote IDs and blinded outputs through `MintRequest`/`BatchMintRequest`; quote amounts are validated from accepted quote state.
-- [ ] Add explicit quote amount fields to the operation payload only if future review decides the current quote-state validation is insufficient.
 - [x] Consensus apply validates quote states, paid amounts, issued amounts, payment methods, units, v3/BLS output keysets, output uniqueness, and NUT-20 signatures.
 - [x] Consensus apply records issuance and member signature shares in the same DB transaction via dedicated federation signature-share storage plus the current wallet-facing blind-signature compatibility rows.
 - [x] Move member signature shares to a dedicated `federation_signature_share` table if that table is added.
@@ -2265,14 +2248,15 @@ Tests and success criteria:
 
 Objective: run federation members as separate processes.
 
+Scope decision: federation networking is signed private REST. Alternative
+transports are outside this implementation plan and would require a separate
+design and deployment requirement.
+
 Implementation checklist:
 
 - [x] Use private REST client/server and `cdk_http_client::Transport` for MVP federation traffic.
-- [ ] Add a Fedimint-like P2P trait similar to `IP2PConnections` when adding non-REST transports.
 - [x] Implement an in-memory consensus/network simulator for tests.
-- [ ] Implement a separate in-memory P2P transport if future consensus code needs it.
 - [x] Abstract HTTP transport for the private REST peer client.
-- [ ] Add a shared transport abstraction spanning in-memory, REST, TCP/TLS or Noise, and Iroh only if additional transports start sharing consensus code.
 - [x] Implement private REST transport first using Axum/Reqwest for local, regtest, and reachable-server deployments.
 - [x] Keep federation REST endpoints separate from public Cashu wallet endpoints, for example under `/federation/v1/*`.
 - [x] Use signed, canonical member-to-member envelopes on every REST message: federation ID, sender member ID, receiver member ID, message kind, consensus height, nonce or sequence number, body hash, and signature.
@@ -2282,11 +2266,9 @@ Implementation checklist:
 - [x] Do not support dynamic peer admission in MVP; member add/remove must be an explicit later governance operation.
 - [x] Make REST messages idempotent so retries after timeouts cannot duplicate consensus proposals, payment observations, or configured development-backend outgoing attempts.
 - [x] Add REST endpoints for peer status, proposal submission, consensus messages, signed session outcomes, catch-up ranges, and state-digest comparison.
-- [ ] Optionally implement TCP/TLS or Noise transport with static peer identities only if a concrete deployment or consensus-performance need appears.
-- [ ] Optionally add an Iroh transport adapter for internet deployments where members cannot expose stable inbound federation REST endpoints.
 - [x] Treat private signed REST as the default federation transport. It is sufficient for all mint-to-mint consensus, catch-up, DKG/setup, status, and AlephBFT message traffic when members have mutually reachable endpoints.
-- [x] Treat Iroh as an optional NAT/firewall traversal backend, not a protocol requirement and not a blocker for correctness milestones.
-- [x] Document that private REST alone requires reachable member endpoints or an external connectivity solution such as VPN, reverse tunnel, relay, Tor, or optional Iroh.
+- [x] Document that private REST requires reachable member endpoints or an
+  external connectivity solution such as VPN, reverse tunnel, relay, or Tor.
 - [x] Authenticate every peer message by member ID.
 - [x] Add consensus item size/admission limits.
 - [x] Add bounded outbound and inbound REST queues and backpressure.
@@ -2295,7 +2277,7 @@ Implementation checklist:
 - [x] Add periodic config-digest, consensus-height, and state-digest gossip between peers.
 - [x] Add admin peer status output.
 - [x] Add peer status metrics.
-- [x] Separate public HTTP API URL from private P2P URL.
+- [x] Separate public Cashu API URL from private federation REST URL.
 - [x] Reject messages from unknown members or wrong federation IDs.
 - [x] Define maximum message sizes and backpressure behavior for consensus proposals, signature-share responses, and catch-up data.
 
@@ -2303,18 +2285,17 @@ Tests and success criteria:
 
 - [x] Local process tooling and smoke scripts exist for multi-member private REST federation runs.
 - [x] Re-run and record a five-local-process private REST consensus smoke test.
-- [x] In-memory P2P test can deterministically simulate partitions, dropped messages, reordered messages, and reconnects.
+- [x] In-memory private-transport tests deterministically simulate partitions,
+  dropped messages, reordered messages, and reconnects.
 - [x] REST retry test proves duplicate HTTP deliveries are idempotent.
 - [x] REST authentication test rejects wrong federation ID, wrong sender ID, stale sequence, invalid signature, and body-hash mismatch.
 - [x] REST allowlist test rejects a well-formed message signed by a valid key that is not in the federation roster.
 - [x] REST claimed-sender test rejects a message signed by member A's key while claiming member B's ID.
-- [ ] Optional Iroh adapter smoke test connects peers without direct inbound TCP reachability if an Iroh backend is implemented and the test environment supports it.
 - [x] Restarted member reconnects and catches up.
 - [x] Unknown peer messages are rejected.
 - [x] Size/admission tests cover oversized consensus items.
 - [x] Queue overflow drops non-critical messages without crashing consensus.
 - [x] Signed-envelope identity mismatch prevents message acceptance.
-- [ ] Add TLS/Noise identity mismatch tests if those transports are implemented.
 - [x] Peer status shows connected, disconnected, lagging, catching-up, and halted states.
 
 ## Milestone 16: member startup, catch-up, and recovery
@@ -2325,7 +2306,6 @@ Implementation checklist:
 
 - [x] On startup, load federation config and validate key shares before serving HTTP.
 - [x] Start private REST/consensus runtime before enabling federation signing endpoints.
-- [ ] Revisit startup sequencing only when non-REST transports are implemented.
 - [x] Replay accepted items since last checkpoint if needed.
 - [x] Persist last applied consensus session, item index, operation hash, outcome hash, and state digest.
 - [x] Persist signed session outcomes so lagging members can verify catch-up data without trusting one peer.
@@ -2754,17 +2734,24 @@ Implementation checklist:
 - [x] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and session outcomes.
 - [x] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
 - [x] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.
-- [ ] Split large federation modules into logical submodules when useful, following existing CDK layout conventions.
-- [ ] Suggested mint split: config/runtime, apply, mint, swap, melt, restore/check-state, payment observations, keysets, and tests. Runtime/member/apply-boundary tests now live in `mint/federation/tests/runtime.rs`, covering backend-agnostic payment-path auditing, proof content-size guards, member-mode standalone-path guards, accepted/applying/applied/terminal apply behavior, and runtime config basics. Pure runtime/admission tests now live in `mint/federation/tests/admission.rs`, covering operation construction, duplicate-output rejection, non-v3 rejection, proof admission, and accepted-share signing while sharing fixtures from the parent mint federation test module. Stateful mint issuance tests now live in `mint/federation/tests/mint.rs`, covering rotated keyset signing, accepted-share restore provenance, pre-signing rejection, materialization rows, and NUT-20 validation. Mint quote construction, quote/payment-observation admission, accepted logical-time persistence, and quote pubsub lifecycle tests now live in `mint/federation/tests/quote.rs`. Mint payment-observation tests now live in `mint/federation/tests/payment_observation.rs`, covering operation construction, stored quorum finalization, metadata, quarantine, and replay ordering. Keyset rotation and old-keyset restore tests now live in `mint/federation/tests/keyset.rs`, covering local share validation, accepted rotation apply, effective rotated keyset responses, and restore provenance after rotation. Stateful swap tests now live in `mint/federation/tests/swap.rs`, covering swap apply rejection, accepted materialization, rotated outputs, spending conditions, and sliding-window input reuse. Stateful melt tests now live in `mint/federation/tests/melt.rs`, covering melt apply rejection, reserve/payment ordering, actor selection, internal melt-to-mint settlement, catch-up payment observations, and stored-quorum finalization/rollback.
-- [ ] Suggested wallet split: connector, member fanout, share aggregation, keyset validation, quote/status aggregation, melt/change aggregation, and tests. Member mint-info and aggregate keyset validation now live in `wallet/federation/validation.rs`; connector orchestration, fanout, share aggregation, quote/status aggregation, melt/change aggregation, and the large wallet connector test module remain open for further splits.
-- [ ] Suggested Axum split: routes, peer client, sync loop, status, catch-up, DKG/setup routes, payment-observation routes, and tests. The peer-sync policy defaults, validation, env-disable parsing, interval setup, and reconnect backoff now live in `crates/cdk-axum/src/federation/sync_config.rs` while `FederationPeerSyncConfig` remains re-exported from the parent module. The signed private REST peer client now lives in `crates/cdk-axum/src/federation/peer_client.rs`, covering outbound admission, signed request construction, endpoint building, per-operation timeouts, DKG/status/submit/catch-up calls, and process-wide REST sequence reservation. Peer sync orchestration now lives in `crates/cdk-axum/src/federation/sync_loop.rs`, covering the periodic sync loop, reconnect-aware sync rounds, signed session-outcome evidence collection, primary forwarding, and peer-client catch-up/materialized-digest checks. The private DKG setup route handlers now live in `crates/cdk-axum/src/federation/dkg_routes.rs`, covering commitment, reveal, secret-share, and transcript-signature request validation/persistence while the parent module keeps router assembly and shared signed-envelope helpers. The signed catch-up journal route now lives in `crates/cdk-axum/src/federation/catch_up_routes.rs`, covering sequence persistence, bounded durable journal responses, materialized state digest attachment, and signed session-outcome evidence. The private status and local-status route handlers plus `FederationLocalStatusResponse` now live in `crates/cdk-axum/src/federation/status_routes.rs`, covering signed status sequence persistence, consensus-visible peer status reads, sync readiness, quorum evidence, materialized-row status responses, and local-status metrics. Payment-observation report assembly now lives in `crates/cdk-axum/src/federation/payment_observation.rs`, covering journal-derived observation/quarantine summaries and quote-age enrichment for local-status responses.
-- [ ] Move large inline federation test fixtures, local connectors, and fakewallet helpers into dedicated test modules or integration-test helpers. The `cdk-common` consensus tests and fixtures have been extracted to `federation/consensus/tests.rs`, the wallet local member connector fixtures now live in `wallet/federation/tests/local_connector.rs`, the mint federation runtime/member/apply-boundary tests now live in `mint/federation/tests/runtime.rs`, the mint federation runtime/admission tests now live in `mint/federation/tests/admission.rs`, the mint federation stateful mint issuance tests now live in `mint/federation/tests/mint.rs`, the mint federation quote lifecycle tests now live in `mint/federation/tests/quote.rs`, the mint federation mint payment-observation tests now live in `mint/federation/tests/payment_observation.rs`, the mint federation keyset/restore tests now live in `mint/federation/tests/keyset.rs`, the mint federation stateful swap tests now live in `mint/federation/tests/swap.rs`, the mint federation stateful melt tests now live in `mint/federation/tests/melt.rs`, the parent mint federation tests now live in `mint/federation/tests.rs`, the wallet federation connector tests now live in `wallet/federation/tests.rs`, the Axum private REST federation tests now live in `federation/tests.rs`, the Axum private operation route tests now live in `federation/tests/private_operation_route.rs`, the Axum DKG setup route tests now live in `federation/tests/dkg_setup_routes.rs`, the Axum DKG transcript-signature route tests now live in `federation/tests/dkg_transcript_signature.rs`, the mintd federation setup/smoke-artifact tests now live in `federation_setup/core_tests.rs` plus `federation_setup/tests.rs`, the smoke-operation argument tests now live in `federation_smoke/tests.rs`, the mintd status command tests now live in `federation_status/tests.rs`, the mintd DKG-status tests now live in `federation_dkg_status/tests.rs`, and the mintd quarantine, digest-compare, payment-observations, and inspect command tests now live in their sibling `tests.rs` modules; remaining smoke/helper splits remain open.
+- [x] Extract federation code and tests into logical submodules where it improves
+  ownership and test focus. The current layout separates mint runtime,
+  admission, issuance, quote/payment observation, keyset/restore, swap, melt,
+  wallet validation, private REST peer client, sync loop, status, catch-up, DKG
+  routes, and smoke/status test modules.
+- Maintenance note: further splitting is ordinary code-health work, not a
+  federation correctness or release gate.
 - [x] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
 - [x] Audit `cdk`, `cdk-common`, `cdk-axum`, `cdk-mintd`, and storage crates for accidental fakewallet coupling in federation code.
 - [x] Audit generated example configs so fakewallet-backed development federation examples are clearly marked development-only and cannot be mistaken for production templates.
 - [x] Audit timeout constants, fallback behavior, and member retry policies introduced for smoke tests, and make production-relevant values configurable.
 - [x] Remove stale "scaffolding", "placeholder", and "MVP wiring" labels from production federation modules once the corresponding feature is implemented; keep such language only in explicit dev/test code.
-- [ ] Make fakewallet federation regtest and smoke tooling look and run more like existing CDK tests where practical, with `cargo test` coverage for core flows and `just` targets as convenience wrappers. Smoke-operation argument tests now cover zero mint amounts, zero operation batches, seed-offset/batch overflow, stateful-scenario batch rejection, and the wallet database and private config prerequisites for resumable, quarantine, and keyset-rotation scenarios before generated scripts reach networked member operations, and `just fed-regtest-check` runs the fast smoke/setup cargo-test gate without starting member processes.
+- [x] Provide fakewallet federation smoke tooling through focused `cargo test`
+  coverage with `just` targets as convenience wrappers. Smoke-operation argument
+  tests cover invalid amounts, batch bounds, stateful scenario validation, and
+  required wallet/private-config prerequisites before generated scripts reach
+  networked member operations; `just fed-regtest-check` runs the fast
+  smoke/setup test gate without starting member processes.
 - [x] Remove or rewrite any comments, docs, metrics, or status labels that imply fakewallet is part of federation rather than a replaceable mint backend.
 - [x] Confirm standalone fakewallet mint behavior remains unchanged outside federation mode.
 
