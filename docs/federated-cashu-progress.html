@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. Milestone 4A remains open, and a fresh process benchmark has identified a blocking phase-dependent liveness bug in the inactive AlephBFT data-provider wait that must be fixed without restoring the earlier idle-CPU and DAG-growth regressions.</span>
+          <span class="value">Milestones 4 and 25 are complete. <code>cdk-cli</code> runs mint, swap, melt, receive, restore, state, and balance flows against real AlephBFT fakewallet federations. The phase-dependent idle data-provider liveness blocker is fixed without restoring periodic idle unit creation; Milestone 4A and the broader convergence certification remain open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record AlephBFT liveness benchmark</span>
+          <span class="value">fix: wake idle AlephBFT federation members</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A fresh five-member, threshold-three benchmark measured direct mint info, standalone and federated CLI mint info, and two full mints. Mint 1 completed in 7.78s; mint 2 took 94.84s because its primary held a paid quote and payment observation without any data-provider yield until the 90-second wallet fallback proposed a new quote elsewhere. Once yielded, networking, finality, apply, signing, and aggregation were fast and all members converged.</span>
+          <span class="value">The signed member-wide activity wake passed provider, route, replay, finalization-tail, and live five-member tests. Fresh 50 sat mints completed in 7.76s and 4.95s after a deliberate 15-second idle gap, with exactly six accepted operations, no fallback quote, no duplicates, no pending work, and matching state and order digests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add a deterministic regression for the asymmetric creator/data-provider phase, then repair distributed activity wakeup so repeated post-idle mints make progress without fallback or extra quotes. The acceptance gate must retain low idle CPU, stop idle DAG growth, preserve one-offline progress, and converge on exactly three accepted operations per mint.</span>
+          <span class="value">Resume Milestone 16A convergence certification: finish the self-partition, below-quorum halt, above-quorum progress, restart, and catch-up matrix, then reconcile the remaining broad-suite test debt without weakening liveness-only sequence or state-digest semantics.</span>
         </div>
       </aside>
     </header>

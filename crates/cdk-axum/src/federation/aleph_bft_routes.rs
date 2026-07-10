@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use cdk::federation::{
+    FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationConsensusBackendKind, FederationError, FederationRestMessageKind,
@@ -16,6 +17,45 @@ use super::{
     acquire_private_rest_admission, cdk_error_response, federation_error_response,
     federation_runtime_config, verify_federation_request,
 };
+
+#[instrument(skip_all)]
+pub(super) async fn post_aleph_bft_activity(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationAlephBftActivityRequest>>,
+) -> Result<Json<FederationAlephBftActivityResponse>, Response> {
+    let _permit =
+        acquire_private_rest_admission(&state, FederationRestMessageKind::AlephBftActivity)?;
+    let verified = verify_federation_request(
+        &state,
+        &payload,
+        FederationRestMessageKind::AlephBftActivity,
+    )
+    .await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    if runtime_config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "AlephBFT activity is not accepted for {} consensus backend",
+                runtime_config.consensus_backend()
+            ),
+        )
+            .into_response());
+    }
+    state
+        .mark_aleph_bft_peer_activity(payload.payload.session_id, payload.payload.operation_id)
+        .await
+        .map_err(cdk_error_response)?;
+    state
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
+
+    Ok(Json(FederationAlephBftActivityResponse::new(
+        runtime_config.federation_id(),
+        payload.payload.session_id,
+        payload.payload.operation_id,
+    )))
+}
 
 #[instrument(skip_all)]
 pub(super) async fn post_aleph_bft_finalized_unit(

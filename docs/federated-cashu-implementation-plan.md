@@ -52,7 +52,13 @@ A blocker is only resolved when the fix is tested and the code is clean: no debu
 
 Current blocking bugs:
 
-- AlephBFT idle data-provider liveness is open. A fresh five-member,
+- None in the AlephBFT idle-liveness checkpoint. The previously open bug was
+  reproduced, isolated, repaired, and closed without restoring periodic idle
+  unit creation.
+
+Resolved blocking bugs:
+
+- AlephBFT idle data-provider liveness is fixed. A fresh five-member,
   threshold-three process benchmark completed one mint in 7.78s, then left a
   second member's locally queued `mint_quote` and already-paid
   `mint_quote_payment` operations without a `data_provider_yielded` event for
@@ -64,9 +70,19 @@ Current blocking bugs:
   inactive wait can therefore hold parent units needed by creators that are
   not themselves waiting in `get_data`; waking only the local submitter is not
   a sufficient distributed liveness mechanism. This is separate from the
-  fixed 100-percent/periodic idle-CPU issue. The blocker is resolved only when
-  repeated fresh and post-idle process mints make progress without member
-  fallback or extra quotes, while idle CPU and DAG growth remain bounded.
+  fixed 100-percent/periodic idle-CPU issue. The clean fix adds an authenticated,
+  session- and operation-bound private REST activity wake. A member admitting
+  public work wakes its local provider and broadcasts the control signal to the
+  configured federation roster; peers use the existing bounded network-activity
+  grace rather than pretending to own local work. Finalization shortens both
+  body-hash and operation-ID activity to the one-second propagation tail.
+  Rejected sessions do not consume sequence numbers, replays are rejected, and
+  the wake never enters the accepted operation journal. A fresh fixed build
+  completed cold and 15-second-post-idle mints in 7.76s and 4.95s with exactly
+  six accepted operations, no fallback quote, no duplicate submission, no
+  pending work, and identical member digests. Over a separate 30-second idle
+  sample every DAG stayed at exactly 293 units and each debug member consumed
+  only 0.64-0.65 CPU seconds, about 2.1% per process.
 
 ## Recent consensus checkpoint
 
@@ -89,9 +105,25 @@ Current blocking bugs:
   bounded retry/backpressure certification, round/consensus-height observability,
   atomic failure-injection coverage for value-operation apply, and the full
   self-partition/below-quorum/above-quorum catch-up certification matrix.
+- Current verification is explicit: all focused activity-wake tests, the
+  default-cadence probe, mintd/CLI feature checks, and the fresh five-process
+  gate pass. The broader single-threaded `cdk-axum` federation run passed 400
+  of 410 tests. Its ten remaining failures are tracked test debt in wallet
+  catch-up timing, liveness-only sequence persistence assertions, idle
+  auto-rotation, in-memory state-digest checkpoint expectations, and the
+  unfinished partition matrix; they were not hidden or relaxed as part of this
+  narrowly scoped liveness repair.
 
 ## Recent performance checkpoint
 
+- Accepted idle-liveness fix rebenchmark: direct `/v1/info` completed in 0.92s,
+  standalone CLI `mint-info` in 2.00s/0.03s user CPU, federation import in
+  1.42s/1.41s user CPU, and federated CLI `mint-info` in 1.56s/0.61s user CPU.
+  The first full 50 sat mint completed in 7.76s; a second 50 sat mint after a
+  deliberate 15-second idle gap completed in 4.95s. All five members converged
+  on exactly `mint_quote -> mint_quote_payment -> mint` twice with no fallback,
+  proving that minting still uses three consensus operations and the stalled
+  creator phase is released by the new member-wide activity wake.
 - Fresh liveness rebenchmark: direct `/v1/info` completed in 0.91s,
   standalone CLI `mint-info` in 4.91s with only 0.03s user CPU, federation
   import in 1.44s/1.41s user CPU, federated `mint-info` in 1.58s/0.60s user
@@ -2259,7 +2291,7 @@ AlephBFT and consensus unit tests:
   as retryable. Process benchmarking exposed a backup-saver termination after
   SQLite storage contention; the runtime now retries backup-byte persistence
   with bounded backoff and has focused retry-classification coverage.
-- [ ] Repair AlephBFT live-session tail pacing so it is both pending-work aware
+- [x] Repair AlephBFT live-session tail pacing so it is both pending-work aware
   and live from every quiescent creator phase. The fixed
   always-fast delay experiment was rejected because it reached the 2s idle tail
   before normal wallet traffic and reproduced high CPU. The live session now
@@ -2285,10 +2317,19 @@ AlephBFT and consensus unit tests:
   why: AlephBFT awaits the data provider after creating a preunit, so an
   indefinite empty-queue wait can withhold parent units while another creator
   is waiting for parents and cannot observe its local activity hint. Keep the
-  CPU and replay fixes, replace the unsafe indefinite wait with a distributed
-  liveness mechanism compatible with upstream creator semantics, and add
-  repeated post-idle process gates proving exact three-operation mints with no
-  fallback quote churn.
+  CPU and replay fixes are retained. Newly admitted public work now emits a
+  signed member-wide private REST activity request bound to federation,
+  receiver, sender, sequence, live session, and operation ID. Every peer marks
+  bounded network activity so an empty provider can return once and release its
+  already-created preunit; private duplicate admissions wake only the local
+  provider, while public retries may rebroadcast. Focused transport, provider,
+  finalization-tail, route/replay, and five-member post-idle tests pass. The
+  fresh process gate completed 7.76s and 4.95s mints with exactly three accepted
+  operations each, matching digests, zero pending work, zero fallback quotes,
+  and zero duplicate submissions. A 30-second post-work idle sample held every
+  DAG at 293 units and measured 0.64-0.65 CPU seconds per debug member, so the
+  indefinite-wait liveness failure is closed without restoring the periodic
+  idle-unit/100-percent-CPU regression.
 - [x] Non-production AlephBFT latency instrumentation records stage timing
   without changing production protocol behavior. The scoped test-only recorder
   captures operation-specific submit queueing, upstream data-provider yield,

@@ -5,9 +5,14 @@ use aleph_bft::{
     create_config, default_delay_config, run_session, Config as AlephBftConfig, DelayConfig, Index,
     NodeCount, Terminator,
 };
-use cdk::federation::{FederationAlephBftFinalityMode, FederationConsensusBackendKind, MemberId};
+use cdk::federation::{
+    FederationAlephBftActivityRequest, FederationAlephBftFinalityMode,
+    FederationConsensusBackendKind, FederationOperationId, MemberConfigPublic, MemberId,
+};
 use cdk_http_client::{Async, Transport};
 use futures::channel::oneshot;
+use futures::future::join_all;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::MintState;
@@ -217,6 +222,8 @@ pub(crate) struct FederationAlephBftLiveSessionHandle {
     activity_hint: CdkAlephBftActivityHint,
     spawn_handle: CdkAlephBftTokioSpawnHandle,
     session_task: JoinHandle<()>,
+    activity_sender: mpsc::UnboundedSender<FederationOperationId>,
+    activity_broadcast_task: JoinHandle<()>,
     network_pump_task: JoinHandle<()>,
     apply_task: JoinHandle<()>,
     completion_watcher_task: Option<JoinHandle<()>>,
@@ -230,8 +237,27 @@ impl std::fmt::Debug for FederationAlephBftLiveSessionHandle {
 }
 
 impl FederationAlephBftLiveSessionHandle {
-    pub(crate) fn mark_activity(&self) {
+    #[cfg(test)]
+    pub(crate) fn activity_is_active(&self) -> bool {
+        self.activity_hint.is_active()
+    }
+
+    pub(crate) fn mark_activity(&self, operation_id: FederationOperationId, broadcast: bool) {
         self.activity_hint.mark_local_pending();
+        if !broadcast {
+            return;
+        }
+        if self.activity_sender.send(operation_id).is_err() {
+            tracing::warn!(
+                %operation_id,
+                "AlephBFT activity broadcaster is not available"
+            );
+        }
+    }
+
+    pub(crate) fn mark_peer_activity(&self, operation_id: FederationOperationId) {
+        self.activity_hint
+            .mark_network_activity([operation_id.to_bytes()]);
     }
 
     fn shutdown(&self) {
@@ -249,6 +275,7 @@ impl FederationAlephBftLiveSessionHandle {
             }
         }
         self.spawn_handle.abort_all();
+        self.activity_broadcast_task.abort();
         self.network_pump_task.abort();
         self.apply_task.abort();
         self.session_task.abort();
@@ -365,6 +392,12 @@ where
         })?;
     let public_config = config.public_config().clone();
     let private_config = config.private_config().clone();
+    let activity_peers = public_config
+        .members
+        .values()
+        .filter(|member| member.member_id != private_config.member_id)
+        .cloned()
+        .collect::<Vec<_>>();
     let keychain = CdkAlephBftKeychain::try_new(&public_config, private_config.clone())?;
     let consensus = state
         .federation_consensus
@@ -489,6 +522,13 @@ where
             "Could not create AlephBFT live session peer client: {err}"
         ))
     })?;
+    let (activity_sender, activity_receiver) = mpsc::unbounded_channel();
+    let activity_broadcast_task = tokio::spawn(run_aleph_bft_activity_broadcast_loop(
+        client.clone(),
+        activity_peers,
+        session_id,
+        activity_receiver,
+    ));
     let pump_keychain = keychain.clone();
     let network_pump_task = tokio::spawn(async move {
         let mut interval = federation_peer_sync_interval(sync_config);
@@ -585,6 +625,8 @@ where
         activity_hint,
         spawn_handle,
         session_task,
+        activity_sender,
+        activity_broadcast_task,
         network_pump_task,
         apply_task,
         completion_watcher_task,
@@ -601,6 +643,49 @@ where
     }
 
     Ok(Some(handle))
+}
+
+async fn run_aleph_bft_activity_broadcast_loop<T>(
+    client: FederationRestPeerClient<T>,
+    peers: Vec<MemberConfigPublic>,
+    session_id: u64,
+    mut activity_receiver: mpsc::UnboundedReceiver<FederationOperationId>,
+) where
+    T: Transport + 'static,
+{
+    while let Some(operation_id) = activity_receiver.recv().await {
+        let request = FederationAlephBftActivityRequest::new(session_id, operation_id);
+        let outcomes = join_all(
+            peers
+                .iter()
+                .map(|peer| client.submit_aleph_bft_activity(peer, &request)),
+        )
+        .await;
+        let mut accepted = 0usize;
+        let mut failed = 0usize;
+        for outcome in outcomes {
+            match outcome {
+                Ok(_) => accepted = accepted.saturating_add(1),
+                Err(_) => failed = failed.saturating_add(1),
+            }
+        }
+        if accepted == 0 {
+            tracing::warn!(
+                %operation_id,
+                session_id,
+                failed_members = failed,
+                "AlephBFT activity wake reached no remote member"
+            );
+        } else if failed > 0 {
+            tracing::debug!(
+                %operation_id,
+                session_id,
+                accepted_members = accepted,
+                failed_members = failed,
+                "AlephBFT activity wake reached only part of the federation"
+            );
+        }
+    }
 }
 
 fn aleph_bft_config(

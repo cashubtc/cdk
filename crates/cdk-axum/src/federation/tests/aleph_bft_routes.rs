@@ -1,3 +1,5 @@
+use cdk::federation::FederationAlephBftActivityRequest;
+
 use super::*;
 
 async fn aleph_bft_route_state() -> (MintState, FederationConfig, MemberConfigPrivate) {
@@ -72,6 +74,24 @@ fn signed_aleph_bft_network_message_request(
         private_config,
     )
     .expect("signed AlephBFT network-message request")
+}
+
+fn signed_aleph_bft_activity_request(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    sequence: u64,
+    session_id: u64,
+    operation_id: FederationOperationId,
+) -> FederationSignedRequest<FederationAlephBftActivityRequest> {
+    FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        member_id(1),
+        sequence,
+        FederationRestMessageKind::AlephBftActivity,
+        FederationAlephBftActivityRequest::new(session_id, operation_id),
+        private_config,
+    )
+    .expect("signed AlephBFT activity request")
 }
 
 #[tokio::test]
@@ -720,6 +740,89 @@ async fn private_aleph_bft_finalized_unit_route_rejects_storage_conflict_before_
         .await
         .peer_status();
     assert_eq!(status.operation_count, 0);
+}
+
+#[tokio::test]
+async fn private_aleph_bft_activity_route_wakes_live_session_and_preserves_rejected_sequence() {
+    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        FederationPeerSyncConfig::default(),
+        CdkAlephBftNetworkPumpConfig::default(),
+        MockFederationTransport::default(),
+    )
+    .await
+    .expect("start AlephBFT live session")
+    .expect("live session handle");
+    let operation_id = mint_quote_envelope(&state, &QuoteId::new())
+        .operation_id()
+        .expect("activity operation id");
+    let wrong_session =
+        signed_aleph_bft_activity_request(&public_config, &peer_private, 1, 1, operation_id);
+
+    let response = post_aleph_bft_activity(State(state.clone()), Json(wrong_session))
+        .await
+        .expect_err("wrong activity session must fail");
+    let detail = response_error_detail(response).await;
+    assert!(
+        detail.contains("Federation AlephBFT unit session mismatch"),
+        "unexpected detail: {detail}"
+    );
+
+    let request =
+        signed_aleph_bft_activity_request(&public_config, &peer_private, 1, 0, operation_id);
+    let response = post_aleph_bft_activity(State(state.clone()), Json(request.clone()))
+        .await
+        .expect("activity response")
+        .0;
+    assert_eq!(response.federation_id, public_config.federation_id);
+    assert_eq!(response.session_id, 0);
+    assert_eq!(response.operation_id, operation_id);
+    assert!(handle.activity_is_active());
+
+    let replay = post_aleph_bft_activity(State(state), Json(request))
+        .await
+        .expect_err("activity request replay must fail");
+    let detail = response_error_detail(replay).await;
+    assert!(
+        detail.contains("stale sequence"),
+        "unexpected detail: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn aleph_bft_activity_wake_finalizes_five_member_operation_after_idle() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let session = start_five_member_aleph_bft_live_session(
+        FederationAlephBftLiveSessionOptions::new(pump_config).with_max_round(500),
+    )
+    .await
+    .expect("start five-member live session");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let latency = CdkAlephBftLatencyRecorder::install().await;
+
+    let operation_id = submit_latency_probe_mint_quote(&session.states[0]).await;
+    for state in &session.states {
+        wait_for_applied_operation(state, operation_id).await;
+    }
+
+    let events = latency.events_for_operation(operation_id);
+    assert_latency_stage_order(&events, LATENCY_EXPECTED_STAGES);
+    let submit_to_yield = latency_stage_delta(
+        &events,
+        CdkAlephBftLatencyStage::SubmitQueued,
+        CdkAlephBftLatencyStage::DataProviderYielded,
+    )
+    .expect("submit-to-provider-yield latency");
+    assert!(
+        submit_to_yield < Duration::from_secs(5),
+        "five-member idle wake took {submit_to_yield:?}: {}",
+        format_latency_events(&events)
+    );
 }
 
 #[tokio::test]

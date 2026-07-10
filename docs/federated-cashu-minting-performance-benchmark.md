@@ -216,6 +216,57 @@ Required regression gate before accepting a fix:
 7. Remove temporary creator/provider instrumentation after the fix, retaining
    only the existing opt-in lifecycle trace or similarly low-noise diagnostics.
 
+### Accepted fix and process verification
+
+The accepted fix keeps the inactive provider wait and adds a separate signed
+private REST activity request. On a newly admitted public operation, the local
+member marks its own pending work and broadcasts the current session and
+operation ID to every configured peer. An authenticated peer records bounded
+network activity for that operation, allowing an empty provider to return
+`None` once so AlephBFT can send its already-created preunit. The signal is
+control traffic only: it is not an operation, cannot sign outputs, and never
+appears in the federation journal. A duplicate private operation wakes only
+the local provider, avoiding broadcast loops; a public retry may rebroadcast
+the wake. Finalization shortens operation-ID activity to the same one-second
+tail already used for finalized body hashes.
+
+Focused tests prove that the signed request and response are bound to the
+expected operation, a peer pulse releases an empty provider, finalization
+shortens its activity tail, a wrong session is rejected without consuming the
+sender sequence, replay is rejected, and a five-member threshold-three live
+session finalizes after a three-second idle period.
+
+Fresh process timings from the fixed build:
+
+| Command | Wall | User | System |
+| --- | ---: | ---: | ---: |
+| direct `curl /v1/info` | 0.92s | 0.00s | 0.00s |
+| non-federated CLI `mint-info` | 2.00s | 0.03s | 0.02s |
+| `federation add` | 1.42s | 1.41s | 0.00s |
+| federated CLI `mint-info` | 1.56s | 0.61s | 0.00s |
+| full federated mint 1, 50 sat | 7.76s | 1.98s | 0.03s |
+| full federated mint 2 after 15s idle, 50 sat | 4.95s | 1.18s | 0.01s |
+
+Every member converged on exactly six accepted operations:
+
+1. `mint_quote`
+2. `mint_quote_payment`
+3. `mint`
+4. `mint_quote`
+5. `mint_quote_payment`
+6. `mint`
+
+There were no fallback quotes, duplicate submissions, pending mempool items,
+pending waiters, payment conflicts, digest alerts, or invalid-operation alerts.
+Order and state digests matched on all five members. This both confirms the fix
+and reconfirms that each successful mint uses three consensus operations.
+
+The post-work idle safety sample ran for 30 seconds. Every member's reconstructed
+DAG remained exactly at 293 units for the whole sample. CPU-time deltas were
+0.64-0.65 seconds per debug member, about 2.1% per process, rather than a busy
+loop. No temporary source instrumentation was needed or retained; the existing
+opt-in lifecycle trace remains the diagnostic path.
+
 ## Fresh CLI and Mint Rebaseline After Command-Routing Audit
 
 On 2026-07-10 local time, a fresh five-member, threshold-three fakewallet

@@ -68,6 +68,7 @@ pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
 pub use self::transport::{
+    FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationAlephBftNetworkRetryRecord, FederationDkgCommitmentRequest,
@@ -475,6 +476,14 @@ pub enum FederationError {
     #[error("Federation submit-operation response mismatch: expected={expected}, found={found}")]
     SubmitOperationResponseMismatch {
         /// Expected submitted operation ID.
+        expected: FederationOperationId,
+        /// Operation ID found in the peer response.
+        found: FederationOperationId,
+    },
+    /// A peer acknowledged AlephBFT activity for a different operation.
+    #[error("Federation AlephBFT activity response mismatch: expected={expected}, found={found}")]
+    AlephBftActivityOperationMismatch {
+        /// Expected activity operation ID.
         expected: FederationOperationId,
         /// Operation ID found in the peer response.
         found: FederationOperationId,

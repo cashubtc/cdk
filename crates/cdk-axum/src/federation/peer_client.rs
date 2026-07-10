@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
+    FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationConfig, FederationConsensusBackendKind, FederationDkgCommitmentRequest,
@@ -210,6 +211,34 @@ where
             )
             .await?;
         response.validate(self.federation_id, request.payload.session_id)?;
+
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_aleph_bft_activity(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationAlephBftActivityRequest,
+    ) -> anyhow::Result<FederationAlephBftActivityResponse> {
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::AlephBftActivity,
+            *request,
+        )?;
+        let response: FederationAlephBftActivityResponse = self
+            .http_post_with_timeout(
+                member,
+                "aleph-bft/activity",
+                "AlephBFT activity submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            request.payload.session_id,
+            request.payload.operation_id,
+        )?;
 
         Ok(response)
     }

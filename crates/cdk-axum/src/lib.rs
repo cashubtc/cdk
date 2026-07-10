@@ -1583,11 +1583,43 @@ impl MintState {
             .is_some()
     }
 
-    async fn mark_aleph_bft_consensus_activity(&self) {
+    async fn mark_aleph_bft_consensus_activity(
+        &self,
+        operation_id: FederationOperationId,
+        broadcast: bool,
+    ) {
         let Some(handle) = self.federation_aleph_bft_live_session.read().await.clone() else {
             return;
         };
-        handle.mark_activity();
+        handle.mark_activity(operation_id, broadcast);
+    }
+
+    pub(crate) async fn mark_aleph_bft_peer_activity(
+        &self,
+        session_id: u64,
+        operation_id: FederationOperationId,
+    ) -> Result<(), cdk::Error> {
+        let status = self.federation_aleph_bft_status().await.ok_or_else(|| {
+            cdk::Error::Custom("AlephBFT activity requires an active consensus runtime".to_string())
+        })?;
+        if status.session != session_id {
+            return Err(cdk::Error::from(
+                cdk::federation::FederationError::AlephBftUnitSessionMismatch {
+                    expected: status.session,
+                    found: session_id,
+                },
+            ));
+        }
+        let handle = self
+            .federation_aleph_bft_live_session
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| {
+                cdk::Error::Custom("AlephBFT activity receiver is not available".to_string())
+            })?;
+        handle.mark_peer_activity(operation_id);
+        Ok(())
     }
 
     pub(crate) async fn federation_invalid_operation_alert_summaries(
@@ -1771,6 +1803,7 @@ impl MintState {
         #[cfg(feature = "prometheus")]
         let operation_label = envelope.operation.kind().to_string();
         let operation_id = envelope.operation_id()?;
+        let broadcast_activity = sequence.is_none();
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
@@ -1803,6 +1836,8 @@ impl MintState {
             .register_existing_waiter(operation_id, sync_config.response_waiter_limit)?
         {
             drop(consensus);
+            self.mark_aleph_bft_consensus_activity(operation_id, broadcast_activity)
+                .await;
             if let Some((sender, sequence)) = sequence {
                 self.remember_federation_aleph_bft_pending_sequence(operation_id, sender, sequence)
                     .await;
@@ -1867,8 +1902,9 @@ impl MintState {
 
         *consensus = next_consensus;
         drop(consensus);
+        self.mark_aleph_bft_consensus_activity(operation_id, broadcast_activity)
+            .await;
         if accepted_admission {
-            self.mark_aleph_bft_consensus_activity().await;
             crate::federation::aleph_bft_latency::record(
                 crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
                 [operation_id],

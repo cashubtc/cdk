@@ -52,6 +52,8 @@ pub enum FederationRestMessageKind {
     DkgTranscriptSignature,
     /// Submit one operation envelope to a peer.
     SubmitOperation,
+    /// Wake a peer's idle AlephBFT creator for newly admitted consensus work.
+    AlephBftActivity,
     /// Deliver one opaque AlephBFT network message to a peer.
     AlephBftNetworkMessage,
     /// Deliver one AlephBFT unit that has already been finalized.
@@ -69,6 +71,7 @@ impl FederationRestMessageKind {
             Self::DkgSecretShare => b"dkg_secret_share",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::SubmitOperation => b"submit_operation",
+            Self::AlephBftActivity => b"aleph_bft_activity",
             Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
             Self::AlephBftFinalizedUnit => b"aleph_bft_finalized_unit",
             Self::CatchUp => b"catch_up",
@@ -1098,6 +1101,91 @@ impl FederationAlephBftFinalizedUnitRequest {
     pub fn ensure_admissible_size(&self) -> super::Result<usize> {
         self.unit
             .ensure_within_size_limit(FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES)
+    }
+}
+
+/// Signed control request that wakes one idle AlephBFT live session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftActivityRequest {
+    /// AlephBFT session containing the newly admitted operation.
+    pub session_id: u64,
+    /// Operation whose admission requires the federation to resume unit creation.
+    pub operation_id: FederationOperationId,
+}
+
+impl FederationAlephBftActivityRequest {
+    /// Create an operation-bound activity request.
+    #[must_use]
+    pub const fn new(session_id: u64, operation_id: FederationOperationId) -> Self {
+        Self {
+            session_id,
+            operation_id,
+        }
+    }
+}
+
+/// Response acknowledging one authenticated AlephBFT activity request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftActivityResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation addressed by this response.
+    pub federation_id: FederationId,
+    /// AlephBFT session that was woken.
+    pub session_id: u64,
+    /// Operation bound to the accepted activity request.
+    pub operation_id: FederationOperationId,
+}
+
+impl FederationAlephBftActivityResponse {
+    /// Create an accepted activity response.
+    #[must_use]
+    pub const fn new(
+        federation_id: FederationId,
+        session_id: u64,
+        operation_id: FederationOperationId,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id,
+            session_id,
+            operation_id,
+        }
+    }
+
+    /// Verify this response belongs to the expected activity request.
+    pub fn validate(
+        &self,
+        expected_federation_id: FederationId,
+        expected_session_id: u64,
+        expected_operation_id: FederationOperationId,
+    ) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        if self.federation_id != expected_federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: expected_federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.session_id != expected_session_id {
+            return Err(FederationError::AlephBftUnitSessionMismatch {
+                expected: expected_session_id,
+                found: self.session_id,
+            });
+        }
+        if self.operation_id != expected_operation_id {
+            return Err(FederationError::AlephBftActivityOperationMismatch {
+                expected: expected_operation_id,
+                found: self.operation_id,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -2440,6 +2528,60 @@ mod tests {
         let decoded: FederationSignedRequest<FederationPeerStatusRequest> =
             serde_json::from_str(&json).expect("decoded request");
         decoded.verify(&config, receiver).expect("decoded verifies");
+    }
+
+    #[test]
+    fn signed_aleph_bft_activity_request_verifies_and_response_is_bound() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let operation_id = mint_quote_envelope()
+            .operation_id()
+            .expect("activity operation id");
+        let payload = FederationAlephBftActivityRequest::new(3, operation_id);
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            6,
+            FederationRestMessageKind::AlephBftActivity,
+            payload,
+            &first_private,
+        )
+        .expect("signed AlephBFT activity request");
+
+        request.verify(&config, receiver).expect("verified request");
+        let decoded: FederationSignedRequest<FederationAlephBftActivityRequest> =
+            serde_json::from_str(
+                &serde_json::to_string(&request).expect("AlephBFT activity request json"),
+            )
+            .expect("decoded request");
+        assert_eq!(decoded.kind, FederationRestMessageKind::AlephBftActivity);
+        decoded.verify(&config, receiver).expect("decoded verifies");
+
+        let response = FederationAlephBftActivityResponse::new(
+            config.federation_id,
+            payload.session_id,
+            operation_id,
+        );
+        response
+            .validate(config.federation_id, payload.session_id, operation_id)
+            .expect("response validates");
+        assert!(matches!(
+            response.validate(
+                config.federation_id,
+                payload.session_id,
+                FederationOperationId::from_bytes([42; 32]),
+            ),
+            Err(FederationError::AlephBftActivityOperationMismatch { expected, found })
+                if expected == FederationOperationId::from_bytes([42; 32])
+                    && found == operation_id
+        ));
+        assert!(matches!(
+            response.validate(config.federation_id, payload.session_id + 1, operation_id),
+            Err(FederationError::AlephBftUnitSessionMismatch {
+                expected: 4,
+                found: 3
+            })
+        ));
     }
 
     #[test]
