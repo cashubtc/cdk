@@ -393,6 +393,110 @@ async fn apply_federation_swap_persists_accepted_materialization_rows() {
 }
 
 #[tokio::test]
+async fn apply_federation_swap_rolls_back_late_failure_and_replays() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let input = proof_for_runtime(&runtime_config, "late failure swap input");
+    let input_y = input.y().expect("swap input y");
+    let output = output_for_runtime(&runtime_config, b"late failure swap output");
+    let swap_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(SwapRequest::new(vec![input], vec![output.clone()]))
+            .expect("late failure swap operation"),
+    );
+    persist_journal_entry(&localstore, &swap_entry).await;
+
+    crate::test_helpers::mint::set_fail_for("FEDERATION_SWAP_APPLY_BEFORE_STATUS");
+    let result = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
+        .await;
+    crate::test_helpers::mint::clear_fail_for("FEDERATION_SWAP_APPLY_BEFORE_STATUS");
+    assert!(matches!(result, Err(Error::Internal)));
+
+    assert_eq!(
+        localstore
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state after rollback"),
+        vec![None]
+    );
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup after rollback"),
+        vec![None]
+    );
+    assert!(localstore
+        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .await
+        .expect("share lookup after rollback")
+        .is_empty());
+    let operation_uuid = super::super::federation_operation_uuid(swap_entry.operation_id);
+    assert!(localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed operation lookup after rollback")
+        .is_none());
+    assert!(localstore
+        .get_proof_ys_by_operation_id(&operation_uuid)
+        .await
+        .expect("proof operation lookup after rollback")
+        .is_empty());
+    assert!(localstore
+        .get_blinded_secrets_by_operation_id(&operation_uuid)
+        .await
+        .expect("blinded-message lookup after rollback")
+        .is_empty());
+    let stored_entries = localstore
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup after rollback");
+    assert_eq!(
+        stored_entries
+            .iter()
+            .find(|entry| entry.operation_id == swap_entry.operation_id)
+            .expect("swap entry after rollback")
+            .status,
+        FederationOperationStatus::Accepted
+    );
+
+    assert_eq!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
+            .await
+            .expect("replay swap after rollback"),
+        vec![swap_entry.operation_id]
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state after replay"),
+        vec![Some(State::Spent)]
+    );
+    assert!(localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("signature lookup after replay")[0]
+        .is_some());
+    assert_eq!(
+        localstore
+            .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+            .await
+            .expect("share lookup after replay")
+            .len(),
+        1
+    );
+    assert!(localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed operation lookup after replay")
+        .is_some());
+}
+
+#[tokio::test]
 async fn apply_federation_swap_accepts_p2pk_locked_input() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

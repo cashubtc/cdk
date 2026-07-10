@@ -132,13 +132,14 @@ Resolved blocking bugs:
   is not active yet, instead of the obsolete claim that the backend is not
   production-ready in the build. The fail-closed behavior is unchanged.
 - Milestone 4A remains in progress for explicitly unchecked work such as deeper
-  bounded retry/backpressure certification, round/consensus-height observability,
-  and atomic failure-injection coverage for value-operation apply. The exact
+  bounded retry/backpressure certification and round/consensus-height
+  observability. Atomic mint and swap apply failure-injection coverage is now
+  complete; melt payment-side-effect boundary coverage remains open. The exact
   self-partitioned proposer, below-quorum value-operation, above-quorum stalled
   value/conflict, and partition restart/catch-up matrices are complete.
 - Current verification is explicit: all focused activity-wake tests, the
   default-cadence probe, mintd/CLI feature checks, and fresh five- and
-  11-process gates pass. The federation-enabled Axum suite covers 422 passing
+  11-process gates pass. The federation-enabled Axum suite covers 426 passing
   tests, including the self-partition, below-quorum full value-operation,
   production-paced above-quorum basic recovery, and below-finality conflicting
   swap plus melt side-effect matrices.
@@ -1640,9 +1641,9 @@ AlephBFT and consensus unit tests:
   for restarted members. The new below-finality value/conflict regression uses
   genuine threshold-minted proofs and verifies zero pre-finality signature or
   payment leakage followed by deterministic recovery and final-lagger
-  convergence. Verification passed all 420 sandbox-compatible tests
+  convergence. Verification passed all 424 sandbox-compatible tests
   in the federation-enabled Axum suite, while the two real-listener tests
-  passed separately outside the managed network sandbox, for 422 covered
+  passed separately outside the managed network sandbox, for 426 covered
   tests total. Federation-enabled and federation-disabled compile checks also
   remain covered.
 
@@ -1659,13 +1660,18 @@ Mint operation tests:
   before quote issuance, blind-signature storage, completed-operation storage,
   or federation share persistence; non-v3 output rejection is covered before
   consensus submission.
-- [ ] Accepted mint apply persists quote issuance, blinded messages, member
+- [x] Accepted mint apply persists quote issuance, blinded messages, member
   signature shares, completed operation response, and state digest atomically.
-  Current direct coverage proves accepted mint apply persists quote issuance,
-  the blinded output row, the completed operation row, the blind signature, the
-  member signature-share provenance, and the applied journal status; stronger
-  failure-injection coverage for all-or-nothing atomic rollback and
-  materialized state-digest coupling remains open.
+  `apply_federation_mint_rolls_back_late_failure_and_replays` injects a
+  test-only failure after quote issuance, blinded-message, blind-signature,
+  member-share, and completed-operation writes but before the journal becomes
+  `Applied`; it proves every write rolls back, the quote remains paid and
+  unissued, and an exact replay succeeds. The SQLite integration regression
+  `failed_mint_apply_preserves_materialized_digest_and_replays_on_restart`
+  independently forces a real unique-row failure after application starts,
+  proves the journal remains `Accepted` and the materialized digest is
+  unchanged, removes the fault, and verifies startup replay reaches `Applied`
+  with the issued quote and signature present.
 - [x] Same quote plus same outputs is idempotent before submission, while
   pending, after acceptance, after restart, and after catch-up. Current public
   route coverage proves live AlephBFT duplicates join one pending queue item
@@ -1720,14 +1726,18 @@ Swap operation tests:
   proofs plus duplicate blinded outputs are rejected before consensus operation
   construction; conflicting spent-input reuse is covered by the input-reuse
   attack regression.
-- [ ] Accepted swap apply marks inputs spent and stores output signature shares
+- [x] Accepted swap apply marks inputs spent and stores output signature shares
   in one deterministic DB transaction.
-  Current direct coverage proves accepted swap apply persists the spent input
-  proof state, proof operation linkage, blinded output operation linkage,
-  completed operation row, blind signature, member signature-share provenance,
-  and applied journal status; stronger failure-injection coverage for
-  all-or-nothing atomic rollback and materialized state-digest coupling remains
-  open.
+  `apply_federation_swap_rolls_back_late_failure_and_replays` injects a
+  test-only failure after proof spending, proof/output operation linkage,
+  blind-signature, member-share, and completed-operation writes but before the
+  journal becomes `Applied`; it proves every write rolls back and exact replay
+  succeeds. The SQLite integration regression
+  `failed_swap_apply_preserves_materialized_digest_and_replays_on_restart`
+  forces a real unique-row failure after the proof has been inserted and marked
+  spent inside the transaction, proves no proof/share/signature/completed row
+  escapes and the materialized digest is unchanged, removes the fault, and
+  verifies startup replay reaches one spent proof and one signed output.
 - [x] Exact duplicate swaps return the same persisted shares before submission,
   while pending, after acceptance, after restart, and after catch-up. Current
   public route coverage proves the after-acceptance duplicate returns the same
@@ -3291,8 +3301,8 @@ Verified implementation result:
   Quote visibility, restore, and check-state retain their established
   threshold-view and fallback behavior.
 - Verification passed: 363 `cdk-common` tests, 81 complete federation wallet
-  tests, 153 `cdk-sqlite` tests, four receive recovery tests, and all 424
-  federation-enabled Axum tests (422 in the managed sandbox plus the two real
+  tests, 153 `cdk-sqlite` tests, four receive recovery tests, and all 426
+  federation-enabled Axum tests (424 in the managed sandbox plus the two real
   loopback-listener tests outside it). A fresh five-member/threshold-three live
   AlephBFT CLI smoke returned `Token Already Spent` on repeated receive and then
   completed melt, restore, balance, and full convergence. The paired

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use aleph_bft::{default_delay_config, Network, NodeIndex, Recipient};
 use async_trait::async_trait;
 use bip39::Mnemonic;
-use cdk::cdk_database::MintDatabase;
+use cdk::cdk_database::{
+    MintDatabase, MintProofsDatabase, MintQuotesDatabase, MintSignaturesDatabase,
+};
 use cdk::cdk_payment::{
     self, CreateIncomingPaymentResponse, DynMintPayment, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
@@ -48,7 +50,9 @@ use cdk::nuts::{
 };
 use cdk::types::FeeReserve;
 use cdk::Amount;
-use cdk_common::database::DynMintDatabase;
+use cdk_common::database::mint::CompletedOperationsDatabase;
+use cdk_common::database::{DynMintDatabase, MintFederationJournalDatabase};
+use cdk_common::mint::Operation;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use cdk_http_client::HttpError;
 use futures::Stream;
@@ -2247,6 +2251,65 @@ async fn catch_up_response_with_materialized_digest(
         .await
         .expect("materialized catch-up state digest");
     response
+}
+
+fn accept_test_journal_entry(
+    consensus: &mut InMemoryFederationConsensus,
+    envelope: FederationOperationEnvelope,
+) -> FederationJournalEntry {
+    consensus
+        .submit_envelope(envelope)
+        .expect("accept test operation")
+        .outcome
+        .entry()
+        .clone()
+}
+
+async fn persist_test_journal_entry(state: &MintState, entry: &FederationJournalEntry) {
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin journal transaction");
+    tx.add_federation_journal_entry(entry)
+        .await
+        .expect("persist journal entry");
+    tx.commit().await.expect("commit journal entry");
+}
+
+async fn add_blinded_message_conflict(
+    state: &MintState,
+    quote_id: Option<&QuoteId>,
+    output: &BlindedMessage,
+) {
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin conflict transaction");
+    tx.add_blinded_messages(
+        quote_id,
+        std::slice::from_ref(output),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .expect("persist conflicting blinded message");
+    tx.commit().await.expect("commit conflict transaction");
+}
+
+async fn remove_blinded_message_conflict(state: &MintState, output: &BlindedMessage) {
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin conflict cleanup transaction");
+    tx.delete_blinded_messages(&[output.blinded_secret])
+        .await
+        .expect("remove conflicting blinded message");
+    tx.commit().await.expect("commit conflict cleanup");
 }
 
 fn payment_observation_envelope(federation_id: FederationId) -> FederationOperationEnvelope {
@@ -20338,6 +20401,284 @@ async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
         .await
         .expect("signature lookup");
     assert!(signatures[0].is_some());
+}
+
+#[tokio::test]
+async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let seed = [41_u8; 64];
+    let state = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    let mut consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+    let quote_id = QuoteId::new();
+
+    let quote_entry =
+        accept_test_journal_entry(&mut consensus, mint_quote_envelope(&state, &quote_id));
+    persist_test_journal_entry(&state, &quote_entry).await;
+    state
+        .mint
+        .apply_federation_journal_entries(std::slice::from_ref(&quote_entry))
+        .await
+        .expect("apply mint quote");
+    let payment_entry =
+        accept_test_journal_entry(&mut consensus, paid_observation_envelope(&state, &quote_id));
+    persist_test_journal_entry(&state, &payment_entry).await;
+    state
+        .mint
+        .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
+        .await
+        .expect("apply mint payment");
+
+    let (mint_envelope, output) =
+        mint_operation_envelope(&state, &quote_id, b"atomic mint apply output");
+    let mint_entry = accept_test_journal_entry(&mut consensus, mint_envelope);
+    add_blinded_message_conflict(&state, Some(&quote_id), &output).await;
+    persist_test_journal_entry(&state, &mint_entry).await;
+    let before_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal before failed mint apply");
+    let before_digest = materialized_state_digest(&state, &before_entries)
+        .await
+        .expect("digest before failed mint apply");
+
+    let err = state
+        .mint
+        .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+        .await
+        .expect_err("conflicting blinded message must fail mint apply");
+    assert!(matches!(
+        err,
+        cdk::Error::Database(cdk_common::database::Error::Duplicate)
+    ));
+
+    let after_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after failed mint apply");
+    let after_digest = materialized_state_digest(&state, &after_entries)
+        .await
+        .expect("digest after failed mint apply");
+    assert_eq!(after_digest, before_digest);
+    assert_eq!(after_entries.len(), before_entries.len());
+    let failed_entry = after_entries
+        .iter()
+        .find(|entry| entry.operation_id == mint_entry.operation_id)
+        .expect("mint entry after failure");
+    assert_eq!(failed_entry.status, FederationOperationStatus::Accepted);
+    let quote = db
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote after failed mint apply")
+        .expect("stored mint quote");
+    assert_eq!(quote.state(), MintQuoteState::Paid);
+    assert_eq!(
+        quote.amount_issued(),
+        Amount::ZERO.with_unit(CurrencyUnit::Sat)
+    );
+    assert!(db
+        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .await
+        .expect("mint shares after failed apply")
+        .is_empty());
+    assert!(db
+        .get_completed_operation(&federation_completed_operation_uuid(
+            mint_entry.operation_id,
+        ))
+        .await
+        .expect("mint completed operation after failed apply")
+        .is_none());
+    assert_eq!(
+        db.get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("mint signature after failed apply"),
+        vec![None]
+    );
+
+    remove_blinded_message_conflict(&state, &output).await;
+    drop(state);
+    let mut restarted_state = federation_route_state_for_private_with_db(
+        public_config,
+        local_private,
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&restarted_state.mint)
+            .await
+            .expect("restart replay after failed mint apply");
+    restarted_state.federation_consensus = replayed_consensus;
+    restarted_state.federation_sequences = replayed_sequences;
+
+    let replayed_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after mint restart replay");
+    assert_eq!(
+        replayed_entries
+            .iter()
+            .find(|entry| entry.operation_id == mint_entry.operation_id)
+            .expect("replayed mint entry")
+            .status,
+        FederationOperationStatus::Applied
+    );
+    let replayed_digest = materialized_state_digest(&restarted_state, &replayed_entries)
+        .await
+        .expect("digest after mint restart replay");
+    assert_ne!(replayed_digest, before_digest);
+    assert_eq!(
+        db.get_mint_quote(&quote_id)
+            .await
+            .expect("replayed mint quote")
+            .expect("mint quote after replay")
+            .state(),
+        MintQuoteState::Issued
+    );
+    assert!(db
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("mint signature after replay")[0]
+        .is_some());
+}
+
+#[tokio::test]
+async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let seed = [42_u8; 64];
+    let state = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    let mut consensus =
+        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+    let input = proof_for_amount(&state, 1, "atomic-swap-apply-input");
+    let input_y = input.y().expect("swap input y");
+    let output = swap_output(&state, "atomic-swap-apply-output");
+    let config = state.mint.federation_config().expect("federation config");
+    let envelope = config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![input],
+            vec![output.clone()],
+        ))
+        .expect("swap envelope");
+    let swap_entry = accept_test_journal_entry(&mut consensus, envelope);
+    add_blinded_message_conflict(&state, None, &output).await;
+    persist_test_journal_entry(&state, &swap_entry).await;
+    let before_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal before failed swap apply");
+    let before_digest = materialized_state_digest(&state, &before_entries)
+        .await
+        .expect("digest before failed swap apply");
+
+    let err = state
+        .mint
+        .apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
+        .await
+        .expect_err("conflicting blinded message must fail swap apply");
+    assert!(matches!(
+        err,
+        cdk::Error::Database(cdk_common::database::Error::Duplicate)
+    ));
+
+    let after_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after failed swap apply");
+    let after_digest = materialized_state_digest(&state, &after_entries)
+        .await
+        .expect("digest after failed swap apply");
+    assert_eq!(after_digest, before_digest);
+    assert_eq!(after_entries.len(), before_entries.len());
+    assert_eq!(
+        after_entries
+            .iter()
+            .find(|entry| entry.operation_id == swap_entry.operation_id)
+            .expect("swap entry after failure")
+            .status,
+        FederationOperationStatus::Accepted
+    );
+    assert_eq!(
+        db.get_proofs_states(&[input_y])
+            .await
+            .expect("proof state after failed swap apply"),
+        vec![None]
+    );
+    assert!(db
+        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .await
+        .expect("swap shares after failed apply")
+        .is_empty());
+    assert!(db
+        .get_completed_operation(&federation_completed_operation_uuid(
+            swap_entry.operation_id,
+        ))
+        .await
+        .expect("swap completed operation after failed apply")
+        .is_none());
+    assert_eq!(
+        db.get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("swap signature after failed apply"),
+        vec![None]
+    );
+
+    remove_blinded_message_conflict(&state, &output).await;
+    drop(state);
+    let mut restarted_state = federation_route_state_for_private_with_db(
+        public_config,
+        local_private,
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&restarted_state.mint)
+            .await
+            .expect("restart replay after failed swap apply");
+    restarted_state.federation_consensus = replayed_consensus;
+    restarted_state.federation_sequences = replayed_sequences;
+
+    let replayed_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after swap restart replay");
+    assert_eq!(
+        replayed_entries
+            .iter()
+            .find(|entry| entry.operation_id == swap_entry.operation_id)
+            .expect("replayed swap entry")
+            .status,
+        FederationOperationStatus::Applied
+    );
+    let replayed_digest = materialized_state_digest(&restarted_state, &replayed_entries)
+        .await
+        .expect("digest after swap restart replay");
+    assert_ne!(replayed_digest, before_digest);
+    assert_eq!(
+        db.get_proofs_states(&[input_y])
+            .await
+            .expect("proof state after swap replay"),
+        vec![Some(cdk::nuts::State::Spent)]
+    );
+    assert!(db
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("swap signature after replay")[0]
+        .is_some());
 }
 
 #[tokio::test]

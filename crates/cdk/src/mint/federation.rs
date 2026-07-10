@@ -1720,6 +1720,11 @@ impl Mint {
             }
         }
 
+        #[cfg(test)]
+        if crate::test_helpers::mint::should_fail_for("FEDERATION_MINT_APPLY_BEFORE_STATUS") {
+            return Err(Error::Internal);
+        }
+
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
         tx.commit().await?;
@@ -1849,6 +1854,11 @@ impl Mint {
                 .await?;
             tx.add_completed_operation(&operation_record, &fee_breakdown.per_keyset)
                 .await?;
+        }
+
+        #[cfg(test)]
+        if crate::test_helpers::mint::should_fail_for("FEDERATION_SWAP_APPLY_BEFORE_STATUS") {
+            return Err(Error::Internal);
         }
 
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)

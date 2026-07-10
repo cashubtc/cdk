@@ -440,11 +440,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Milestone 26 verification covers 363 shared-core tests, 81 federation wallet tests, 153 SQLite tests, four receive-recovery tests, and all 424 federation-enabled Axum tests. Exact 4xx response details participate in quorum while HTTP 429/5xx remain infrastructure errors. The live CLI definitive-error smoke and insufficient-threshold ambiguous smoke both pass.</span>
+          <span class="value">Accepted mint and swap application is now fault-tested as one atomic transaction. Late test-only faults and real SQLite uniqueness faults leave no partial quote issuance, proof spend, signature, provenance, completed-operation, or Applied-status rows; materialized digests remain unchanged and startup replay succeeds after fault removal. All 97 core mint-federation tests and all 426 federation-enabled Axum tests pass, with 424 sandbox-compatible cases plus two loopback-listener cases verified separately.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend deterministic atomic failure injection across mint, swap, and melt apply boundaries, then continue DKG completion and production security review work.</span>
+          <span class="value">Extend deterministic failure coverage through melt payment-side-effect and finalization boundaries, then continue DKG completion and production security review work.</span>
         </div>
       </aside>
     </header>
@@ -710,7 +710,7 @@
             <div>
               <h3>Milestone 26: unified federated wallet errors and recovery</h3>
               <p>Objective: preserve normal Cashu wallet errors and saga recovery after a threshold-consensus business outcome, while keeping unavailable quorum, pending finalization, timeouts, invalid shares, and inconsistent member views explicitly ambiguous.</p>
-              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by 363 shared-core, 81 wallet-federation, 153 SQLite, four receive-recovery, and 424 Axum tests, plus definitive and ambiguous live CLI smokes.</p>
+              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by 363 shared-core, 81 wallet-federation, 153 SQLite, four receive-recovery, and the now-426-test Axum gate, plus definitive and ambiguous live CLI smokes.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -801,7 +801,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare missing-row and variant diagnostics, payment-observation digest-compare missing-row and variant diagnostics, unresolved payment-observation, payment-observation quarantine, rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage. SQLite now serializes writes per database while preserving concurrent reads, and dropped explicit transactions synchronously roll back before connection reuse. Federation melt-quote creation is atomic and idempotent: an existing quote is accepted only when its consensus-controlled request fields match exactly. Catch-up replay no longer persists transient locked/busy storage as a durable Failed operation.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare missing-row and variant diagnostics, payment-observation digest-compare missing-row and variant diagnostics, unresolved payment-observation, payment-observation quarantine, rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage. Accepted mint and swap now have late-write fault injection plus real SQLite conflict regressions proving all materialized rows and Applied status roll back together, preserve the pre-apply state digest, and replay successfully on restart. SQLite serializes writes per database while preserving concurrent reads, and dropped explicit transactions synchronously roll back before connection reuse. Federation melt-quote creation is atomic and idempotent: an existing quote is accepted only when its consensus-controlled request fields match exactly. Catch-up replay no longer persists transient locked/busy storage as a durable Failed operation.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
@@ -887,8 +887,8 @@
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
           forced direct swap and change melt pass with all members live, one member offline, and a
           behaviorally verified 30-second payment delay member. The complete
-          federation-enabled Axum regression gate now covers 422 passing tests,
-          with 420 sandbox-compatible cases plus two real-listener cases verified
+          federation-enabled Axum regression gate now covers 426 passing tests,
+          with 424 sandbox-compatible cases plus two real-listener cases verified
           outside the managed network sandbox. This includes real-HTTP wallet
           aggregation, rotated-keyset restore,
           automatic session rotation, state-digest checkpoints, equivocation,
@@ -972,8 +972,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Atomic apply failure injection</h3>
-            <p>Extend deterministic fault injection across mint, swap, and melt accepted-state transactions, including rollback, restart replay, payment-side-effect boundaries, and final journal/state-digest convergence.</p>
+            <h3>Melt atomic failure boundaries</h3>
+            <p>Mint and swap rollback, digest, and restart-replay coverage is complete. Extend the same deterministic proof through melt reserve, external payment-side-effect, terminal finalization, and rollback boundaries without risking a duplicate outgoing payment.</p>
           </article>
           <article class="item">
             <h3>Distributed key generation</h3>

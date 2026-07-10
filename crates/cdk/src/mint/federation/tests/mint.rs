@@ -748,6 +748,136 @@ async fn apply_federation_mint_persists_accepted_materialization_rows() {
 }
 
 #[tokio::test]
+async fn apply_federation_mint_rolls_back_late_failure_and_replays() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    let paid_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_payment_observation(
+            quote.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintQuoteState::Paid,
+            Amount::from(1),
+            Amount::ZERO,
+            Some("late-failure-mint-payment".to_string()),
+        ),
+    );
+    persist_and_apply_entry(&mint, &paid_entry).await;
+
+    let output = output_for_runtime(&runtime_config, b"late failure mint output");
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote: quote.clone(),
+                outputs: vec![output.clone()],
+                signature: None,
+            }))
+            .expect("late failure mint operation"),
+    );
+    persist_journal_entry(&localstore, &mint_entry).await;
+
+    crate::test_helpers::mint::set_fail_for("FEDERATION_MINT_APPLY_BEFORE_STATUS");
+    let result = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+        .await;
+    crate::test_helpers::mint::clear_fail_for("FEDERATION_MINT_APPLY_BEFORE_STATUS");
+    assert!(matches!(result, Err(Error::Internal)));
+
+    let stored_quote = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup after rollback")
+        .expect("quote after rollback");
+    assert_eq!(stored_quote.state(), MintQuoteState::Paid);
+    assert_eq!(
+        stored_quote.amount_issued(),
+        Amount::ZERO.with_unit(CurrencyUnit::Sat)
+    );
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup after rollback"),
+        vec![None]
+    );
+    assert!(localstore
+        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .await
+        .expect("share lookup after rollback")
+        .is_empty());
+    let operation_uuid = super::super::federation_operation_uuid(mint_entry.operation_id);
+    assert!(localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed operation lookup after rollback")
+        .is_none());
+    assert!(localstore
+        .get_blinded_secrets_by_operation_id(&operation_uuid)
+        .await
+        .expect("blinded-message lookup after rollback")
+        .is_empty());
+    let stored_entries = localstore
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup after rollback");
+    assert_eq!(
+        stored_entries
+            .iter()
+            .find(|entry| entry.operation_id == mint_entry.operation_id)
+            .expect("mint entry after rollback")
+            .status,
+        FederationOperationStatus::Accepted
+    );
+
+    assert_eq!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+            .await
+            .expect("replay mint after rollback"),
+        vec![mint_entry.operation_id]
+    );
+    let replayed_quote = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup after replay")
+        .expect("quote after replay");
+    assert_eq!(replayed_quote.state(), MintQuoteState::Issued);
+    assert_eq!(
+        replayed_quote.amount_issued(),
+        Amount::new(1, CurrencyUnit::Sat)
+    );
+    assert!(localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("signature lookup after replay")[0]
+        .is_some());
+    assert_eq!(
+        localstore
+            .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+            .await
+            .expect("share lookup after replay")
+            .len(),
+        1
+    );
+    assert!(localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed operation lookup after replay")
+        .is_some());
+}
+
+#[tokio::test]
 async fn apply_federation_mint_accepts_nut20_locked_quote() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
