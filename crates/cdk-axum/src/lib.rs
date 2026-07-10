@@ -2940,6 +2940,7 @@ impl MintState {
             .get_federation_dkg_member_keyset_shares()
             .await?;
         let mut keysets_by_id = BTreeMap::new();
+        let mut ceremonies_by_keyset_id = BTreeMap::new();
         for share in keyset_shares {
             if share.federation_id != setup_public_config.federation_id {
                 return Err(cdk::Error::Federation(
@@ -2955,13 +2956,39 @@ impl MintState {
                     found: share.member_id,
                 }));
             }
+            let ceremony_keyset = share
+                .public_ceremony
+                .derive_federated_keyset(setup_public_config)?;
+            if ceremony_keyset != share.keyset {
+                return Err(cdk::Error::Federation(
+                    FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "public DKG ceremony does not match local keyset share {}",
+                            share.keyset.id
+                        ),
+                    },
+                ));
+            }
             let keyset_id = share.keyset.id;
-            let keyset = share.keyset;
+            let keyset = share.keyset.clone();
             match keysets_by_id.insert(keyset_id, keyset.clone()) {
                 Some(existing) if existing != keyset => {
                     return Err(cdk::Error::Federation(
                         FederationError::DkgTranscriptMismatch {
                             reason: format!("conflicting local DKG keyset {keyset_id}"),
+                        },
+                    ));
+                }
+                Some(_) | None => {}
+            }
+            let public_ceremony = share.public_ceremony;
+            match ceremonies_by_keyset_id.insert(keyset_id, public_ceremony.clone()) {
+                Some(existing) if existing != public_ceremony => {
+                    return Err(cdk::Error::Federation(
+                        FederationError::DkgTranscriptMismatch {
+                            reason: format!(
+                                "conflicting local public DKG ceremony for keyset {keyset_id}"
+                            ),
                         },
                     ));
                 }
@@ -2981,10 +3008,12 @@ impl MintState {
         final_public_config.keysets = keysets_by_id.into_values().collect();
         final_public_config.setup_transcript = None;
         final_public_config.validate()?;
+        let public_ceremonies = ceremonies_by_keyset_id.into_values().collect::<Vec<_>>();
 
         Ok(FederationDkgTranscript::hash_for_config(
             FederationDkgSetupMethod::PedersenDkg,
             &final_public_config,
+            &public_ceremonies,
         )?)
     }
 

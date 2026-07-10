@@ -2179,12 +2179,14 @@ async fn route_derived_dkg_transcript_fixture() -> (
     let final_public_config = FederationConfig::new(
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),
-        vec![keyset_share.keyset],
+        vec![keyset_share.keyset.clone()],
     )
     .expect("final public config");
+    let public_ceremonies = vec![keyset_share.public_ceremony];
     let transcript_hash = FederationDkgTranscript::hash_for_config(
         FederationDkgSetupMethod::PedersenDkg,
         &final_public_config,
+        &public_ceremonies,
     )
     .expect("route-derived transcript hash");
 

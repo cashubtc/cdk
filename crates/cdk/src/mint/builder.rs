@@ -964,11 +964,11 @@ mod tests {
     use cdk_common::database::MintDatabase;
     #[cfg(feature = "federation")]
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederatedKeyset, FederationConfig,
-        FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
-        FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
-        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-        TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationConfig, FederationDkgCeremonyId,
+        FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+        FederationDkgParticipantState, FederationDkgSetupMethod, FederationDkgTranscript,
+        FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, MemberId,
+        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk_common::mint_url::MintUrl;
@@ -1196,11 +1196,84 @@ mod tests {
         )
         .expect("trusted dealer bundle");
 
-        let mut final_public_config = bundle.public_config.clone();
-        final_public_config.setup_transcript = None;
+        let mut setup_public_config = bundle.public_config.clone();
+        setup_public_config.keysets.clear();
+        setup_public_config.setup_transcript = None;
+        setup_public_config.validate().expect("setup public config");
+        let ceremony_id = FederationDkgCeremonyId::from_bytes([88; 32]);
+        let keyset_spec = FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1), Amount::from(2)].into_iter().collect(),
+        )
+        .expect("DKG keyset spec");
+        let participants = setup_public_config
+            .members
+            .keys()
+            .copied()
+            .map(|participant_id| {
+                (
+                    participant_id,
+                    FederationDkgParticipantState::generate(
+                        &setup_public_config,
+                        ceremony_id,
+                        participant_id,
+                        keyset_spec.clone(),
+                    )
+                    .expect("participant state"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let reveals = participants
+            .iter()
+            .map(|(participant_id, state)| (*participant_id, state.reveal_request().reveal))
+            .collect::<BTreeMap<_, _>>();
+        let commitments = participants
+            .iter()
+            .map(|(participant_id, state)| {
+                (
+                    *participant_id,
+                    state
+                        .commitment_request()
+                        .expect("participant commitment")
+                        .commitment,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let round = FederationDkgCommitmentRound::new(&setup_public_config, commitments)
+            .expect("commitment round");
+        let contributions = participants
+            .iter()
+            .map(|(participant_id, state)| {
+                (
+                    *participant_id,
+                    state
+                        .secret_share_request(local_member)
+                        .expect("local secret contribution"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let keyset_share = round
+            .derive_member_keyset_share(
+                &setup_public_config,
+                &reveals,
+                local_member,
+                &contributions,
+            )
+            .expect("local member keyset share");
+        let mut final_public_config = FederationConfig::new(
+            setup_public_config.threshold_params,
+            setup_public_config.members.clone(),
+            vec![keyset_share.keyset.clone()],
+        )
+        .expect("final public config");
+        let public_ceremonies = vec![keyset_share.public_ceremony.clone()];
         let transcript_hash = FederationDkgTranscript::hash_for_config(
             FederationDkgSetupMethod::PedersenDkg,
             &final_public_config,
+            &public_ceremonies,
         )
         .expect("pedersen transcript hash");
         let transcript_signatures = bundle
@@ -1219,6 +1292,7 @@ mod tests {
         let transcript = FederationDkgTranscript::from_signatures(
             FederationDkgSetupMethod::PedersenDkg,
             &final_public_config,
+            &public_ceremonies,
             transcript_signatures
                 .iter()
                 .map(|signature| (signature.signer, signature.signature))
@@ -1228,26 +1302,10 @@ mod tests {
         final_public_config.setup_transcript = Some(transcript);
         final_public_config.validate().expect("final public config");
 
-        let final_keyset = final_public_config
-            .keysets
-            .first()
-            .expect("federated keyset")
-            .clone();
         let local_private_config = bundle
             .private_configs
             .get(&local_member)
             .expect("local private config");
-        let keyset_share = keyset_share_from_private(
-            final_public_config.federation_id,
-            local_member,
-            &final_keyset,
-            local_private_config,
-        );
-
-        let mut setup_public_config = final_public_config.clone();
-        setup_public_config.keysets.clear();
-        setup_public_config.setup_transcript = None;
-        setup_public_config.validate().expect("setup public config");
 
         let mut setup_private_config = local_private_config.clone();
         setup_private_config.keyset_secret_shares.clear();
@@ -1265,25 +1323,6 @@ mod tests {
             final_public_config,
             keyset_share,
             transcript_signatures,
-        }
-    }
-
-    #[cfg(feature = "federation")]
-    fn keyset_share_from_private(
-        federation_id: cdk_common::federation::FederationId,
-        local_member: MemberId,
-        keyset: &FederatedKeyset,
-        private_config: &MemberConfigPrivate,
-    ) -> FederationDkgMemberKeysetShare {
-        FederationDkgMemberKeysetShare {
-            federation_id,
-            member_id: local_member,
-            keyset: keyset.clone(),
-            secret_shares: private_config
-                .keyset_secret_shares
-                .get(&keyset.id)
-                .expect("local keyset secret shares")
-                .clone(),
         }
     }
 
@@ -1421,6 +1460,10 @@ mod tests {
         assert_eq!(
             setup_transcript.payload.setup_method,
             FederationDkgSetupMethod::PedersenDkg
+        );
+        assert_eq!(
+            setup_transcript.payload.ceremonies,
+            vec![fixture.keyset_share.public_ceremony.clone()]
         );
         assert_eq!(
             runtime_config

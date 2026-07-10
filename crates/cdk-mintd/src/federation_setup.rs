@@ -20,12 +20,12 @@ use cdk_common::federation::{
     generate_trusted_dealer_configs_with_options, FederatedKeyset, FederationConfig,
     FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
     FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberId,
-    ThresholdParams, TrustedDealerConfigBundle, TrustedDealerGenerationOptions,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationDkgParticipantCommitmentReveal, FederationDkgPublicCeremony,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
+    MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+    TrustedDealerGenerationOptions, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 #[cfg(feature = "federation")]
 use cdk_common::mint_url::MintUrl;
@@ -826,9 +826,15 @@ fn write_dkg_setup_route_probe_requests(
         vec![route_probe_keyset],
     )
     .context("generated DKG route-probe final public config is invalid")?;
+    let public_ceremonies =
+        vec![
+            FederationDkgPublicCeremony::new(public_config, round.clone(), reveals.clone())
+                .context("generated DKG route-probe public ceremony is invalid")?,
+        ];
     let transcript_hash = FederationDkgTranscript::hash_for_config(
         FederationDkgSetupMethod::PedersenDkg,
         &final_public_config,
+        &public_ceremonies,
     )
     .context("generated DKG route-probe transcript hash is invalid")?;
     let transcript_signature_payloads = private_configs
@@ -855,6 +861,7 @@ fn write_dkg_setup_route_probe_requests(
     let transcript = FederationDkgTranscript::from_signatures(
         FederationDkgSetupMethod::PedersenDkg,
         &final_public_config,
+        &public_ceremonies,
         transcript_signature_payloads
             .iter()
             .map(|(member_id, payload)| (*member_id, payload.signature))

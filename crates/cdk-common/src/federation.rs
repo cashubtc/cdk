@@ -102,7 +102,8 @@ const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
 const FEDERATION_CONFIG_DIGEST_VERSION: &[u8] = b"cdk-federation-config-digest-v1";
 const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v2";
 const FEDERATION_DKG_PARTICIPANT_STATE_VERSION: u16 = 2;
-const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
+const FEDERATION_DKG_PUBLIC_CEREMONY_VERSION: u16 = 1;
+const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v2";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-transcript-signature-v1";
 const FEDERATION_KEYSET_ROTATION_PROOF_VERSION: &[u8] = b"cdk-federation-keyset-rotation-pop-v1";
@@ -1910,6 +1911,8 @@ pub struct FederationDkgMemberKeysetShare {
     pub member_id: MemberId,
     /// Public aggregate keyset derived from all revealed DKG commitments.
     pub keyset: FederatedKeyset,
+    /// Complete public ceremony that produced this keyset.
+    pub public_ceremony: FederationDkgPublicCeremony,
     /// Final local secret BLS share per amount for one federation member.
     pub secret_shares: BTreeMap<Amount, BlsSecretKeyShare>,
 }
@@ -3146,12 +3149,78 @@ impl FederationDkgCommitmentRound {
             secret_shares.insert(*amount, secret_share);
         }
 
+        let public_ceremony =
+            FederationDkgPublicCeremony::new(public_config, self.clone(), reveals.clone())?;
         Ok(FederationDkgMemberKeysetShare {
             federation_id: public_config.federation_id,
             member_id,
             keyset,
+            public_ceremony,
             secret_shares,
         })
+    }
+}
+
+/// Complete public record of one dealer-free DKG ceremony.
+///
+/// This deliberately excludes private scalar contributions. The commitment
+/// round and every reveal are sufficient to audit the commit-before-reveal
+/// exchange and deterministically rederive the aggregate keyset and all public
+/// member shares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgPublicCeremony {
+    /// Public ceremony record format version.
+    pub version: u16,
+    /// Pre-reveal commitment round for every federation member.
+    pub commitment_round: FederationDkgCommitmentRound,
+    /// Revealed public polynomial commitments for every federation member.
+    pub reveals: BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+}
+
+impl FederationDkgPublicCeremony {
+    /// Build and validate a complete public DKG ceremony record.
+    pub fn new(
+        public_config: &FederationConfig,
+        commitment_round: FederationDkgCommitmentRound,
+        reveals: BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+    ) -> Result<Self> {
+        let ceremony = Self {
+            version: FEDERATION_DKG_PUBLIC_CEREMONY_VERSION,
+            commitment_round,
+            reveals,
+        };
+        ceremony.validate_against_config(public_config)?;
+        Ok(ceremony)
+    }
+
+    /// Return the unique ID that domain-separates this ceremony.
+    #[must_use]
+    pub fn ceremony_id(&self) -> FederationDkgCeremonyId {
+        self.commitment_round.ceremony_id
+    }
+
+    /// Validate the full commitment/reveal exchange against a federation roster.
+    pub fn validate_against_config(&self, public_config: &FederationConfig) -> Result<()> {
+        if self.version != FEDERATION_DKG_PUBLIC_CEREMONY_VERSION {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: format!(
+                    "public ceremony version mismatch: expected={}, found={}",
+                    FEDERATION_DKG_PUBLIC_CEREMONY_VERSION, self.version
+                ),
+            });
+        }
+        self.commitment_round
+            .validate_reveals(public_config, &self.reveals)
+    }
+
+    /// Rederive the public aggregate keyset committed by this ceremony.
+    pub fn derive_federated_keyset(
+        &self,
+        public_config: &FederationConfig,
+    ) -> Result<FederatedKeyset> {
+        self.validate_against_config(public_config)?;
+        self.commitment_round
+            .derive_federated_keyset(public_config, &self.reveals)
     }
 }
 
@@ -3609,7 +3678,7 @@ impl<'de> Deserialize<'de> for FederationDkgTranscriptSignature {
 pub enum FederationDkgSetupMethod {
     /// Test/development setup where one process locally generated all shares.
     TrustedDealer,
-    /// Future dealer-free Pedersen DKG setup.
+    /// Dealer-free Pedersen DKG setup with a complete public ceremony record.
     PedersenDkg,
 }
 
@@ -3647,6 +3716,8 @@ pub struct FederationDkgTranscriptPayload {
     pub member_identity_public_keys: BTreeMap<MemberId, PublicKey>,
     /// Public aggregate keysets and public member shares.
     pub keysets: Vec<FederationDkgKeysetTranscript>,
+    /// Complete public ceremonies, one per Pedersen-DKG keyset in keyset order.
+    pub ceremonies: Vec<FederationDkgPublicCeremony>,
 }
 
 /// Signed public DKG/setup transcript for audit and recovery.
@@ -3662,11 +3733,13 @@ pub struct FederationDkgTranscript {
 
 impl FederationDkgTranscript {
     /// Build an unsigned public transcript payload from a public config.
-    pub fn payload_from_config(
+    fn payload_from_config(
         setup_method: FederationDkgSetupMethod,
         public_config: &FederationConfig,
-    ) -> FederationDkgTranscriptPayload {
-        FederationDkgTranscriptPayload {
+        ceremonies: &[FederationDkgPublicCeremony],
+    ) -> Result<FederationDkgTranscriptPayload> {
+        let ceremonies = Self::canonical_ceremonies(setup_method, public_config, ceremonies)?;
+        Ok(FederationDkgTranscriptPayload {
             setup_method,
             federation_id: public_config.federation_id,
             threshold_params: public_config.threshold_params,
@@ -3689,25 +3762,33 @@ impl FederationDkgTranscript {
                     public_shares: keyset.public_shares.clone(),
                 })
                 .collect(),
-        }
+            ceremonies,
+        })
     }
 
     /// Derive the transcript hash that members must sign for this setup method and config.
+    ///
+    /// Trusted-dealer setup requires an empty ceremony slice. Pedersen DKG
+    /// requires exactly one complete, keyset-matching ceremony per public keyset.
     pub fn hash_for_config(
         setup_method: FederationDkgSetupMethod,
         public_config: &FederationConfig,
+        ceremonies: &[FederationDkgPublicCeremony],
     ) -> Result<FederationDkgTranscriptHash> {
-        let payload = Self::payload_from_config(setup_method, public_config);
+        let payload = Self::payload_from_config(setup_method, public_config, ceremonies)?;
         FederationDkgTranscriptHash::for_payload(&payload)
     }
 
     /// Create a transcript from externally collected member signatures.
+    ///
+    /// The ceremony requirements are the same as [`Self::hash_for_config`].
     pub fn from_signatures(
         setup_method: FederationDkgSetupMethod,
         public_config: &FederationConfig,
+        ceremonies: &[FederationDkgPublicCeremony],
         signatures: BTreeMap<MemberId, FederationDkgTranscriptSignature>,
     ) -> Result<Self> {
-        let payload = Self::payload_from_config(setup_method, public_config);
+        let payload = Self::payload_from_config(setup_method, public_config, ceremonies)?;
         let transcript_hash = FederationDkgTranscriptHash::for_payload(&payload)?;
         let transcript = Self {
             payload,
@@ -3726,6 +3807,7 @@ impl FederationDkgTranscript {
         Self::signed_setup_with_mode(
             FederationDkgSetupMethod::TrustedDealer,
             public_config,
+            &[],
             private_configs,
             FederationSchnorrSigningMode::RandomAux,
         )
@@ -3739,6 +3821,7 @@ impl FederationDkgTranscript {
         Self::signed_setup_with_mode(
             FederationDkgSetupMethod::TrustedDealer,
             public_config,
+            &[],
             private_configs,
             FederationSchnorrSigningMode::NoAuxRand,
         )
@@ -3747,11 +3830,13 @@ impl FederationDkgTranscript {
     /// Create a signed transcript from dealer-free Pedersen DKG public material.
     pub fn pedersen_dkg(
         public_config: &FederationConfig,
+        ceremonies: &[FederationDkgPublicCeremony],
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
     ) -> Result<Self> {
         Self::signed_setup_with_mode(
             FederationDkgSetupMethod::PedersenDkg,
             public_config,
+            ceremonies,
             private_configs,
             FederationSchnorrSigningMode::RandomAux,
         )
@@ -3760,10 +3845,11 @@ impl FederationDkgTranscript {
     fn signed_setup_with_mode(
         setup_method: FederationDkgSetupMethod,
         public_config: &FederationConfig,
+        ceremonies: &[FederationDkgPublicCeremony],
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
         mode: FederationSchnorrSigningMode,
     ) -> Result<Self> {
-        let payload = Self::payload_from_config(setup_method, public_config);
+        let payload = Self::payload_from_config(setup_method, public_config, ceremonies)?;
         let transcript_hash = FederationDkgTranscriptHash::for_payload(&payload)?;
         let mut signatures = BTreeMap::new();
         for member_id in payload.member_identity_public_keys.keys() {
@@ -3786,6 +3872,86 @@ impl FederationDkgTranscript {
         };
         transcript.validate_against_config(public_config)?;
         Ok(transcript)
+    }
+
+    fn canonical_ceremonies(
+        setup_method: FederationDkgSetupMethod,
+        public_config: &FederationConfig,
+        ceremonies: &[FederationDkgPublicCeremony],
+    ) -> Result<Vec<FederationDkgPublicCeremony>> {
+        match setup_method {
+            FederationDkgSetupMethod::TrustedDealer => {
+                if !ceremonies.is_empty() {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: "trusted-dealer transcript contains DKG ceremonies".to_string(),
+                    });
+                }
+                Ok(Vec::new())
+            }
+            FederationDkgSetupMethod::PedersenDkg => {
+                if ceremonies.is_empty() {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: "Pedersen DKG transcript is missing public ceremonies".to_string(),
+                    });
+                }
+                if ceremonies.len() != public_config.keysets.len() {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "Pedersen DKG ceremony count mismatch: expected={}, found={}",
+                            public_config.keysets.len(),
+                            ceremonies.len()
+                        ),
+                    });
+                }
+
+                let mut ceremony_ids = BTreeSet::new();
+                let mut ceremonies_by_keyset = BTreeMap::new();
+                for ceremony in ceremonies {
+                    if !ceremony_ids.insert(ceremony.ceremony_id()) {
+                        return Err(FederationError::DkgTranscriptMismatch {
+                            reason: format!("duplicate DKG ceremony id {}", ceremony.ceremony_id()),
+                        });
+                    }
+                    let keyset = ceremony.derive_federated_keyset(public_config)?;
+                    let keyset_id = keyset.id;
+                    if ceremonies_by_keyset
+                        .insert(keyset_id, (keyset, ceremony.clone()))
+                        .is_some()
+                    {
+                        return Err(FederationError::DkgTranscriptMismatch {
+                            reason: format!("duplicate DKG ceremony for keyset {keyset_id}"),
+                        });
+                    }
+                }
+
+                let mut canonical = Vec::with_capacity(public_config.keysets.len());
+                for expected_keyset in &public_config.keysets {
+                    let (derived_keyset, ceremony) = ceremonies_by_keyset
+                        .remove(&expected_keyset.id)
+                        .ok_or(FederationError::DkgTranscriptMismatch {
+                            reason: format!(
+                                "missing public DKG ceremony for keyset {}",
+                                expected_keyset.id
+                            ),
+                        })?;
+                    if &derived_keyset != expected_keyset {
+                        return Err(FederationError::DkgTranscriptMismatch {
+                            reason: format!(
+                                "public DKG ceremony does not derive keyset {}",
+                                expected_keyset.id
+                            ),
+                        });
+                    }
+                    canonical.push(ceremony);
+                }
+                if let Some(keyset_id) = ceremonies_by_keyset.keys().next() {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!("unexpected public DKG ceremony for keyset {keyset_id}"),
+                    });
+                }
+                Ok(canonical)
+            }
+        }
     }
 
     /// Validate this transcript against a public federation config.
@@ -3840,6 +4006,16 @@ impl FederationDkgTranscript {
         if self.payload.keysets != expected_keysets {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "keyset public material mismatch".to_string(),
+            });
+        }
+        let canonical_ceremonies = Self::canonical_ceremonies(
+            self.payload.setup_method,
+            public_config,
+            &self.payload.ceremonies,
+        )?;
+        if self.payload.ceremonies != canonical_ceremonies {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "public DKG ceremonies are not in keyset order".to_string(),
             });
         }
 
@@ -3897,6 +4073,7 @@ impl FederationDkgFinalizedMemberConfig {
         }
 
         let mut keysets_by_id = BTreeMap::new();
+        let mut ceremonies_by_keyset_id = BTreeMap::new();
         let mut secret_shares_by_keyset = BTreeMap::new();
         for share in keyset_shares {
             if share.federation_id != setup_public_config.federation_id {
@@ -3911,10 +4088,32 @@ impl FederationDkgFinalizedMemberConfig {
                     found: share.member_id,
                 });
             }
+            let ceremony_keyset = share
+                .public_ceremony
+                .derive_federated_keyset(setup_public_config)?;
+            if ceremony_keyset != share.keyset {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "public DKG ceremony does not match local keyset share {}",
+                        share.keyset.id
+                    ),
+                });
+            }
             match keysets_by_id.insert(share.keyset.id, share.keyset.clone()) {
                 Some(existing) if existing != share.keyset => {
                     return Err(FederationError::DkgTranscriptMismatch {
                         reason: format!("conflicting DKG keyset {}", share.keyset.id),
+                    });
+                }
+                Some(_) | None => {}
+            }
+            match ceremonies_by_keyset_id.insert(share.keyset.id, share.public_ceremony.clone()) {
+                Some(existing) if existing != share.public_ceremony => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting public DKG ceremony for keyset {}",
+                            share.keyset.id
+                        ),
                     });
                 }
                 Some(_) | None => {}
@@ -3941,10 +4140,12 @@ impl FederationDkgFinalizedMemberConfig {
         public_config.keysets = keysets_by_id.into_values().collect();
         public_config.setup_transcript = None;
         public_config.validate()?;
+        let public_ceremonies = ceremonies_by_keyset_id.into_values().collect::<Vec<_>>();
 
         let transcript_hash = FederationDkgTranscript::hash_for_config(
             FederationDkgSetupMethod::PedersenDkg,
             &public_config,
+            &public_ceremonies,
         )?;
         let mut transcript_signatures = BTreeMap::new();
         for signature_record in transcript_signature_records {
@@ -3969,6 +4170,7 @@ impl FederationDkgFinalizedMemberConfig {
         let transcript = FederationDkgTranscript::from_signatures(
             FederationDkgSetupMethod::PedersenDkg,
             &public_config,
+            &public_ceremonies,
             transcript_signatures,
         )?;
         public_config.setup_transcript = Some(transcript);
@@ -5212,11 +5414,13 @@ mod tests {
 
     fn dkg_transcript_signature_records(
         public_config: &FederationConfig,
+        ceremonies: &[FederationDkgPublicCeremony],
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
     ) -> Vec<FederationDkgTranscriptSignatureRequest> {
         let transcript_hash = FederationDkgTranscript::hash_for_config(
             FederationDkgSetupMethod::PedersenDkg,
             public_config,
+            ceremonies,
         )
         .expect("transcript hash");
         private_configs
@@ -6099,8 +6303,11 @@ mod tests {
 
         let mut public_config =
             FederationConfig::new(params, members, vec![keyset.clone()]).expect("public config");
+        let public_ceremony =
+            FederationDkgPublicCeremony::new(&setup_config, round, reveals).expect("ceremony");
         let transcript = FederationDkgTranscript::pedersen_dkg(
             &public_config,
+            std::slice::from_ref(&public_ceremony),
             &dkg_transcript_private_configs(&public_config),
         )
         .expect("pedersen DKG transcript");
@@ -6111,6 +6318,11 @@ mod tests {
         assert_eq!(transcript.payload.keysets.len(), 1);
         assert_eq!(transcript.payload.keysets[0].keyset_id, keyset.id);
         assert_eq!(transcript.payload.keysets[0].unit, keyset.unit);
+        assert_eq!(transcript.payload.ceremonies, vec![public_ceremony]);
+        assert_eq!(
+            transcript.payload.ceremonies[0].ceremony_id(),
+            dkg_ceremony_id()
+        );
         assert_eq!(transcript.payload.keysets[0].active, keyset.active);
         assert_eq!(
             transcript.payload.keysets[0].input_fee_ppk,
@@ -6126,6 +6338,90 @@ mod tests {
 
         public_config.setup_transcript = Some(transcript);
         public_config.validate().expect("config with transcript");
+    }
+
+    #[test]
+    fn dkg_pedersen_transcript_binds_complete_public_ceremony() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let setup_config =
+            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let reveals = dkg_reveals(&setup_config);
+        let commitments = dkg_commitments(&reveals);
+        let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
+        let keyset = round
+            .derive_federated_keyset(&setup_config, &reveals)
+            .expect("keyset");
+        let public_config =
+            FederationConfig::new(params, members, vec![keyset.clone()]).expect("public config");
+        let public_ceremony =
+            FederationDkgPublicCeremony::new(&setup_config, round, reveals.clone())
+                .expect("public ceremony");
+        let private_configs = dkg_transcript_private_configs(&public_config);
+        let transcript = FederationDkgTranscript::pedersen_dkg(
+            &public_config,
+            std::slice::from_ref(&public_ceremony),
+            &private_configs,
+        )
+        .expect("pedersen transcript");
+
+        assert!(matches!(
+            FederationDkgTranscript::hash_for_config(
+                FederationDkgSetupMethod::PedersenDkg,
+                &public_config,
+                &[],
+            ),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason == "Pedersen DKG transcript is missing public ceremonies"
+        ));
+
+        let mut relabeled_reveals = reveals;
+        for reveal in relabeled_reveals.values_mut() {
+            reveal.ceremony_id = other_dkg_ceremony_id();
+        }
+        let relabeled_commitments = dkg_commitments(&relabeled_reveals);
+        let relabeled_round =
+            FederationDkgCommitmentRound::new(&setup_config, relabeled_commitments)
+                .expect("relabeled round");
+        let relabeled_ceremony =
+            FederationDkgPublicCeremony::new(&setup_config, relabeled_round, relabeled_reveals)
+                .expect("relabeled ceremony");
+        assert_eq!(
+            relabeled_ceremony
+                .derive_federated_keyset(&setup_config)
+                .expect("relabeled keyset"),
+            keyset
+        );
+        let relabeled_hash = FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            &public_config,
+            std::slice::from_ref(&relabeled_ceremony),
+        )
+        .expect("relabeled transcript hash");
+        assert_ne!(relabeled_hash, transcript.transcript_hash);
+        assert!(matches!(
+            FederationDkgTranscript::from_signatures(
+                FederationDkgSetupMethod::PedersenDkg,
+                &public_config,
+                std::slice::from_ref(&relabeled_ceremony),
+                transcript.signatures.clone(),
+            ),
+            Err(FederationError::DkgTranscriptSignatureVerificationFailed { .. })
+        ));
+
+        let mut tampered = transcript;
+        tampered.payload.ceremonies[0]
+            .reveals
+            .get_mut(&member_id(1))
+            .expect("first reveal")
+            .coefficient_commitments
+            .get_mut(&Amount::from(1))
+            .expect("amount commitments")[0] = bls_key(99).public_key_g2();
+        assert!(matches!(
+            tampered.validate_against_config(&public_config),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason == "transcript hash does not match payload"
+        ));
     }
 
     #[test]
@@ -6185,8 +6481,11 @@ mod tests {
             FederationConfig::new(params, members, vec![keyset_share.keyset.clone()])
                 .expect("public config");
         let private_configs = dkg_transcript_private_configs(&public_config);
-        let transcript_signatures =
-            dkg_transcript_signature_records(&public_config, &private_configs);
+        let transcript_signatures = dkg_transcript_signature_records(
+            &public_config,
+            std::slice::from_ref(&keyset_share.public_ceremony),
+            &private_configs,
+        );
         let finalized = FederationDkgFinalizedMemberConfig::from_records(
             &setup_config,
             private_configs
@@ -6242,8 +6541,11 @@ mod tests {
             FederationConfig::new(params, members, vec![keyset_share.keyset.clone()])
                 .expect("public config");
         let private_configs = dkg_transcript_private_configs(&public_config);
-        let mut transcript_signatures =
-            dkg_transcript_signature_records(&public_config, &private_configs);
+        let mut transcript_signatures = dkg_transcript_signature_records(
+            &public_config,
+            std::slice::from_ref(&keyset_share.public_ceremony),
+            &private_configs,
+        );
         transcript_signatures.retain(|signature| signature.signer != member_id(3));
 
         assert!(matches!(

@@ -444,9 +444,11 @@ async fn federation_restart_activates_route_derived_dkg_records() {
         vec![keyset_share.keyset.clone()],
     )
     .expect("final public config");
+    let public_ceremonies = vec![keyset_share.public_ceremony.clone()];
     let transcript_hash = FederationDkgTranscript::hash_for_config(
         FederationDkgSetupMethod::PedersenDkg,
         &final_public_config,
+        &public_ceremonies,
     )
     .expect("transcript hash");
     let transcript_signatures = [&setup_local_private, &setup_peer_private]
@@ -464,6 +466,7 @@ async fn federation_restart_activates_route_derived_dkg_records() {
     let transcript = FederationDkgTranscript::from_signatures(
         FederationDkgSetupMethod::PedersenDkg,
         &final_public_config,
+        &public_ceremonies,
         transcript_signatures
             .iter()
             .map(|signature| (signature.signer, signature.signature))

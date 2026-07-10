@@ -7,17 +7,18 @@ use std::sync::Arc;
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
-    FederatedKeyset, FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationConsensusItem, FederationDkgCeremonyId, FederationDkgCommitmentRound,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgPublicCeremony,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -28,8 +29,7 @@ use crate::federation::{
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut01::{
-    evaluate_secret_key_coefficients, trusted_dealer_keygen, BlsBlindSignatureShare,
-    BlsG1PublicKey, BlsSecretKey,
+    evaluate_secret_key_coefficients, BlsBlindSignatureShare, BlsG1PublicKey, BlsSecretKey,
 };
 use crate::{
     Amount, CurrencyUnit, Id, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
@@ -190,43 +190,35 @@ fn dkg_setup_state_from_db_records(
 
 fn dkg_member_keyset_share(local_member_id: MemberId) -> FederationDkgMemberKeysetShare {
     let public_config = dkg_public_config();
-    let signer_ids = public_config
-        .members
-        .keys()
-        .map(|member_id| member_id.to_bls_signer_id())
-        .collect::<Vec<_>>();
-    let amount = Amount::from(1);
-    let threshold_keyset =
-        trusted_dealer_keygen(&[bls_key(7), bls_key(17)], &signer_ids).expect("threshold keyset");
-    let mut aggregate_keys = BTreeMap::new();
-    aggregate_keys.insert(amount, threshold_keyset.aggregate_public_key());
-    let mut public_shares = BTreeMap::new();
-    for share in threshold_keyset.public_shares() {
-        public_shares
-            .entry(MemberId::new(share.signer_id().get()).expect("member id"))
-            .or_insert_with(BTreeMap::new)
-            .insert(amount, *share);
-    }
-    let mut secret_shares = BTreeMap::new();
-    for share in threshold_keyset.secret_shares() {
-        if share.signer_id().get() == local_member_id.get() {
-            secret_shares.insert(amount, share.clone());
-        }
-    }
-    let keyset = FederatedKeyset::new(
-        CurrencyUnit::Sat,
-        true,
-        0,
-        None,
-        aggregate_keys,
-        public_shares,
-    );
-    FederationDkgMemberKeysetShare {
-        federation_id: public_config.federation_id,
-        member_id: local_member_id,
-        keyset,
-        secret_shares,
-    }
+    let reveals = BTreeMap::from([
+        (member_id(1), dkg_reveal(&public_config, member_id(1), 11)),
+        (member_id(2), dkg_reveal(&public_config, member_id(2), 21)),
+    ]);
+    let commitments = reveals
+        .iter()
+        .map(|(member_id, reveal)| {
+            (
+                *member_id,
+                FederationDkgParticipantCommitment::from_reveal(reveal)
+                    .expect("commitment from reveal"),
+            )
+        })
+        .collect();
+    let round =
+        FederationDkgCommitmentRound::new(&public_config, commitments).expect("commitment round");
+    let contributions = BTreeMap::from([
+        (
+            member_id(1),
+            dkg_secret_share_request(&public_config, member_id(1), local_member_id, 11),
+        ),
+        (
+            member_id(2),
+            dkg_secret_share_request(&public_config, member_id(2), local_member_id, 21),
+        ),
+    ]);
+    round
+        .derive_member_keyset_share(&public_config, &reveals, local_member_id, &contributions)
+        .expect("member keyset share")
 }
 
 fn dkg_finalized_public_config(setup_config: &FederationConfig) -> FederationConfig {
@@ -241,6 +233,7 @@ fn dkg_finalized_public_config(setup_config: &FederationConfig) -> FederationCon
     finalized_config.setup_transcript = Some(
         FederationDkgTranscript::pedersen_dkg(
             &finalized_config,
+            std::slice::from_ref(&keyset_share.public_ceremony),
             &BTreeMap::from([
                 (member_id(1), private_member(1)),
                 (member_id(2), private_member(2)),
@@ -304,11 +297,13 @@ fn signature_share_record(
 
 fn dkg_transcript_signature_request(
     public_config: &FederationConfig,
+    ceremonies: &[FederationDkgPublicCeremony],
     private_config: &MemberConfigPrivate,
 ) -> FederationDkgTranscriptSignatureRequest {
     let transcript_hash = FederationDkgTranscript::hash_for_config(
         FederationDkgSetupMethod::PedersenDkg,
         public_config,
+        ceremonies,
     )
     .expect("transcript hash");
     let signature = FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
@@ -1572,11 +1567,20 @@ pub async fn federation_dkg_transcript_signature_persistence<DB>(db: DB)
 where
     DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
 {
-    let public_config = dkg_public_config();
+    let setup_config = dkg_public_config();
+    let keyset_share = dkg_member_keyset_share(member_id(1));
+    let mut public_config = setup_config;
+    public_config.keysets = vec![keyset_share.keyset];
+    public_config
+        .validate()
+        .expect("public DKG keyset validates");
+    let ceremonies = vec![keyset_share.public_ceremony];
     let first_private = private_member(1);
     let second_private = private_member(2);
-    let first_signature = dkg_transcript_signature_request(&public_config, &first_private);
-    let second_signature = dkg_transcript_signature_request(&public_config, &second_private);
+    let first_signature =
+        dkg_transcript_signature_request(&public_config, &ceremonies, &first_private);
+    let second_signature =
+        dkg_transcript_signature_request(&public_config, &ceremonies, &second_private);
     let mut conflicting_signature = first_signature;
     conflicting_signature.federation_id = FederationId::from_bytes([99; 32]);
 
@@ -1605,6 +1609,7 @@ where
     let transcript = FederationDkgTranscript::from_signatures(
         FederationDkgSetupMethod::PedersenDkg,
         &public_config,
+        &ceremonies,
         transcript_signatures,
     )
     .expect("assembled DKG transcript");
