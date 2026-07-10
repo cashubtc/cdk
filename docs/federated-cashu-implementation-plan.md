@@ -3115,6 +3115,81 @@ Tests and success criteria:
 - [x] Existing standalone `cdk-cli` tests keep passing with federation disabled
   and do not require federation config.
 
+## Milestone 26: unified federated wallet errors and recovery
+
+Objective: make federation-mode wallet and CLI error behavior match the existing
+standalone Cashu behavior whenever consensus has decided an ordinary Cashu
+business outcome. Reuse existing wallet error types, saga recovery, and public
+Cashu error codes rather than creating a parallel federation-specific business
+error system.
+
+Implementation checklist:
+
+- [ ] Define one deterministic, persisted operation-result representation for
+  consensus-finalized federation operations. A rejected operation must retain
+  its canonical Cashu business error instead of exposing only the generic
+  `RejectedOperation` status.
+- [ ] Reuse existing public `ErrorCode` and `ErrorResponse` values for
+  consensus-decided business failures, including `TokenAlreadySpent`,
+  `TokenPending`, `BlindedMessageAlreadySigned`, quote state errors, payment
+  failures, keyset errors, transaction-balance errors, duplicate inputs/outputs,
+  and witness/authentication failures.
+- [ ] Make every federation member persist and return the same finalized
+  operation outcome. The outcome, including any canonical business rejection,
+  must be deterministic and covered by the finalized operation/journal
+  integrity commitment.
+- [ ] Keep federation liveness and consistency conditions distinct from Cashu
+  business errors: pending AlephBFT finalization, unavailable quorum, catch-up
+  gates, timeouts, HTTP `429`/`5xx`, invalid shares, mismatched member views,
+  and insufficient threshold responses remain retryable or ambiguous.
+- [ ] Preserve the existing `OperationPendingFinalization` to pending/retry
+  mapping. Do not reinterpret a timeout or unavailable member as a rejected
+  mint, swap, receive, or melt operation.
+- [ ] Update `FederatedMintConnector` fanout collection so it returns an
+  existing wallet business error when a signing threshold returns the same
+  canonical rejection, aggregates threshold shares when successful, and
+  returns an ambiguous federation-consistency error when neither outcome has
+  threshold agreement.
+- [ ] Do not allow a single stale, faulty, or malicious member response to
+  determine a definitive wallet error. Threshold agreement is required for a
+  federated business outcome.
+- [ ] Route federation-public mint, swap, melt, and restore errors through the
+  existing `ErrorResponse -> Error` conversion path. Private member-to-member
+  REST failures remain internal transport errors and must not be exposed as
+  wallet-facing Cashu business errors.
+- [ ] Reuse existing wallet saga recovery rules without federation-only copies:
+  definitive business errors may compensate when the standalone saga already
+  does so; pending or ambiguous errors retain recoverable state and use the
+  existing replay, check-state, quote-status, and restore paths.
+- [ ] Keep the CLI thin: it should surface the wallet's typed error and exit
+  nonzero, with clear text for pending/retryable federation state, rather than
+  reimplementing mint, swap, receive, or melt recovery policy.
+- [ ] Keep standalone mint, wallet, and CLI error behavior unchanged.
+
+Tests and success criteria:
+
+- [ ] Add end-to-end federation connector and Axum tests showing a threshold
+  `TokenAlreadySpent` rejection during receive/swap reaches
+  `Error::TokenAlreadySpent`, while a spent proof caused by this wallet's own
+  interrupted receive follows the existing restore-based recovery path.
+- [ ] Add threshold-agreement tests for mint, batch mint, swap/receive, melt,
+  melt change, restore, and check-state covering the relevant existing Cashu
+  business error codes and proving they round-trip through public HTTP unchanged.
+- [ ] Add mixed-member tests proving success or a business rejection requires
+  threshold agreement, and that conflicting member responses remain ambiguous
+  without producing spendable proofs or prematurely releasing local proofs.
+- [ ] Add tests for `TokenPending`, pending finalization, timeout, unavailable
+  quorum, catch-up, invalid share, and HTTP `429`/`5xx` that prove existing
+  sagas retain recoverable state and do not classify them as definitive failure.
+- [ ] Add mint and melt saga tests proving existing standalone recovery behavior
+  is reused for quote-state and payment outcomes, including successful replay,
+  failed payment release, paid finalization, and unresolved payment safety.
+- [ ] Add CLI tests proving federation receive, mint, swap, and melt display
+  the typed wallet error for consensus-decided business failures and a clear
+  retry/recovery message for ambiguous federation conditions.
+- [ ] Re-run the equivalent standalone wallet and CLI error tests with
+  federation disabled to prove no regression in existing behavior.
+
 ## MVP cut lines
 
 MVP 1: local deterministic federation
@@ -3167,3 +3242,4 @@ MVP 3: payments and production hardening
 17. Add real payment observation policy and DKG.
 18. Add production cleanup and payment-backend isolation.
 19. Add CLI wallet federation support.
+20. Add unified federated wallet error handling and saga recovery.
