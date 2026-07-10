@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cdk_common::database::DynMintDatabase;
+use cdk_common::database::{DynMintDatabase, Error as DatabaseError};
 #[cfg(feature = "federation")]
 use cdk_common::federation::FederationOperationId;
 use cdk_common::melt::MeltQuoteRequest;
@@ -75,6 +75,55 @@ fn pending_melt_status_recheck_interval() -> Duration {
     }
 }
 
+pub(super) fn ensure_melt_quote_matches_request(
+    existing: &MeltQuote,
+    request: &MeltQuoteRequest,
+) -> Result<(), Error> {
+    let matches = match request {
+        MeltQuoteRequest::Bolt11(request) => {
+            existing.unit == request.unit
+                && existing.options == request.options
+                && existing.payment_method == PaymentMethod::Known(KnownMethod::Bolt11)
+                && existing.request
+                    == cdk_common::mint::MeltPaymentRequest::Bolt11 {
+                        bolt11: request.request.clone(),
+                    }
+        }
+        MeltQuoteRequest::Bolt12(request) => {
+            existing.unit == request.unit
+                && existing.options == request.options
+                && existing.payment_method == PaymentMethod::Known(KnownMethod::Bolt12)
+                && existing.request.to_string() == request.request
+        }
+        MeltQuoteRequest::Onchain(request) => {
+            existing.unit == request.unit
+                && existing.amount() == request.amount.with_unit(request.unit.clone())
+                && existing.payment_method == PaymentMethod::Known(KnownMethod::Onchain)
+                && existing.request
+                    == cdk_common::mint::MeltPaymentRequest::Onchain {
+                        address: request.request.clone(),
+                    }
+        }
+        MeltQuoteRequest::Custom(request) => {
+            existing.unit == request.unit
+                && existing.payment_method == PaymentMethod::from(request.method.as_str())
+                && existing.request
+                    == cdk_common::mint::MeltPaymentRequest::Custom {
+                        method: request.method.clone(),
+                        request: request.request.clone(),
+                    }
+        }
+    };
+
+    if matches {
+        Ok(())
+    } else {
+        Err(Error::Custom(
+            "federation melt quote replay found mismatched local quote".to_string(),
+        ))
+    }
+}
+
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
 pub struct PendingMelt {
@@ -114,6 +163,62 @@ impl std::future::IntoFuture for PendingMelt {
 }
 
 impl Mint {
+    /// Return an existing melt quote for an idempotent federation retry.
+    pub async fn existing_federation_melt_quote(
+        &self,
+        quote_id: &QuoteId,
+        request: &MeltQuoteRequest,
+    ) -> Result<Option<MeltQuoteCreateResponse<QuoteId>>, Error> {
+        let Some(quote) = self.localstore.get_melt_quote(quote_id).await? else {
+            return Ok(None);
+        };
+        ensure_melt_quote_matches_request(&quote, request)?;
+
+        let response: MeltQuoteResponse<QuoteId> = quote.into();
+        Ok(Some(match response {
+            MeltQuoteResponse::Bolt11(response) => MeltQuoteCreateResponse::Bolt11(response),
+            MeltQuoteResponse::Bolt12(response) => MeltQuoteCreateResponse::Bolt12(response),
+            MeltQuoteResponse::Onchain(response) => MeltQuoteCreateResponse::Onchain(response),
+            MeltQuoteResponse::Custom(response) => MeltQuoteCreateResponse::Custom(response),
+        }))
+    }
+
+    async fn persist_melt_quote_idempotently(
+        &self,
+        quote: MeltQuote,
+        request: &MeltQuoteRequest,
+    ) -> Result<MeltQuote, Error> {
+        let mut tx = self.localstore.begin_transaction().await?;
+        if let Some(existing) = tx.get_melt_quote(&quote.id).await? {
+            let validation = ensure_melt_quote_matches_request(&existing, request);
+            let existing = existing.inner();
+            tx.rollback().await?;
+            validation?;
+            return Ok(existing);
+        }
+
+        match tx.add_melt_quote(quote.clone()).await {
+            Ok(()) => {
+                tx.commit().await?;
+                Ok(quote)
+            }
+            Err(DatabaseError::Duplicate) => {
+                tx.rollback().await?;
+                let existing = self
+                    .localstore
+                    .get_melt_quote(&quote.id)
+                    .await?
+                    .ok_or(Error::Internal)?;
+                ensure_melt_quote_matches_request(&existing, request)?;
+                Ok(existing)
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                Err(err.into())
+            }
+        }
+    }
+
     /// Loads a settled melt response from the database.
     ///
     /// Returns `Ok(None)` while the quote is still `Pending`; callers should
@@ -310,7 +415,7 @@ impl Mint {
     /// Get a melt quote using a consensus-assigned quote id for federation replay.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
-    pub(crate) async fn get_federation_melt_quote(
+    pub async fn get_federation_melt_quote(
         &self,
         quote_id: QuoteId,
         melt_quote_request: MeltQuoteRequest,
@@ -442,9 +547,10 @@ impl Mint {
                 payment_quote.request_lookup_id
             );
 
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.add_melt_quote(quote.clone()).await?;
-            tx.commit().await?;
+            let request = MeltQuoteRequest::Bolt11(melt_request.clone());
+            let quote = self
+                .persist_melt_quote_idempotently(quote, &request)
+                .await?;
 
             Ok(quote.into())
         }
@@ -559,9 +665,10 @@ impl Mint {
                 payment_quote.request_lookup_id
             );
 
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.add_melt_quote(quote.clone()).await?;
-            tx.commit().await?;
+            let request = MeltQuoteRequest::Bolt12(melt_request.clone());
+            let quote = self
+                .persist_melt_quote_idempotently(quote, &request)
+                .await?;
 
             Ok(quote.into())
         }
@@ -694,9 +801,10 @@ impl Mint {
                 fee_options,
             )?;
 
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.add_melt_quote(quote.clone()).await?;
-            tx.commit().await?;
+            let request = MeltQuoteRequest::Onchain(melt_request.clone());
+            let quote = self
+                .persist_melt_quote_idempotently(quote, &request)
+                .await?;
 
             Ok(quote.into())
         }
@@ -829,9 +937,10 @@ impl Mint {
                 payment_quote.request_lookup_id
             );
 
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.add_melt_quote(quote.clone()).await?;
-            tx.commit().await?;
+            let request = MeltQuoteRequest::Custom(melt_request.clone());
+            let quote = self
+                .persist_melt_quote_idempotently(quote, &request)
+                .await?;
 
             Ok(quote.into())
         }

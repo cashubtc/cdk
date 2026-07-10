@@ -6,6 +6,7 @@ use std::time::Duration;
 use cdk_sql_common::pool::{self, DatabasePool};
 use cdk_sql_common::value::Value;
 use rusqlite::Connection;
+use tokio::sync::Mutex;
 
 use crate::async_sqlite;
 
@@ -14,6 +15,7 @@ use crate::async_sqlite;
 pub struct Config {
     path: Option<String>,
     password: Option<String>,
+    write_gate: Arc<Mutex<()>>,
 }
 
 impl pool::DatabaseConfig for Config {
@@ -78,7 +80,10 @@ impl DatabasePool for SqliteConnectionManager {
 
         conn.busy_timeout(Duration::from_secs(10))?;
 
-        Ok(async_sqlite::AsyncSqlite::new(conn))
+        Ok(async_sqlite::AsyncSqlite::new(
+            conn,
+            Arc::clone(&config.write_gate),
+        ))
     }
 }
 
@@ -106,11 +111,13 @@ impl From<&str> for Config {
             Config {
                 path: None,
                 password: None,
+                write_gate: Arc::new(Mutex::new(())),
             }
         } else {
             Config {
                 path: Some(path.to_owned()),
                 password: None,
+                write_gate: Arc::new(Mutex::new(())),
             }
         }
     }
@@ -122,11 +129,13 @@ impl From<(&str, &str)> for Config {
             Config {
                 path: None,
                 password: Some(pass.to_owned()),
+                write_gate: Arc::new(Mutex::new(())),
             }
         } else {
             Config {
                 path: Some(path.to_owned()),
                 password: Some(pass.to_owned()),
+                write_gate: Arc::new(Mutex::new(())),
             }
         }
     }

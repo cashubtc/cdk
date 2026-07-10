@@ -12,12 +12,13 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationBlindSignatureShareSet, FederationConfig, FederationConsensusBackendKind,
-    FederationError, FederationId, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
-    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationBlindSignatureShareSet, FederationConfig, FederationConfigDigest,
+    FederationConsensusBackendKind, FederationError, FederationId, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationRestoreOperation, FederationSignatureShareRecord, FederationSwapOperation,
@@ -34,6 +35,7 @@ use cdk_common::{
 };
 use uuid::Uuid;
 
+use super::melt::ensure_melt_quote_matches_request;
 use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
 use super::Mint;
 use super::MintInput;
@@ -61,6 +63,7 @@ impl FederationMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationRuntimeConfig {
     public_config: FederationConfig,
+    config_digest: FederationConfigDigest,
     private_config: MemberConfigPrivate,
     consensus_backend: FederationConsensusBackendKind,
 }
@@ -86,9 +89,11 @@ impl FederationRuntimeConfig {
     ) -> Result<Self, Error> {
         public_config.validate()?;
         private_config.validate_against_public(&public_config)?;
+        let config_digest = public_config.config_digest_for_validated_config()?;
 
         Ok(Self {
             public_config,
+            config_digest,
             private_config,
             consensus_backend,
         })
@@ -98,6 +103,12 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn public_config(&self) -> &FederationConfig {
         &self.public_config
+    }
+
+    /// Digest of the public config validated when this runtime was created.
+    #[must_use]
+    pub fn config_digest(&self) -> FederationConfigDigest {
+        self.config_digest
     }
 
     fn validate_federation_observer(&self, observer: MemberId) -> Result<(), Error> {
@@ -222,9 +233,31 @@ impl FederationRuntimeConfig {
     where
         Q: ToString,
     {
+        let quote = quote.to_string();
+        let request_lookup_id = match QuoteId::from_str(&quote) {
+            Ok(quote_id) => PaymentIdentifier::QuoteId(quote_id),
+            Err(_) => PaymentIdentifier::CustomId(quote.clone()),
+        };
+        self.mint_quote_operation_with_lookup_id(quote, request_lookup_id, request, response)
+    }
+
+    /// Build the consensus operation for creating a mint quote with the
+    /// backend's stable payment lookup identifier.
+    #[must_use]
+    pub fn mint_quote_operation_with_lookup_id<Q>(
+        &self,
+        quote: Q,
+        request_lookup_id: PaymentIdentifier,
+        request: MintQuoteRequest,
+        response: MintQuoteResponse<String>,
+    ) -> FederationOperationEnvelope
+    where
+        Q: ToString,
+    {
         self.operation_envelope(FederationOperation::MintQuote(
             FederationMintQuoteOperation {
                 quote: quote.to_string(),
+                request_lookup_id,
                 request,
                 response,
             },
@@ -859,6 +892,48 @@ impl FederationRuntimeConfig {
 }
 
 impl Mint {
+    /// Return a previously ordered mint-quote response for an idempotent
+    /// wallet retry, while rejecting reuse of the assigned ID for another
+    /// request.
+    pub async fn ordered_federation_mint_quote_response(
+        &self,
+        quote_id: &QuoteId,
+        request: &MintQuoteRequest,
+    ) -> Result<Option<(MintQuoteResponse<QuoteId>, PaymentIdentifier)>, Error> {
+        let quote_id = quote_id.to_string();
+        let entries = self.localstore.get_federation_journal_entries().await?;
+        let Some(entry) = entries.iter().rev().find(|entry| {
+            matches!(
+                &entry.envelope.operation,
+                FederationOperation::MintQuote(operation) if operation.quote == quote_id
+            )
+        }) else {
+            return Ok(None);
+        };
+        let FederationOperation::MintQuote(operation) = &entry.envelope.operation else {
+            return Ok(None);
+        };
+
+        if &operation.request != request {
+            return Err(Error::Custom(
+                "federation mint quote id was reused with a different request".to_string(),
+            ));
+        }
+        if matches!(
+            entry.status,
+            FederationOperationStatus::Rejected | FederationOperationStatus::Failed
+        ) {
+            return Err(FederationError::RejectedOperation {
+                operation_id: entry.operation_id,
+                status: entry.status,
+            }
+            .into());
+        }
+
+        let response = serde_json::from_value(serde_json::to_value(&operation.response)?)?;
+        Ok(Some((response, operation.request_lookup_id.clone())))
+    }
+
     async fn persisted_signature_shares_for_outputs(
         &self,
         operation_id: FederationOperationId,
@@ -2259,7 +2334,7 @@ fn mint_quote_from_federation_operation(
         unit.clone(),
         amount,
         operation.response.expiry().unwrap_or_default(),
-        PaymentIdentifier::QuoteId(quote_id),
+        operation.request_lookup_id.clone(),
         operation.request.pubkey(),
         amount_paid,
         amount_issued,
@@ -2339,6 +2414,7 @@ fn ensure_mint_quote_matches(existing: &MintQuote, expected: &MintQuote) -> Resu
     if existing.id != expected.id
         || existing.unit != expected.unit
         || existing.request != expected.request
+        || existing.request_lookup_id != expected.request_lookup_id
         || existing.amount != expected.amount
         || existing.expiry != expected.expiry
         || existing.pubkey != expected.pubkey
@@ -2346,21 +2422,6 @@ fn ensure_mint_quote_matches(existing: &MintQuote, expected: &MintQuote) -> Resu
     {
         return Err(Error::Custom(
             "federation mint quote replay found mismatched local quote".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-fn ensure_melt_quote_matches_request(
-    existing: &MeltQuote,
-    request: &MeltQuoteRequest,
-) -> Result<(), Error> {
-    if existing.payment_method != request.method()
-        || existing.request.to_string() != melt_quote_request_string(request)
-    {
-        return Err(Error::Custom(
-            "federation melt quote replay found mismatched local quote".to_string(),
         ));
     }
 

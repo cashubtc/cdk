@@ -46,6 +46,13 @@ where
 
     /// Consumes the transaction rolling back all changes
     async fn rollback(conn: &mut DB) -> Result<(), Error>;
+
+    /// Roll back synchronously during drop when the connector supports it.
+    ///
+    /// Returning `Ok(false)` delegates to the asynchronous fallback.
+    fn rollback_on_drop(_conn: &mut DB) -> Result<bool, Error> {
+        Ok(false)
+    }
 }
 
 /// Database connection with a transaction
@@ -72,12 +79,16 @@ where
     /// Commits the transaction consuming it and releasing the connection back to the pool (or
     /// disconnecting)
     pub async fn commit(mut self) -> Result<(), Error> {
-        let mut conn = self
+        let conn = self
             .inner
-            .take()
+            .as_mut()
             .ok_or(Error::Internal("Missing connection".to_owned()))?;
 
-        DB::Transaction::commit(&mut conn).await?;
+        let result = DB::Transaction::commit(conn.deref_mut()).await;
+        if result.is_ok() {
+            self.inner.take();
+        }
+        result?;
 
         Ok(())
     }
@@ -85,12 +96,16 @@ where
     /// Rollback the transaction consuming it and releasing the connection back to the pool (or
     /// disconnecting)
     pub async fn rollback(mut self) -> Result<(), Error> {
-        let mut conn = self
+        let conn = self
             .inner
-            .take()
+            .as_mut()
             .ok_or(Error::Internal("Missing connection".to_owned()))?;
 
-        DB::Transaction::rollback(&mut conn).await?;
+        let result = DB::Transaction::rollback(conn.deref_mut()).await;
+        if result.is_ok() {
+            self.inner.take();
+        }
+        result?;
 
         Ok(())
     }
@@ -103,6 +118,10 @@ where
 {
     fn drop(&mut self) {
         if let Some(mut conn) = self.inner.take() {
+            match DB::Transaction::rollback_on_drop(conn.deref_mut()) {
+                Ok(true) => return,
+                Ok(false) | Err(_) => {}
+            }
             tokio::spawn(async move {
                 let _ = DB::Transaction::rollback(conn.deref_mut()).await;
             });

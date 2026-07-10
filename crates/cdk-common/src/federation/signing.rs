@@ -270,6 +270,7 @@ mod tests {
             federation_id,
             FederationOperation::MintQuote(FederationMintQuoteOperation {
                 quote: quote.to_string(),
+                request_lookup_id: crate::payment::PaymentIdentifier::CustomId(quote.to_string()),
                 request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                     amount: Amount::from(1),
                     unit: CurrencyUnit::Sat,

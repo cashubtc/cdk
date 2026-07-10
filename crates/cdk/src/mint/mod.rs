@@ -632,7 +632,10 @@ impl Mint {
                 mint_info.federation = Some(
                     config
                         .public_config()
-                        .mint_info_for_member(config.member_id())?,
+                        .mint_info_for_member_with_config_digest(
+                            config.member_id(),
+                            config.config_digest(),
+                        )?,
                 );
             }
             mint_info
@@ -1720,8 +1723,8 @@ mod tests {
         let issue_mint = source_before_cfg_tests(include_str!("issue/mod.rs"));
         assert_contains_in_order(
             issue_mint,
-            "tx.commit().await?;\n\n            if payment_method.is_bolt11()",
-            "self.pubsub_manager\n                    .publish(NotificationPayload::MintQuoteBolt11Response(res));",
+            "tx.commit().await?;\n\n                if payment_method.is_bolt11()",
+            ".publish(NotificationPayload::MintQuoteBolt11Response(res));",
         );
         assert_contains_in_order(
             issue_mint,

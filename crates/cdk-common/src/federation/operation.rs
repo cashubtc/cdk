@@ -26,11 +26,11 @@ use crate::{
     RestoreRequest, SwapRequest,
 };
 
-const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
+const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v2";
 const FEDERATION_REQUEST_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-request-transcript-v1";
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 1;
+pub const FEDERATION_OPERATION_VERSION: u16 = 2;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -353,6 +353,8 @@ pub enum FederationOperationConflictKey {
 pub struct FederationMintQuoteOperation {
     /// Quote ID assigned by the proposing member.
     pub quote: String,
+    /// Stable backend identifier used by every member to observe payment.
+    pub request_lookup_id: PaymentIdentifier,
     /// Wallet's quote request.
     pub request: MintQuoteRequest,
     /// Quote response produced by the proposing member, including the payment request.
@@ -1938,6 +1940,7 @@ mod tests {
         let envelope = envelope(FederationOperation::MintQuote(
             FederationMintQuoteOperation {
                 quote: "quote-oversized".to_string(),
+                request_lookup_id: PaymentIdentifier::CustomId("quote-oversized".to_string()),
                 request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                     amount: Amount::from(1),
                     unit: CurrencyUnit::Sat,
@@ -1979,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v1_golden_vector() {
+    fn canonical_operation_encoding_matches_v2_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -1995,12 +1998,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":1}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":2}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd"
+            "b4636fa385a9dc0e788fa7c37206fff72d437c1d774a20fa87aa57484fcc83b5"
         );
     }
 
@@ -2051,6 +2054,7 @@ mod tests {
         let quote_envelope = envelope(FederationOperation::MintQuote(
             FederationMintQuoteOperation {
                 quote: "quote-no-transcript".to_string(),
+                request_lookup_id: PaymentIdentifier::CustomId("quote-no-transcript".to_string()),
                 request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                     amount: Amount::from(1),
                     unit: CurrencyUnit::Sat,
@@ -2369,6 +2373,7 @@ mod tests {
         let first = envelope(FederationOperation::MintQuote(
             FederationMintQuoteOperation {
                 quote: "quote-custom".to_string(),
+                request_lookup_id: PaymentIdentifier::CustomId("quote-custom".to_string()),
                 request: request_one,
                 response: MintQuoteResponse::Custom {
                     method: PaymentMethod::Custom("custom".to_string()),
@@ -2389,6 +2394,7 @@ mod tests {
         let second = envelope(FederationOperation::MintQuote(
             FederationMintQuoteOperation {
                 quote: "quote-custom".to_string(),
+                request_lookup_id: PaymentIdentifier::CustomId("quote-custom".to_string()),
                 request: request_two,
                 response: MintQuoteResponse::Custom {
                     method: PaymentMethod::Custom("custom".to_string()),
@@ -3114,6 +3120,7 @@ mod tests {
     fn operation_kind_and_keys_cover_core_flows() {
         let mint_quote = FederationOperation::MintQuote(FederationMintQuoteOperation {
             quote: "mint-quote".to_string(),
+            request_lookup_id: PaymentIdentifier::CustomId("mint-quote".to_string()),
             request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                 amount: Amount::from(10),
                 unit: CurrencyUnit::Sat,

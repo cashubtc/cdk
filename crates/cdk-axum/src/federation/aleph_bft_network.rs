@@ -3,6 +3,7 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use aleph_bft::Recipient;
 use cdk::federation::FederationOperationId;
@@ -12,7 +13,7 @@ use cdk::federation::{
 };
 use cdk_common::database::DynMintDatabase;
 use cdk_http_client::{HttpError, Transport};
-use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use parity_scale_codec::{Decode, Encode};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -25,6 +26,8 @@ use super::peer_client::FederationRestPeerClient;
 
 pub(crate) const CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT: usize = 4096;
 const CDK_ALEPH_BFT_SEEN_CONSENSUS_ACTIVITY_LIMIT: usize = 16_384;
+const CDK_ALEPH_BFT_NETWORK_QUORUM_COMPLETION_GRACE: Duration = Duration::from_millis(25);
+const CDK_ALEPH_BFT_NETWORK_RETRY_ATTEMPT_BUDGET: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Default)]
 struct CdkAlephBftSeenConsensusActivity {
@@ -437,6 +440,8 @@ where
             config,
             &delivery.retry_delivery.request,
             &delivery.retry_delivery.peers,
+            delivery.retry_delivery.peers.len(),
+            None,
         )
         .await?;
         outcome.encoded_bytes = outcome
@@ -504,37 +509,6 @@ where
     config.validate()?;
 
     let mut outcome = CdkAlephBftNetworkPumpTickOutcome::default();
-    let retry_messages_to_drain = retry_queue.pending.len().min(config.max_messages_per_tick);
-    for _ in 0..retry_messages_to_drain {
-        let Some(delivery) = retry_queue.pending.pop_front() else {
-            break;
-        };
-        outcome.retry_messages_drained = outcome.retry_messages_drained.saturating_add(1);
-        let mut retry_outcome = deliver_cdk_aleph_bft_network_request(
-            client,
-            config,
-            &delivery.request,
-            &delivery.peers,
-        )
-        .await?;
-        outcome.encoded_bytes = outcome
-            .encoded_bytes
-            .saturating_add(retry_outcome.encoded_bytes);
-        outcome
-            .remote_accepted_members
-            .append(&mut retry_outcome.remote_accepted_members);
-        outcome
-            .remote_failed_members
-            .append(&mut retry_outcome.remote_failed_members);
-        outcome
-            .remote_skipped_members
-            .append(&mut retry_outcome.remote_skipped_members);
-        let requeued = retry_queue.push_failed(delivery.request, retry_outcome.remote_failed_peers);
-        persist_retry_push_outcome(retry_store, &requeued).await?;
-        remove_obsolete_persisted_retry(retry_store, &delivery.retry_id, &requeued).await?;
-        outcome.remote_requeued_members.extend(requeued.member_ids);
-    }
-
     let mut first_outbound = first_outbound;
     for _ in 0..config.max_messages_per_tick {
         let outbound = match first_outbound.take() {
@@ -553,6 +527,8 @@ where
             config,
             &delivery.retry_delivery.request,
             &delivery.retry_delivery.peers,
+            keychain.remote_delivery_threshold(delivery.retry_delivery.peers.len()),
+            None,
         )
         .await?;
         outcome.encoded_bytes = outcome
@@ -571,6 +547,43 @@ where
             retry_queue.push_failed(message_outcome.request, message_outcome.remote_failed_peers);
         persist_retry_push_outcome(retry_store, &requeued).await?;
         outcome.remote_requeued_members.extend(requeued.member_ids);
+    }
+
+    // An idle bridge can spend the remainder of this tick on retry traffic.
+    if outcome.messages_drained == 0 {
+        let retry_messages_to_drain = retry_queue.pending.len().min(config.max_messages_per_tick);
+        for _ in 0..retry_messages_to_drain {
+            let Some(delivery) = retry_queue.pending.pop_front() else {
+                break;
+            };
+            outcome.retry_messages_drained = outcome.retry_messages_drained.saturating_add(1);
+            let mut retry_outcome = deliver_cdk_aleph_bft_network_request(
+                client,
+                config,
+                &delivery.request,
+                &delivery.peers,
+                delivery.peers.len(),
+                Some(CDK_ALEPH_BFT_NETWORK_RETRY_ATTEMPT_BUDGET),
+            )
+            .await?;
+            outcome.encoded_bytes = outcome
+                .encoded_bytes
+                .saturating_add(retry_outcome.encoded_bytes);
+            outcome
+                .remote_accepted_members
+                .append(&mut retry_outcome.remote_accepted_members);
+            outcome
+                .remote_failed_members
+                .append(&mut retry_outcome.remote_failed_members);
+            outcome
+                .remote_skipped_members
+                .append(&mut retry_outcome.remote_skipped_members);
+            let requeued =
+                retry_queue.push_failed(delivery.request, retry_outcome.remote_failed_peers);
+            persist_retry_push_outcome(retry_store, &requeued).await?;
+            remove_obsolete_persisted_retry(retry_store, &delivery.retry_id, &requeued).await?;
+            outcome.remote_requeued_members.extend(requeued.member_ids);
+        }
     }
     outcome.retry_queue_len = retry_queue.len();
 
@@ -712,6 +725,8 @@ async fn deliver_cdk_aleph_bft_network_request<T>(
     config: CdkAlephBftNetworkPumpConfig,
     request: &FederationAlephBftNetworkMessageRequest,
     peers: &[MemberConfigPublic],
+    minimum_remote_deliveries: usize,
+    attempt_budget: Option<Duration>,
 ) -> Result<CdkAlephBftNetworkMessageDeliveryOutcome, cdk::Error>
 where
     T: Transport,
@@ -736,13 +751,41 @@ where
         }
     }
 
-    let attempts = attempted_peers.iter().map(|peer| async move {
-        (
-            peer,
-            client.submit_aleph_bft_network_message(peer, request).await,
-        )
-    });
-    for (peer, result) in join_all(attempts).await {
+    let minimum_remote_deliveries = match attempted_peers.is_empty() {
+        true => 0,
+        false => minimum_remote_deliveries.clamp(1, attempted_peers.len()),
+    };
+    let mut attempts = FuturesUnordered::new();
+    for peer in attempted_peers.iter().cloned() {
+        attempts.push(async move {
+            let result = client
+                .submit_aleph_bft_network_message(&peer, request)
+                .await;
+            (peer, result)
+        });
+    }
+    let attempt_deadline = attempt_budget.map(|budget| tokio::time::Instant::now() + budget);
+    let mut completion_deadline = None;
+    let mut completed_members = BTreeSet::new();
+
+    while !attempts.is_empty() {
+        let deadline = match (attempt_deadline, completion_deadline) {
+            (Some(attempt), Some(completion)) => Some(attempt.min(completion)),
+            (Some(attempt), None) => Some(attempt),
+            (None, Some(completion)) => Some(completion),
+            (None, None) => None,
+        };
+        let next = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, attempts.next()).await {
+                Ok(next) => next,
+                Err(_) => break,
+            },
+            None => attempts.next().await,
+        };
+        let Some((peer, result)) = next else {
+            break;
+        };
+        completed_members.insert(peer.member_id);
         match result {
             Ok(_) => {
                 #[cfg(not(test))]
@@ -783,6 +826,21 @@ where
                 }
             }
         }
+
+        if completion_deadline.is_none()
+            && outcome.remote_accepted_members.len() >= minimum_remote_deliveries
+            && !attempts.is_empty()
+        {
+            completion_deadline =
+                Some(tokio::time::Instant::now() + CDK_ALEPH_BFT_NETWORK_QUORUM_COMPLETION_GRACE);
+        }
+    }
+
+    for peer in attempted_peers
+        .iter()
+        .filter(|peer| !completed_members.contains(&peer.member_id))
+    {
+        outcome.remote_failed_peers.push(peer.clone());
     }
 
     outcome.remote_skipped_members = peers
@@ -790,6 +848,11 @@ where
         .filter(|peer| !attempted_members.contains(&peer.member_id))
         .map(|peer| peer.member_id)
         .collect();
+    outcome.remote_accepted_members.sort();
+    outcome.remote_failed_members.sort();
+    outcome
+        .remote_failed_peers
+        .sort_by_key(|peer| peer.member_id);
 
     Ok(outcome)
 }

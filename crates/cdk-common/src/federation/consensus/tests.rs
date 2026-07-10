@@ -69,6 +69,7 @@ fn mint_quote_envelope_with_amount(
         federation_id,
         super::super::FederationOperation::MintQuote(super::super::FederationMintQuoteOperation {
             quote: quote.to_string(),
+            request_lookup_id: crate::payment::PaymentIdentifier::CustomId(quote.to_string()),
             request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                 amount: Amount::from(amount),
                 unit: CurrencyUnit::Sat,

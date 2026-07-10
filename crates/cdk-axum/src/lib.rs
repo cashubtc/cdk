@@ -633,6 +633,10 @@ impl FederationOperationNotifications {
         self.lock_inner().record_duplicate_submission();
     }
 
+    fn record_duplicate_pending_waiter_join(&self) {
+        self.lock_inner().record_duplicate_pending_waiter_join();
+    }
+
     fn stats(&self) -> FederationOperationNotificationStats {
         let inner = self.lock_inner();
         FederationOperationNotificationStats {
@@ -1298,6 +1302,9 @@ mod tests {
             cdk::federation::FederationOperation::MintQuote(
                 cdk::federation::FederationMintQuoteOperation {
                     quote: "quote-1".to_string(),
+                    request_lookup_id: cdk::cdk_payment::PaymentIdentifier::CustomId(
+                        "quote-1".to_string(),
+                    ),
                     request: cdk::mint::MintQuoteRequest::Bolt11(
                         cdk::nuts::MintQuoteBolt11Request {
                             amount: cdk::Amount::from(1),
@@ -1806,17 +1813,48 @@ impl MintState {
         let operation_label = envelope.operation.kind().to_string();
         let operation_id = envelope.operation_id()?;
         let broadcast_activity = sequence.is_none();
+        let sync_config = self.federation_peer_sync_config.unwrap_or_default();
+        let notifications = self.federation_notifications.as_ref().ok_or_else(|| {
+            cdk::Error::Custom(
+                "federation operation notifications are unavailable for AlephBFT submit"
+                    .to_string(),
+            )
+        })?;
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
         let mut consensus = consensus.lock().await;
         if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
+            if matches!(
+                entry.status,
+                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
+            ) {
+                notifications.record_duplicate_pending_waiter_join();
+                let wait_registration = notifications
+                    .register_waiter(operation_id, sync_config.response_waiter_limit)?;
+                drop(consensus);
+                self.mark_aleph_bft_consensus_activity(operation_id, broadcast_activity)
+                    .await;
+                if let Some((sender, sequence)) = sequence {
+                    self.remember_federation_aleph_bft_pending_sequence(
+                        operation_id,
+                        sender,
+                        sequence,
+                    )
+                    .await;
+                }
+                return Self::wait_for_aleph_bft_operation_acceptance(
+                    operation_id,
+                    sync_config,
+                    wait_registration,
+                )
+                .await;
+            }
+
             let response = FederationSubmitOperationResponse::from_outcome(
                 FederationJournalAppendOutcome::Duplicate(entry.clone()),
             );
-            if let Some(notifications) = &self.federation_notifications {
-                notifications.record_duplicate_submission();
-            }
+            notifications.record_duplicate_submission();
             drop(consensus);
             if let Some(sequence) = sequence {
                 self.persist_federation_journal_entries(&[], None, Some(sequence))
@@ -1827,13 +1865,6 @@ impl MintState {
             return Ok(response);
         }
 
-        let sync_config = self.federation_peer_sync_config.unwrap_or_default();
-        let notifications = self.federation_notifications.as_ref().ok_or_else(|| {
-            cdk::Error::Custom(
-                "federation operation notifications are unavailable for AlephBFT submit"
-                    .to_string(),
-            )
-        })?;
         if let Some(wait_registration) = notifications
             .register_existing_waiter(operation_id, sync_config.response_waiter_limit)?
         {
@@ -4190,6 +4221,11 @@ async fn create_federation_runtime_state(
                 &persisted_entries,
                 consensus.journal().entries(),
             )?;
+            for entry in &persisted_entries {
+                if should_overlay_local_status_after_aleph_bft_recovery(entry.status) {
+                    consensus.update_status(entry.operation_id, entry.status)?;
+                }
+            }
             let session_id = consensus.aleph_bft_status()?.session;
             for pending in db
                 .get_federation_aleph_bft_pending_operations(session_id)
@@ -4220,7 +4256,10 @@ async fn create_federation_runtime_state(
         }
     };
     let entries = consensus.journal().entries().to_vec();
-    let applied = mint.apply_federation_journal_entries(&entries).await?;
+    let entries_to_apply = accepted_federation_journal_entries(&entries);
+    let applied = mint
+        .apply_federation_journal_entries(&entries_to_apply)
+        .await?;
     for operation_id in applied {
         consensus.update_status(operation_id, FederationOperationStatus::Applied)?;
     }

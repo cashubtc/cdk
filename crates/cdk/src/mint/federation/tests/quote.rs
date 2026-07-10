@@ -47,6 +47,7 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
     let quote = QuoteId::new();
     let mint_quote = FederationMintQuoteOperation {
         quote: quote.to_string(),
+        request_lookup_id: PaymentIdentifier::QuoteId(quote.clone()),
         request: bolt11_quote_request(10),
         response: bolt11_quote_response(&quote, 10),
     };

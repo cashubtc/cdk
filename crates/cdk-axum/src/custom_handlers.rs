@@ -7,7 +7,7 @@
 //! When the method parameter is "bolt11" or "bolt12", these handlers use the
 //! specific Bolt11/Bolt12 request/response types instead of the generic custom types.
 
-use axum::extract::{FromRequestParts, Json, Path, State};
+use axum::extract::{FromRequestParts, Json, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -21,6 +21,7 @@ use cdk::nuts::{
     MintQuoteOnchainResponse, MintRequest, MintResponse, PaymentMethod,
 };
 use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::instrument;
 
@@ -29,6 +30,8 @@ use crate::router_handlers::into_response;
 use crate::MintState;
 
 const PREFER_HEADER_KEY: &str = "Prefer";
+#[cfg(feature = "federation")]
+const FEDERATION_QUOTE_ID_QUERY_KEY: &str = "federation_quote_id";
 #[cfg(feature = "federation")]
 const FEDERATION_MINT_PAYMENT_OBSERVER_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
@@ -45,6 +48,85 @@ const FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL: std::time::Duration =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreferHeader {
     pub respond_async: bool,
+}
+
+/// Federation-only quote request identity carried outside the Cashu JSON body.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FederationQuoteQuery {
+    #[serde(rename = "federation_quote_id")]
+    _federation_quote_id: Option<QuoteId>,
+}
+
+fn assigned_federation_quote_id(
+    state: &MintState,
+    query: FederationQuoteQuery,
+) -> Result<Option<QuoteId>, cdk::Error> {
+    #[cfg(feature = "federation")]
+    if state.mint.federation_config().is_some() {
+        return query._federation_quote_id.map(Some).ok_or_else(|| {
+            cdk::Error::Custom(format!(
+                "federation quote creation requires the {FEDERATION_QUOTE_ID_QUERY_KEY} query parameter"
+            ))
+        });
+    }
+
+    let _ = (state, query);
+    Ok(None)
+}
+
+async fn create_mint_quote_for_route(
+    state: &MintState,
+    request: cdk::mint::MintQuoteRequest,
+    assigned_quote_id: Option<QuoteId>,
+) -> Result<
+    (
+        cdk::mint::MintQuoteResponse<QuoteId>,
+        Option<cdk::cdk_payment::PaymentIdentifier>,
+    ),
+    cdk::Error,
+> {
+    #[cfg(feature = "federation")]
+    if let Some(quote_id) = assigned_quote_id {
+        if let Some((response, request_lookup_id)) = state
+            .mint
+            .ordered_federation_mint_quote_response(&quote_id, &request)
+            .await?
+        {
+            return Ok((response, Some(request_lookup_id)));
+        }
+        let (response, request_lookup_id) = state
+            .mint
+            .prepare_federation_mint_quote(quote_id, request)
+            .await?;
+        return Ok((response, Some(request_lookup_id)));
+    }
+
+    let _ = assigned_quote_id;
+    Ok((state.mint.get_mint_quote(request).await?, None))
+}
+
+async fn create_melt_quote_for_route(
+    state: &MintState,
+    request: cdk::MeltQuoteRequest,
+    assigned_quote_id: Option<QuoteId>,
+) -> Result<MeltQuoteCreateResponse<QuoteId>, cdk::Error> {
+    #[cfg(feature = "federation")]
+    if let Some(quote_id) = assigned_quote_id {
+        if let Some(response) = state
+            .mint
+            .existing_federation_melt_quote(&quote_id, &request)
+            .await?
+        {
+            return Ok(response);
+        }
+        return state
+            .mint
+            .get_federation_melt_quote(quote_id, request)
+            .await;
+    }
+
+    let _ = assigned_quote_id;
+    state.mint.get_melt_quote(request).await
 }
 
 impl<S> FromRequestParts<S> for PreferHeader
@@ -250,12 +332,15 @@ async fn submit_federation_mint_quote_operation(
     state: &MintState,
     request: cdk::mint::MintQuoteRequest,
     response: &cdk::mint::MintQuoteResponse<QuoteId>,
+    request_lookup_id: Option<cdk::cdk_payment::PaymentIdentifier>,
 ) -> Result<(), cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
         return Ok(());
     };
-    let envelope = config.mint_quote_operation(
+    let request_lookup_id = request_lookup_id.ok_or(cdk::Error::Internal)?;
+    let envelope = config.mint_quote_operation_with_lookup_id(
         response.quote().clone(),
+        request_lookup_id,
         request,
         mint_quote_response_to_string(response),
     );
@@ -753,6 +838,7 @@ pub async fn post_mint_custom_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
+    Query(quote_query): Query<FederationQuoteQuery>,
     Json(payload): Json<Value>,
 ) -> Result<Response, Response> {
     state
@@ -770,6 +856,9 @@ pub async fn post_mint_custom_quote(
         .await
         .map_err(into_response)?;
 
+    let assigned_quote_id =
+        assigned_federation_quote_id(&state, quote_query).map_err(into_response)?;
+
     match method.as_str() {
         "bolt11" => {
             let bolt11_request: MintQuoteBolt11Request =
@@ -779,15 +868,22 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request: cdk::mint::MintQuoteRequest = bolt11_request.into();
-            let quote = state
-                .mint
-                .get_mint_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let (quote, _request_lookup_id) = create_mint_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
             #[cfg(feature = "federation")]
-            submit_federation_mint_quote_operation(&state, quote_request, &quote)
-                .await
-                .map_err(into_response)?;
+            submit_federation_mint_quote_operation(
+                &state,
+                quote_request,
+                &quote,
+                _request_lookup_id,
+            )
+            .await
+            .map_err(into_response)?;
 
             let response: MintQuoteBolt11Response<QuoteId> =
                 quote.try_into().map_err(into_response)?;
@@ -804,15 +900,22 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request: cdk::mint::MintQuoteRequest = bolt12_request.into();
-            let quote = state
-                .mint
-                .get_mint_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let (quote, _request_lookup_id) = create_mint_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
             #[cfg(feature = "federation")]
-            submit_federation_mint_quote_operation(&state, quote_request, &quote)
-                .await
-                .map_err(into_response)?;
+            submit_federation_mint_quote_operation(
+                &state,
+                quote_request,
+                &quote,
+                _request_lookup_id,
+            )
+            .await
+            .map_err(into_response)?;
 
             let response: MintQuoteBolt12Response<QuoteId> =
                 quote.try_into().map_err(into_response)?;
@@ -830,15 +933,22 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request: cdk::mint::MintQuoteRequest = onchain_request.into();
-            let quote = state
-                .mint
-                .get_mint_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let (quote, _request_lookup_id) = create_mint_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
             #[cfg(feature = "federation")]
-            submit_federation_mint_quote_operation(&state, quote_request, &quote)
-                .await
-                .map_err(into_response)?;
+            submit_federation_mint_quote_operation(
+                &state,
+                quote_request,
+                &quote,
+                _request_lookup_id,
+            )
+            .await
+            .map_err(into_response)?;
 
             let response: MintQuoteOnchainResponse<QuoteId> =
                 MintQuoteOnchainResponse::try_from(quote).map_err(into_response)?;
@@ -856,15 +966,22 @@ pub async fn post_mint_custom_quote(
                 request: custom_request,
             };
 
-            let response = state
-                .mint
-                .get_mint_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let (response, _request_lookup_id) = create_mint_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
             #[cfg(feature = "federation")]
-            submit_federation_mint_quote_operation(&state, quote_request, &response)
-                .await
-                .map_err(into_response)?;
+            submit_federation_mint_quote_operation(
+                &state,
+                quote_request,
+                &response,
+                _request_lookup_id,
+            )
+            .await
+            .map_err(into_response)?;
 
             match response {
                 cdk::mint::MintQuoteResponse::Custom { response, .. } => {
@@ -1019,6 +1136,7 @@ pub async fn post_melt_custom_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
+    Query(quote_query): Query<FederationQuoteQuery>,
     Json(payload): Json<Value>,
 ) -> Result<Response, Response> {
     state
@@ -1036,6 +1154,9 @@ pub async fn post_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
+    let assigned_quote_id =
+        assigned_federation_quote_id(&state, quote_query).map_err(into_response)?;
+
     let (quote_request, response) = match method.as_str() {
         "bolt11" => {
             let bolt11_request: MeltQuoteBolt11Request =
@@ -1045,11 +1166,13 @@ pub async fn post_melt_custom_quote(
                 })?;
 
             let quote_request = cdk::MeltQuoteRequest::Bolt11(bolt11_request);
-            let response = state
-                .mint
-                .get_melt_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let response = create_melt_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
 
             (quote_request, response)
         }
@@ -1061,11 +1184,13 @@ pub async fn post_melt_custom_quote(
                 })?;
 
             let quote_request = cdk::MeltQuoteRequest::Bolt12(bolt12_request);
-            let response = state
-                .mint
-                .get_melt_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let response = create_melt_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
 
             (quote_request, response)
         }
@@ -1077,11 +1202,13 @@ pub async fn post_melt_custom_quote(
                 })?;
 
             let quote_request = cdk::MeltQuoteRequest::Onchain(onchain_request);
-            let response = state
-                .mint
-                .get_melt_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let response = create_melt_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
 
             (quote_request, response)
         }
@@ -1100,11 +1227,13 @@ pub async fn post_melt_custom_quote(
             }
 
             let quote_request = cdk::MeltQuoteRequest::Custom(custom_request);
-            let response = state
-                .mint
-                .get_melt_quote(quote_request.clone())
-                .await
-                .map_err(into_response)?;
+            let response = create_melt_quote_for_route(
+                &state,
+                quote_request.clone(),
+                assigned_quote_id.clone(),
+            )
+            .await
+            .map_err(into_response)?;
 
             (quote_request, response)
         }
@@ -1883,15 +2012,11 @@ mod tests {
             "pub async fn post_mint_custom_quote",
             "pub async fn get_check_mint_custom_quote",
         );
-        assert_occurrences(
-            mint_quote,
-            "submit_federation_mint_quote_operation(&state",
-            4,
-        );
+        assert_occurrences(mint_quote, "submit_federation_mint_quote_operation(", 4);
         assert_contains_in_order(
             mint_quote,
             ".ensure_federation_ready_for_public_submit()",
-            ".get_mint_quote(quote_request.clone())",
+            "create_mint_quote_for_route(",
         );
 
         let mint_public_submit = source_slice(
@@ -1978,12 +2103,12 @@ mod tests {
         assert_contains_in_order(
             melt_quote,
             ".ensure_federation_ready_for_public_submit()",
-            ".get_melt_quote(quote_request.clone())",
+            "create_melt_quote_for_route(",
         );
         assert_contains_in_order(
             melt_quote,
-            ".get_melt_quote(quote_request.clone())",
-            "submit_federation_melt_quote_operation(&state, quote_request, &response)",
+            "create_melt_quote_for_route(",
+            "submit_federation_melt_quote_operation(",
         );
 
         let melt_quote_status = source_slice(
@@ -4329,6 +4454,7 @@ mod tests {
     async fn post_mint_custom_quote_records_quote_and_immediate_payment_observation() {
         let state =
             create_federated_test_state_with_backend(InstantIncomingPaymentWallet::new()).await;
+        let assigned_quote_id = QuoteId::new();
         let payload = serde_json::to_value(MintQuoteBolt11Request {
             amount: Amount::from(2u64),
             unit: CurrencyUnit::Sat,
@@ -4341,6 +4467,9 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(assigned_quote_id.clone()),
+            }),
             Json(payload),
         )
         .await;
@@ -4353,6 +4482,100 @@ mod tests {
                 cdk::federation::FederationOperationKind::MintQuotePayment,
             ]
         );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&assigned_quote_id)
+            .await
+            .expect("assigned mint quote lookup")
+            .is_some());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_quote_creation_requires_wallet_assigned_quote_id() {
+        let state = create_federated_test_state().await;
+        let payload = serde_json::to_value(MintQuoteBolt11Request {
+            amount: Amount::from(2u64),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        })
+        .expect("mint quote payload");
+
+        let error = post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Query(FederationQuoteQuery::default()),
+            Json(payload),
+        )
+        .await
+        .expect_err("federation quote id is required");
+
+        assert!(response_error_detail(error)
+            .await
+            .contains(FEDERATION_QUOTE_ID_QUERY_KEY));
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quotes()
+            .await
+            .expect("mint quotes lookup")
+            .is_empty());
+        assert!(federation_operation_kinds(&state).await.is_empty());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn pending_aleph_bft_mint_quote_is_not_persisted_before_consensus() {
+        let mut state = create_aleph_bft_federated_test_state().await;
+        state.mark_federation_healthy().await;
+        state
+            .mark_aleph_bft_network_finality_available_for_tests()
+            .await;
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_millis(10),
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let assigned_quote_id = QuoteId::new();
+        let payload = serde_json::to_value(MintQuoteBolt11Request {
+            amount: Amount::from(2u64),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        })
+        .expect("mint quote payload");
+
+        let error = post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(assigned_quote_id.clone()),
+            }),
+            Json(payload),
+        )
+        .await
+        .expect_err("mint quote should remain pending without AlephBFT finalization");
+
+        let body = response_error_detail(error).await;
+        assert!(body.contains("pending AlephBFT finalization"), "{body}");
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&assigned_quote_id)
+            .await
+            .expect("pending mint quote lookup")
+            .is_none());
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("federation consensus")
+            .lock()
+            .await;
+        assert_eq!(consensus.queued_len(), 1);
+        assert!(consensus.journal().entries().is_empty());
     }
 
     #[cfg(feature = "federation")]
@@ -4371,6 +4594,9 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(QuoteId::new()),
+            }),
             Json(payload),
         )
         .await
@@ -4416,6 +4642,9 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(QuoteId::new()),
+            }),
             Json(payload),
         )
         .await;
@@ -4430,8 +4659,57 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn assigned_mint_quote_id_rejects_a_different_retry_request() {
+        let state = create_federated_test_state().await;
+        let assigned_quote_id = QuoteId::new();
+        let payload = |amount: u64| {
+            serde_json::to_value(MintQuoteBolt11Request {
+                amount: Amount::from(amount),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+            })
+            .expect("mint quote payload")
+        };
+
+        post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(assigned_quote_id.clone()),
+            }),
+            Json(payload(2)),
+        )
+        .await
+        .expect("first assigned quote request");
+
+        let error = post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(assigned_quote_id),
+            }),
+            Json(payload(3)),
+        )
+        .await
+        .expect_err("mismatched assigned quote retry");
+
+        assert!(response_error_detail(error)
+            .await
+            .contains("reused with a different request"));
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuote]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_melt_custom_quote_records_federation_quote_operation() {
         let state = create_federated_test_state().await;
+        let assigned_quote_id = QuoteId::new();
         let payload = serde_json::to_value(MeltQuoteBolt11Request {
             request: create_fake_invoice(1000, "".to_string()),
             unit: CurrencyUnit::Sat,
@@ -4443,6 +4721,9 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(assigned_quote_id.clone()),
+            }),
             Json(payload),
         )
         .await;
@@ -4452,6 +4733,13 @@ mod tests {
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::MeltQuote]
         );
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_quote(&assigned_quote_id)
+            .await
+            .expect("assigned melt quote lookup")
+            .is_some());
     }
 
     #[cfg(feature = "federation")]
@@ -4469,6 +4757,9 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
+            Query(FederationQuoteQuery {
+                _federation_quote_id: Some(QuoteId::new()),
+            }),
             Json(payload),
         )
         .await
@@ -10152,6 +10443,7 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("paypal".to_string()),
+            Query(FederationQuoteQuery::default()),
             Json(payload),
         )
         .await;
@@ -10191,6 +10483,7 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("paypal".to_string()),
+            Query(FederationQuoteQuery::default()),
             Json(payload),
         )
         .await;

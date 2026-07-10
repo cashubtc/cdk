@@ -18,9 +18,11 @@ mod test {
     #[cfg(feature = "federation")]
     use std::collections::BTreeSet;
     use std::fs::remove_file;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use cdk_common::mint_db_test;
+    use cdk_sql_common::database::ConnectionWithTransaction;
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
     #[cfg(feature = "federation")]
@@ -34,6 +36,72 @@ mod test {
     }
 
     mint_db_test!(provide_db);
+
+    #[tokio::test]
+    async fn dropped_write_transaction_releases_serialized_writer() {
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-sqlite-writer-recovery-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let config: Config = (&path).into();
+        let pool = Pool::<SqliteConnectionManager>::new(config);
+        let setup = pool.get().await.expect("setup connection");
+        query("CREATE TABLE writer_recovery (value INTEGER NOT NULL)")
+            .expect("create-table query")
+            .execute(&*setup)
+            .await
+            .expect("create writer recovery table");
+        drop(setup);
+
+        let first =
+            ConnectionWithTransaction::new(pool.get().await.expect("first writer connection"))
+                .await
+                .expect("first writer transaction");
+        query("INSERT INTO writer_recovery (value) VALUES (1)")
+            .expect("first insert query")
+            .execute(&first)
+            .await
+            .expect("first uncommitted insert");
+
+        let waiting_pool = Arc::clone(&pool);
+        let second = tokio::spawn(async move {
+            let tx = ConnectionWithTransaction::new(
+                waiting_pool.get().await.expect("second writer connection"),
+            )
+            .await
+            .expect("second writer transaction");
+            query("INSERT INTO writer_recovery (value) VALUES (2)")
+                .expect("second insert query")
+                .execute(&tx)
+                .await
+                .expect("second insert");
+            tx.commit().await.expect("commit second writer");
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !second.is_finished(),
+            "second writer must wait for the active transaction"
+        );
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(2), second)
+            .await
+            .expect("second writer should recover after rollback")
+            .expect("second writer task");
+
+        let verify = pool.get().await.expect("verification connection");
+        let rows = query("SELECT value FROM writer_recovery ORDER BY value")
+            .expect("verification query")
+            .fetch_all(&*verify)
+            .await
+            .expect("verification rows");
+        assert_eq!(rows, vec![vec![cdk_sql_common::value::Value::Integer(2)]]);
+
+        drop(verify);
+        drop(pool);
+        let _ = remove_file(path);
+    }
 
     #[cfg(feature = "federation")]
     #[tokio::test]

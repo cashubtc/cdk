@@ -81,8 +81,8 @@ use self::sync_config::FederationPeerReconnectBackoff;
 pub use self::sync_config::FederationPeerSyncConfig;
 #[cfg(test)]
 use self::sync_config::{
-    federation_peer_sync_disabled_value, federation_peer_sync_interval,
-    federation_reconnect_backoff_delay,
+    federation_peer_sync_disabled_value, federation_peer_sync_initial_delay,
+    federation_peer_sync_interval, federation_reconnect_backoff_delay,
 };
 #[cfg(test)]
 use self::sync_loop::{

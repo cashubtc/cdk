@@ -7,7 +7,7 @@ use super::FEDERATION_DISABLE_PEER_SYNC_ENV_VAR;
 
 const DEFAULT_FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE: usize = 1000;
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
 const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
@@ -175,6 +175,23 @@ pub(super) fn federation_peer_sync_interval(
     let mut interval = time::interval(sync_config.peer_sync_interval);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     interval
+}
+
+pub(super) fn federation_peer_sync_initial_delay(
+    peer_sync_interval: Duration,
+    member_rank: usize,
+    member_count: usize,
+) -> Duration {
+    if member_count <= 1 || member_rank == 0 {
+        return Duration::ZERO;
+    }
+
+    let interval_nanos = peer_sync_interval.as_nanos();
+    let phase_nanos = interval_nanos
+        .saturating_mul(member_rank as u128)
+        .checked_div(member_count as u128)
+        .unwrap_or_default();
+    Duration::from_nanos(u64::try_from(phase_nanos).unwrap_or(u64::MAX))
 }
 
 pub(super) fn federation_peer_sync_disabled_by_env() -> bool {

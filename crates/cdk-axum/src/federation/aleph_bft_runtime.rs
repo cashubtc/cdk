@@ -269,6 +269,16 @@ impl CdkAlephBftKeychain {
             .map(|(_, member)| member.clone())
             .collect()
     }
+
+    /// Remote acknowledgements needed before an everyone-delivery has reached
+    /// the AlephBFT consensus threshold, accounting for local loopback.
+    pub(crate) fn remote_delivery_threshold(&self, remote_member_count: usize) -> usize {
+        self.node_count
+            .consensus_threshold()
+            .0
+            .saturating_sub(1)
+            .min(remote_member_count)
+    }
 }
 
 impl Index for CdkAlephBftKeychain {
@@ -1178,6 +1188,7 @@ mod tests {
             federation_id(8),
             FederationOperation::MintQuote(FederationMintQuoteOperation {
                 quote: quote.to_string(),
+                request_lookup_id: cdk::cdk_payment::PaymentIdentifier::CustomId(quote.to_string()),
                 request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                     amount: Amount::from(1),
                     unit: CurrencyUnit::Sat,

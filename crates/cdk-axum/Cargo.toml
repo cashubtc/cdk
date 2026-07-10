@@ -11,7 +11,12 @@ readme = "README.md"
 
 
 [features]
-federation = ["cdk/federation", "dep:aleph-bft", "dep:parity-scale-codec"]
+federation = [
+    "cdk/federation",
+    "cdk-http-client/reqwest",
+    "dep:aleph-bft",
+    "dep:parity-scale-codec",
+]
 redis = ["dep:redis"]
 prometheus = ["dep:cdk-prometheus"]
 info-page = ["dep:maud"]

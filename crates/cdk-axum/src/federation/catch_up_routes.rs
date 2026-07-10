@@ -10,9 +10,9 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, cdk_error_response,
-    durable_federation_journal, federation_error_response, federation_runtime_config,
-    materialized_state_digest, verify_federation_request,
+    acquire_private_rest_admission, anyhow_response, durable_federation_journal,
+    federation_error_response, federation_runtime_config, materialized_state_digest,
+    verify_federation_request,
 };
 
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
@@ -27,9 +27,8 @@ pub(super) async fn post_journal(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
-        .await
-        .map_err(cdk_error_response)?;
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
     let private_config = federation_runtime_config(&state)?.private_config().clone();
     tracing::debug!(
         next_index = payload.payload.next_index,

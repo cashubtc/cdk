@@ -45,7 +45,7 @@ use cdk_common::{
     SpendingConditions, State, SwapRequest,
 };
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
-use tokio::sync::Mutex;
+use tokio::sync::{Barrier, Mutex};
 
 mod admission;
 mod keyset;
@@ -327,6 +327,81 @@ impl MintPayment for BackendAgnosticPaymentProcessor {
 
 struct CountingBackendAgnosticPaymentProcessor {
     make_payment_calls: Arc<AtomicUsize>,
+}
+
+struct BarrierBackendAgnosticPaymentProcessor {
+    quote_barrier: Arc<Barrier>,
+}
+
+#[async_trait]
+impl MintPayment for BarrierBackendAgnosticPaymentProcessor {
+    type Err = payment::Error;
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor.get_settings().await
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .create_incoming_payment_request(options)
+            .await
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        self.quote_barrier.wait().await;
+        BackendAgnosticPaymentProcessor
+            .get_payment_quote(unit, options)
+            .await
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .make_payment(unit, options)
+            .await
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Event> + Send>>, Self::Err> {
+        BackendAgnosticPaymentProcessor.wait_payment_event().await
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        BackendAgnosticPaymentProcessor.is_payment_event_stream_active()
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        BackendAgnosticPaymentProcessor.cancel_payment_event_stream();
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .check_incoming_payment_status(payment_identifier)
+            .await
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .check_outgoing_payment(payment_identifier)
+            .await
+    }
 }
 
 #[async_trait]

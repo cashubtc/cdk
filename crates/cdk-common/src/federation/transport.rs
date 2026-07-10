@@ -1991,6 +1991,9 @@ mod tests {
             super::super::FederationOperation::MintQuote(
                 super::super::FederationMintQuoteOperation {
                     quote: "quote-1".to_string(),
+                    request_lookup_id: crate::payment::PaymentIdentifier::CustomId(
+                        "quote-1".to_string(),
+                    ),
                     request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
                         amount: Amount::from(1),
                         unit: CurrencyUnit::Sat,

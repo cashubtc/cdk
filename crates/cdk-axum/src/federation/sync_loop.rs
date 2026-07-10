@@ -14,8 +14,8 @@ use crate::MintState;
 
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{
-    federation_peer_sync_disabled_by_env, federation_peer_sync_interval,
-    FederationPeerReconnectBackoff, FederationPeerSyncConfig,
+    federation_peer_sync_disabled_by_env, federation_peer_sync_initial_delay,
+    federation_peer_sync_interval, FederationPeerReconnectBackoff, FederationPeerSyncConfig,
 };
 #[cfg(feature = "prometheus")]
 use super::u64_to_i64_saturating;
@@ -42,6 +42,16 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
     };
     let public_config = config.public_config().clone();
     let local_member = config.member_id();
+    let member_rank = public_config
+        .members
+        .keys()
+        .position(|member| *member == local_member)
+        .unwrap_or_default();
+    let initial_delay = federation_peer_sync_initial_delay(
+        sync_config.peer_sync_interval,
+        member_rank,
+        public_config.members.len(),
+    );
     let peers = public_config
         .members
         .values()
@@ -67,6 +77,9 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
                 return;
             }
         };
+        if !initial_delay.is_zero() {
+            time::sleep(initial_delay).await;
+        }
         let mut interval = federation_peer_sync_interval(sync_config);
         let mut reconnect_backoff = FederationPeerReconnectBackoff::default();
 

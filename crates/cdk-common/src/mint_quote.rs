@@ -11,7 +11,7 @@ use crate::nuts::nut30::{MintQuoteOnchainRequest, MintQuoteOnchainResponse};
 use crate::{Amount, CurrencyUnit, PaymentMethod, PublicKey};
 
 /// Unified mint quote request for all payment methods
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MintQuoteRequest {
     /// Bolt11 (Lightning invoice)
     Bolt11(MintQuoteBolt11Request),

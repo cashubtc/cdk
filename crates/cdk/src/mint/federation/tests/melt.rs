@@ -1,6 +1,45 @@
 use super::*;
 
 #[tokio::test]
+async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
+    let runtime_config = runtime_config();
+    let quote_barrier = Arc::new(Barrier::new(2));
+    let payment_processor = Arc::new(BarrierBackendAgnosticPaymentProcessor {
+        quote_barrier: Arc::clone(&quote_barrier),
+    });
+    let (mint, localstore) =
+        federated_test_mint_with_payment_processor(runtime_config.clone(), payment_processor).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_journal_entry(&localstore, &quote_entry).await;
+
+    let (first, second) = tokio::join!(
+        mint.apply_accepted_federation_operation(&quote_entry),
+        mint.apply_accepted_federation_operation(&quote_entry),
+    );
+
+    assert_eq!(first.expect("first concurrent apply"), true);
+    assert_eq!(second.expect("second concurrent apply"), true);
+    let persisted_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("melt quote lookup")
+        .expect("persisted melt quote");
+    assert_eq!(persisted_quote.id, quote);
+    assert_eq!(persisted_quote.state, MeltQuoteState::Unpaid);
+
+    let mismatch = mint
+        .existing_federation_melt_quote(&quote, &pending_melt_quote_request(2_000))
+        .await
+        .expect_err("same quote id with another request must be rejected");
+    assert!(mismatch.to_string().contains("mismatched local quote"));
+}
+
+#[tokio::test]
 async fn process_federation_melt_change_signs_rotated_keyset() {
     let runtime_config = runtime_config_with_inactive_rotation_keyset();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

@@ -1,10 +1,12 @@
 //! Simple SQLite
+use std::sync::Arc;
+
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
 use cdk_sql_common::run_db_operation_sync;
 use cdk_sql_common::stmt::{query, Column, SqlPart, Statement};
 use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::common::{from_sqlite, to_sqlite};
 
@@ -12,16 +14,19 @@ use crate::common::{from_sqlite, to_sqlite};
 #[derive(Debug)]
 pub struct AsyncSqlite {
     inner: Mutex<Connection>,
+    write_gate: Arc<Mutex<()>>,
+    transaction_guard: Option<OwnedMutexGuard<()>>,
 }
 
 impl AsyncSqlite {
-    pub fn new(inner: Connection) -> Self {
+    pub fn new(inner: Connection, write_gate: Arc<Mutex<()>>) -> Self {
         Self {
             inner: inner.into(),
+            write_gate,
+            transaction_guard: None,
         }
     }
-}
-impl AsyncSqlite {
+
     fn get_stmt<'a>(
         &self,
         conn: &'a Connection,
@@ -41,6 +46,16 @@ impl AsyncSqlite {
         }
 
         Ok((sql, stmt))
+    }
+
+    async fn execute_without_write_gate(&self, statement: Statement) -> Result<usize, Error> {
+        let conn = self.inner.lock().await;
+
+        let (sql, mut stmt) = self
+            .get_stmt(&conn, statement)
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        run_db_operation_sync(&sql, || stmt.raw_execute(), to_sqlite_error)
     }
 }
 
@@ -76,20 +91,50 @@ pub struct SQLiteTransactionHandler;
 impl DatabaseTransaction<AsyncSqlite> for SQLiteTransactionHandler {
     /// Consumes the current transaction committing the changes
     async fn commit(conn: &mut AsyncSqlite) -> Result<(), Error> {
-        query("COMMIT")?.execute(conn).await?;
+        conn.execute_without_write_gate(query("COMMIT")?).await?;
+        conn.transaction_guard.take();
         Ok(())
     }
 
     /// Begin a transaction
     async fn begin(conn: &mut AsyncSqlite) -> Result<(), Error> {
-        query("BEGIN IMMEDIATE")?.execute(conn).await?;
-        Ok(())
+        let guard = Arc::clone(&conn.write_gate).lock_owned().await;
+        conn.transaction_guard = Some(guard);
+
+        match conn
+            .execute_without_write_gate(query("BEGIN IMMEDIATE")?)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                conn.transaction_guard.take();
+                Err(err)
+            }
+        }
     }
 
     /// Consumes the transaction rolling back all changes
     async fn rollback(conn: &mut AsyncSqlite) -> Result<(), Error> {
-        query("ROLLBACK")?.execute(conn).await?;
+        conn.execute_without_write_gate(query("ROLLBACK")?).await?;
+        conn.transaction_guard.take();
         Ok(())
+    }
+
+    fn rollback_on_drop(conn: &mut AsyncSqlite) -> Result<bool, Error> {
+        if conn.transaction_guard.is_none() {
+            return Ok(true);
+        }
+
+        let sqlite = conn.inner.get_mut();
+        let result = run_db_operation_sync(
+            "ROLLBACK",
+            || sqlite.execute_batch("ROLLBACK"),
+            to_sqlite_error,
+        );
+        if result.is_ok() {
+            conn.transaction_guard.take();
+        }
+        result.map(|_| true)
     }
 }
 
@@ -104,13 +149,11 @@ impl DatabaseExecutor for AsyncSqlite {
     }
 
     async fn execute(&self, statement: Statement) -> Result<usize, Error> {
-        let conn = self.inner.lock().await;
-
-        let (sql, mut stmt) = self
-            .get_stmt(&conn, statement)
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        run_db_operation_sync(&sql, || stmt.raw_execute(), to_sqlite_error)
+        let _write_guard = match self.transaction_guard.is_some() {
+            true => None,
+            false => Some(self.write_gate.lock().await),
+        };
+        self.execute_without_write_gate(statement).await
     }
 
     async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
@@ -201,6 +244,10 @@ impl DatabaseExecutor for AsyncSqlite {
             } else {
                 unreachable!()
             }
+        };
+        let _write_guard = match self.transaction_guard.is_some() {
+            true => None,
+            false => Some(self.write_gate.lock().await),
         };
         let conn = self.inner.lock().await;
 

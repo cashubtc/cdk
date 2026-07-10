@@ -127,10 +127,10 @@ Resolved blocking bugs:
   exact self-partitioned proposer and below-quorum value-operation windows are
   complete.
 - Current verification is explicit: all focused activity-wake tests, the
-  default-cadence probe, mintd/CLI feature checks, and the fresh five-process
-  gate pass. The single-threaded `cdk-axum` federation run passes all 413 tests,
-  including the self-partition, below-quorum full value-operation, and
-  above-quorum basic recovery matrices.
+  default-cadence probe, mintd/CLI feature checks, and fresh five- and
+  11-process gates pass. The federation-enabled Axum suite covers 421 passing
+  tests, including the self-partition, below-quorum full value-operation, and
+  production-paced above-quorum basic recovery matrices.
 
 ## Recent performance checkpoint
 
@@ -1381,9 +1381,16 @@ AlephBFT and consensus unit tests:
   two of five members offline times out as retryably pending, creates no quote
   or accepted journal entry anywhere, finalizes autonomously once one member
   returns, and later catches the final member up to identical order, cursor,
-  and state digest. Broader value operations, conflict ordering, share leakage,
-  and outgoing-payment side effects remain open, so this item is intentionally
-  not checked.
+  and state digest. The returning fourth member now follows the production
+  restart path by reconstructing its consensus runtime and REST sequence state
+  from durable storage before rejoining AlephBFT; the final lagging member does
+  the same before signed catch-up and quorum certification. The matrix uses the
+  production activity-aware cadence because its old fixed 10 ms test cadence
+  let surviving members race thousands of artificial rounds ahead during a
+  long partition and made recovery depend on test-runner load. Repeated
+  isolated runs and the full parallel Axum suite now pass. Broader value
+  operations, conflict ordering, share leakage, and outgoing-payment side
+  effects remain open, so this item is intentionally not checked.
 - [ ] Extend the partition matrix above with restart/catch-up variants: restart
   the self-partitioned proposer before reconnect, restart at least one
   non-proposer member while below quorum is offline, and restart one lagging
@@ -1392,6 +1399,10 @@ AlephBFT and consensus unit tests:
   AlephBFT backup/finalized-item cursors replay safely, pending-operation rows
   are neither lost nor duplicated, and all honest members converge after
   reconnect.
+  Partial coverage now includes restarting a non-proposer while the federation
+  is below finality quorum and restarting the lagging member after finality but
+  before catch-up. Both rebuild from durable runtime state and converge. The
+  self-partitioned proposer restart variant remains open.
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.
@@ -1483,6 +1494,25 @@ AlephBFT and consensus unit tests:
   untrusted public-config URL constructor still rejects tampered aggregate
   material, while the trusted registry constructor skips the redundant
   validation pass.
+- [x] The 11-member, threshold-eight private-REST and SQLite failure has an
+  evidence-backed fix and regression gate. The initiating timeout storm was
+  synchronous unpooled `bitreq` fanout, not SQLite: a 2,000-request comparison
+  measured about 27.7s through `bitreq` and 57ms through pooled async
+  `reqwest`, and the former immediately reproduced synchronized 10-second
+  AlephBFT request timeouts. Federation Axum now enables the reqwest transport,
+  AlephBFT fanout is concurrent and quorum-aware, SQLite serializes writes per
+  database while keeping reads concurrent, dropped explicit transactions roll
+  back deterministically, and melt-quote persistence is atomic/idempotent with
+  exact request matching. A fresh 11-of-8 sender/receiver run completed two
+  mints, receive/swap, and melt with all 11 members converged on nine operations
+  and zero request timeouts, database locks, duplicate quote constraints,
+  range mismatches, or HTTP 500s. A separate one-member-offline run finalized
+  with ten members and caught the restarted member up in about five seconds
+  with identical order and state digests.
+- [x] Session-outcome `range content mismatch` remains fail-closed. Mismatched
+  or stale evidence is rejected before persistence, quorum certification,
+  readiness changes, journal mutation, or materialized-state mutation. Focused
+  tests prove rejected evidence does not enter the session-outcome table.
 - [x] AlephBFT backup persistence treats transient locked/busy database writes
   as retryable. Process benchmarking exposed a backup-saver termination after
   SQLite storage contention; the runtime now retries backup-byte persistence
@@ -1595,9 +1625,12 @@ AlephBFT and consensus unit tests:
   test likewise requires no durable gossip watermark, and empty-session
   rotation is stimulated by bounded activity instead of periodic idle units.
   The live partition/catch-up matrix uses actual threshold session-outcome
-  evidence and converges after reconnect. Verification passed all 413 tests in
-  `cargo test -p cdk-axum --features federation --lib -- --test-threads 1`,
-  plus federation-enabled and federation-disabled `cdk-axum` compile checks.
+  evidence, production activity pacing, and production-style runtime replay
+  for restarted members. Verification passed all 419 sandbox-compatible tests
+  in the federation-enabled Axum suite, while the two real-listener tests
+  passed separately outside the managed network sandbox, for 421 covered
+  tests total. Federation-enabled and federation-disabled compile checks also
+  remain covered.
 
 Mint operation tests:
 

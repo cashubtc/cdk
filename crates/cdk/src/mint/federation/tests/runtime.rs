@@ -116,6 +116,19 @@ fn federation_mode_defaults_to_standalone() {
     assert!(FederationMode::Member.is_member());
 }
 
+#[test]
+fn runtime_config_caches_the_validated_public_config_digest() {
+    let runtime_config = runtime_config();
+
+    assert_eq!(
+        runtime_config.config_digest(),
+        runtime_config
+            .public_config()
+            .config_digest()
+            .expect("validated public config digest")
+    );
+}
+
 fn assert_requires_consensus(err: Error, operation: &str) {
     let message = err.to_string();
     assert!(

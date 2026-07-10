@@ -1518,6 +1518,93 @@ The 37.60-second mint is intentional evidence of the configured 30-second
 backend delay; it is not an AlephBFT performance regression. The swap and melt
 remain below the 10-second value-operation target while that member is live.
 
+## Eleven-Member Transport and SQLite Investigation
+
+On 2026-07-10, a fresh 11-member, threshold-eight fakewallet federation was
+used to separate private-REST overload from the later SQLite lock failure. The
+baseline reproduced request-timeout bursts before the severe writer lock, so
+database contention was not treated as the initiating cause.
+
+### Confirmed causal sequence
+
+1. The federation build selected the synchronous `bitreq` transport. Each
+   private request ran through `spawn_blocking`, opened a fresh connection, and
+   provided no connection pooling. AlephBFT all-to-all gossip, peer sync, and
+   session-evidence polling therefore amplified one-host thread and connection
+   pressure.
+2. A standalone 2,000-request comparison measured about 27.7 seconds through
+   `bitreq` and about 57 milliseconds through pooled async `reqwest`. Running
+   the `bitreq` comparison against the federation immediately reproduced the
+   synchronized 10-second network-message timeout bursts.
+3. Once handlers and catch-up paths backed up, independent SQLite connections
+   competed for the single WAL writer. The 20-connection pool and
+   `BEGIN IMMEDIATE` did not serialize writers; one member eventually waited
+   through the 10-second busy timeout and returned HTTP 500 from journal reads.
+4. The same accepted melt-quote operation reached concurrent replay/apply
+   paths. Its read-then-insert persistence was not atomic, so both paths saw no
+   row and one hit the unique quote-ID constraint.
+5. A failed explicit transaction could then retain its connection until an
+   asynchronously scheduled drop rollback ran. This was an avoidable lock
+   amplifier, although the earlier transport storm proves it was not the
+   original cause.
+
+The six `range content mismatch` observations were fail-closed stale-evidence
+rejections. Validation compares the signed session range with the local
+accepted range before persisting evidence or changing readiness. Focused tests
+prove mismatched evidence is not stored, does not satisfy quorum, and does not
+mutate journal or materialized state.
+
+### Accepted fixes
+
+- Federation-enabled Axum now selects pooled async `reqwest` for private REST.
+- AlephBFT peer deliveries run concurrently, return after the required remote
+  quorum plus a short completion grace, and durably requeue unfinished peers.
+- SQLite shares one async writer gate per database while reads remain
+  concurrent. Dropped explicit transactions roll back synchronously before the
+  connection can be reused; commit and rollback failures retain ownership for
+  deterministic recovery.
+- Melt-quote creation is atomic and idempotent. An existing quote is accepted
+  only when every consensus-controlled request field matches; mismatched data
+  is rejected.
+- Startup replay ignores terminal rejected entries, restores durable
+  AlephBFT apply status, phases peer-sync startup, and keeps gossip sequence
+  watermarks in memory.
+- Federation mint-info advertises the startup-validated cached config digest,
+  avoiding repeated aggregate BLS interpolation on every info request.
+
+### Clean 11-of-8 verification
+
+A fresh sender/receiver run completed two mints, a send/receive swap, and a
+melt. All 11 members converged on nine accepted operations with identical order
+and materialized state digests. Logs contained zero private-request timeouts,
+database locks, duplicate quote constraints, range mismatches, or HTTP 500
+responses.
+
+| Measurement | Result |
+| --- | ---: |
+| direct `/v1/info` before cached digest | 2.03s |
+| direct `/v1/info` after cached digest | 0.04s |
+| federated CLI `mint-info` before cached digest | 4.34s |
+| federated CLI `mint-info` after cached digest | 2.28s |
+| full mint 1 | 17.22s |
+| full mint 2 | 11.07s |
+| receiver swap | 13.41s |
+| melt | 12.77s |
+
+A separate fresh true-AlephBFT run stopped one member, minted with the ten live
+members, and restarted the missing member. The initial mint took 7.86 seconds,
+the one-member-offline mint took 6.21 seconds, and the restarted member caught
+up in about five seconds. All 11 members then reported six operations,
+identical order and state digests, healthy readiness, and no timeout, lock,
+duplicate, mismatch, or HTTP 500 warning.
+
+The live five-member partition regression was also corrected to model actual
+daemon recovery: recovered members rebuild consensus and replay state from the
+database, and the test uses the production activity-aware 100 ms cadence rather
+than an artificial fixed 10 ms cadence that allowed surviving peers to race
+thousands of rounds ahead during a long partition. It passed repeatedly in
+isolation and in the full parallel Axum suite.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

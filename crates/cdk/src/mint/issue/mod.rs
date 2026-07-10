@@ -201,6 +201,47 @@ impl Mint {
         &self,
         mint_quote_request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<QuoteId>, Error> {
+        let (response, _) = self
+            .create_mint_quote(mint_quote_request, QuoteId::new(), true)
+            .await?;
+        Ok(response)
+    }
+
+    /// Prepare a mint quote with the wallet-assigned federation quote ID.
+    ///
+    /// The payment request is deliberately not persisted here. The accepted
+    /// mint-quote consensus operation is the only path that may publish it to
+    /// member databases, so competing member retries cannot leave a losing
+    /// invoice in local state.
+    #[cfg(feature = "federation")]
+    #[instrument(skip_all)]
+    pub async fn prepare_federation_mint_quote(
+        &self,
+        quote_id: QuoteId,
+        mint_quote_request: MintQuoteRequest,
+    ) -> Result<
+        (
+            MintQuoteResponse<QuoteId>,
+            cdk_common::payment::PaymentIdentifier,
+        ),
+        Error,
+    > {
+        self.create_mint_quote(mint_quote_request, quote_id, false)
+            .await
+    }
+
+    async fn create_mint_quote(
+        &self,
+        mint_quote_request: MintQuoteRequest,
+        quote_id: QuoteId,
+        persist_immediately: bool,
+    ) -> Result<
+        (
+            MintQuoteResponse<QuoteId>,
+            cdk_common::payment::PaymentIdentifier,
+        ),
+        Error,
+    > {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_mint_quote");
 
@@ -218,8 +259,6 @@ impl Mint {
             let pubkey = mint_quote_request.pubkey();
 
             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
-
-            let quote_id = QuoteId::new();
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -360,25 +399,28 @@ impl Mint {
                 create_invoice_response.request_lookup_id.to_string(),
             );
 
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.add_mint_quote(quote.clone()).await?;
-            tx.commit().await?;
+            if persist_immediately {
+                let mut tx = self.localstore.begin_transaction().await?;
+                tx.add_mint_quote(quote.clone()).await?;
+                tx.commit().await?;
 
-            if payment_method.is_bolt11() {
-                let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
-                self.pubsub_manager
-                    .publish(NotificationPayload::MintQuoteBolt11Response(res));
-            } else if payment_method.is_bolt12() {
-                let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
-                self.pubsub_manager
-                    .publish(NotificationPayload::MintQuoteBolt12Response(res));
-            } else if payment_method.is_onchain() {
-                let res: MintQuoteOnchainResponse<QuoteId> = quote.clone().try_into()?;
-                self.pubsub_manager
-                    .publish(NotificationPayload::MintQuoteOnchainResponse(res));
+                if payment_method.is_bolt11() {
+                    let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
+                    self.pubsub_manager
+                        .publish(NotificationPayload::MintQuoteBolt11Response(res));
+                } else if payment_method.is_bolt12() {
+                    let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
+                    self.pubsub_manager
+                        .publish(NotificationPayload::MintQuoteBolt12Response(res));
+                } else if payment_method.is_onchain() {
+                    let res: MintQuoteOnchainResponse<QuoteId> = quote.clone().try_into()?;
+                    self.pubsub_manager
+                        .publish(NotificationPayload::MintQuoteOnchainResponse(res));
+                }
             }
 
-            quote.try_into()
+            let request_lookup_id = quote.request_lookup_id.clone();
+            Ok((quote.try_into()?, request_lookup_id))
         }
         .await;
 

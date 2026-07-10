@@ -19,7 +19,7 @@ use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
     Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
     MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse, MintRequest, MintResponse,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    QuoteId, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use tokio::sync::Barrier;
 
@@ -465,6 +465,8 @@ pub struct MockMintConnector {
     pub post_mint_quote_response: Mutex<Option<Result<MintQuoteResponse<String>, Error>>>,
     /// Optional delay used by tests to simulate a slow mint quote member.
     pub post_mint_quote_delay: Mutex<Option<Duration>>,
+    /// Federation-assigned IDs received by mint quote creation calls.
+    pub assigned_mint_quote_ids: Mutex<Vec<QuoteId>>,
     /// Response for get_mint_quote_status calls
     pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_mint_quote_status calls.
@@ -480,6 +482,8 @@ pub struct MockMintConnector {
         Mutex<Option<Result<Vec<MintQuoteResponse<String>>, Error>>>,
     /// Response for post_melt_quote calls
     pub post_melt_quote_response: Mutex<Option<Result<MeltQuoteCreateResponse<String>, Error>>>,
+    /// Federation-assigned IDs received by melt quote creation calls.
+    pub assigned_melt_quote_ids: Mutex<Vec<QuoteId>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -563,11 +567,13 @@ impl MockMintConnector {
             restore_response: Mutex::new(None),
             post_mint_quote_response: Mutex::new(None),
             post_mint_quote_delay: Mutex::new(None),
+            assigned_mint_quote_ids: Mutex::new(Vec::new()),
             mint_quote_status_response: Mutex::new(None),
             mint_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             mint_quote_status_delay: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
             post_melt_quote_response: Mutex::new(None),
+            assigned_melt_quote_ids: Mutex::new(Vec::new()),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -711,6 +717,10 @@ impl MockMintConnector {
         *self.post_mint_quote_delay.lock().unwrap() = Some(delay);
     }
 
+    pub fn assigned_mint_quote_ids(&self) -> Vec<QuoteId> {
+        self.assigned_mint_quote_ids.lock().unwrap().clone()
+    }
+
     pub fn set_batch_mint_quote_status_response(
         &self,
         response: Result<Vec<MintQuoteResponse<String>>, Error>,
@@ -730,6 +740,10 @@ impl MockMintConnector {
         response: Result<MeltQuoteBolt11Response<String>, Error>,
     ) {
         *self.melt_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn assigned_melt_quote_ids(&self) -> Vec<QuoteId> {
+        self.assigned_melt_quote_ids.lock().unwrap().clone()
     }
 
     /// Enqueue a response for the next `get_melt_quote_status` call.
@@ -929,6 +943,26 @@ impl MintConnector for MockMintConnector {
             .expect("MockMintConnector: post_mint_quote called without configured response")
     }
 
+    async fn post_mint_quote_with_id(
+        &self,
+        request: MintQuoteRequest,
+        quote_id: &QuoteId,
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        self.assigned_mint_quote_ids
+            .lock()
+            .unwrap()
+            .push(quote_id.clone());
+        let mut response = self.post_mint_quote(request).await?;
+        let quote_id = quote_id.to_string();
+        match &mut response {
+            MintQuoteResponse::Bolt11(response) => response.quote = quote_id,
+            MintQuoteResponse::Bolt12(response) => response.quote = quote_id,
+            MintQuoteResponse::Onchain(response) => response.quote = quote_id,
+            MintQuoteResponse::Custom { response, .. } => response.quote = quote_id,
+        }
+        Ok(response)
+    }
+
     async fn get_mint_quote_status(
         &self,
         _method: PaymentMethod,
@@ -939,7 +973,7 @@ impl MintConnector for MockMintConnector {
             tokio::time::sleep(delay).await;
         }
 
-        let response = match self.mint_quote_status_responses.lock().unwrap().pop_front() {
+        let mut response = match self.mint_quote_status_responses.lock().unwrap().pop_front() {
             Some(response) => response,
             None => self
                 .mint_quote_status_response
@@ -950,6 +984,7 @@ impl MintConnector for MockMintConnector {
                     "MockMintConnector: get_mint_quote_status called without configured response",
                 ),
         }?;
+        response.quote = _quote_id.to_string();
         Ok(MintQuoteResponse::Bolt11(response))
     }
 
@@ -991,13 +1026,33 @@ impl MintConnector for MockMintConnector {
             .expect("MockMintConnector: post_melt_quote called without configured response")
     }
 
+    async fn post_melt_quote_with_id(
+        &self,
+        request: MeltQuoteRequest,
+        quote_id: &QuoteId,
+    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
+        self.assigned_melt_quote_ids
+            .lock()
+            .unwrap()
+            .push(quote_id.clone());
+        let mut response = self.post_melt_quote(request).await?;
+        let quote_id = quote_id.to_string();
+        match &mut response {
+            MeltQuoteCreateResponse::Bolt11(response) => response.quote = quote_id,
+            MeltQuoteCreateResponse::Bolt12(response) => response.quote = quote_id,
+            MeltQuoteCreateResponse::Onchain(response) => response.quote = quote_id,
+            MeltQuoteCreateResponse::Custom((_, response)) => response.quote = quote_id,
+        }
+        Ok(response)
+    }
+
     async fn get_melt_quote_status(
         &self,
         _method: PaymentMethod,
         _quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let queued = self.melt_quote_status_responses.lock().unwrap().pop_front();
-        let response = match queued {
+        let mut response = match queued {
             Some(response) => response,
             None => self
                 .melt_quote_status_response
@@ -1008,6 +1063,7 @@ impl MintConnector for MockMintConnector {
                     "MockMintConnector: get_melt_quote_status called without configured response",
                 ),
         }?;
+        response.quote = _quote_id.to_string();
         Ok(MeltQuoteResponse::Bolt11(response))
     }
 

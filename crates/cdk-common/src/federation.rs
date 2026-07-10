@@ -3641,6 +3641,16 @@ impl FederationConfig {
 
     /// Build the mint-info federation advertisement expected from a member.
     pub fn mint_info_for_member(&self, member_id: MemberId) -> Result<FederationInfo> {
+        let config_digest = self.config_digest()?;
+        self.mint_info_for_member_with_config_digest(member_id, config_digest)
+    }
+
+    /// Build a member advertisement with the digest of an already-validated config.
+    pub fn mint_info_for_member_with_config_digest(
+        &self,
+        member_id: MemberId,
+        config_digest: FederationConfigDigest,
+    ) -> Result<FederationInfo> {
         if !self.members.contains_key(&member_id) {
             return Err(FederationError::UnknownMember { member_id });
         }
@@ -3648,7 +3658,7 @@ impl FederationConfig {
         Ok(FederationInfo::new(
             self.federation_id.to_string(),
             member_id.get(),
-            self.config_digest()?.to_string(),
+            config_digest.to_string(),
             self.protocol_versions.to_mint_info(),
         ))
     }
@@ -4406,6 +4416,23 @@ mod tests {
 
         config
             .validate_member_mint_info(member_id, &info)
+            .expect("member mint-info advertisement");
+    }
+
+    #[test]
+    fn federation_mint_info_accepts_a_precomputed_validated_digest() {
+        let config = test_public_federation_config();
+        config.validate().expect("valid federation config");
+        let digest = config
+            .config_digest_for_validated_config()
+            .expect("precomputed config digest");
+        let info = config
+            .mint_info_for_member_with_config_digest(member_id(2), digest)
+            .expect("mint-info federation advertisement");
+
+        assert_eq!(info.config_digest, digest.to_string());
+        config
+            .validate_member_mint_info_with_config_digest(member_id(2), &info, digest)
             .expect("member mint-info advertisement");
     }
 
