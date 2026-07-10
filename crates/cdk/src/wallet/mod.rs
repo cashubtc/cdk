@@ -22,7 +22,7 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, verify_bls_message};
+use crate::dhke::{batch_verify_bls_messages, construct_proofs};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
@@ -895,7 +895,11 @@ impl Wallet {
         // We need the keysets information to properly convert from token proof to proof
         let proofs = self.token_proofs(token).await?;
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-        for proof in proofs {
+        let mut bls_mint_pubkeys = Vec::new();
+        let mut bls_signatures = Vec::new();
+        let mut bls_messages = Vec::new();
+
+        for proof in &proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
@@ -917,11 +921,15 @@ impl Wallet {
                     if proof.dleq.is_some() {
                         return Err(Error::CouldNotVerifyDleq);
                     }
-                    verify_bls_message(mint_pubkey, proof.c, proof.secret.as_bytes())
-                        .map_err(|_| Error::CouldNotVerifyDleq)?;
+                    bls_mint_pubkeys.push(mint_pubkey);
+                    bls_signatures.push(proof.c);
+                    bls_messages.push(proof.secret.as_bytes());
                 }
             }
         }
+
+        batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+            .map_err(|_| Error::CouldNotVerifyDleq)?;
 
         Ok(())
     }

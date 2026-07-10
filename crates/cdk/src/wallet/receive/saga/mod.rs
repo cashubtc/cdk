@@ -46,7 +46,7 @@ use tracing::instrument;
 use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
-use crate::dhke::{construct_proofs, verify_bls_message};
+use crate::dhke::{batch_verify_bls_messages, construct_proofs};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, KeySetVersion, Proofs, PublicKey, SecretKey, SigFlag, State};
@@ -137,6 +137,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .iter()
             .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
             .collect();
+        let mut bls_mint_pubkeys = Vec::new();
+        let mut bls_signatures = Vec::new();
 
         // Process each proof: verify mint signature, handle P2PK/HTLC
         for proof in &mut proofs {
@@ -162,8 +164,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         .await?
                         .keys;
                     let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-                    verify_bls_message(key, proof.c, proof.secret.as_bytes())
-                        .map_err(|_| Error::CouldNotVerifyDleq)?;
+                    bls_mint_pubkeys.push(key);
+                    bls_signatures.push(proof.c);
                 }
             }
 
@@ -253,6 +255,14 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 }
             }
         }
+
+        let bls_messages = proofs
+            .iter()
+            .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
+            .map(|proof| proof.secret.as_bytes())
+            .collect::<Vec<_>>();
+        batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+            .map_err(|_| Error::CouldNotVerifyDleq)?;
 
         Ok(ReceiveSaga {
             wallet: self.wallet,

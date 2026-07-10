@@ -16,6 +16,7 @@ use super::Error;
 
 const BLS_DST: &[u8] = b"CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_";
 const BLS_BATCH_DST: &[u8] = b"Cashu_BLS_Batch_v1";
+const BLS_BLIND_BATCH_DST: &[u8] = b"Cashu_BLS_Blind_Batch_v1";
 #[cfg(feature = "federation")]
 const BLS_THRESHOLD_SHARE_VERSION: u8 = 1;
 
@@ -713,6 +714,46 @@ pub fn verify_blind_signature_share(
     ))
 }
 
+/// Batch verify blind signature shares against their signer public shares.
+///
+/// The batch uses domain-separated transcript-derived non-zero weights. A
+/// caller that needs to identify an invalid signer can fall back to
+/// [`verify_blind_signature_share`] after this function returns `false`.
+#[cfg(feature = "federation")]
+pub fn batch_verify_blind_signature_shares(
+    shares: &[BlsBlindSignatureShare],
+    blinded_messages: &[BlsG1PublicKey],
+    public_shares: &[BlsPublicKeyShare],
+) -> Result<bool, Error> {
+    if shares.len() != blinded_messages.len() || shares.len() != public_shares.len() {
+        return Ok(false);
+    }
+
+    for (share, public_share) in shares.iter().zip(public_shares) {
+        if share.signer_id != public_share.signer_id {
+            return Err(Error::ThresholdSignerMismatch {
+                expected: public_share.signer_id.get(),
+                found: share.signer_id.get(),
+            });
+        }
+    }
+
+    let signatures = shares
+        .iter()
+        .map(BlsBlindSignatureShare::signature)
+        .collect::<Vec<_>>();
+    let mint_pubkeys = public_shares
+        .iter()
+        .map(BlsPublicKeyShare::public_key)
+        .collect::<Vec<_>>();
+
+    Ok(batch_verify_blind_signature_pairing(
+        &mint_pubkeys,
+        &signatures,
+        blinded_messages,
+    ))
+}
+
 /// Aggregate threshold blind signature shares into one BLS blind signature.
 #[cfg(feature = "federation")]
 pub fn aggregate_blind_signature_shares(
@@ -962,8 +1003,30 @@ fn derive_batch_weights(
         transcript.extend_from_slice(message);
     }
 
-    let challenge = Sha256Hash::hash(&transcript).to_byte_array();
-    (0..mint_pubkeys.len())
+    derive_nonzero_batch_weights(&transcript, mint_pubkeys.len())
+}
+
+fn derive_blind_batch_weights(
+    mint_pubkeys: &[BlsG2PublicKey],
+    signatures: &[BlsG1PublicKey],
+    blinded_messages: &[BlsG1PublicKey],
+) -> Vec<BlsSecretKey> {
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(BLS_BLIND_BATCH_DST);
+    for ((mint_pubkey, signature), blinded_message) in
+        mint_pubkeys.iter().zip(signatures).zip(blinded_messages)
+    {
+        transcript.extend_from_slice(&signature.to_bytes());
+        transcript.extend_from_slice(&mint_pubkey.to_bytes());
+        transcript.extend_from_slice(&blinded_message.to_bytes());
+    }
+
+    derive_nonzero_batch_weights(&transcript, mint_pubkeys.len())
+}
+
+fn derive_nonzero_batch_weights(transcript: &[u8], count: usize) -> Vec<BlsSecretKey> {
+    let challenge = Sha256Hash::hash(transcript).to_byte_array();
+    (0..count)
         .map(|i| {
             // Per NUT-00, derive each weight by rejection sampling in `Fr*`:
             //   h = SHA256(challenge || u32_BE(i) || u32_BE(ctr))
@@ -1028,7 +1091,49 @@ pub(crate) fn batch_verify_pairing(
     let right = weighted_messages.into_values().fold(
         Gt::identity(),
         |acc, (mint_pubkey, weighted_message)| {
-            &acc + &pairing(&weighted_message.to_affine(), &mint_pubkey.point())
+            acc + pairing(&weighted_message.to_affine(), &mint_pubkey.point())
+        },
+    );
+
+    left == right
+}
+
+/// Batch verify `e(signature, G2) == e(blinded_message, mint_pubkey)`.
+pub(crate) fn batch_verify_blind_signature_pairing(
+    mint_pubkeys: &[BlsG2PublicKey],
+    signatures: &[BlsG1PublicKey],
+    blinded_messages: &[BlsG1PublicKey],
+) -> bool {
+    if mint_pubkeys.len() != signatures.len() || signatures.len() != blinded_messages.len() {
+        return false;
+    }
+    if signatures.is_empty() {
+        return true;
+    }
+
+    let weights = derive_blind_batch_weights(mint_pubkeys, signatures, blinded_messages);
+    let mut weighted_signatures = G1Projective::identity();
+    let mut weighted_messages = BTreeMap::<[u8; 96], (BlsG2PublicKey, G1Projective)>::new();
+
+    for (((mint_pubkey, signature), blinded_message), weight) in mint_pubkeys
+        .iter()
+        .zip(signatures)
+        .zip(blinded_messages)
+        .zip(&weights)
+    {
+        weighted_signatures += G1Projective::from(signature.point()) * weight.scalar();
+        let weighted_message = G1Projective::from(blinded_message.point()) * weight.scalar();
+        weighted_messages
+            .entry(mint_pubkey.to_bytes())
+            .and_modify(|(_, sum)| *sum += weighted_message)
+            .or_insert((*mint_pubkey, weighted_message));
+    }
+
+    let left = pairing(&weighted_signatures.to_affine(), &G2Affine::generator());
+    let right = weighted_messages.into_values().fold(
+        Gt::identity(),
+        |acc, (mint_pubkey, weighted_message)| {
+            acc + pairing(&weighted_message.to_affine(), &mint_pubkey.point())
         },
     );
 
@@ -1327,6 +1432,76 @@ mod tests {
                 .expect("aggregate public key"),
             keyset.aggregate_public_key()
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_batch_verify_blind_signature_shares_matches_scalar_verification() {
+        let coefficients = vec![bls_key(3), bls_key(5), bls_key(9)];
+        let keyset =
+            trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5])).expect("keyset");
+        let blinded_messages = (0..14)
+            .map(|index| BlsG1PublicKey::hash_to_curve(format!("batch output {index}").as_bytes()))
+            .collect::<Vec<_>>();
+        let shares = blinded_messages
+            .iter()
+            .map(|message| keyset.secret_shares()[0].blind_sign_share(message))
+            .collect::<Vec<_>>();
+        let public_shares = vec![keyset.public_shares()[0]; blinded_messages.len()];
+
+        assert!(
+            batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares)
+                .expect("batch verification")
+        );
+        for ((share, message), public_share) in
+            shares.iter().zip(&blinded_messages).zip(&public_shares)
+        {
+            assert!(verify_blind_signature_share(share, message, public_share)
+                .expect("scalar verification"));
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_batch_verify_blind_signature_shares_rejects_corruption_and_bad_shape() {
+        let coefficients = vec![bls_key(11), bls_key(13), bls_key(17)];
+        let keyset =
+            trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5])).expect("keyset");
+        let blinded_messages = [
+            BlsG1PublicKey::hash_to_curve(b"batch output one"),
+            BlsG1PublicKey::hash_to_curve(b"batch output two"),
+            BlsG1PublicKey::hash_to_curve(b"batch output three"),
+        ];
+        let mut shares = blinded_messages
+            .iter()
+            .map(|message| keyset.secret_shares()[0].blind_sign_share(message))
+            .collect::<Vec<_>>();
+        let public_shares = vec![keyset.public_shares()[0]; blinded_messages.len()];
+
+        shares[1] = keyset.secret_shares()[0].blind_sign_share(&blinded_messages[0]);
+        assert!(
+            !batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares)
+                .expect("batch corruption verdict")
+        );
+        assert!(!batch_verify_blind_signature_shares(
+            &shares[..2],
+            &blinded_messages,
+            &public_shares
+        )
+        .expect("batch length verdict"));
+
+        let mismatched_public_shares = vec![keyset.public_shares()[1]; blinded_messages.len()];
+        assert!(matches!(
+            batch_verify_blind_signature_shares(
+                &shares,
+                &blinded_messages,
+                &mismatched_public_shares
+            ),
+            Err(Error::ThresholdSignerMismatch {
+                expected: 2,
+                found: 1
+            })
+        ));
     }
 
     #[cfg(feature = "federation")]

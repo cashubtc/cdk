@@ -21,7 +21,8 @@ use futures::FutureExt;
 
 use super::{AuthWallet, HttpClient, MintConnector};
 use crate::nuts::nut01::{
-    aggregate_blind_signature_shares, verify_blind_signature_share, BlsBlindSignatureShare,
+    aggregate_blind_signature_shares, batch_verify_blind_signature_shares,
+    verify_blind_signature_share, BlsBlindSignatureShare,
 };
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
@@ -1117,6 +1118,8 @@ impl FederatedMintConnector {
 
         let mut metadata = Vec::with_capacity(outputs.len());
         let mut shares = Vec::with_capacity(outputs.len());
+        let mut blinded_messages = Vec::with_capacity(outputs.len());
+        let mut public_shares = Vec::with_capacity(outputs.len());
         for (output, signature) in outputs.iter().zip(response.signatures.iter()) {
             validate_signature_metadata(signature, output, member_id, amount_validation)?;
 
@@ -1149,15 +1152,31 @@ impl FederatedMintConnector {
             let share =
                 BlsBlindSignatureShare::new(member_id.to_bls_signer_id(), signature.c.as_bls_g1()?);
 
-            if !verify_blind_signature_share(&share, &blinded_message, public_share)? {
-                return Err(Error::InvalidMintResponse(format!(
-                    "member {} returned an invalid signature share for keyset {} amount {}",
-                    member_id, output.keyset_id, output.amount
-                )));
-            }
-
             metadata.push((signature.amount, signature.keyset_id));
             shares.push(share);
+            blinded_messages.push(blinded_message);
+            public_shares.push(*public_share);
+        }
+
+        if !batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares)? {
+            for (((share, blinded_message), public_share), (amount, keyset_id)) in shares
+                .iter()
+                .zip(&blinded_messages)
+                .zip(&public_shares)
+                .zip(&metadata)
+            {
+                if !verify_blind_signature_share(share, blinded_message, public_share)? {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "member {} returned an invalid signature share for keyset {} amount {}",
+                        member_id, keyset_id, amount
+                    )));
+                }
+            }
+
+            return Err(Error::InvalidMintResponse(format!(
+                "member {} signature-share batch verification failed",
+                member_id
+            )));
         }
 
         Ok((metadata, shares))

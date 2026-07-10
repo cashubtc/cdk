@@ -281,6 +281,36 @@ pub fn verify_bls_blind_signature(
     Err(Error::TokenNotVerified)
 }
 
+/// Batch verify BLS blind signatures using pairings.
+pub fn batch_verify_bls_blind_signatures(
+    mint_pubkeys: &[PublicKey],
+    blinded_signatures: &[PublicKey],
+    blinded_messages: &[PublicKey],
+) -> Result<(), Error> {
+    let mint_pubkeys = mint_pubkeys
+        .iter()
+        .map(PublicKey::as_bls_g2)
+        .collect::<Result<Vec<_>, _>>()?;
+    let blinded_signatures = blinded_signatures
+        .iter()
+        .map(PublicKey::as_bls_g1)
+        .collect::<Result<Vec<_>, _>>()?;
+    let blinded_messages = blinded_messages
+        .iter()
+        .map(PublicKey::as_bls_g1)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if bls::batch_verify_blind_signature_pairing(
+        &mint_pubkeys,
+        &blinded_signatures,
+        &blinded_messages,
+    ) {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerified)
+}
+
 /// Verify BLS proof using the mint secret key.
 pub fn verify_bls_message_keyed(
     mint_secretkey: &SecretKey,
@@ -670,6 +700,47 @@ mod tests {
             mint_secret.public_key(),
             blinded_signature,
             wrong_blinded
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_bls_blind_signature_batch_verification() {
+        let mint_secret_1 = SecretKey::generate_bls();
+        let mint_secret_2 = SecretKey::generate_bls();
+        let mut mint_pubkeys = Vec::new();
+        let mut blinded_signatures = Vec::new();
+        let mut blinded_messages = Vec::new();
+
+        for (message, mint_secret) in [
+            (b"blind batch one".as_slice(), &mint_secret_1),
+            (b"blind batch two".as_slice(), &mint_secret_1),
+            (b"blind batch three".as_slice(), &mint_secret_2),
+        ] {
+            let (blinded_message, _) =
+                blind_message_for_version(message, None, KeySetVersion::Version02)
+                    .expect("blind message");
+            let blinded_signature =
+                sign_message(mint_secret, &blinded_message).expect("blind signature");
+            mint_pubkeys.push(mint_secret.public_key());
+            blinded_signatures.push(blinded_signature);
+            blinded_messages.push(blinded_message);
+        }
+
+        batch_verify_bls_blind_signatures(&mint_pubkeys, &blinded_signatures, &blinded_messages)
+            .expect("valid blind-signature batch");
+
+        blinded_signatures[1] = blinded_signatures[0];
+        assert!(batch_verify_bls_blind_signatures(
+            &mint_pubkeys,
+            &blinded_signatures,
+            &blinded_messages
+        )
+        .is_err());
+        assert!(batch_verify_bls_blind_signatures(
+            &mint_pubkeys[..2],
+            &blinded_signatures,
+            &blinded_messages
         )
         .is_err());
     }

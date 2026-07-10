@@ -50,7 +50,14 @@ A blocker is only resolved when the fix is tested and the code is clean: no debu
 
 Current blocking bugs:
 
-- None recorded.
+- The federation wallet restore and check-state collectors currently stop after
+  any `signature_threshold` successful member replies. If those early replies
+  disagree, a later reply that would complete a matching threshold can be
+  discarded. The deterministic matching-view tests now expose this as
+  `insufficient matching federation ... responses`. Change the collector stop
+  predicates to require an aggregatable/matching threshold, then rerun the full
+  federation wallet suite before treating restore and check-state routing as
+  complete.
 
 ## Recent performance checkpoint
 
@@ -73,10 +80,23 @@ Current blocking bugs:
   counter tests cover both persisted and missing metadata. A fresh live repeat
   left the first mint unchanged at 9.21s and reduced the warm second mint from
   6.05s to 4.97s while preserving the exact journal and convergence.
-- Next performance candidate: securely batch partial blind-signature share and
-  final proof verification, with scalar fallback on batch failure and explicit
-  corrupted-share/proof tests. No cryptographic verification was weakened in
-  the startup fix.
+- Completed cryptographic batching checkpoint: blind BLS signature-share,
+  aggregate blind-signature, and final v3 proof verification now use
+  domain-separated transcript-derived non-zero batch weights. Member-share
+  batch failures fall back to scalar verification so invalid members and
+  denomination/keyset metadata remain attributable; no verification layer was
+  removed. Corrupted shares, malformed shape/signer metadata, corrupted
+  aggregate signatures, standalone v3 compatibility, and metadata-before-point
+  parsing have focused regression coverage.
+- Mixed-denomination Criterion gates show the expected scaling. For 3-of-5,
+  scalar versus batch verification measured 15.00ms/13.44ms at 4 outputs,
+  53.12ms/25.83ms at 14, and 243.62ms/77.34ms at 64. For 5-of-7 it measured
+  26.20ms/22.77ms, 88.75ms/40.64ms, and 412.63ms/131.03ms respectively.
+- Fresh live AlephBFT validation remained consensus-bound for ordinary small
+  mints: 3-of-5 completed cold/warm mints in 7.87s/5.05s and 5-of-7 in
+  10.39s/6.51s. Both topologies converged after exactly six accepted operations
+  (`mint_quote`, `mint_quote_payment`, `mint` twice), with identical order and
+  state digests, no pending work, and no invalid-operation alerts.
 - Latest minting performance checkpoint: a fresh five-member, threshold-three
   fakewallet AlephBFT benchmark confirmed the pre-fix delay was not direct HTTP,
   fakewallet settlement, catch-up, or DB contention. Each full mint still

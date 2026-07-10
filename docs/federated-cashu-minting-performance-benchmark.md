@@ -190,7 +190,7 @@ with matching digests and no pending work or alerts. One member recorded one
 idempotent duplicate submission/waiter join; there was no duplicate accepted
 journal operation.
 
-### Current classification and next candidate
+### Pre-batching classification
 
 - **Dominant current cost:** wallet/library work, specifically cold metadata
   discovery on first use and output-count-dependent BLS share/proof validation.
@@ -212,26 +212,69 @@ journal operation.
   idempotent duplicate in the post-fix repeat, with the same six accepted
   operations.
 
-The next clean performance candidate is cryptographic batching, not a consensus
-or retry change:
+## Accepted BLS Batch Verification
 
-1. Add a secure randomized batch verifier for blinded partial BLS signature
-   shares in `cashu`; on batch failure, fall back to individual checks so a bad
-   member can be excluded without hiding which response failed.
-2. Replace the final per-proof v3 verification loop with the existing
-   `batch_verify_bls_messages` primitive.
-3. Evaluate whether aggregate blind-signature verification is redundant when
-   metadata is checked and the final unblinded proof batch is always verified;
-   do not remove it without an explicit security argument and corruption tests.
-4. Benchmark 4, 14, and 64 outputs across 3-of-5 and 5-of-7 thresholds before
-   accepting any optimization.
+The wallet now batches all three existing v3/BLS verification layers without
+removing any of them:
 
-Required tests for that candidate include valid batch/scalar equivalence,
-single corrupted share rejection, collector continuation to a slower valid
-threshold, malformed metadata rejection before crypto, corrupted aggregate and
-unblinded proof rejection, denomination/keyset mixing, and standalone v3/BLS
-wallet compatibility. No cryptographic verification was removed or weakened in
-this checkpoint.
+1. Each member's blind threshold-signature shares are verified as one batch
+   after response length, amount, keyset, signer, and public-share metadata is
+   checked. A failed batch falls back to scalar checks so the invalid member and
+   output remain attributable and the collector can continue toward a valid
+   threshold.
+2. The aggregate blind signatures returned by mint, swap, melt-change,
+   restore, and recovery paths are batch verified by the common mint-response
+   validator.
+3. Final unblinded v3 proofs are batch verified in the issue, receive, and
+   explicit token-verification paths that previously verified them one by one.
+
+Weights are deterministic non-zero BLS scalars derived from a domain-separated
+SHA-256 transcript containing every signature, public key, and blinded message.
+The proof and blind-signature transcripts use distinct domains. V1/v2 DLEQ
+verification and standalone non-federated behavior remain on their existing
+paths.
+
+The Criterion fixture cycles over four independent denomination-style threshold
+keysets so repeated-key pairing aggregation does not hide mixed-key behavior.
+Every scalar and batch fixture is asserted valid before timing. The latest
+local Criterion benchmark measured:
+
+| Federation | Outputs | Scalar | Batch | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| 3-of-5 | 4 | 15.00ms | 13.44ms | 1.12x |
+| 3-of-5 | 14 | 53.12ms | 25.83ms | 2.06x |
+| 3-of-5 | 64 | 243.62ms | 77.34ms | 3.15x |
+| 5-of-7 | 4 | 26.20ms | 22.77ms | 1.15x |
+| 5-of-7 | 14 | 88.75ms | 40.64ms | 2.18x |
+| 5-of-7 | 64 | 412.63ms | 131.03ms | 3.15x |
+
+Fresh process tests then used brand-new fakewallet databases, wallets, and real
+private-REST AlephBFT sessions:
+
+| Federation | Mint | Wall | User | System |
+| --- | --- | ---: | ---: | ---: |
+| 3-of-5 | cold 50 sat | 7.87s | 2.02s | 0.03s |
+| 3-of-5 | warm 30 sat | 5.05s | 1.34s | 0.01s |
+| 5-of-7 | cold 50 sat | 10.39s | 2.92s | 0.07s |
+| 5-of-7 | warm 30 sat | 6.51s | 1.93s | 0.05s |
+
+Both topologies converged after exactly six accepted operations, latest index
+5, with matching order and state digests on every member, no pending mempool
+items or response waiters, and no invalid-operation alerts. The live result is
+deliberately more modest than the 14/64-output microbenchmarks: ordinary mints
+have small output sets and still pay for three serialized consensus operations.
+Batching removes an output-count scaling cost; it does not disguise consensus
+latency as cryptography.
+
+Focused gates cover valid batch/scalar equivalence, mixed public keys,
+single-share and aggregate-signature corruption, malformed lengths and signer
+IDs, metadata rejection before point parsing, slow/offline/bad-share member
+continuation, and standalone v3/BLS issue with federation disabled. The broad
+CDK federation run passed 678 of 681 tests and exposed two existing collector
+bugs where restore/check-state stopped after any successful threshold instead
+of a matching threshold, plus one stale source-order test marker. Those failures
+are tracked for the next correctness checkpoint and are not batch-verification
+failures.
 
 ## Accepted 100ms Active Cadence and Idle CPU Fix
 

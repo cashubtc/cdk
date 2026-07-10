@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: avoid network during wallet repository load</span>
+          <span class="value">perf: batch BLS federation verification</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A fresh untouched five-member benchmark measured curl info at 0.92s, standalone CLI mint-info at 2.28s, federated mint-info at 1.56s, and full mints at 9.15s and 6.05s. Trace and temporary probes classified the remaining delay as wallet metadata discovery and output-count-dependent BLS validation, not fakewallet, observer polling, private REST, catch-up, or database persistence. Repository reload was making a direct member info request before federation activation; it now uses persisted metadata, and the warm second mint fell to 4.97s while all five members retained the exact six-operation journal.</span>
+          <span class="value">Transcript-weighted batch verification now covers member blind-signature shares, aggregate blind signatures, and final v3 proofs without removing a verification layer. Failed member batches retain scalar bad-member attribution. Mixed-keyset 14-output verification is about 2.1x faster and 64-output verification about 3.15x faster; fresh real AlephBFT mints completed in 7.87s/5.05s for 3-of-5 and 10.39s/6.51s for 5-of-7, with exact six-operation journals and full digest convergence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Design and test secure batched verification for partial blind BLS signature shares and final wallet proofs. Preserve bad-member attribution with scalar fallback, prove corrupted shares/proofs still fail closed, and benchmark 4, 14, and 64 outputs before accepting any cryptographic optimization.</span>
+          <span class="value">Fix restore and check-state fanout so collection stops only after a matching response threshold, not merely any successful threshold. Refresh the stale publish-order source marker and rerun the broad federation suite to turn the current 678/681 result fully green.</span>
         </div>
       </aside>
     </header>
@@ -940,8 +940,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Batched BLS verification</h3>
-            <p>Prototype secure randomized batch verification for member blind-signature shares and use the existing final-proof batch primitive. Fall back to scalar checks on failure, retain bad-member isolation, and require corruption plus 4/14/64-output performance gates before merging.</p>
+            <h3>Matching response quorum</h3>
+            <p>Restore and check-state fanout must continue past an early disagreeing threshold until one response view reaches the signature threshold or every member is exhausted. Add deterministic early-disagreement tests and rerun the full federation wallet suite.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

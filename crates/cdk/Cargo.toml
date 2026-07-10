@@ -193,5 +193,10 @@ tokio = { workspace = true, features = ["full"] }
 name = "dhke_benchmarks"
 harness = false
 
+[[bench]]
+name = "bls_batch_benchmarks"
+harness = false
+required-features = ["federation"]
+
 [lints]
 workspace = true

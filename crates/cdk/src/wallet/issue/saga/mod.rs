@@ -45,7 +45,7 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, verify_bls_message};
+use crate::dhke::{batch_verify_bls_messages, construct_proofs};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{KeySetVersion, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
@@ -728,13 +728,21 @@ impl<'a> MintSaga<'a, Prepared> {
                 &keys,
             )?;
 
-            for proof in &proofs {
-                if proof.keyset_id.get_version() == KeySetVersion::Version02 {
-                    let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-                    verify_bls_message(key, proof.c, proof.secret.as_bytes())
-                        .map_err(|_| Error::CouldNotVerifyDleq)?;
-                }
-            }
+            let bls_proofs = proofs
+                .iter()
+                .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
+                .collect::<Vec<_>>();
+            let bls_mint_pubkeys = bls_proofs
+                .iter()
+                .map(|proof| keys.amount_key(proof.amount).ok_or(Error::AmountKey))
+                .collect::<Result<Vec<_>, _>>()?;
+            let bls_signatures = bls_proofs.iter().map(|proof| proof.c).collect::<Vec<_>>();
+            let bls_messages = bls_proofs
+                .iter()
+                .map(|proof| proof.secret.as_bytes())
+                .collect::<Vec<_>>();
+            batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+                .map_err(|_| Error::CouldNotVerifyDleq)?;
 
             let minted_amount = proofs.total_amount()?;
 
@@ -866,16 +874,119 @@ impl<S: std::fmt::Debug> std::fmt::Debug for MintSaga<'_, S> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use cdk_common::nuts::MintQuoteState;
 
     use super::*;
-    use crate::nuts::{BlindSignature, MintResponse};
+    use crate::dhke::sign_message;
+    use crate::nuts::nut01::{Keys, SecretKey};
+    use crate::nuts::{BlindSignature, CurrencyUnit, Id, KeySet, MintResponse};
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
         MockMintConnector,
     };
+
+    fn bls_test_keyset() -> (KeySet, BTreeMap<Amount, SecretKey>) {
+        let secret_keys = BTreeMap::from([
+            (
+                Amount::from(1),
+                SecretKey::bls_from_reduced_bytes(&[11; 32]),
+            ),
+            (
+                Amount::from(2),
+                SecretKey::bls_from_reduced_bytes(&[12; 32]),
+            ),
+        ]);
+        let keys = Keys::new(
+            secret_keys
+                .iter()
+                .map(|(amount, secret_key)| (*amount, secret_key.public_key()))
+                .collect(),
+        );
+        let unit = CurrencyUnit::Sat;
+        let id = Id::v3_from_data(&keys, &unit, 0, None);
+        (
+            KeySet {
+                id,
+                unit,
+                active: Some(true),
+                keys,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            secret_keys,
+        )
+    }
+
+    async fn execute_bls_mint(corrupt_second_signature: bool) -> Result<Proofs, Error> {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let (keyset, secret_keys) = bls_test_keyset();
+        mock_client.set_active_keyset(keyset);
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let mut mint_quote = test_mint_quote(mint_url);
+        mint_quote.state = MintQuoteState::Paid;
+        mint_quote.amount = Some(Amount::from(3));
+        mint_quote.amount_paid = Amount::from(3);
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare(
+                &quote_id,
+                SplitTarget::Values(vec![Amount::from(1), Amount::from(2)]),
+                None,
+            )
+            .await
+            .expect("prepare BLS mint saga");
+        let outputs = match &prepared.state_data.mint_request {
+            PreparedMintRequest::Single { request, .. } => request.outputs.clone(),
+            PreparedMintRequest::Batch { .. } => panic!("expected single mint request"),
+        };
+        let mut signatures = outputs
+            .iter()
+            .map(|output| {
+                let secret_key = secret_keys
+                    .get(&output.amount)
+                    .expect("BLS amount secret key");
+                BlindSignature {
+                    amount: output.amount,
+                    keyset_id: output.keyset_id,
+                    c: sign_message(secret_key, &output.blinded_secret).expect("blind signature"),
+                    dleq: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        if corrupt_second_signature {
+            signatures[1].c = signatures[0].c;
+        }
+        mock_client.set_post_mint_response(Ok(MintResponse { signatures }));
+
+        prepared.execute().await.map(MintSaga::into_proofs)
+    }
+
+    #[tokio::test]
+    async fn standalone_bls_issue_accepts_valid_batched_signatures_and_proofs() {
+        let proofs = execute_bls_mint(false).await.expect("standalone BLS issue");
+
+        assert_eq!(proofs.total_amount().expect("proof total"), Amount::from(3));
+        assert!(proofs
+            .iter()
+            .all(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02));
+    }
+
+    #[tokio::test]
+    async fn standalone_bls_issue_rejects_corrupted_batched_signature() {
+        assert!(matches!(
+            execute_bls_mint(true).await,
+            Err(Error::CouldNotVerifyDleq)
+        ));
+    }
 
     #[tokio::test]
     async fn test_execute_rejects_signature_with_mismatched_amount() {

@@ -3383,6 +3383,32 @@ async fn federated_mint_connector_tolerates_slow_offline_and_bad_share_members()
     );
 }
 
+#[test]
+fn federated_share_batch_rejects_metadata_before_parsing_signature_points() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        member_connectors(&bundle, &outputs),
+        FederatedMintConnectorConfig::default(),
+    )
+    .expect("federated mint connector");
+    let mut response = share_response(&bundle, member_id(1), &outputs);
+    response.signatures[0].amount = Amount::from(2);
+    response.signatures[0].c = identity_secret(member_id(1)).public_key();
+
+    let error = connector
+        .valid_member_share_set(
+            &outputs,
+            member_id(1),
+            &response,
+            super::ShareAmountValidation::Exact,
+        )
+        .expect_err("mismatched signature metadata");
+
+    assert!(error.to_string().contains("signature amount"));
+}
+
 #[tokio::test]
 async fn federated_mint_connector_uses_threshold_live_members_for_wallet_operations() {
     let bundle = threshold_five_bundle();

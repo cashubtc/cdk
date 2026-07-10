@@ -1,4 +1,4 @@
-use crate::dhke::verify_bls_blind_signature;
+use crate::dhke::batch_verify_bls_blind_signatures;
 use crate::nuts::{nut12, BlindSignature, BlindedMessage, KeySetVersion};
 use crate::wallet::Wallet;
 use crate::{Amount, Error};
@@ -42,6 +42,10 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         )));
     }
 
+    let mut bls_mint_pubkeys = Vec::new();
+    let mut bls_signatures = Vec::new();
+    let mut bls_blinded_messages = Vec::new();
+
     for (sig, blinded_message) in signatures.iter().zip(blinded_messages) {
         let amount_matches = match amount_validation {
             SignatureAmountValidation::Exact => sig.amount == blinded_message.amount,
@@ -78,11 +82,15 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
                 if sig.dleq.is_some() {
                     return Err(Error::CouldNotVerifyDleq);
                 }
-                verify_bls_blind_signature(key, sig.c, blinded_message.blinded_secret)
-                    .map_err(|_| Error::CouldNotVerifyDleq)?;
+                bls_mint_pubkeys.push(key);
+                bls_signatures.push(sig.c);
+                bls_blinded_messages.push(blinded_message.blinded_secret);
             }
         }
     }
+
+    batch_verify_bls_blind_signatures(&bls_mint_pubkeys, &bls_signatures, &bls_blinded_messages)
+        .map_err(|_| Error::CouldNotVerifyDleq)?;
 
     Ok(())
 }
