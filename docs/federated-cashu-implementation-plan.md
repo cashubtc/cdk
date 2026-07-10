@@ -2722,6 +2722,58 @@ Tests and success criteria:
 
 Objective: remove MVP/dev scaffolding from production federation semantics before real-funds deployment.
 
+### Refactoring and cleanup policy
+
+Use the [Federated Cashu refactoring plan](./federated-cashu-refactoring-plan.md)
+as the detailed source of refactoring instructions, architectural opportunities,
+target module boundaries, safety invariants, test requirements, and suggested
+commit checkpoints. Its ranked items are candidates to investigate, not
+instructions to apply mechanically. The implementation may have changed since
+an opportunity was recorded, and a locally elegant rewrite is not valuable if
+it does not improve ownership, correctness, maintainability, performance, or
+testability in the current code.
+
+Before applying any refactoring-plan item:
+
+1. Verify against the current branch that the described duplication, ownership
+   problem, invalid state, performance cost, or review burden still exists.
+2. Identify the invariant owner before and after the change, the exact files and
+   APIs affected, and the standalone and federation behavior that must remain
+   unchanged.
+3. Capture a relevant baseline. Depending on the item, this can include lines of
+   implementation code, duplicated branches, public API surface, dependency
+   edges, compile time, focused test time, operation latency, idle CPU, memory,
+   database queries/lock duration, network requests, retry volume, or failure
+   recovery time. Line count alone is never sufficient evidence.
+4. Define the expected impact and a concrete success threshold before editing.
+   High-risk consensus, journal, catch-up, signing, and application-state changes
+   require a behavior-preserving characterization test or fault-injection test
+   before implementation.
+5. Confirm that the proposed abstraction has one real owner and removes more
+   lifecycle or decision duplication than it introduces. Reject or narrow the
+   item when measurement does not justify its cost or blast radius.
+
+After applying an item:
+
+1. Re-run the baseline and the item's focused tests, then compare measured
+   before/after results.
+2. Prove that canonical bytes, operation IDs, accepted ordering, threshold
+   decisions, state transitions, digests, error behavior, and standalone CDK
+   behavior remain unchanged unless the checkpoint explicitly intends a tested
+   change.
+3. Record the measured impact and any residual risk in the commit, progress
+   documentation, or an adjacent benchmark/review document.
+4. Remove temporary instrumentation and speculative abstractions. Keep
+   instrumentation only when it is low-overhead, generally useful production
+   observability with tests.
+5. Commit the refactor as its own reconstructable checkpoint, separate from
+   unrelated features and protocol changes.
+
+The refactoring plan's AlephBFT-only architecture and
+`crates/cdk/src/mint/federation/` target layout are accepted project direction,
+but their individual removal and move steps still require the same baseline,
+focused verification, and impact report before they are applied.
+
 Implementation checklist:
 
 - [x] Ensure federation crates and production federation modules do not depend on, import, or semantically special-case `cdk-fake-wallet`.
@@ -2746,8 +2798,10 @@ Implementation checklist:
   admission, issuance, quote/payment observation, keyset/restore, swap, melt,
   wallet validation, private REST peer client, sync loop, status, catch-up, DKG
   routes, and smoke/status test modules.
-- Maintenance note: further splitting is ordinary code-health work, not a
-  federation correctness or release gate.
+- Maintenance note: evaluate further splitting and architectural cleanup through
+  the linked refactoring plan and its measurement policy. Refactoring candidates
+  do not become correctness or release gates merely by being listed; each must
+  demonstrate current applicability and measurable value before implementation.
 - [x] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
 - [x] Audit `cdk`, `cdk-common`, `cdk-axum`, `cdk-mintd`, and storage crates for accidental fakewallet coupling in federation code.
 - [x] Audit generated example configs so fakewallet-backed development federation examples are clearly marked development-only and cannot be mistaken for production templates.
