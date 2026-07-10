@@ -3136,20 +3136,30 @@ Implementation checklist:
 - [ ] Keep the existing CDK error model as the single authority for error
   classification and wallet behavior. Do not add a federation-specific error
   whitelist, definitive-error classifier, or parallel business-error hierarchy.
-- [ ] When the existing mint logic durably rejects a consensus operation,
-  persist the standard Cashu `ErrorResponse` that the standalone public API
-  would return, atomically with `FederationOperationStatus::Rejected`. A replay
-  or duplicate request must return that same response instead of reducing it to
+- [ ] Extend the existing federation journal entry's application state with
+  `rejection: Option<ErrorResponse>`. Do not create a separate result journal,
+  rejection table, consensus item, or AlephBFT round, and do not use successful
+  `completed_operations` rows to store rejected operations.
+- [ ] Enforce one persisted-state invariant: `Rejected` always carries its
+  standard Cashu `ErrorResponse`, while `Accepted`, `Applying`, `Applied`, and
+  `Failed` do not. Persist the status and response atomically through one
+  operation-state transition.
+- [ ] When the existing mint logic durably rejects an ordered operation, store
+  the `ErrorResponse` that the standalone public API would return. A replay or
+  duplicate request must return that same response instead of reducing it to
   the generic `RejectedOperation` error.
 - [ ] Reuse the existing `Error -> ErrorResponse` and `ErrorResponse -> Error`
   conversions unchanged. This includes errors such as `TokenAlreadySpent`,
   `TokenPending`, `BlindedMessageAlreadySigned`, quote and payment errors,
   keyset errors, balance errors, duplicate inputs/outputs, and witness or
   authentication errors whenever the existing non-federated path produces them.
-- [ ] Keep persisted rejection responses deterministic and include them in
-  materialized-state digest and catch-up verification. Do not introduce a
-  second consensus phase or misuse successful `completed_operations` rows to
-  store rejected operations.
+- [ ] Treat the rejection as post-consensus application metadata, not as part of
+  the immutable operation envelope or original ordering hash. Keep it
+  deterministic and include it in existing catch-up data, materialized-state
+  digests, checkpoints, and session outcomes.
+- [ ] Do not increase mint-to-mint consensus traffic for error handling. Wallet
+  fanout may wait for threshold agreement using its existing member requests,
+  but rejection persistence must not submit another consensus operation.
 - [ ] Keep federation liveness and consistency conditions distinct from Cashu
   business errors: pending AlephBFT finalization, unavailable quorum, catch-up
   gates, timeouts, HTTP `429`/`5xx`, invalid shares, mismatched member views,
