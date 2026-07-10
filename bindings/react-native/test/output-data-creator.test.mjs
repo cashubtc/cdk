@@ -97,6 +97,36 @@ describe('createRandomData', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Split validation (mirrors HybridOutputDataCreator::splitAmount)
+// ---------------------------------------------------------------------------
+
+describe('split validation', () => {
+  // Keyset missing the low denominations needed to represent odd amounts.
+  const COARSE_KEYS = [8, 16, 32].map((amount) => ({ amount, pubkey: TEST_PUBKEY }));
+
+  it('throws when keys cannot represent the amount exactly', () => {
+    assert.throws(
+      () => creator.createRandomData(5, KEYSET_ID, COARSE_KEYS),
+      /Cannot split amount with available denominations/,
+    );
+  });
+
+  it('throws when a custom split sum does not equal the amount', () => {
+    assert.throws(
+      () => creator.createRandomData(10, KEYSET_ID, KEYS, [2, 4]),
+      /Custom split total does not equal requested amount/,
+    );
+  });
+
+  it('throws when a custom split contains a zero denomination', () => {
+    assert.throws(
+      () => creator.createRandomData(6, KEYSET_ID, KEYS, [2, 4, 0]),
+      /Custom split contains invalid denomination/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // P2PK outputs
 // ---------------------------------------------------------------------------
 

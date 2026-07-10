@@ -87,7 +87,9 @@ function splitPow2(amount) {
 
 /**
  * Split amount using available key denominations.
- * Greedily picks the largest denomination that fits.
+ * Greedily picks the largest denomination that fits. Throws when the
+ * denominations cannot represent the amount exactly, mirroring the
+ * production HybridOutputDataCreator::splitAmount behavior.
  */
 function splitByKeys(amount, keys) {
   const denoms = keys.map((k) => k.amount).sort((a, b) => b - a);
@@ -100,14 +102,33 @@ function splitByKeys(amount, keys) {
     }
   }
   if (remaining > 0) {
-    // Fallback: add remainder as-is (shouldn't happen with power-of-2 keys)
-    splits.push(remaining);
+    throw new Error('Cannot split amount with available denominations');
   }
   return splits;
 }
 
+/**
+ * Validate a caller-supplied custom split. Rejects zero denominations and
+ * splits whose sum differs from the requested amount, matching production.
+ */
+function validateCustomSplit(amount, customSplit) {
+  let sum = 0;
+  for (const v of customSplit) {
+    if (v === 0) {
+      throw new Error('Custom split contains invalid denomination');
+    }
+    sum += v;
+  }
+  if (sum !== amount) {
+    throw new Error('Custom split total does not equal requested amount');
+  }
+  return customSplit;
+}
+
 function computeSplit(amount, keys, customSplit) {
-  if (customSplit && customSplit.length > 0) return customSplit;
+  if (customSplit && customSplit.length > 0) {
+    return validateCustomSplit(amount, customSplit);
+  }
   if (keys && keys.length > 0) return splitByKeys(amount, keys);
   return splitPow2(amount);
 }
