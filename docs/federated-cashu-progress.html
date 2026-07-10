@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: certify below-finality value conflict recovery</span>
+          <span class="value">test: certify self-partitioned proposer restart</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The federation-enabled Axum gate covers 422 passing tests: 420 run in the managed sandbox and both real-listener wallet tests pass outside it. A new production-paced five-member test proves conflicting swaps and an independent melt leak no state, signatures, or payment below finality; restored quorum applies one swap, rejects its conflict, pays once, and converges the restarted lagger.</span>
+          <span class="value">The federation-enabled Axum gate covers 422 passing tests: 420 run in the managed sandbox and both real-listener wallet tests pass outside it. The live five-member matrix now restarts a self-partitioned proposer before healing its links, proves exactly one pending mint survives with no signature or completion leakage, and finalizes that operation once after reconnect.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add the remaining self-partitioned proposer restart permutation and crash-window recovery cases, then repeat larger SQLite/Postgres process matrices.</span>
+          <span class="value">Complete the unit-creation, finalized-before-apply, and applied-before-response crash-window recovery cases, then repeat larger SQLite/Postgres process matrices.</span>
         </div>
       </aside>
     </header>
@@ -629,7 +629,7 @@
             <div>
               <h3>Milestone 16A: state convergence and catch-up certification</h3>
               <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
-              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. Exact self-partition is certified with no pre-finality mutation; the one-member-offline live window covers mint, swap, restore/check-state, melt, payment quorums, one elected outgoing payment, and non-duplicated share provenance. With two members offline, conflicting swaps and an independent melt remain side-effect-free below finality, then recover to one accepted swap, one rejected conflict, and one payment when quorum returns. Restart variants remain.</p>
+              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. Exact self-partition is certified with no pre-finality mutation; the one-member-offline live window covers mint, swap, restore/check-state, melt, payment quorums, one elected outgoing payment, and non-duplicated share provenance. With two members offline, conflicting swaps and an independent melt remain side-effect-free below finality, then recover to one accepted swap, one rejected conflict, and one payment when quorum returns. Self-partitioned proposer, below-quorum non-proposer, and post-finality lagger restarts all rebuild durable runtime state and converge.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -810,7 +810,7 @@
         <div class="stack">
           <article class="item">
             <h3>AlephBFT idle wake regression risk</h3>
-            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. Work-bound lease renewal continues only while durable pending rows exist. The intermittent partition test was traced to an unrealistic fixed 10ms cadence plus an in-place task restart that skipped durable runtime reconstruction; production pacing and production-style restart replay now pass repeatedly in isolation and under the full parallel Axum suite. The full one-member-offline value-operation window, basic two-offline recovery, and above-quorum stalled value/conflict recovery are certified. Residual work is the self-partitioned proposer restart permutation and the remaining crash windows.</p>
+            <p>The former 90-second post-idle stall is fixed by an authenticated member-wide activity wake that releases held preunits without creating journal work. Work-bound lease renewal continues only while durable pending rows exist. The intermittent partition test was traced to an unrealistic fixed 10ms cadence plus an in-place task restart that skipped durable runtime reconstruction; production pacing and production-style restart replay now pass repeatedly in isolation and under the full parallel Axum suite. The full one-member-offline value-operation window, basic two-offline recovery, above-quorum stalled value/conflict recovery, and all three partition restart permutations are certified. Residual work is the distinct unit/apply/response crash-window matrix.</p>
           </article>
           <article class="item">
             <h3>Production AlephBFT process behavior</h3>
@@ -964,7 +964,7 @@
         <div class="stack">
           <article class="item">
             <h3>Live partition certification</h3>
-            <p>Add the remaining self-partitioned-proposer restart permutation and complete the unit-creation, finalized-before-apply, and applied-before-response crash windows. The below-quorum non-proposer and post-finality lagging-member restart paths already rebuild durable runtime state and converge.</p>
+            <p>Complete the unit-creation, finalized-before-apply, and applied-before-response crash windows. The self-partitioned proposer, below-quorum non-proposer, and post-finality lagging-member restart paths now rebuild durable runtime state and converge.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

@@ -11804,6 +11804,68 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].operation_id, mint_operation_id);
 
+    *session.states[4]
+        .federation_aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *session.states[4]
+        .federation_aleph_bft_live_session
+        .write()
+        .await = None;
+    let proposer_handle = session._handles.remove(4);
+    drop(proposer_handle);
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[4]).await;
+    let proposer_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[4],
+        session.sync_config,
+        live_options.clone(),
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart self-partitioned proposer")
+    .expect("restarted self-partitioned proposer live session handle");
+    session._handles.push(proposer_handle);
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[4].clone()),
+    );
+
+    let err = session.states[4]
+        .submit_federation_envelope_with_sequence(mint_envelope.clone(), None)
+        .await
+        .expect_err("restarted self-partitioned proposer must remain pending before heal");
+    assert_pending_finalization_error(&err, mint_operation_id, 250);
+    let pending = session.states[4]
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(0)
+        .await
+        .expect("restarted self-partitioned pending operation");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation_id, mint_operation_id);
+    for state in &session.states {
+        assert!(
+            !operation_applied_within(state, mint_operation_id, Duration::from_millis(100)).await,
+            "restarted self-partitioned operation must remain unapplied before heal"
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(mint_operation_id, 0)
+            .await
+            .expect("signature share lookup after self-partitioned restart")
+            .is_empty());
+        assert!(state
+            .mint
+            .localstore()
+            .get_completed_operation(&federation_completed_operation_uuid(mint_operation_id))
+            .await
+            .expect("completed operation lookup after self-partitioned restart")
+            .is_none());
+    }
+
     session.transport.set_member_outbound_partition(
         &session.public_config,
         session.private_configs[4].member_id,

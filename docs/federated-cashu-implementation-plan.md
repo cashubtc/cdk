@@ -122,10 +122,9 @@ Resolved blocking bugs:
   production-ready in the build. The fail-closed behavior is unchanged.
 - Milestone 4A remains in progress for explicitly unchecked work such as deeper
   bounded retry/backpressure certification, round/consensus-height observability,
-  atomic failure-injection coverage for value-operation apply, and the
-  remaining restart variants of the catch-up certification matrix. The exact
-  self-partitioned proposer, below-quorum value-operation, and above-quorum
-  stalled value/conflict windows are complete.
+  and atomic failure-injection coverage for value-operation apply. The exact
+  self-partitioned proposer, below-quorum value-operation, above-quorum stalled
+  value/conflict, and partition restart/catch-up matrices are complete.
 - Current verification is explicit: all focused activity-wake tests, the
   default-cadence probe, mintd/CLI feature checks, and fresh five- and
   11-process gates pass. The federation-enabled Axum suite covers 422 passing
@@ -1402,7 +1401,7 @@ AlephBFT and consensus unit tests:
   cursor, state digest, spent proofs, signature provenance, completed rows, and
   paid quote state without repeating payment. Combined with the exact isolated
   proposer regression above, this closes the above-quorum-offline gate.
-- [ ] Extend the partition matrix above with restart/catch-up variants: restart
+- [x] Extend the partition matrix above with restart/catch-up variants: restart
   the self-partitioned proposer before reconnect, restart at least one
   non-proposer member while below quorum is offline, and restart one lagging
   member after finality but before catch-up completes. Each variant must prove
@@ -1410,10 +1409,15 @@ AlephBFT and consensus unit tests:
   AlephBFT backup/finalized-item cursors replay safely, pending-operation rows
   are neither lost nor duplicated, and all honest members converge after
   reconnect.
-  Partial coverage now includes restarting a non-proposer while the federation
-  is below finality quorum and restarting the lagging member after finality but
-  before catch-up. Both rebuild from durable runtime state and converge. The
-  self-partitioned proposer restart variant remains open.
+  `aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_members`
+  now covers all three variants with production-style durable runtime replay.
+  The self-partitioned proposer retains exactly one pending mint operation
+  across restart, duplicate retry while still isolated remains retryably
+  pending without a signature share or completion row, and reconnect finalizes
+  the same operation once. The same matrix restarts a non-proposer while the
+  federation is below finality and restarts the final lagger after finality but
+  before signed catch-up certification. Every path converges on journal order,
+  finalized cursor, materialized state digest, and empty pending rows.
 - [ ] Restart during unit creation, after finalization before apply, and after
   apply before response persistence all recover to the same journal and state
   digest.
@@ -2425,7 +2429,7 @@ Tests and success criteria:
   paid and failed pending melts, payment-observation quarantine, offline keyset
   rotation, old-proof restore, post-rotation mint, melt, final restore, and
   returned-member catch-up.
-- [ ] Add AlephBFT live private-REST catch-up certification tests for
+- [x] Add AlephBFT live private-REST catch-up certification tests for
   self-partitioned proposers, below-quorum-offline operation windows, and
   above-quorum-offline stall windows. These tests must verify reconnect
   catch-up through finalized-item cursors and signed session-outcome evidence,
@@ -2441,8 +2445,11 @@ Tests and success criteria:
   certification, cursor/journal/state-digest convergence, mint/swap/melt share
   provenance, payment-observation replay, deterministic conflict rejection and
   duplicate retry, one elected outgoing payment attempt, and zero post-finality
-  activity refresh. This parent remains open for the self-partitioned proposer
-  restart permutation and the remaining crash-window variants listed above.
+  activity refresh. Restart-before-heal now preserves exactly one durable
+  pending operation on the self-partitioned proposer, while the below-quorum
+  non-proposer and post-finality lagger also rebuild runtime state before
+  convergence. The distinct unit/apply/response crash-window item above remains
+  open.
 - [x] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
