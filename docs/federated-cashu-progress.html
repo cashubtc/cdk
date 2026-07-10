@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: certify AlephBFT crash-window convergence</span>
+          <span class="value">docs: align federation progress with REST-only plan</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The federation-enabled Axum gate covers 422 passing tests: 420 run in the managed sandbox and both real-listener wallet tests pass outside it. Focused restart tests now prove identical accepted-order and materialized-state digests after a pre-backup local unit, an upstream-finalized operation before local apply, and a SQLite apply whose waiter and response cache are lost.</span>
+          <span class="value">The federation-enabled Axum gate covers 422 passing tests: 420 run in the managed sandbox and both real-listener wallet tests pass outside it. The plan now records signed private REST as the sole federation transport, marks completed cache, waiter, backpressure, status, and public-route work done, and leaves only concrete safety, DKG, and error-recovery work open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend atomic failure injection across mint, swap, and melt apply boundaries, then repeat larger SQLite/Postgres process matrices.</span>
+          <span class="value">Implement Milestone 26 persisted consensus business errors and threshold-agreed wallet recovery, then extend atomic failure injection across mint, swap, and melt apply boundaries.</span>
         </div>
       </aside>
     </header>
@@ -614,7 +614,7 @@
             <div>
               <h3>Milestone 15: networking and peer authentication</h3>
               <p>Objective: run federation members as separate processes.</p>
-              <p class="test-gate"><strong>Test gate:</strong> five local processes form consensus over private REST, retries are idempotent, authentication and allowlists reject bad peers, restarts catch up, and status exposes healthy, offline, lagging, catching-up, and halted states.</p>
+              <p class="test-gate"><strong>Test gate:</strong> five local processes form consensus over signed private REST, retries are idempotent, authentication and allowlists reject bad peers, restarts catch up, and status exposes healthy, offline, lagging, catching-up, and halted states.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -686,7 +686,7 @@
             <div>
               <h3>Milestone 23: production cleanup and payment-backend isolation</h3>
               <p>Objective: remove MVP and development scaffolding from production federation semantics before real-funds deployment.</p>
-              <p class="test-gate"><strong>Test gate:</strong> federation code is payment-backend agnostic, production startup rejects implicit development policies, fakewallet remains development-only, durable state is used for status and catch-up, and module cleanup keeps focused tests passing.</p>
+              <p class="test-gate"><strong>Test gate:</strong> federation code is payment-backend agnostic, production startup rejects implicit development policies, fakewallet remains development-only, durable state is used for status and catch-up, and signed private REST remains the documented federation transport scope.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -827,7 +827,7 @@
           </article>
           <article class="item">
             <h3>State-machine extraction</h3>
-            <p>Mint issue, swap, and melt logic must be refactored carefully so standalone behavior remains unchanged.</p>
+            <p>Federation admission is pure and request-local, while ordered accepted apply is authoritative for quote, proof, and payment state. Further sharing with standalone mint internals is optional maintenance work, not a federation release gate.</p>
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
@@ -971,6 +971,10 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Federated Error Recovery</h3>
+            <p>Implement persisted consensus business rejections, threshold-agreed wallet errors, and existing saga recovery through mint, receive/swap, melt, restore, and check-state without treating unavailable quorum or transport failure as a definitive Cashu error.</p>
+          </article>
           <article class="item">
             <h3>Atomic apply failure injection</h3>
             <p>Extend deterministic fault injection across mint, swap, and melt accepted-state transactions, including rollback, restart replay, payment-side-effect boundaries, and final journal/state-digest convergence.</p>

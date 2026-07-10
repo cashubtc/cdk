@@ -37,6 +37,13 @@ through normal HTTPS, VPNs, reverse tunnels, Tor onion services, or equivalent
 connectivity. Alternate NAT-traversing transports are out of scope and do not
 affect federation correctness milestones.
 
+Plan maintenance checkpoint: speculative transport/config abstractions and
+refactor-only placeholders are not active checklist items. The plan marks the
+implemented REST limits, status surface, response cache, pending waiter joining,
+public mint/swap/melt routes, payment actor selection, and share provenance as
+complete; the remaining unchecked work is concrete safety, DKG, and
+wallet-error recovery work.
+
 The interface to existing CDK code should be as small and thin as practical. Prefer logically organized federation modules with well-separated concerns over scattering federation conditionals through existing mint, wallet, HTTP, storage, or signatory code. Existing code should expose narrow hooks or adapters where needed, and most federation-specific behavior should live behind explicit feature-gated abstractions so reviews can reason about ownership, invariants, and blast radius.
 
 ## Development workflow
