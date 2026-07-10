@@ -508,6 +508,8 @@ struct ReserveCheckingPaymentProcessor {
     localstore: Arc<MintSqliteDatabase>,
     expected: Arc<Mutex<Option<ExpectedMeltReserve>>>,
     make_payment_calls: Arc<AtomicUsize>,
+    payment_state: MeltQuoteState,
+    payment_total_spent: u64,
 }
 
 impl ReserveCheckingPaymentProcessor {
@@ -592,9 +594,12 @@ impl MintPayment for ReserveCheckingPaymentProcessor {
     ) -> Result<MakePaymentResponse, Self::Err> {
         self.assert_reserve_persisted_before_payment().await?;
         self.make_payment_calls.fetch_add(1, Ordering::Relaxed);
-        BackendAgnosticPaymentProcessor
+        let mut response = BackendAgnosticPaymentProcessor
             .make_payment(unit, options)
-            .await
+            .await?;
+        response.status = self.payment_state;
+        response.total_spent = Amount::new(self.payment_total_spent, unit.clone());
+        Ok(response)
     }
 
     async fn wait_payment_event(
@@ -638,6 +643,24 @@ async fn federated_test_mint_with_reserve_checking_payment_processor(
     Arc<Mutex<Option<ExpectedMeltReserve>>>,
     Arc<AtomicUsize>,
 ) {
+    federated_test_mint_with_reserve_checking_payment_response(
+        runtime_config,
+        MeltQuoteState::Pending,
+        0,
+    )
+    .await
+}
+
+async fn federated_test_mint_with_reserve_checking_payment_response(
+    runtime_config: FederationRuntimeConfig,
+    payment_state: MeltQuoteState,
+    payment_total_spent: u64,
+) -> (
+    Mint,
+    Arc<MintSqliteDatabase>,
+    Arc<Mutex<Option<ExpectedMeltReserve>>>,
+    Arc<AtomicUsize>,
+) {
     let localstore = Arc::new(memory::empty().await.expect("mint db"));
     let expected = Arc::new(Mutex::new(None));
     let make_payment_calls = Arc::new(AtomicUsize::new(0));
@@ -645,6 +668,8 @@ async fn federated_test_mint_with_reserve_checking_payment_processor(
         localstore: Arc::clone(&localstore),
         expected: Arc::clone(&expected),
         make_payment_calls: Arc::clone(&make_payment_calls),
+        payment_state,
+        payment_total_spent,
     });
     let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
     builder
@@ -756,10 +781,10 @@ fn operation_id_with_selector(selector: u64) -> FederationOperationId {
     FederationOperationId::from_bytes(bytes)
 }
 
-fn pending_melt_quote_request(amount_msat: u64) -> MeltQuoteRequest {
+fn fake_melt_quote_request(amount_msat: u64, payment_state: MeltQuoteState) -> MeltQuoteRequest {
     let description = cdk_fake_wallet::FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Pending,
-        check_payment_state: MeltQuoteState::Pending,
+        pay_invoice_state: payment_state,
+        check_payment_state: payment_state,
         pay_err: false,
         check_err: false,
     };
@@ -773,6 +798,10 @@ fn pending_melt_quote_request(amount_msat: u64) -> MeltQuoteRequest {
         unit: CurrencyUnit::Sat,
         options: None,
     })
+}
+
+fn pending_melt_quote_request(amount_msat: u64) -> MeltQuoteRequest {
+    fake_melt_quote_request(amount_msat, MeltQuoteState::Pending)
 }
 
 async fn setup_pending_federated_melt(

@@ -2251,6 +2251,15 @@ Implementation checklist:
 - [x] Unknown or pending backend states keep inputs pending until resolved or an admin policy handles timeout.
 - [x] Existing `MeltSaga` recovery concepts should be reused, but consensus state replaces member-local saga state as the source of truth.
 - [x] Internal melt-to-mint settlement must become a single consensus operation that updates both quote families atomically.
+- [x] A paid federation melt is not locally complete until its deterministic
+  melt completed-operation row exists. If payment finalization committed the
+  paid quote and spent proofs but crashed before change signing and cleanup,
+  replay resumes the existing `Finalizing` saga from its persisted settlement
+  data without consulting or paying the backend again.
+- [x] Failed-payment rollback atomically releases proofs, resets the quote,
+  deletes melt-request state, and deletes the saga. Saga cleanup is not
+  best-effort because committing without it would leave a partially rolled-back
+  consensus operation.
 
 Tests and success criteria:
 
@@ -2258,6 +2267,16 @@ Tests and success criteria:
 - [x] Failed fake wallet melt releases inputs across all members, and exact duplicate failed public retries return `PaymentFailed` without attempting a second outgoing payment, including after SQLite restart and in-memory catch-up.
 - [x] Pending fake wallet melt keeps inputs pending and later finalizes after observation.
 - [x] Crash after payment attempt but before finalize recovers by checking observations and finalizing.
+- [x] A late fault after paid/spent state is durable but before change,
+  completed-operation, request, and saga cleanup leaves the operation
+  replayable; replay produces the change share, records completion, reaches
+  `Applied`, and keeps the outgoing backend call count at one. Covered by
+  `paid_federation_melt_replays_finalizing_cleanup_without_second_payment`.
+- [x] A late failed-payment rollback fault commits none of proof release, quote
+  reset, request deletion, or saga deletion. The accepted payment observation
+  remains deduplicated, and replay completes rollback without another outgoing
+  payment. Covered by
+  `failed_federation_melt_rolls_back_atomically_and_replays`.
 - [x] Two concurrent melts of the same proofs cannot both pay.
 - [x] Internal melt-to-mint updates the mint quote and melt quote in one accepted operation.
 

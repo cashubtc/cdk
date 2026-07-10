@@ -236,14 +236,12 @@ pub async fn rollback_melt_quote(
     // Delete melt request tracking record
     tx.delete_melt_request(quote_id).await?;
 
-    // Delete saga state record
-    if let Err(e) = tx.delete_saga(operation_id).await {
-        tracing::warn!(
-            "Failed to delete saga {} during rollback: {}",
-            operation_id,
-            e
-        );
-        // Continue anyway - saga cleanup is best-effort
+    // Delete saga state in the same transaction as proof and quote recovery.
+    tx.delete_saga(operation_id).await?;
+
+    #[cfg(all(test, feature = "federation"))]
+    if crate::test_helpers::mint::should_fail_for("FEDERATION_MELT_ROLLBACK_BEFORE_COMMIT") {
+        return Err(Error::Internal);
     }
 
     tx.commit().await?;
@@ -1428,6 +1426,15 @@ async fn finalize_melt_quote_inner(
             tx.rollback().await?;
             return Err(err.into());
         }
+    }
+
+    #[cfg(all(test, feature = "federation"))]
+    if federation_operation_id.is_some()
+        && crate::test_helpers::mint::should_fail_for(
+            "FEDERATION_MELT_FINALIZE_BEFORE_CLEANUP_COMMIT",
+        )
+    {
+        return Err(Error::Internal);
     }
 
     // Commit TX2 (change signatures + operation record + melt request + saga cleanup)

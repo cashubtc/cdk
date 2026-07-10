@@ -479,7 +479,7 @@ impl MeltSaga<Initial> {
 }
 
 #[cfg(feature = "federation")]
-fn federation_operation_uuid(operation_id: FederationOperationId) -> uuid::Uuid {
+pub(super) fn federation_operation_uuid(operation_id: FederationOperationId) -> uuid::Uuid {
     let bytes = operation_id.to_bytes();
     let mut uuid = [0_u8; 16];
     uuid.copy_from_slice(&bytes[..16]);

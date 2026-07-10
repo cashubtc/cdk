@@ -1345,6 +1345,44 @@ impl Mint {
         Ok(())
     }
 
+    #[cfg(feature = "federation")]
+    async fn resume_paid_federation_melt_finalization(
+        &self,
+        quote: &mut MeltQuote,
+        saga: &cdk_common::mint::Saga,
+        federation_operation_id: FederationOperationId,
+    ) -> Result<(), Error> {
+        let operation_id = federation_operation_id.to_string();
+        if saga.federation_operation_id.as_deref() != Some(operation_id.as_str()) {
+            return Err(Error::Internal);
+        }
+        if saga.operation_id != melt_saga::federation_operation_uuid(federation_operation_id) {
+            return Err(Error::Internal);
+        }
+        if saga.state
+            != cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing)
+        {
+            return Err(Error::Internal);
+        }
+        let finalization_data = saga.finalization_data.clone().ok_or(Error::Internal)?;
+        let payment_response = cdk_common::payment::MakePaymentResponse {
+            payment_lookup_id: finalization_data.payment_lookup_id,
+            payment_proof: finalization_data.payment_proof,
+            status: MeltQuoteState::Paid,
+            total_spent: finalization_data.total_spent,
+        };
+
+        crate::mint::saga_recovery::process_melt_saga_outcome(
+            saga,
+            quote,
+            &payment_response,
+            &self.localstore,
+            &self.pubsub_manager,
+            self,
+        )
+        .await
+    }
+
     /// Process a federation melt after the exact request has been accepted by consensus.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
@@ -1418,7 +1456,47 @@ impl Mint {
             }
         }
 
-        if quote.state != MeltQuoteState::Unpaid && quote.state != MeltQuoteState::Failed {
+        if quote.state == MeltQuoteState::Paid {
+            if let Some(saga) = self.localstore.get_melt_saga_by_quote_id(&quote_id).await? {
+                let mut paid_quote = quote.clone();
+                self.resume_paid_federation_melt_finalization(
+                    &mut paid_quote,
+                    &saga,
+                    federation_operation_id,
+                )
+                .await?;
+            }
+
+            let completed_operation_id =
+                melt_saga::federation_operation_uuid(federation_operation_id);
+            let completed_operation = self
+                .localstore
+                .get_completed_operation(&completed_operation_id)
+                .await?
+                .ok_or(Error::Internal)?;
+            if completed_operation.kind() != cdk_common::mint::OperationKind::Melt {
+                return Err(Error::Internal);
+            }
+
+            let quote = self
+                .localstore
+                .get_melt_quote(&quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            let change = self
+                .localstore
+                .get_blind_signatures_for_quote(&quote_id)
+                .await?;
+            let change_opt = if change.is_empty() {
+                None
+            } else {
+                Some(change)
+            };
+
+            return Ok(quote.into_response(change_opt));
+        }
+
+        if quote.state == MeltQuoteState::Pending {
             let change = self
                 .localstore
                 .get_blind_signatures_for_quote(&quote_id)

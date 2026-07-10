@@ -1245,6 +1245,338 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
 }
 
 #[tokio::test]
+async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, expected_reserve, make_payment_calls) =
+        federated_test_mint_with_reserve_checking_payment_response(
+            runtime_config.clone(),
+            MeltQuoteState::Paid,
+            2,
+        )
+        .await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(
+            quote.clone(),
+            fake_melt_quote_request(1_000, MeltQuoteState::Paid),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "paid-finalizing-input-one"),
+        proof_for_runtime(&runtime_config, "paid-finalizing-input-two"),
+        proof_for_runtime(&runtime_config, "paid-finalizing-input-three"),
+    ];
+    let input_ys = proofs.ys().expect("paid finalizing input ys");
+    *expected_reserve.lock().await = Some(ExpectedMeltReserve {
+        quote: quote.clone(),
+        input_ys: input_ys.clone(),
+    });
+    let mut change_output = output_for_runtime(&runtime_config, b"paid finalizing change output");
+    change_output.amount = Amount::ZERO;
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(
+                quote.clone(),
+                proofs,
+                Some(vec![change_output.clone()]),
+            ))
+            .expect("paid finalizing melt operation"),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+
+    crate::test_helpers::mint::set_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_CLEANUP_COMMIT");
+    let result = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+        .await;
+    crate::test_helpers::mint::clear_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_CLEANUP_COMMIT");
+    assert!(matches!(result, Err(Error::Internal)));
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+
+    let paid_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("paid quote lookup after cleanup failure")
+        .expect("paid quote after cleanup failure");
+    assert_eq!(paid_quote.state, MeltQuoteState::Paid);
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof states after cleanup failure"),
+        vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
+    );
+    let saga = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("saga lookup after cleanup failure")
+        .expect("finalizing saga after cleanup failure");
+    assert_eq!(saga.state, SagaStateEnum::Melt(MeltSagaState::Finalizing));
+    let finalization_data = saga
+        .finalization_data
+        .as_ref()
+        .expect("persisted finalization data");
+    assert_eq!(
+        finalization_data.total_spent,
+        Amount::new(2, CurrencyUnit::Sat)
+    );
+    assert_eq!(
+        Some(finalization_data.payment_lookup_id.clone()),
+        paid_quote.request_lookup_id
+    );
+    let federation_operation_id = melt_entry.operation_id.to_string();
+    assert_eq!(
+        saga.federation_operation_id.as_deref(),
+        Some(federation_operation_id.as_str())
+    );
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("change signature after cleanup failure"),
+        vec![None]
+    );
+    assert!(localstore
+        .get_federation_signature_shares_for_output(melt_entry.operation_id, 0)
+        .await
+        .expect("change share after cleanup failure")
+        .is_empty());
+    let operation_uuid = super::super::federation_operation_uuid(melt_entry.operation_id);
+    assert!(localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed melt after cleanup failure")
+        .is_none());
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+            .await
+            .expect("melt journal lookup after cleanup failure")
+            .expect("melt journal entry after cleanup failure")
+            .status,
+        FederationOperationStatus::Accepted
+    );
+
+    assert_eq!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await
+            .expect("replay paid finalizing melt"),
+        vec![melt_entry.operation_id]
+    );
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        1,
+        "finalizing replay must not call the payment backend again"
+    );
+    assert!(localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("saga lookup after replay")
+        .is_none());
+    assert!(localstore
+        .get_blind_signatures(&[change_output.blinded_secret])
+        .await
+        .expect("change signature after replay")[0]
+        .is_some());
+    assert_eq!(
+        localstore
+            .get_federation_signature_shares_for_output(melt_entry.operation_id, 0)
+            .await
+            .expect("change share after replay")
+            .len(),
+        1
+    );
+    let completed_operation = localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed melt after replay")
+        .expect("completed melt operation after replay");
+    assert_eq!(
+        completed_operation.kind(),
+        cdk_common::mint::OperationKind::Melt
+    );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+            .await
+            .expect("melt journal lookup after replay")
+            .expect("melt journal entry after replay")
+            .status,
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
+async fn failed_federation_melt_rolls_back_atomically_and_replays() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (quote, input_ys) =
+        setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+    let saga = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("pending saga lookup")
+        .expect("pending saga");
+
+    let failed_observation = appended_entry(
+        &mut journal,
+        melt_payment_observation_envelope(
+            &runtime_config,
+            &quote,
+            MeltPaymentObservationFixture {
+                observer: 1,
+                state: MeltQuoteState::Failed,
+                amount: Amount::from(1),
+                fee_reserve: Amount::from(1),
+                payment_id: None,
+                payment_proof: None,
+                failure_reason: Some("route failed"),
+            },
+        ),
+    );
+    persist_journal_entry(&localstore, &failed_observation).await;
+
+    crate::test_helpers::mint::set_fail_for("FEDERATION_MELT_ROLLBACK_BEFORE_COMMIT");
+    let result = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&failed_observation))
+        .await;
+    crate::test_helpers::mint::clear_fail_for("FEDERATION_MELT_ROLLBACK_BEFORE_COMMIT");
+    assert!(matches!(result, Err(Error::Internal)));
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+
+    let pending_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("quote lookup after rollback failure")
+        .expect("quote after rollback failure");
+    assert_eq!(pending_quote.state, MeltQuoteState::Pending);
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof states after rollback failure"),
+        vec![Some(State::Pending), Some(State::Pending)]
+    );
+    assert_eq!(
+        localstore
+            .get_melt_saga_by_quote_id(&quote)
+            .await
+            .expect("saga lookup after rollback failure")
+            .expect("saga after rollback failure")
+            .operation_id,
+        saga.operation_id
+    );
+    let melt_request_after_failure = {
+        let mut tx = localstore
+            .begin_transaction()
+            .await
+            .expect("melt request read transaction after rollback failure");
+        let request = tx
+            .get_melt_request_and_blinded_messages(&quote)
+            .await
+            .expect("melt request after rollback failure");
+        tx.rollback()
+            .await
+            .expect("rollback melt request read transaction after failure");
+        request
+    };
+    assert!(melt_request_after_failure.is_some());
+    assert_eq!(
+        localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MeltQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("payment observations after rollback failure")
+            .len(),
+        1,
+        "the accepted observation remains durable for replay"
+    );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(failed_observation.operation_id)
+            .await
+            .expect("failed observation journal lookup")
+            .expect("failed observation journal entry")
+            .status,
+        FederationOperationStatus::Accepted
+    );
+
+    assert_eq!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&failed_observation))
+            .await
+            .expect("replay failed melt observation"),
+        vec![failed_observation.operation_id]
+    );
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        1,
+        "failed-observation replay must not attempt another outgoing payment"
+    );
+    let unpaid_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("quote lookup after rollback replay")
+        .expect("quote after rollback replay");
+    assert_eq!(unpaid_quote.state, MeltQuoteState::Unpaid);
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof states after rollback replay"),
+        vec![None, None]
+    );
+    assert!(localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("saga lookup after rollback replay")
+        .is_none());
+    let melt_request_after_replay = {
+        let mut tx = localstore
+            .begin_transaction()
+            .await
+            .expect("melt request read transaction after replay");
+        let request = tx
+            .get_melt_request_and_blinded_messages(&quote)
+            .await
+            .expect("melt request after rollback replay");
+        tx.rollback()
+            .await
+            .expect("rollback melt request read transaction after replay");
+        request
+    };
+    assert!(melt_request_after_replay.is_none());
+    assert_eq!(
+        localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MeltQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("payment observations after rollback replay")
+            .len(),
+        1
+    );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(failed_observation.operation_id)
+            .await
+            .expect("failed observation journal lookup after replay")
+            .expect("failed observation journal entry after replay")
+            .status,
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
 async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() {
     let policy = FederationPaymentObservationPolicy::member_quorum(
         2,

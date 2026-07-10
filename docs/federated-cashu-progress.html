@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: unify federated wallet errors and recovery</span>
+          <span class="value">fix: recover federated melt crash windows</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Accepted mint and swap application is now fault-tested as one atomic transaction. Late test-only faults and real SQLite uniqueness faults leave no partial quote issuance, proof spend, signature, provenance, completed-operation, or Applied-status rows; materialized digests remain unchanged and startup replay succeeds after fault removal. All 97 core mint-federation tests and all 426 federation-enabled Axum tests pass, with 424 sandbox-compatible cases plus two loopback-listener cases verified separately.</span>
+          <span class="value">Federated melt crash boundaries are now explicit and replay-safe. A crash after paid quote and spent proofs are durable resumes the persisted Finalizing saga, signs change, records completion, and reaches Applied without a second backend payment; a late failed-payment rollback fault commits none of proof release, quote reset, request deletion, or saga deletion, then replays from the one durable observation. All 99 core mint-federation tests pass; all 697 CDK core tests and all 426 federation-enabled Axum tests pass, with three and two loopback-listener cases respectively verified outside the restricted sandbox.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend deterministic failure coverage through melt payment-side-effect and finalization boundaries, then continue DKG completion and production security review work.</span>
+          <span class="value">Continue DKG ceremony completion and the route-admission security audit, then lift the focused melt crash guarantees into generated multi-process kill/restart drills.</span>
         </div>
       </aside>
     </header>
@@ -606,7 +606,7 @@
             <div>
               <h3>Milestone 14: melt reserve and payment finalization</h3>
               <p>Objective: federate melts without losing funds or allowing proof reuse.</p>
-              <p class="test-gate"><strong>Test gate:</strong> development-backend melts finalize with aggregate change, failures release inputs, pending melts later resolve, crash recovery is safe, duplicate melts cannot both pay, and internal melt-to-mint is atomic.</p>
+              <p class="test-gate"><strong>Test gate:</strong> development-backend melts finalize with aggregate change, failures release inputs, pending melts later resolve, duplicate melts cannot both pay, and internal melt-to-mint is atomic. Late paid-finalization and failed-rollback faults now prove replay completes from durable saga/observation state without a second outgoing payment or partial rollback.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -781,7 +781,7 @@
           </article>
           <article class="item">
             <h3>Recovery and convergence</h3>
-            <p>Offline, lagging, restarted, and partially-applied members can replay accepted history, verify digests and quorum evidence, rebuild materialized mint state, catch up across paid melt observations without duplicate outgoing payments, and refuse public signing until healthy.</p>
+            <p>Offline, lagging, restarted, and partially-applied members can replay accepted history, verify digests and quorum evidence, rebuild materialized mint state, catch up across paid melt observations without duplicate outgoing payments, and refuse public signing until healthy. Paid melts that crash between durable paid/spent state and terminal cleanup now resume the existing Finalizing saga from exact persisted settlement data, while failed-payment rollback remains all-or-nothing and replayable.</p>
           </article>
           <article class="item">
             <h3>Codebase hygiene</h3>
@@ -801,7 +801,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare missing-row and variant diagnostics, payment-observation digest-compare missing-row and variant diagnostics, unresolved payment-observation, payment-observation quarantine, rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage. Accepted mint and swap now have late-write fault injection plus real SQLite conflict regressions proving all materialized rows and Applied status roll back together, preserve the pre-apply state digest, and replay successfully on restart. SQLite serializes writes per database while preserving concurrent reads, and dropped explicit transactions synchronously roll back before connection reuse. Federation melt-quote creation is atomic and idempotent: an existing quote is accepted only when its consensus-controlled request fields match exactly. Catch-up replay no longer persists transient locked/busy storage as a durable Failed operation.</p>
+            <p>Accepted order, accepted mint and swap materialization rows, completed-operation digest rows for mint, swap, and terminal paid melt, signature shares, DKG material, payment evidence, config snapshots, sync status, unfinalized AlephBFT retry behavior, finalized-evidence router startup replay, reordered-evidence rejection before mutation, live-submission, catch-up, completed-operation replay, completed-operation local-status fingerprints, completed-operation digest-compare missing-row and variant diagnostics, payment-observation digest-compare missing-row and variant diagnostics, unresolved payment-observation, payment-observation quarantine, rejected-boundary materialized digest checkpoints, and redacted materialized digest rows survive restart with migration parity and indexed hot-path coverage. Accepted mint and swap have late-write fault injection plus real SQLite conflict regressions proving all materialized rows and Applied status roll back together, preserve the pre-apply state digest, and replay successfully on restart. Paid melt finalization now requires its deterministic completed-operation row before Applied and resumes incomplete terminal cleanup without repeating payment; failed melt rollback commits proof, quote, request, and saga cleanup together. SQLite serializes writes per database while preserving concurrent reads, and dropped explicit transactions synchronously roll back before connection reuse. Federation melt-quote creation is atomic and idempotent: an existing quote is accepted only when its consensus-controlled request fields match exactly. Catch-up replay no longer persists transient locked/busy storage as a durable Failed operation.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
@@ -972,8 +972,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Melt atomic failure boundaries</h3>
-            <p>Mint and swap rollback, digest, and restart-replay coverage is complete. Extend the same deterministic proof through melt reserve, external payment-side-effect, terminal finalization, and rollback boundaries without risking a duplicate outgoing payment.</p>
+            <h3>Process-level melt crash drills</h3>
+            <p>The deterministic paid-finalization and failed-rollback boundaries are now fault-tested in core logic. Add generated daemon kill/restart hooks around those exact boundaries to verify the same one-payment and convergence invariants across real processes, member catch-up, and both SQLite and Postgres.</p>
           </article>
           <article class="item">
             <h3>Distributed key generation</h3>
