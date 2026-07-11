@@ -617,6 +617,63 @@ async fn dkg_readiness_waits_for_exact_all_member_configuration_without_persiste
 }
 
 #[tokio::test]
+async fn dkg_driver_times_out_one_slow_member_without_blocking_fast_members() {
+    let mut federation = DkgDriverTestFederation::new().await;
+    let sender_id = federation.members[0].private_config.member_id;
+    let slow_member_id = federation.members[2].private_config.member_id;
+    federation.transport.delay_next_posts_before_delivery(
+        "/federation/v1/dkg/commitments",
+        slow_member_id,
+        [Duration::from_millis(100)],
+    );
+    let mut sync_config = FederationPeerSyncConfig::default();
+    sync_config.peer_request_timeout = Duration::from_millis(20);
+    federation.members[0].client = FederationRestPeerClient::new_with_config(
+        federation.transport.clone(),
+        &federation.public_config,
+        federation.members[0].private_config.clone(),
+        sync_config,
+    )
+    .expect("short-timeout DKG client");
+
+    let first = {
+        let member = &federation.members[0];
+        let mut delivery_tracker = member.delivery_tracker.lock().await;
+        run_federation_dkg_driver_tick(
+            &member.state,
+            &member.client,
+            &member.participant,
+            FederationDkgSecretShareTransportPolicy::RequireHttps,
+            &mut delivery_tracker,
+        )
+        .await
+        .expect("slow-member DKG tick")
+    };
+    assert_eq!(first.attempted_deliveries, 3);
+    assert_eq!(first.successful_deliveries, 2);
+    assert_eq!(first.failed_deliveries, 1);
+    assert_eq!(first.failed_members, vec![slow_member_id]);
+
+    for (index, member) in federation.members.iter().enumerate() {
+        let sender_commitments = member
+            .db
+            .get_federation_dkg_commitments()
+            .await
+            .expect("commitments after slow-member deadline")
+            .into_iter()
+            .filter(|commitment| {
+                commitment.ceremony_id == federation.ceremony_id
+                    && commitment.member_id == sender_id
+            })
+            .count();
+        assert_eq!(sender_commitments, usize::from(index != 2));
+    }
+
+    let _ = federation.drive_until_complete(12).await;
+    federation.assert_complete_and_consistent().await;
+}
+
+#[tokio::test]
 async fn durable_dkg_participant_skips_volatile_readiness_after_restart() {
     let federation = DkgDriverTestFederation::new().await;
 

@@ -2503,7 +2503,7 @@ for audit. This adds no AlephBFT item or DKG message. Focused persistence,
 mintd restart/replacement, stale-activation, authenticated completion, and
 operator-status tests cover the transitions.
 
-Current verified gate: 47/47 release Axum DKG tests, 19/19 release mintd DKG/status
+Current verified gate: 48/48 release Axum DKG tests, 19/19 release mintd DKG/status
 tests, six release builder DKG tests, seven release SQLite DKG persistence
 tests, migration parity, and a successful Postgres lifecycle test compile with
 `--no-run`.
@@ -2527,8 +2527,17 @@ persistence without adding a production probe or retry branch.
 
 Together with existing partition, duplicate, invalid-share, conflicting-reveal,
 transcript-mismatch, partial-activation, and abort/replacement tests, this leaves
-the deterministic slow-member deadline and actual SQLite write-failure/disk-full
-rollback-and-recovery cases open.
+actual SQLite write-failure/disk-full rollback and recovery as the open case.
+
+### Slow-member deadline isolation
+
+Decision: **Kept** as a deterministic liveness checkpoint, with no speed claim.
+The test transport delays one member's commitment delivery for 100ms while the
+sender uses a 20ms authenticated peer deadline. The two fast members persist
+the commitment, the delayed receiver has no partial mutation, and the tick
+reports exactly that member as failed. Once the one-shot delay is consumed, the
+normal retry catches the slow member up and all three members complete with the
+same finalized configuration.
 
 ## Recommended Work Order
 

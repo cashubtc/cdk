@@ -422,6 +422,7 @@ struct RouterFederationTransportRegistry {
 #[derive(Debug, Default)]
 struct RouterFederationTransportFaults {
     post_response_failures_after_delivery: BTreeMap<String, usize>,
+    post_delays_before_delivery: BTreeMap<(String, MemberId), VecDeque<Duration>>,
     aleph_bft_network_message_delays: VecDeque<Duration>,
     aleph_bft_network_message_duplicate_replays: usize,
     aleph_bft_network_message_reorder_once: bool,
@@ -468,6 +469,7 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                     .map(|faults| {
                         (
                             faults.post_response_failures_after_delivery.len(),
+                            faults.post_delays_before_delivery.len(),
                             faults.aleph_bft_network_message_delays.len(),
                             faults.aleph_bft_network_message_duplicate_replays,
                             faults.aleph_bft_network_message_reorder_once,
@@ -542,6 +544,32 @@ impl RouterFederationTransportRegistry {
         };
         *remaining = remaining.saturating_sub(1);
         true
+    }
+
+    fn delay_next_posts_before_delivery<I>(&self, path_suffix: &str, receiver: MemberId, delays: I)
+    where
+        I: IntoIterator<Item = Duration>,
+    {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .post_delays_before_delivery
+            .entry((path_suffix.to_string(), receiver))
+            .or_default()
+            .extend(delays);
+    }
+
+    fn take_post_delay_before_delivery(&self, path: &str, receiver: MemberId) -> Duration {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .post_delays_before_delivery
+            .iter_mut()
+            .find(|((suffix, configured_receiver), delays)| {
+                *configured_receiver == receiver && path.ends_with(suffix) && !delays.is_empty()
+            })
+            .and_then(|(_, delays)| delays.pop_front())
+            .unwrap_or_default()
     }
 
     fn with_missing_router_wait(self, timeout: Duration) -> Self {
@@ -1361,6 +1389,10 @@ impl Transport for RouterFederationTransportRegistry {
                 "federation link {} -> {} is partitioned",
                 signed_request.sender, signed_request.receiver
             )));
+        }
+        let post_delay = self.take_post_delay_before_delivery(&path, signed_request.receiver);
+        if !post_delay.is_zero() {
+            tokio::time::sleep(post_delay).await;
         }
         if aleph_bft_message_contains_data && self.aleph_bft_data_is_held(signed_request.sender) {
             return Err(HttpError::Other(format!(

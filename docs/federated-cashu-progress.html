@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: harden DKG failure recovery</span>
+          <span class="value">test: cover slow DKG member recovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The DKG failure matrix now restarts a member at all six durable phases and proves recovery after a commitment response is lost only after durable receiver persistence. Exact retry adds one delivery attempt, creates no duplicate record, and still converges. Existing tests cover partition recovery, invalid shares, conflicts, transcript mismatch, partial activation, and explicit replacement; all 47 focused Axum DKG tests pass.</span>
+          <span class="value">The DKG failure matrix now restarts a member at all six durable phases, recovers a response lost after durable receiver persistence, and isolates one member delayed beyond its request deadline while fast members continue. Retry catches every member up without duplicate records or divergent final config.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Finish the Milestone 20A production failure matrix with a deterministic slow-member deadline case and a real SQLite write-failure/disk-full rollback-and-recovery gate. Database encryption at rest and backup/restore remain explicitly out of scope. Keep the interrupted 20-member process acceptance ceremony deferred until those focused gates justify another bounded run.</span>
+          <span class="value">Finish the Milestone 20A production failure matrix with a real SQLite write-failure/disk-full rollback-and-recovery gate. Database encryption at rest and backup/restore remain explicitly out of scope. Keep the interrupted 20-member process acceptance ceremony deferred until that focused gate justifies another bounded run.</span>
         </div>
       </aside>
     </header>
