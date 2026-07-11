@@ -2912,6 +2912,12 @@ Verified harness checkpoint (2026-07-11):
   `docs/federated-cashu-minting-performance-benchmark.md`: three complete
   release ceremonies have a 1.308s median versus 30.792s in debug, with every
   correctness flag true. No production optimization has been made or selected.
+- The unmodified 11-of-8 release profile completed with a 32.084s ceremony
+  median and every correctness flag true. The 20-of-14 one-denomination profile
+  was interrupted after 1,116.72s without a complete report; this is enough to
+  fail the current implementation as a quick iteration gate. Do not spend CPU
+  on the eight-denomination 20-of-14 acceptance run until focused optimization
+  makes the one-denomination profile complete within the quick gate.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must

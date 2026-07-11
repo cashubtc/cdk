@@ -1684,11 +1684,49 @@ successes, and timeouts; those belong to the optional real-process runner.
   derivation dominate; commitment/reveal map bookkeeping does not.
 - **Not yet decided:** no production optimization candidate is accepted or
   rejected from the 5-of-3 quick profile alone.
-- **Next measurements:** repeat the release one-denomination profile at 11-of-8
-  and 20-of-14, then run eight-denomination 5-of-3, 11-of-8, and 20-of-14 in
-  that order. Extend the optional process runner with REST responsiveness,
-  attempt/success/timeout, peak CPU, and retry metrics before the large-process
-  acceptance gate.
+- **Next measurements at this checkpoint:** the one-denomination scaling results
+  are recorded below. Extend the optional process runner with REST
+  responsiveness, attempt/success/timeout, peak CPU, and retry metrics before
+  the large-process acceptance gate.
+
+### One-denomination scaling baseline
+
+The committed release harness was then run unchanged at 11-of-8 and 20-of-14.
+The 11-of-8 profile completed three repetitions. The 20-of-14 profile was
+interrupted after 1,116.72 seconds on operator instruction because it had not
+produced one complete report; this is sufficient evidence that the current
+implementation fails the quick-profile requirement. The eight-denomination
+20-of-14 acceptance run is intentionally deferred until the one-denomination
+path completes within the quick gate.
+
+| Release one-denomination measurement | 5-of-3 | 11-of-8 | 20-of-14 |
+| --- | ---: | ---: | ---: |
+| Complete ceremony median | 1.308s | 32.084s | incomplete |
+| Complete ceremony range | 1.306-1.319s | 32.066-32.291s | incomplete |
+| Participant generation median | 67.972ms | 614.476ms | no report |
+| Reload validation median | 50.105ms | 527.077ms | no report |
+| Secret-share verification median | 47.657ms | 514.370ms | no report |
+| All-member local derivation median | 243.407ms | 5.582s | no report |
+| Final transcript/config derivation median | 198.676ms | 2.347s | no report |
+| Whole process wall | 7.13s | 158.18s | 1,116.72s interrupted |
+| Whole process user | 7.08s | 155.95s | 1,097.06s |
+| Whole process system | 0.04s | 1.23s | 6.56s |
+| Maximum RSS | 5.59 MB | 7.60 MB | 14.88 MB |
+| Modeled canonical bytes | 44.1 KB | 331.5 KB | no report |
+| Final equality checks | all true | all true | not reached |
+
+The 11-of-8 complete ceremony is about 24.5x slower than 5-of-3 despite only
+2.2x as many members. The process remains overwhelmingly CPU-bound and memory
+use stays modest. This points to repeated cryptographic derivation and
+validation rather than record storage, network fanout, or memory pressure. It
+does not yet distinguish immutable-state revalidation from repeated public
+polynomial evaluation, so the next step is short phase-selected/subphase probes,
+not a production optimization chosen from intuition.
+
+Decision: the 20-of-14 eight-denomination baseline is **deferred**, not passed
+or failed as a ceremony. The current implementation already fails the preceding
+one-denomination quick gate by a wide margin, and no final transcript result was
+available from the interrupted run.
 
 ## Recommended Work Order
 
