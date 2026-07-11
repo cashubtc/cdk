@@ -151,6 +151,12 @@ impl FederationDkgDriverTickOutcome {
 pub struct FederationDkgDriverRunOutcome {
     /// Number of ticks executed by this invocation.
     pub ticks: usize,
+    /// Total private REST deliveries attempted across all ticks.
+    pub attempted_deliveries: usize,
+    /// Total private REST deliveries acknowledged across all ticks.
+    pub successful_deliveries: usize,
+    /// Total private REST deliveries that failed across all ticks.
+    pub failed_deliveries: usize,
     /// Last durable tick outcome.
     pub last_tick: FederationDkgDriverTickOutcome,
 }
@@ -160,6 +166,21 @@ impl FederationDkgDriverRunOutcome {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.last_tick.is_complete()
+    }
+}
+
+#[derive(Debug, Default)]
+struct FederationDkgDeliveryTotals {
+    attempted: usize,
+    successful: usize,
+    failed: usize,
+}
+
+impl FederationDkgDeliveryTotals {
+    fn record(&mut self, tick: &FederationDkgDriverTickOutcome) {
+        self.attempted = self.attempted.saturating_add(tick.attempted_deliveries);
+        self.successful = self.successful.saturating_add(tick.successful_deliveries);
+        self.failed = self.failed.saturating_add(tick.failed_deliveries);
     }
 }
 
@@ -802,6 +823,8 @@ pub async fn run_federation_dkg_driver(
     )
     .await?;
     let mut ticks = 1;
+    let mut delivery_totals = FederationDkgDeliveryTotals::default();
+    delivery_totals.record(&last_tick);
     while !last_tick.is_complete() && ticks < driver_config.max_ticks {
         tokio::time::sleep(driver_config.retry_delay).await;
         last_tick = run_federation_dkg_driver_tick_with_cache(
@@ -813,6 +836,7 @@ pub async fn run_federation_dkg_driver(
             &mut delivery_tracker,
         )
         .await?;
+        delivery_totals.record(&last_tick);
         ticks = ticks.saturating_add(1);
     }
 
@@ -820,7 +844,13 @@ pub async fn run_federation_dkg_driver(
         complete_federation_dkg_ceremony(state, ceremony_id).await?;
     }
 
-    Ok(FederationDkgDriverRunOutcome { ticks, last_tick })
+    Ok(FederationDkgDriverRunOutcome {
+        ticks,
+        attempted_deliveries: delivery_totals.attempted,
+        successful_deliveries: delivery_totals.successful,
+        failed_deliveries: delivery_totals.failed,
+        last_tick,
+    })
 }
 
 pub(crate) fn spawn_federation_dkg_driver(
@@ -848,6 +878,9 @@ pub(crate) fn spawn_federation_dkg_driver(
                     %local_member,
                     ceremony_id = %config.ceremony_id,
                     ticks = outcome.ticks,
+                    attempted_deliveries = outcome.attempted_deliveries,
+                    successful_deliveries = outcome.successful_deliveries,
+                    failed_deliveries = outcome.failed_deliveries,
                     "Federation DKG ceremony completed; restart this member to activate the finalized keyset"
                 );
             }
@@ -856,7 +889,9 @@ pub(crate) fn spawn_federation_dkg_driver(
                     %local_member,
                     ceremony_id = %config.ceremony_id,
                     ticks = outcome.ticks,
-                    failed_deliveries = outcome.last_tick.failed_deliveries,
+                    attempted_deliveries = outcome.attempted_deliveries,
+                    successful_deliveries = outcome.successful_deliveries,
+                    failed_deliveries = outcome.failed_deliveries,
                     "Federation DKG driver exhausted its bounded run before completion"
                 );
             }
@@ -1371,6 +1406,44 @@ mod tests {
             pending_broadcast_targets(&mut tracked, &12, [first, second]),
             vec![first, second]
         );
+    }
+
+    #[test]
+    fn delivery_totals_accumulate_every_tick_with_saturating_counts() {
+        let progress = FederationDkgDriverProgress {
+            member_count: 3,
+            commitment_count: 0,
+            reveal_count: 0,
+            secret_share_contribution_count: 0,
+            local_keyset_share_ready: false,
+            transcript_signature_count: 0,
+            activation_count: 0,
+        };
+        let first = FederationDkgDriverTickOutcome {
+            phase_before: FederationDkgDriverPhase::Commitment,
+            phase_after: FederationDkgDriverPhase::Commitment,
+            progress,
+            attempted_deliveries: 3,
+            successful_deliveries: 2,
+            failed_deliveries: 1,
+            failed_members: vec![MemberId::new(3).expect("member")],
+        };
+        let second = FederationDkgDriverTickOutcome {
+            phase_before: FederationDkgDriverPhase::Commitment,
+            phase_after: FederationDkgDriverPhase::Reveal,
+            progress,
+            attempted_deliveries: 1,
+            successful_deliveries: 1,
+            failed_deliveries: 0,
+            failed_members: Vec::new(),
+        };
+
+        let mut totals = FederationDkgDeliveryTotals::default();
+        totals.record(&first);
+        totals.record(&second);
+        assert_eq!(totals.attempted, 4);
+        assert_eq!(totals.successful, 3);
+        assert_eq!(totals.failed, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

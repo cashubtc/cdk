@@ -240,6 +240,20 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         .expect("live DKG smoke script file");
     assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
     assert!(live_dkg_smoke_script.starts_with("#!/usr/bin/env bash"));
+    for script_path in [
+        &artifacts.smoke_script_path,
+        &artifacts.live_dkg_smoke_script_path,
+    ] {
+        let syntax = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(script_path)
+            .status()
+            .expect("run bash syntax validation");
+        assert!(
+            syntax.success(),
+            "generated smoke script must parse as bash"
+        );
+    }
     assert!(smoke_script.contains("federation status"));
     assert!(smoke_script.contains("federation dkg-status"));
     assert!(smoke_script.contains("federation payment-observations"));
@@ -348,6 +362,15 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     );
     assert!(smoke_script.contains("env \"${mintd_env[@]}\" \"$CDK_MINTD_BIN\""));
     assert!(live_dkg_smoke_script.contains("DKG_SETUP_PHASE=1"));
+    assert!(live_dkg_smoke_script.contains("DKG_CAPTURE_METRICS"));
+    assert!(live_dkg_smoke_script.contains("DKG_METRICS_INTERVAL_SECONDS"));
+    assert!(live_dkg_smoke_script.contains("sample_dkg_metrics"));
+    assert!(live_dkg_smoke_script.contains("average_cpu_percent"));
+    assert!(live_dkg_smoke_script.contains("total_user_seconds"));
+    assert!(live_dkg_smoke_script.contains("total_system_seconds"));
+    assert!(live_dkg_smoke_script.contains("dkg_rest samples="));
+    assert!(live_dkg_smoke_script.contains("attempted_deliveries="));
+    assert!(live_dkg_smoke_script.contains(">> \"$work_dir/mintd.log\""));
     assert!(live_dkg_smoke_script.contains("HELD_MEMBER"));
     assert!(live_dkg_smoke_script.contains("INTERRUPTED_MEMBER"));
     assert!(live_dkg_smoke_script.contains("wait_for_commitment_count"));

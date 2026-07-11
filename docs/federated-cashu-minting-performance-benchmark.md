@@ -2503,7 +2503,7 @@ for audit. This adds no AlephBFT item or DKG message. Focused persistence,
 mintd restart/replacement, stale-activation, authenticated completion, and
 operator-status tests cover the transitions.
 
-Current verified gate: 48/48 release Axum DKG tests, 19/19 release mintd DKG/status
+Current verified gate: 49/49 release Axum DKG tests, 19/19 release mintd DKG/status
 tests, six release builder DKG tests, seven release SQLite DKG persistence
 tests, migration parity, and a successful Postgres lifecycle test compile with
 `--no-run`.
@@ -2587,6 +2587,27 @@ shrinkage, non-loopback plaintext shares, persistent volatile delivery
 acknowledgements, and an extra consensus phase for setup failures. The retained
 design reaches the same relevant safety boundary with fewer moving parts in the
 Cashu server architecture.
+
+### Large-process accounting collector
+
+Decision: **Kept** as opt-in benchmark tooling, with no ceremony result yet.
+`DKG_CAPTURE_METRICS=1` on the generated live-DKG runner now records setup wall
+time and one CSV sample stream per process containing member, PID, CPU percent,
+RSS, user CPU time, and system CPU time. A second stream probes the primary
+member's `/v1/info` HTTP status and latency throughout setup. The runner emits
+average/peak CPU, peak RSS, total user/system CPU, average/peak REST latency,
+and the aggregate delivery attempts/successes/failures logged by each bounded
+driver invocation. User and system CPU totals take the maximum observed value
+for each PID and sum those values per member, so the intentional setup restart
+does not discard the first process incarnation's work.
+
+Member logs append across the intentional interruption/restart instead of being
+overwritten. Metrics stop at the setup completion boundary before activation
+restart and wallet smoke, so process accounting is scoped to DKG. The collector
+is disabled by default, contains no ceremony scalars, changes no DKG message or
+retry, and generated scripts are syntax-checked with `bash -n` in the focused
+generator test. Per the operator's stop request, the 20-member process ceremony
+was not rerun; the acceptance measurement remains explicitly open.
 
 ## Recommended Work Order
 

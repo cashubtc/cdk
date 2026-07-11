@@ -3151,6 +3151,16 @@ Verified harness checkpoint (2026-07-11):
   with the same transcript hash, keyset ID, aggregate keys, and local public
   share mapping. Sampling must be low overhead and removable or explicitly
   benchmark-only.
+  The generated live-DKG runner now has opt-in `DKG_CAPTURE_METRICS=1`
+  accounting. It preserves logs across setup restarts, samples each member's
+  CPU percentage, RSS, user time, and system time, and sums CPU time across PID
+  changes caused by intentional setup restarts. It probes the primary member's
+  `/v1/info` latency/status, records setup wall time, and prints every driver's
+  aggregate attempt/success/failure totals from low-noise completion/exhaustion
+  logs. Raw process and REST CSV files are retained under `dkg-metrics`, and the
+  generated scripts pass `bash -n`. This item remains open until an explicitly
+  resumed large process run records the values; the previously stopped
+  20-member run was not restarted merely to validate the collector.
 - [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.
@@ -3364,7 +3374,7 @@ Production robustness checklist:
   artifacts, and no AlephBFT item or additional DKG network phase is added.
   Focused SQL compare-and-set, mintd replacement/restart, mint-builder stale
   activation, authenticated completion, and status regressions pass.
-  The current verified gate is 48/48 release Axum DKG tests, 19/19 release mintd
+  The current verified gate is 49/49 release Axum DKG tests, 19/19 release mintd
   DKG/status tests, six release builder DKG tests, seven release SQLite DKG
   persistence tests, migration parity, and a successful Postgres lifecycle
   test compile with `--no-run`.
@@ -3426,7 +3436,7 @@ Production robustness checklist:
   commitment nor sequence durable, and removing the trigger lets the exact
   retry commit both. This exercises the same atomic rollback/recovery boundary
   required for storage exhaustion without a production fault switch. The full
-  focused gate is 48/48 Axum DKG tests and eight SQLite DKG persistence/failure
+  focused gate is 49/49 Axum DKG tests and eight SQLite DKG persistence/failure
   tests; no test or error output contains scalar material.
 
 Fedimint DKG comparison and source references:

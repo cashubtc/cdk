@@ -2650,8 +2650,13 @@ SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-600}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
 FEDERATION_CONSENSUS_BACKEND="${{FEDERATION_CONSENSUS_BACKEND:-aleph_bft}}"
+DKG_CAPTURE_METRICS="${{DKG_CAPTURE_METRICS:-0}}"
+DKG_METRICS_INTERVAL_SECONDS="${{DKG_METRICS_INTERVAL_SECONDS:-1}}"
+DKG_METRICS_DIR="${{DKG_METRICS_DIR:-$(dirname "$SETUP_PUBLIC_CONFIG")/dkg-metrics}}"
 DKG_SETUP_PHASE=1
 PIDS=()
+METRICS_PID=""
+DKG_SETUP_STARTED_SECONDS=0
 
 member_config() {{
   case "$1" in
@@ -2708,7 +2713,7 @@ start_member() {{
     mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="$FEDERATION_CONSENSUS_BACKEND")
     mintd_env+=(CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$SMOKE_OPERATION_TIMEOUT_SECONDS")
   fi
-  env "${{mintd_env[@]}}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  env "${{mintd_env[@]}}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" >> "$work_dir/mintd.log" 2>&1 &
   PIDS[$member]=$!
   printf 'started live DKG member %s with pid %s\n' "$member" "${{PIDS[$member]}}"
 }}
@@ -2726,10 +2731,112 @@ stop_member() {{
 }}
 
 cleanup() {{
+  stop_metrics_monitor
   local member
   for member in "${{MEMBERS[@]}}"; do
     stop_member "$member"
   done
+}}
+
+sample_dkg_metrics() {{
+  local sampled_at
+  sampled_at="$(date +%s)"
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    local pid="${{PIDS[$member]:-}}"
+    if [[ -z "$pid" ]]; then
+      continue
+    fi
+    local sample
+    sample="$(ps -p "$pid" -o %cpu= -o rss= -o utime= -o stime= 2>/dev/null | awk 'NF {{ print $1 "," $2 "," $3 "," $4; exit }}')"
+    if [[ -n "$sample" ]]; then
+      printf '%s,%s,%s,%s\n' "$sampled_at" "$member" "$pid" "$sample" >> "$DKG_METRICS_DIR/process.csv"
+    fi
+  done
+
+  local info_sample
+  info_sample="$(curl -sS -o /dev/null -w '%{{http_code}},%{{time_total}}' "$(member_mint_url "$PRIMARY_MEMBER")/v1/info" 2>/dev/null || true)"
+  if [[ -n "$info_sample" ]]; then
+    printf '%s,%s\n' "$sampled_at" "$info_sample" >> "$DKG_METRICS_DIR/rest.csv"
+  fi
+}}
+
+run_metrics_monitor() {{
+  printf 'sampled_at,member,pid,cpu_percent,rss_kb,user_time,system_time\n' > "$DKG_METRICS_DIR/process.csv"
+  printf 'sampled_at,http_status,time_total_seconds\n' > "$DKG_METRICS_DIR/rest.csv"
+  while true; do
+    sample_dkg_metrics
+    sleep "$DKG_METRICS_INTERVAL_SECONDS"
+  done
+}}
+
+start_metrics_monitor() {{
+  if [[ "$DKG_CAPTURE_METRICS" != "1" ]]; then
+    return 0
+  fi
+  mkdir -p "$DKG_METRICS_DIR"
+  run_metrics_monitor &
+  METRICS_PID=$!
+}}
+
+stop_metrics_monitor() {{
+  if [[ -z "$METRICS_PID" ]]; then
+    return 0
+  fi
+  kill "$METRICS_PID" 2>/dev/null || true
+  wait "$METRICS_PID" 2>/dev/null || true
+  METRICS_PID=""
+}}
+
+report_dkg_metrics() {{
+  if [[ "$DKG_CAPTURE_METRICS" != "1" ]]; then
+    return 0
+  fi
+  printf 'dkg_setup_wall_seconds=%s\n' "$((SECONDS - DKG_SETUP_STARTED_SECONDS))"
+  awk -F, '
+    function cpu_seconds(raw, parts, count) {{
+      count = split(raw, parts, ":");
+      if (count == 2) return (parts[1] * 60) + parts[2];
+      if (count == 3) return (parts[1] * 3600) + (parts[2] * 60) + parts[3];
+      return raw + 0;
+    }}
+    NR > 1 {{
+      samples[$2] += 1; cpu[$2] += $4;
+      if ($4 > peak_cpu[$2]) peak_cpu[$2] = $4;
+      if ($5 > peak_rss[$2]) peak_rss[$2] = $5;
+      process = $2 SUBSEP $3;
+      user_seconds = cpu_seconds($6);
+      system_seconds = cpu_seconds($7);
+      if (!(process in process_user) || user_seconds > process_user[process]) process_user[process] = user_seconds;
+      if (!(process in process_system) || system_seconds > process_system[process]) process_system[process] = system_seconds;
+    }}
+    END {{
+      for (process in process_user) {{
+        split(process, identity, SUBSEP);
+        total_user[identity[1]] += process_user[process];
+      }}
+      for (process in process_system) {{
+        split(process, identity, SUBSEP);
+        total_system[identity[1]] += process_system[process];
+      }}
+      for (member in samples) printf "dkg_process member=%s samples=%d average_cpu_percent=%.2f peak_cpu_percent=%.2f peak_rss_kb=%d total_user_seconds=%.2f total_system_seconds=%.2f\n", member, samples[member], cpu[member] / samples[member], peak_cpu[member], peak_rss[member], total_user[member], total_system[member];
+    }}
+  ' "$DKG_METRICS_DIR/process.csv" | sort
+  awk -F, '
+    NR > 1 {{
+      samples += 1; latency += $3;
+      if ($3 > peak_latency) peak_latency = $3;
+      if ($2 >= 200 && $2 < 300) successes += 1; else failures += 1;
+    }}
+    END {{
+      if (samples > 0) printf "dkg_rest samples=%d successes=%d failures=%d average_seconds=%.6f peak_seconds=%.6f\n", samples, successes, failures, latency / samples, peak_latency;
+    }}
+  ' "$DKG_METRICS_DIR/rest.csv"
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    grep 'attempted_deliveries=' "$(member_work_dir "$member")/mintd.log" | grep 'Federation DKG' || true
+  done
+  printf 'dkg_metrics_dir=%s\n' "$DKG_METRICS_DIR"
 }}
 
 reset_postgres_schemas() {{
@@ -2935,11 +3042,20 @@ validate_live_dkg_smoke() {{
     printf 'STATUS_RETRIES and STATUS_SLEEP_SECONDS must be positive integers\n' >&2
     return 1
   fi
+  if [[ "$DKG_CAPTURE_METRICS" != "0" && "$DKG_CAPTURE_METRICS" != "1" ]]; then
+    printf 'DKG_CAPTURE_METRICS must be 0 or 1\n' >&2
+    return 1
+  fi
+  if ! [[ "$DKG_METRICS_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'DKG_METRICS_INTERVAL_SECONDS must be a positive integer\n' >&2
+    return 1
+  fi
 }}
 
 trap cleanup EXIT INT TERM
 validate_live_dkg_smoke
 reset_live_dkg_state
+DKG_SETUP_STARTED_SECONDS=$SECONDS
 
 partial_member_count=$((${{#MEMBERS[@]}} - 1))
 for member in "${{MEMBERS[@]}}"; do
@@ -2947,6 +3063,7 @@ for member in "${{MEMBERS[@]}}"; do
     start_member "$member"
   fi
 done
+start_metrics_monitor
 for member in "${{MEMBERS[@]}}"; do
   if [[ "$member" != "$HELD_MEMBER" ]]; then
     wait_for_dkg_participant "$member" >/dev/null
@@ -2968,6 +3085,8 @@ start_member "$INTERRUPTED_MEMBER"
 for member in "${{MEMBERS[@]}}"; do
   wait_for_dkg_ready "$member"
 done
+stop_metrics_monitor
+report_dkg_metrics
 interrupted_after="$(member_dkg_setup_line "$INTERRUPTED_MEMBER")"
 interrupted_ceremony_after="$(status_field "$interrupted_after" participant_state_ceremonies)"
 if [[ "$interrupted_ceremony_before" != "$interrupted_ceremony_after" || "$(status_field "$interrupted_after" participant_states)" != "1" ]]; then
