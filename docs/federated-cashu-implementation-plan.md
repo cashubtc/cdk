@@ -1294,7 +1294,7 @@ AlephBFT and consensus unit tests:
   returns. The focused duplicate/delay, deterministic reorder, and combined
   five-member reorder/duplicate/delay live-session tests all pass against the
   upstream AlephBFT runtime and compare the honest members' accepted order.
-- [ ] Byzantine equivocation or malformed unit data from one member is rejected
+- [x] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
   with tampered derived operation IDs, tampered body hash, a mismatched body
@@ -1312,8 +1312,18 @@ AlephBFT and consensus unit tests:
   receiver rejects it without watermark, journal, or finalized-item mutation.
   Five-member/threshold-three live-session coverage now applies the same
   equivocation attempt in a BFT-sized federation and proves a subsequent honest
-  operation finalizes across every member without order divergence. Broader
-  production AlephBFT equivocation handling remains open.
+  operation finalizes across every member without order divergence. A separate
+  five-member upstream AlephBFT regression now restores two member-one runtimes
+  from the same pre-operation backup, permits normal parent/control traffic,
+  withholds only their data-bearing messages, and makes them sign different
+  Cashu operations at the same local Aleph unit index. The two branch payloads
+  are then delivered to alternating peers through fresh authenticated private
+  REST requests with distinct increasing sequences. After the duplicate
+  runtime is removed, at most one fork variant reaches the journal, a later
+  honest operation finalizes, and all five honest states converge on identical
+  journal order and materialized-state digest. The malformed, same-sequence,
+  combined reorder/duplicate/delay, and partition/catch-up regressions continue
+  to pass alongside the increasing-sequence fork test.
 - [x] Consensus stalls safely when fewer than the BFT quorum are connected and
   resumes when enough members return.
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast

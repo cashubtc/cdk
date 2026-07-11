@@ -436,11 +436,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: certify AlephBFT fault delivery gates</span>
+          <span class="value">test: cover AlephBFT increasing-sequence forks</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Live upstream AlephBFT regressions now certify that delayed, reordered, duplicated, and combined five-member fault delivery preserves one accepted order. Below-quorum work remains pending with no materialized mutation and resumes autonomously after connectivity returns; Byzantine increasing-sequence fork injection remains a separate open adversarial gate.</span>
+          <span class="value">Live upstream AlephBFT regressions now certify malformed and same-sequence rejection plus a true increasing-sequence fork from two same-identity runtimes restored at one checkpoint. At most one fork variant enters the journal, later honest work finalizes, and all five states retain identical order and materialized digests; delayed, reordered, duplicated, partitioned, and combined fault delivery remains green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -793,7 +793,7 @@
           </article>
           <article class="item">
             <h3>Networking and authentication</h3>
-            <p>Private REST routes reject wrong federation IDs, unknown members, stale sequences, same-sequence AlephBFT network-message equivocation at route, two-member live-session, and five-member BFT-session boundaries, tampered bodies, wrong message kinds, mismatched outcomes, invalid operation envelopes, wrong-federation and future-session AlephBFT unit bodies, tampered AlephBFT unit operation IDs and body hashes, and unauthenticated mutations before state changes. Federation-enabled Axum now uses pooled async reqwest transport; AlephBFT fanout is concurrent, quorum-aware, and durably requeues unfinished peers instead of blocking fresh consensus traffic on one slow member.</p>
+            <p>Private REST routes reject wrong federation IDs, unknown members, stale sequences, same-sequence AlephBFT network-message equivocation at route, two-member live-session, and five-member BFT-session boundaries, tampered bodies, wrong message kinds, mismatched outcomes, invalid operation envelopes, wrong-federation and future-session AlephBFT unit bodies, tampered AlephBFT unit operation IDs and body hashes, and unauthenticated mutations before state changes. A five-member upstream regression also injects two different same-coordinate Aleph units through valid increasing-sequence authenticated requests, proves at most one branch reaches the journal, and proves later honest finality with identical order and materialized digests. Federation-enabled Axum now uses pooled async reqwest transport; AlephBFT fanout is concurrent, quorum-aware, and durably requeues unfinished peers instead of blocking fresh consensus traffic on one slow member.</p>
           </article>
           <article class="item">
             <h3>Eleven-member reliability</h3>
@@ -868,6 +868,7 @@
           restart recovery, unit creation, persisted retry-row, orphan-cleanup,
           recovered-session orphan retry cleanup, pending-operation replay, duplicate/delay transport-fault,
           same-sequence route/two-member/five-member equivocation rejection,
+          same-coordinate increasing-sequence upstream fork convergence,
           deterministic opaque-message reorder, five-member fault-matrix,
           adapter-level session-rotation, live empty-session rotation,
           live post-finality rotation continuation, recovered-session live startup,

@@ -244,6 +244,11 @@ impl FederationAlephBftLiveSessionHandle {
         self.activity_hint.is_active()
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_network_activity(&self) {
+        self.activity_hint.clear_network_activity();
+    }
+
     pub(crate) fn mark_activity(&self, operation_id: FederationOperationId, broadcast: bool) {
         self.activity_hint.mark_local_pending();
         if !broadcast {
