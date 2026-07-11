@@ -232,6 +232,7 @@ where
     }
 
     /// Preserve exact Cashu error responses for an outer threshold aggregator.
+    #[cfg(any(test, feature = "federation"))]
     pub(crate) fn with_preserved_error_responses(mut self) -> Self {
         self.preserve_error_responses = true;
         self

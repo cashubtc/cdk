@@ -4317,7 +4317,6 @@ async fn create_mint_router_with_custom_cache_inner(
                 FederationSyncState::for_consensus_backend(config.consensus_backend()),
             ))
         });
-    #[cfg(feature = "federation")]
     let mut state = MintState {
         mint,
         cache: Arc::new(cache),

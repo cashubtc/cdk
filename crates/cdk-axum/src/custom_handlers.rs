@@ -1595,7 +1595,9 @@ mod tests {
         InMemoryFederationConsensus, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
         ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
-    use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
+    #[cfg(feature = "federation")]
+    use cdk::mint::Mint;
+    use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
     #[cfg(feature = "federation")]
     use cdk::nuts::nut01::{
@@ -1606,9 +1608,11 @@ mod tests {
     #[cfg(feature = "federation")]
     use cdk::nuts::SecretKey;
     use cdk::nuts::{
-        BatchMintRequest, BlindSignature, BlindedMessage, CheckStateRequest, CurrencyUnit,
-        MeltRequest, MintQuoteState, MintRequest, PaymentMethod, Proof, RestoreRequest,
-        SwapRequest,
+        BatchMintRequest, BlindedMessage, CurrencyUnit, MintQuoteState, MintRequest, PaymentMethod,
+    };
+    #[cfg(feature = "federation")]
+    use cdk::nuts::{
+        BlindSignature, CheckStateRequest, MeltRequest, Proof, RestoreRequest, SwapRequest,
     };
     #[cfg(feature = "federation")]
     use cdk::secret::Secret;
@@ -2286,6 +2290,7 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "federation")]
             federation_isolated_member_test: false,
         }
     }
@@ -3015,6 +3020,7 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "federation")]
             federation_isolated_member_test: false,
         }
     }

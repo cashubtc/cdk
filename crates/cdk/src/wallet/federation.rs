@@ -889,11 +889,8 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if results.responses.len() >= threshold
-            && self
-                .aggregate_restore_response(requested_outputs, &results.responses)
-                .is_ok()
-        {
+        if results.responses.len() >= threshold {
+            self.aggregate_restore_response(requested_outputs, &results.responses)?;
             return Ok(results.responses);
         }
 
@@ -1055,11 +1052,8 @@ impl FederatedMintConnector {
             )
             .await;
 
-        if results.responses.len() >= threshold
-            && self
-                .aggregate_check_state_response(request, &results.responses)
-                .is_ok()
-        {
+        if results.responses.len() >= threshold {
+            self.aggregate_check_state_response(request, &results.responses)?;
             return Ok(results.responses);
         }
 
