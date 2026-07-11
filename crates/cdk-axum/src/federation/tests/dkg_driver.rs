@@ -283,27 +283,24 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
     let federation = DkgDriverTestFederation::new().await;
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 45);
+    assert_eq!(attempted_deliveries, 48);
     federation.assert_complete_and_consistent().await;
 }
 
 #[tokio::test]
-async fn dkg_finalized_config_cache_recovers_after_early_lookup_and_reuses_result() {
+async fn dkg_finalized_config_cache_is_seeded_by_driver_and_reused() {
     let federation = DkgDriverTestFederation::new().await;
     let state = &federation.members[0].state;
     assert!(state
-        .cached_federation_dkg_finalized_member_config()
-        .await
-        .is_err());
+        .ready_federation_dkg_finalized_member_config()
+        .is_none());
 
     federation.drive_until_complete(12).await;
     let first = state
-        .cached_federation_dkg_finalized_member_config()
-        .await
-        .expect("complete finalized DKG config");
+        .ready_federation_dkg_finalized_member_config()
+        .expect("driver-seeded finalized DKG config");
     let second = state
-        .cached_federation_dkg_finalized_member_config()
-        .await
+        .ready_federation_dkg_finalized_member_config()
         .expect("cached finalized DKG config");
     assert!(Arc::ptr_eq(&first, &second));
 }
@@ -345,7 +342,7 @@ async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
     }
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 45);
+    assert_eq!(attempted_deliveries, 48);
     federation.assert_complete_and_consistent().await;
     for member in &federation.members {
         assert_eq!(
@@ -368,7 +365,7 @@ async fn dkg_driver_retries_response_lost_after_durable_persistence() {
         .fail_post_responses_after_delivery("/federation/v1/dkg/commitments", 1);
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 46);
+    assert_eq!(attempted_deliveries, 49);
     federation.assert_complete_and_consistent().await;
     for member in &federation.members {
         let commitments = member

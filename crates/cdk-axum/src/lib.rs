@@ -3173,44 +3173,35 @@ impl MintState {
         Ok(())
     }
 
-    pub(crate) async fn federation_dkg_finalized_member_config(
+    pub(crate) fn ready_federation_dkg_finalized_member_config(
         &self,
-    ) -> Result<FederationDkgFinalizedMemberConfig, cdk::Error> {
-        let runtime_config = self.mint.federation_config().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?;
-        let setup_public_config = runtime_config.public_config();
-        let local_private_config = runtime_config.private_config();
-        let db = self.mint.localstore();
-        let keyset_shares = db.get_federation_dkg_member_keyset_shares().await?;
-        let transcript_signatures = db.get_federation_dkg_transcript_signatures().await?;
-        FederationDkgFinalizedMemberConfig::from_records(
-            setup_public_config,
-            local_private_config,
-            &keyset_shares,
-            &transcript_signatures,
-        )
-        .map_err(Into::into)
+    ) -> Option<Arc<FederationDkgFinalizedMemberConfig>> {
+        self.federation_dkg_member_admission
+            .as_ref()?
+            .finalized_config
+            .get()
+            .cloned()
     }
 
-    pub(crate) async fn cached_federation_dkg_finalized_member_config(
+    pub(crate) async fn remember_federation_dkg_finalized_member_config(
         &self,
-    ) -> Result<Arc<FederationDkgFinalizedMemberConfig>, cdk::Error> {
+        finalized: Arc<FederationDkgFinalizedMemberConfig>,
+    ) -> Result<(), cdk::Error> {
         let Some(admission) = self.federation_dkg_member_admission.as_ref() else {
-            return self
-                .federation_dkg_finalized_member_config()
-                .await
-                .map(Arc::new);
+            return Ok(());
         };
-        let finalized = admission
+        let cached = admission
             .finalized_config
-            .get_or_try_init(|| async {
-                self.federation_dkg_finalized_member_config()
-                    .await
-                    .map(Arc::new)
-            })
-            .await?;
-        Ok(finalized.clone())
+            .get_or_init(|| async { finalized.clone() })
+            .await;
+        if cached.as_ref() != finalized.as_ref() {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgTranscriptMismatch {
+                    reason: "cached finalized DKG config changed during one process".to_string(),
+                },
+            ));
+        }
+        Ok(())
     }
 
     async fn expected_federation_dkg_transcript_hash(

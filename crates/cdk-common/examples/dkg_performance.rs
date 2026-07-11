@@ -25,8 +25,8 @@ use cdk_common::nuts::nut01::{
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 6;
-const ALL_PHASES: [&str; 18] = [
+const HARNESS_VERSION: u16 = 7;
+const ALL_PHASES: [&str; 20] = [
     "participant_generation",
     "participant_generation_validated_by_construction",
     "participant_reload_validation",
@@ -45,6 +45,8 @@ const ALL_PHASES: [&str; 18] = [
     "transcript_derivation",
     "activation_validation_checked",
     "activation_validation_validated_configs",
+    "activation_replanning_rebuild",
+    "activation_replanning_cached_config",
 ];
 
 #[derive(Debug, Clone)]
@@ -336,6 +338,8 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
         || args
             .phases
             .contains("activation_validation_validated_configs")
+        || args.phases.contains("activation_replanning_rebuild")
+        || args.phases.contains("activation_replanning_cached_config")
         || args.include_full_ceremony;
     let complete_start = Instant::now();
     let complete_fixture = match (needs_complete, participant_fixture.as_ref()) {
@@ -622,6 +626,71 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                             local_member,
                         )?;
                         Ok(())
+                    },
+                )?);
+            }
+        }
+        if args.phases.contains("activation_replanning_rebuild")
+            || args.phases.contains("activation_replanning_cached_config")
+        {
+            let participant = ValidatedFederationDkgParticipantState::new(
+                &base.public_config,
+                participant.clone(),
+            )?;
+            let finalized = FederationDkgFinalizedMemberConfig::from_records(
+                &base.public_config,
+                private_config,
+                std::slice::from_ref(keyset_share),
+                &complete.transcript_signatures,
+            )?;
+            let activations = activation_requests(&base, &finalized.public_config)?;
+            let activation_plan = complete_records.plan_with_validated_participant(
+                &base.public_config,
+                private_config,
+                &participant,
+            )?;
+            if args.phases.contains("activation_replanning_rebuild") {
+                reports.push(measure_phase(
+                    "activation_replanning_rebuild",
+                    args.iterations,
+                    || {
+                        let mut records = complete_records.clone();
+                        for activation in &activations {
+                            records.activations.push(*activation);
+                            black_box(records.plan_with_validated_participant(
+                                &base.public_config,
+                                private_config,
+                                &participant,
+                            )?);
+                        }
+                        Ok(records.activations.len())
+                    },
+                )?);
+            }
+            if args.phases.contains("activation_replanning_cached_config") {
+                reports.push(measure_phase(
+                    "activation_replanning_cached_config",
+                    args.iterations,
+                    || {
+                        let mut previous_records = complete_records.clone();
+                        let mut previous_plan = activation_plan.clone();
+                        for activation in &activations {
+                            let mut records = previous_records.clone();
+                            records.activations.push(*activation);
+                            let plan = records
+                                .replan_activation_only_change(
+                                    &base.public_config,
+                                    &previous_records,
+                                    &previous_plan,
+                                )?
+                                .context(
+                                    "activation-only records missed the cached planner path",
+                                )?;
+                            previous_records = records;
+                            previous_plan = plan;
+                        }
+                        black_box(previous_plan);
+                        Ok(activations.len())
                     },
                 )?);
             }
@@ -1177,6 +1246,23 @@ fn complete_records_for(
         transcript_signatures: transcript_signatures.to_vec(),
         activations: Vec::new(),
     }
+}
+
+fn activation_requests(
+    base: &BaseFixture,
+    finalized_public_config: &FederationConfig,
+) -> Result<Vec<FederationDkgActivationRequest>> {
+    base.private_configs
+        .values()
+        .map(|private_config| {
+            FederationDkgActivationRequest::sign_for_validated_config(
+                base.ceremony_id,
+                finalized_public_config,
+                private_config,
+            )
+            .map_err(Into::into)
+        })
+        .collect()
 }
 
 fn verify_complete_fixture(

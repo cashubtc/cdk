@@ -181,6 +181,13 @@ pub struct FederationDkgDriverPlan {
     pub transcript_signature: Option<FederationDkgTranscriptSignatureRequest>,
     /// Local finalized-config activation confirmation to deliver to every member.
     pub activation: Option<FederationDkgActivationRequest>,
+    /// Fully validated final member config available from the activation phase onward.
+    ///
+    /// This process-local value is never serialized and lets a driver validate
+    /// later activation-only record changes without rebuilding immutable DKG state.
+    pub finalized_member_config: Option<Arc<FederationDkgFinalizedMemberConfig>>,
+    /// Setup-config digest bound to [`Self::finalized_member_config`].
+    pub finalized_setup_config_digest: Option<FederationConfigDigest>,
 }
 
 impl fmt::Debug for FederationDkgDriverPlan {
@@ -207,6 +214,10 @@ impl fmt::Debug for FederationDkgDriverPlan {
             .field("derived_keyset_id", &derived_keyset_id)
             .field("transcript_hash", &transcript_hash)
             .field("activation_digest", &activation_digest)
+            .field(
+                "has_finalized_member_config",
+                &self.finalized_member_config.is_some(),
+            )
             .finish()
     }
 }
@@ -308,6 +319,8 @@ impl FederationDkgDriverRecords {
                 None,
                 None,
                 None,
+                None,
+                None,
             ));
         }
 
@@ -319,6 +332,8 @@ impl FederationDkgDriverRecords {
                 Some(commitment),
                 Some(reveal),
                 BTreeMap::new(),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -338,6 +353,8 @@ impl FederationDkgDriverRecords {
                 Some(commitment),
                 Some(reveal),
                 secret_shares,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -376,6 +393,8 @@ impl FederationDkgDriverRecords {
                 Some(reveal),
                 secret_shares,
                 Some(derived_keyset_share),
+                None,
+                None,
                 None,
                 None,
             ));
@@ -448,16 +467,18 @@ impl FederationDkgDriverRecords {
                 None,
                 Some(transcript_signature),
                 None,
+                None,
+                None,
             ));
         }
 
         let signature_records = matching_signatures.values().copied().collect::<Vec<_>>();
-        let finalized = FederationDkgFinalizedMemberConfig::from_records(
+        let finalized = Arc::new(FederationDkgFinalizedMemberConfig::from_records(
             public_config,
             private_config,
             std::slice::from_ref(stored_keyset_share),
             &signature_records,
-        )?;
+        )?);
         let activation = FederationDkgActivationRequest::sign_for_validated_config(
             participant_state.ceremony_id(),
             &finalized.public_config,
@@ -504,7 +525,80 @@ impl FederationDkgDriverRecords {
             None,
             Some(transcript_signature),
             Some(activation),
+            Some(finalized),
+            Some(public_config.config_digest_for_validated_config()?),
         ))
+    }
+
+    /// Replan when only durable activation records changed.
+    ///
+    /// Returns `None` unless every commitment, reveal, private contribution,
+    /// local keyset share, and transcript signature exactly matches the records
+    /// that produced `previous_plan`. A matching update reuses that plan's
+    /// validated final config but still verifies every activation signature,
+    /// config digest, ceremony, and duplicate signer before advancing progress.
+    pub fn replan_activation_only_change(
+        &self,
+        setup_public_config: &FederationConfig,
+        previous_records: &Self,
+        previous_plan: &FederationDkgDriverPlan,
+    ) -> Result<Option<FederationDkgDriverPlan>> {
+        if self.commitments != previous_records.commitments
+            || self.reveals != previous_records.reveals
+            || self.secret_share_contributions != previous_records.secret_share_contributions
+            || self.keyset_shares != previous_records.keyset_shares
+            || self.transcript_signatures != previous_records.transcript_signatures
+        {
+            return Ok(None);
+        }
+        let (Some(finalized), Some(expected_setup_digest), Some(local_activation)) = (
+            previous_plan.finalized_member_config.as_ref(),
+            previous_plan.finalized_setup_config_digest,
+            previous_plan.activation,
+        ) else {
+            return Ok(None);
+        };
+        let found_setup_digest = setup_public_config.config_digest_for_validated_config()?;
+        if found_setup_digest != expected_setup_digest {
+            return Err(FederationError::FederationConfigDigestMismatch {
+                member_id: finalized.private_config.member_id,
+                expected: expected_setup_digest,
+                found: found_setup_digest,
+            });
+        }
+
+        let mut matching_activations = BTreeMap::new();
+        for candidate in self
+            .activations
+            .iter()
+            .filter(|candidate| candidate.ceremony_id == local_activation.ceremony_id)
+        {
+            candidate.validate_sender_against_validated_configs(
+                setup_public_config,
+                &finalized.public_config,
+                candidate.signer,
+            )?;
+            match matching_activations.insert(candidate.signer, *candidate) {
+                Some(existing) if existing != *candidate => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting DKG activation for member {} ceremony {}",
+                            candidate.signer, candidate.ceremony_id
+                        ),
+                    });
+                }
+                Some(_) | None => {}
+            }
+        }
+
+        let mut plan = previous_plan.clone();
+        plan.progress.activation_count = matching_activations.len();
+        plan.phase = if matching_activations.len() == setup_public_config.members.len() {
+            FederationDkgDriverPhase::Complete
+        } else {
+            FederationDkgDriverPhase::Activation
+        };
+        Ok(Some(plan))
     }
 
     fn plan_for_phase(
@@ -516,6 +610,8 @@ impl FederationDkgDriverRecords {
         derived_keyset_share: Option<FederationDkgMemberKeysetShare>,
         transcript_signature: Option<FederationDkgTranscriptSignatureRequest>,
         activation: Option<FederationDkgActivationRequest>,
+        finalized_member_config: Option<Arc<FederationDkgFinalizedMemberConfig>>,
+        finalized_setup_config_digest: Option<FederationConfigDigest>,
     ) -> FederationDkgDriverPlan {
         FederationDkgDriverPlan {
             phase,
@@ -526,6 +622,8 @@ impl FederationDkgDriverRecords {
             derived_keyset_share,
             transcript_signature,
             activation,
+            finalized_member_config,
+            finalized_setup_config_digest,
         }
     }
 }
@@ -827,6 +925,8 @@ mod tests {
             .plan(&public_config, private_config, participant_state)
             .expect("activation plan");
         assert_eq!(activation_plan.phase, FederationDkgDriverPhase::Activation);
+        assert!(activation_plan.finalized_member_config.is_some());
+        assert!(activation_plan.finalized_setup_config_digest.is_some());
         let local_activation = activation_plan.activation.expect("local activation");
         let finalized = FederationDkgFinalizedMemberConfig::from_records(
             &public_config,
@@ -862,6 +962,7 @@ mod tests {
                 private_config.member_id,
             )
             .expect("activation validation from validated configs");
+        let records_before_activations = records.clone();
         records.activations = private_configs
             .values()
             .map(|private_config| {
@@ -873,9 +974,18 @@ mod tests {
                 .expect("activation confirmation")
             })
             .collect();
+        let fast_complete = records
+            .replan_activation_only_change(
+                &public_config,
+                &records_before_activations,
+                &activation_plan,
+            )
+            .expect("activation-only replan")
+            .expect("activation-only records use cached plan");
         let complete = records
             .plan(&public_config, private_config, participant_state)
             .expect("complete plan");
+        assert_eq!(fast_complete, complete);
         assert_eq!(complete.phase, FederationDkgDriverPhase::Complete);
         assert_eq!(complete.progress.transcript_signature_count, 3);
         assert_eq!(complete.progress.activation_count, 3);
@@ -899,8 +1009,26 @@ mod tests {
         tampered_records.activations[0].final_config_digest =
             FederationConfigDigest::from_bytes([99; 32]);
         assert!(tampered_records
+            .replan_activation_only_change(
+                &public_config,
+                &records_before_activations,
+                &activation_plan,
+            )
+            .is_err());
+        assert!(tampered_records
             .plan(&public_config, private_config, participant_state)
             .is_err());
+
+        let mut changed_records = records.clone();
+        changed_records.transcript_signatures.pop();
+        assert!(changed_records
+            .replan_activation_only_change(
+                &public_config,
+                &records_before_activations,
+                &activation_plan,
+            )
+            .expect("changed immutable records are not an error")
+            .is_none());
     }
 
     #[test]

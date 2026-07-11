@@ -3111,7 +3111,33 @@ Verified harness checkpoint (2026-07-11):
   1,724.13 to 1,418.67 seconds and peak RSS from 96,544 to 93,248 KiB. Rotated
   target order increased timeouts to 76; serial delivery took 248 seconds and
   still recorded 12 late timeouts, so both variants are **Rejected**. The
-  zero-self-timeout success criterion remains open.
+  zero-self-timeout success criterion remained open at this checkpoint.
+- Candidate 17 is **Kept** for activation-only replanning. Harness v7 reduces a
+  complete incremental activation sweep from 2.259s to 2.499ms at 5-of-3/eight
+  and from 22.581s to 39.049ms at 11-of-8/eight. The first 20-of-14 process run
+  completed in 110 seconds with 1,304.15 user CPU seconds, 39 failures, and nine
+  timeouts. The cache is process-local, bound to the validated setup digest,
+  and is used only when every non-activation durable record is byte-identical;
+  all changed activations still receive the ordinary signature/digest checks.
+- Candidate 18 is **Kept as a fail-fast trust boundary**. Activation routes use
+  only the finalized config already validated and seeded by the local driver;
+  an early request receives retryable HTTP 425 and cannot trigger a duplicate
+  config reconstruction or advance sequence/persistence. Diagnostics classify
+  this separately as `remote_not_ready`. In isolation it reduced setup to 101
+  seconds and activation timeouts to zero, but produced about 400 quick retries,
+  so it required the phase-handoff improvement below rather than being accepted
+  as a standalone load optimization.
+- Candidate 19 is **Kept** for prior-tick acknowledgement gating. Transcript
+  signatures are sent only after every matching secret share was acknowledged
+  before the current tick; activations follow the same rule for the sender's
+  transcript signature. No message, durable phase, timeout, or cryptographic
+  rule changes, and restart safely rebroadcasts because the tracker is volatile.
+  The final 20-of-14/eight run completed in 89 seconds using 1,071.00 user and
+  7.24 system CPU seconds, 83,408 KiB peak RSS, zero runtime info failures, and
+  zero private-REST timeouts. Its 285 bounded failures were 19 deliberate
+  interruption connections, 25 early transcript rejections, and 241 retryable
+  activation-readiness responses. All 20 exports were byte-identical and the
+  restart mint/swap/check-state/melt/restore smoke passed in 7.447 seconds.
 - The bounded-admission robustness checkpoint is **Kept** without a speed
   claim. Dealer-free DKG now accepts at most 64 roster members and 64
   denomination keys, while broader standalone and trusted-dealer configuration
@@ -3252,8 +3278,12 @@ Verified harness checkpoint (2026-07-11):
   share; mint, swap, check-state, melt, and restore passed in 7.834 seconds.
   Candidate 16 then bounded artifact fanout at four concurrent requests and
   completed in 130 seconds with 1,418.67 user CPU seconds, 93,248 KiB peak RSS,
-  2,096 deliveries, 76 failures, and 37 timeouts. This is the retained large
-  process profile while the stricter zero-timeout criterion remains open.
+  2,096 deliveries, 76 failures, and 37 timeouts. Candidates 17-19 reuse the
+  validated activation plan, fail fast until that config is locally ready, and
+  hand later artifacts across prior-tick acknowledgement boundaries. The final
+  run completed in 89 seconds with 1,071.00 user CPU seconds, 83,408 KiB peak
+  RSS, zero runtime info failures, and zero timeouts; all exported configs,
+  restart activation, and wallet operations passed.
 - [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.
@@ -3434,7 +3464,23 @@ reference to the recorded measurements:
   291 to 76, while user CPU fell from 1,724.13 to 1,418.67 seconds and peak RSS
   from 96,544 to 93,248 KiB. Rotated order increased timeouts to 76; serial
   delivery took 248 seconds and still recorded 12 late timeouts, so both
-  variants are **Rejected**. The zero-self-timeout criterion remains open.
+  variants are **Rejected**. The zero-self-timeout criterion remained open at
+  this checkpoint and is closed by Candidates 17-19 below.
+- [x] Reuse the validated finalized config when only activation records change.
+  Outcome: **Kept**. Harness v7 measures 904x lower 5-of-3/eight sweep latency
+  and 578x lower 11-of-8/eight latency. The fast path verifies its setup digest
+  and every activation, matches the full plan, and falls back on any immutable
+  record change.
+- [x] Keep activation request handling out of duplicate finalized-config work.
+  Outcome: **Kept as a fail-fast trust boundary**. The driver seeds one
+  validated process-local config; early routes return classified retryable HTTP
+  425 without persistence. The immediate policy alone amplified quick retries,
+  so it is paired with the measured acknowledgement handoff below.
+- [x] Gate transcript-signature and activation fanout on complete prerequisite
+  acknowledgements from the prior tick. Outcome: **Kept**. The final release
+  20-of-14/eight run completes in 89 seconds with zero self-request timeouts,
+  identical final configs, passing restart/wallet operations, and unchanged
+  message, persistence, deadline, and cryptographic semantics.
 
 Production robustness checklist:
 
@@ -3620,7 +3666,7 @@ Tests and success criteria:
 - [x] The quick harness reports a complete phase breakdown in minutes and can
   compare two implementations without running wallet, AlephBFT, or full
   workspace tests.
-- [ ] The release 20-of-14 eight-denomination ceremony completes within a
+- [x] The release 20-of-14 eight-denomination ceremony completes within a
   documented, repeatable budget without sustained event-loop starvation,
   self-request timeouts, unbounded retries, or divergent final transcripts.
   Set the numeric budget only after recording the first controlled release

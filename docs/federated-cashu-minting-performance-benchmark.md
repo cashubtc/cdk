@@ -2810,13 +2810,70 @@ sender's target order made all receivers initialize expensive activation state
 at once and increased timeouts to 76 with a 140-second setup. Serial concurrency
 one initially showed zero timeouts but completed in 248 seconds, recorded 12
 late timeouts, and exceeded the budget. The sorted four-request result is the
-measured balance; the stricter zero-self-timeout success criterion remains open.
+measured balance; the stricter zero-self-timeout success criterion remained open
+at this checkpoint and is closed by Candidates 17-19 below.
 
 The same series exposed a benchmark-runner signal bug. A shared
 `trap cleanup EXIT INT TERM` performed cleanup but let Bash continue after
 Ctrl-C. Generated runners now trap EXIT for cleanup and map INT/TERM to exit
 status 130, causing the EXIT cleanup to run exactly once. A live process run
 confirmed immediate member shutdown and status 130.
+
+### Candidates 17-19: activation replanning and phase handoff
+
+Candidate 17, reusing the first fully validated finalized member config when
+only activation records change, is **Kept**. Harness v7 measures a complete
+incremental activation sweep, not one request: the full planner versus the
+activation-only path is 2.259s versus 2.499ms at 5-of-3/eight and 22.581s versus
+39.049ms at 11-of-8/eight. The fast path requires byte-identical commitments,
+reveals, private contributions, local keyset shares, and transcript signatures;
+otherwise it returns to the full planner. It rechecks the setup-config digest,
+ceremony, final-config digest, signer, signature, and duplicate signer for every
+activation. Focused tests prove equality with the full plan and rejection of a
+tampered digest or changed immutable record.
+
+The first controlled 20-of-14 process run with Candidate 17 completed setup in
+110 seconds using 1,304.15 user and 9.58 system CPU seconds. Failures fell to 38
+and timeouts to nine, localized to eight activation requests in one synchronized
+burst and one transcript-signature request. All 20 independently exported
+configs were byte-identical and the restart wallet smoke passed in 8.469s.
+
+Candidate 18, making activation validation wait for the driver's already
+validated finalized config instead of independently rebuilding it in an HTTP
+handler, is **Kept as a fail-fast trust boundary**, not as a standalone load
+optimization. In isolation it reduced setup to 101 seconds and activation
+timeouts to zero, but immediate retryable not-ready responses increased total
+failures to about 400 while two transcript timeouts remained. The route now
+returns HTTP 425 and diagnostics classify it as `remote_not_ready`; it never
+persists or acknowledges an activation before the driver seeds the exact
+validated config.
+
+Candidate 19, requiring complete acknowledgements from the prior tick before
+sending transcript signatures or activations, is **Kept**. It uses only the
+existing volatile delivery tracker: no ceremony message, durable phase,
+cryptographic check, deadline, or retry limit changes. A restart intentionally
+rebroadcasts and rebuilds the acknowledgement view. This prevents a driver from
+sending a later artifact in the same tick that peers merely acknowledged its
+prerequisite.
+
+| Release 20-of-14 final result | Bound 4 baseline | Candidate 17 | Candidates 17-19 |
+|---|---:|---:|---:|
+| Setup wall | 130s | 110s | 89s |
+| Aggregate user/system CPU | 1,418.67s / 13.36s | 1,304.15s / 9.58s | 1,071.00s / 7.24s |
+| Attempts/failures/timeouts | 2,096 / 76 / 37 | 2,059 / 39 / 9 | 2,305 / 285 / 0 |
+| Runtime info failures | 0 | 0 | 0 |
+| Peak per-member RSS | 93,248 KiB | 94,640 KiB | 83,408 KiB |
+
+The final run's 285 failures are bounded and classified: 19 expected connection
+failures around the deliberate member interruption, 25 early transcript
+rejections, and 241 retryable activation-readiness responses. This is more
+request churn than Candidate 16, and remains a future simplification target,
+but it does not hold handlers open, consume the request deadline, bypass any
+validation, or grow without the existing tick bound. `/v1/info` had zero runtime
+failures with 108.344ms mean and 1.044s peak latency. Every member completed,
+all exported public configs were byte-identical, restart activation succeeded,
+and mint/swap/check-state/melt/restore passed in 7.447s. The 180-second and
+zero-self-timeout Milestone 20A gates are therefore met.
 
 ## Recommended Work Order
 

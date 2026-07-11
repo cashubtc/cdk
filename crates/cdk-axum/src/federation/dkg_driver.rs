@@ -286,6 +286,33 @@ fn record_broadcast_acknowledgements<T>(
     }
 }
 
+fn broadcast_acknowledged_by_all<T, I>(
+    tracked: &Option<TrackedDkgBroadcast<T>>,
+    request: &T,
+    members: I,
+) -> bool
+where
+    T: PartialEq,
+    I: IntoIterator<Item = MemberId>,
+{
+    tracked.as_ref().is_some_and(|tracked| {
+        tracked.request == *request
+            && members
+                .into_iter()
+                .all(|member| tracked.acknowledged_members.contains(&member))
+    })
+}
+
+fn secret_shares_acknowledged_by_all(
+    tracked: &BTreeMap<MemberId, FederationDkgSecretShareRequest>,
+    requests: &BTreeMap<MemberId, FederationDkgSecretShareRequest>,
+) -> bool {
+    !requests.is_empty()
+        && requests
+            .iter()
+            .all(|(member, request)| tracked.get(member) == Some(request))
+}
+
 impl DeliverySummary {
     fn record(&mut self, member_id: MemberId, accepted: bool) {
         self.attempted = self.attempted.saturating_add(1);
@@ -304,6 +331,7 @@ enum FederationDkgDeliveryFailureKind {
     Connection,
     OutboundAdmission,
     RemoteAdmission,
+    RemoteNotReady,
     RemoteValidation,
     RemoteStorage,
     RemoteServer,
@@ -322,6 +350,7 @@ impl FederationDkgDeliveryFailureKind {
             Self::Connection => "connection",
             Self::OutboundAdmission => "outbound_admission",
             Self::RemoteAdmission => "remote_admission",
+            Self::RemoteNotReady => "remote_not_ready",
             Self::RemoteValidation => "remote_validation",
             Self::RemoteStorage => "remote_storage",
             Self::RemoteServer => "remote_server",
@@ -361,6 +390,9 @@ fn classify_federation_dkg_delivery_failure(err: &anyhow::Error) -> FederationDk
         let (kind, http_status) = match http_error {
             HttpError::Status { status: 429, .. } => {
                 (FederationDkgDeliveryFailureKind::RemoteAdmission, Some(429))
+            }
+            HttpError::Status { status: 425, .. } => {
+                (FederationDkgDeliveryFailureKind::RemoteNotReady, Some(425))
             }
             HttpError::Status { status, .. } if (400..500).contains(status) => (
                 FederationDkgDeliveryFailureKind::RemoteValidation,
@@ -611,8 +643,22 @@ where
         plan_cache,
     )
     .await?;
+    if let Some(finalized) = plan.finalized_member_config.as_ref() {
+        state
+            .remember_federation_dkg_finalized_member_config(finalized.clone())
+            .await?;
+    }
     let phase_before = plan.phase;
     let mut delivery = DeliverySummary::default();
+    let secret_shares_ready_before_tick =
+        secret_shares_acknowledged_by_all(&delivery_tracker.secret_shares, &plan.secret_shares);
+    let transcript_ready_before_tick = plan.transcript_signature.as_ref().is_some_and(|request| {
+        broadcast_acknowledged_by_all(
+            &delivery_tracker.transcript_signature,
+            request,
+            public_config.members.keys().copied(),
+        )
+    });
 
     if let Some(request) = plan.commitment.as_ref() {
         let targets = pending_broadcast_targets(
@@ -705,7 +751,10 @@ where
         persist_federation_dkg_member_keyset_share(state, keyset_share).await?;
     }
 
-    if let Some(request) = plan.transcript_signature.as_ref() {
+    if let (true, Some(request)) = (
+        secret_shares_ready_before_tick,
+        plan.transcript_signature.as_ref(),
+    ) {
         let targets = pending_broadcast_targets(
             &mut delivery_tracker.transcript_signature,
             request,
@@ -735,7 +784,7 @@ where
         );
     }
 
-    if let Some(request) = plan.activation.as_ref() {
+    if let (true, Some(request)) = (transcript_ready_before_tick, plan.activation.as_ref()) {
         let targets = pending_broadcast_targets(
             &mut delivery_tracker.activation,
             request,
@@ -793,11 +842,21 @@ async fn plan_federation_dkg_records(
     }
 
     let records_for_plan = records.clone();
+    let previous = plan_cache.clone();
     let public_config = public_config.clone();
     let private_config = private_config.clone();
     let participant = participant.clone();
     let plan =
         crate::run_federation_dkg_cpu_task("federation DKG planner task failed", move || {
+            if let Some(cached) = previous.as_ref() {
+                if let Some(plan) = records_for_plan.replan_activation_only_change(
+                    &public_config,
+                    &cached.records,
+                    &cached.plan,
+                )? {
+                    return Ok(plan);
+                }
+            }
             records_for_plan.plan_with_validated_participant(
                 &public_config,
                 &private_config,
@@ -1327,6 +1386,14 @@ mod tests {
             ),
             (
                 HttpError::Status {
+                    status: 425,
+                    message: "private readiness detail".to_string(),
+                },
+                FederationDkgDeliveryFailureKind::RemoteNotReady,
+                Some(425),
+            ),
+            (
+                HttpError::Status {
                     status: 400,
                     message: "private validation detail".to_string(),
                 },
@@ -1446,14 +1513,30 @@ mod tests {
             vec![first, second]
         );
         record_broadcast_acknowledgements(&mut tracked, &11, &BTreeSet::from([first]));
+        assert!(!broadcast_acknowledged_by_all(
+            &tracked,
+            &11,
+            [first, second]
+        ));
         assert_eq!(
             pending_broadcast_targets(&mut tracked, &11, [first, second]),
             vec![second]
         );
+        record_broadcast_acknowledgements(&mut tracked, &11, &BTreeSet::from([second]));
+        assert!(broadcast_acknowledged_by_all(
+            &tracked,
+            &11,
+            [first, second]
+        ));
         assert_eq!(
             pending_broadcast_targets(&mut tracked, &12, [first, second]),
             vec![first, second]
         );
+        assert!(!broadcast_acknowledged_by_all(
+            &tracked,
+            &12,
+            [first, second]
+        ));
     }
 
     #[test]

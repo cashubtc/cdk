@@ -58,6 +58,14 @@ fn active_dkg_config(
         })
 }
 
+fn dkg_finalized_config_not_ready_response() -> Response {
+    (
+        axum::http::StatusCode::TOO_EARLY,
+        "federation DKG finalized config is not ready",
+    )
+        .into_response()
+}
+
 #[instrument(skip_all)]
 pub(super) async fn post_dkg_readiness(
     State(state): State<MintState>,
@@ -289,9 +297,8 @@ pub(super) async fn post_dkg_activation(
     }
     let runtime_config = federation_runtime_config(&state)?;
     let finalized = state
-        .cached_federation_dkg_finalized_member_config()
-        .await
-        .map_err(dkg_error_response)?;
+        .ready_federation_dkg_finalized_member_config()
+        .ok_or_else(dkg_finalized_config_not_ready_response)?;
     payload
         .payload
         .validate_sender_against_validated_configs(
@@ -333,6 +340,11 @@ mod tests {
         assert_eq!(
             internal.status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        assert_eq!(
+            dkg_finalized_config_not_ready_response().status(),
+            axum::http::StatusCode::TOO_EARLY
         );
     }
 }
