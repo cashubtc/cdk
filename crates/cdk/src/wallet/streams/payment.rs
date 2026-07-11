@@ -326,13 +326,8 @@ fn classify_payment_notification(
     notification: NotificationPayload<String>,
 ) -> Option<ClassifiedPayment> {
     match notification {
-        NotificationPayload::MintQuoteBolt11Response(info)
-            if info.state == MintQuoteState::Paid =>
-        {
-            Some(ClassifiedPayment {
-                value: (info.quote, None),
-                finalize: true,
-            })
+        NotificationPayload::MintQuoteBolt11Response(info) => {
+            bolt11_mint_payment(info.quote, info.amount_paid, info.amount_issued, info.state)
         }
         NotificationPayload::MintQuoteBolt12Response(info) => {
             positive_unissued_amount(info.quote, info.amount_paid, info.amount_issued)
@@ -376,6 +371,34 @@ fn classify_payment_notification(
             })
         }
         _ => None,
+    }
+}
+
+fn bolt11_mint_payment(
+    quote: String,
+    amount_paid: Amount,
+    amount_issued: Amount,
+    state: MintQuoteState,
+) -> Option<ClassifiedPayment> {
+    if amount_paid > Amount::ZERO || amount_issued > Amount::ZERO {
+        let to_be_issued = amount_paid.checked_sub(amount_issued)?;
+        if to_be_issued > Amount::ZERO {
+            return Some(ClassifiedPayment {
+                value: (quote, None),
+                finalize: true,
+            });
+        }
+
+        return None;
+    }
+
+    if state == MintQuoteState::Paid {
+        Some(ClassifiedPayment {
+            value: (quote, None),
+            finalize: true,
+        })
+    } else {
+        None
     }
 }
 
@@ -424,6 +447,30 @@ mod tests {
 
         assert_eq!(payment.value, ("bolt11_quote".to_string(), None));
         assert!(payment.finalize);
+    }
+
+    #[test]
+    fn mint_bolt11_prefers_accounting_counters_over_legacy_state() {
+        let mut response = mint_bolt11_response("bolt11_quote", MintQuoteState::Unpaid);
+        response.amount_paid = Amount::from(100u64);
+
+        let payment =
+            classify_payment_notification(NotificationPayload::MintQuoteBolt11Response(response))
+                .expect("mintable bolt11 quote should emit");
+
+        assert_eq!(payment.value, ("bolt11_quote".to_string(), None));
+        assert!(payment.finalize);
+
+        let mut issued_response = mint_bolt11_response("issued_bolt11", MintQuoteState::Paid);
+        issued_response.amount_paid = Amount::from(100u64);
+        issued_response.amount_issued = Amount::from(100u64);
+
+        assert!(
+            classify_payment_notification(NotificationPayload::MintQuoteBolt11Response(
+                issued_response,
+            ))
+            .is_none()
+        );
     }
 
     #[test]
