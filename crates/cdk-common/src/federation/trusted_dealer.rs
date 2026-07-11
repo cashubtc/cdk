@@ -290,7 +290,10 @@ fn validate_coefficient_count(
 mod tests {
     use std::str::FromStr;
 
-    use crate::federation::{FederationDkgSetupMethod, FederationDkgTranscriptHash, FederationId};
+    use crate::federation::{
+        FederationDkgSetupMethod, FederationDkgTranscriptHash, FederationId,
+        FederationKeysetRotationOperation,
+    };
 
     use super::*;
 
@@ -328,6 +331,21 @@ mod tests {
             [
                 (Amount::from(1), vec![bls_key(1), bls_key(2)]),
                 (Amount::from(2), vec![bls_key(3), bls_key(4)]),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    fn rotation_keyset_spec() -> TrustedDealerKeysetSpec {
+        TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            false,
+            0,
+            None,
+            [
+                (Amount::from(1), vec![bls_key(5), bls_key(6)]),
+                (Amount::from(2), vec![bls_key(7), bls_key(8)]),
             ]
             .into_iter()
             .collect(),
@@ -400,6 +418,74 @@ mod tests {
                 .expect("private config from json"),
             *bundle.private_configs.get(&member_id(1)).expect("private")
         );
+    }
+
+    #[test]
+    fn trusted_dealer_setup_transcript_survives_consensus_keyset_rotation() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec(), rotation_keyset_spec()],
+        )
+        .expect("trusted dealer bundle");
+        let setup_transcript = bundle
+            .public_config
+            .setup_transcript
+            .clone()
+            .expect("setup transcript");
+        let original_active_keyset = bundle
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("original active keyset")
+            .id;
+        let mut rotation_keyset = bundle
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("rotation keyset")
+            .clone();
+        rotation_keyset.active = true;
+
+        let rotated = bundle
+            .public_config
+            .apply_keyset_rotation(&FederationKeysetRotationOperation {
+                keyset: rotation_keyset,
+            })
+            .expect("consensus keyset rotation");
+
+        assert_eq!(rotated.setup_transcript, Some(setup_transcript));
+        assert!(
+            !rotated
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == original_active_keyset)
+                .expect("original keyset retained")
+                .active
+        );
+        rotated.validate().expect("rotated config validates");
+        for private_config in bundle.private_configs.values() {
+            private_config
+                .validate_against_public(&rotated)
+                .expect("rotated private config validates");
+        }
+
+        let mut missing_setup_keyset = rotated;
+        missing_setup_keyset
+            .keysets
+            .retain(|keyset| keyset.id != original_active_keyset);
+        assert!(matches!(
+            missing_setup_keyset.validate(),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason.contains("is missing from current config")
+        ));
     }
 
     #[test]

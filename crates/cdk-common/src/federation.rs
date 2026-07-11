@@ -3817,6 +3817,29 @@ pub struct FederationDkgKeysetTranscript {
     pub public_shares: BTreeMap<MemberId, BTreeMap<Amount, BlsPublicKeyShare>>,
 }
 
+impl FederationDkgKeysetTranscript {
+    fn federated_keyset(&self) -> FederatedKeyset {
+        FederatedKeyset {
+            id: self.keyset_id,
+            unit: self.unit.clone(),
+            active: self.active,
+            input_fee_ppk: self.input_fee_ppk,
+            final_expiry: self.final_expiry,
+            aggregate_keys: self.aggregate_keys.clone(),
+            public_shares: self.public_shares.clone(),
+        }
+    }
+
+    fn matches_immutable_keyset_material(&self, keyset: &FederatedKeyset) -> bool {
+        self.keyset_id == keyset.id
+            && self.unit == keyset.unit
+            && self.input_fee_ppk == keyset.input_fee_ppk
+            && self.final_expiry == keyset.final_expiry
+            && self.aggregate_keys == keyset.aggregate_keys
+            && self.public_shares == keyset.public_shares
+    }
+}
+
 /// Public, signed DKG/setup transcript payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationDkgTranscriptPayload {
@@ -4173,6 +4196,51 @@ impl FederationDkgTranscript {
 
         Ok(())
     }
+
+    /// Validate this historical setup transcript against a later runtime config.
+    ///
+    /// The signed payload is verified exactly against the setup-time keyset
+    /// snapshot. Consensus key rotations may subsequently change activation
+    /// flags and append keysets, but may not remove or mutate any immutable
+    /// setup key material.
+    pub fn validate_setup_lineage_against_config(
+        &self,
+        public_config: &FederationConfig,
+    ) -> Result<()> {
+        let mut setup_config = public_config.clone();
+        setup_config.keysets = self
+            .payload
+            .keysets
+            .iter()
+            .map(FederationDkgKeysetTranscript::federated_keyset)
+            .collect();
+        setup_config.setup_transcript = None;
+        setup_config.validate()?;
+        self.validate_against_config(&setup_config)?;
+
+        for setup_keyset in &self.payload.keysets {
+            let current_keyset = public_config
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == setup_keyset.keyset_id)
+                .ok_or_else(|| FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "setup keyset {} is missing from current config",
+                        setup_keyset.keyset_id
+                    ),
+                })?;
+            if !setup_keyset.matches_immutable_keyset_material(current_keyset) {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "setup keyset {} public material changed",
+                        setup_keyset.keyset_id
+                    ),
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Final public and local-private member config material assembled from DKG records.
@@ -4414,7 +4482,7 @@ impl FederationConfig {
         }
 
         if let Some(transcript) = &self.setup_transcript {
-            transcript.validate_against_config(self)?;
+            transcript.validate_setup_lineage_against_config(self)?;
         }
 
         self.payment_observation_policy

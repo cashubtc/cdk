@@ -2867,6 +2867,28 @@ Tests and success criteria:
 - [x] Version fields and some version checks exist for federation data.
 - [x] Add mixed-version federation tests proving unsupported major versions are rejected cleanly.
 
+Verified setup-transcript rotation-lineage checkpoint:
+
+- The signed DKG/trusted-dealer transcript is now treated as an immutable
+  historical setup attestation rather than a mutable snapshot of current
+  activation state. Validation reconstructs the exact setup-time keyset list
+  from the signed payload and verifies its hash, member signatures, roster,
+  threshold, ceremonies, aggregate keys, and public shares without weakening
+  the original transcript check.
+- A later consensus keyset rotation may deactivate setup keysets and append a
+  separately validated keyset. Every setup keyset must remain present with the
+  same ID, unit, fee, expiry, aggregate public keys, and member public shares;
+  removal or immutable-material changes fail closed. Private member configs
+  remain bound to the original setup transcript hash.
+- `cargo test -p cdk-common --features federation trusted_dealer -- --test-threads=1`:
+  all 12 trusted-dealer generation, transcript-tamper, private-binding, and
+  rotation-lineage tests passed.
+- `cargo test -p cdk-common --features federation dkg -- --test-threads=1`:
+  all 29 dealer-free DKG, transcript, planner, and transport tests passed.
+- `cargo test -p cdk --features federation wallet::federation::tests -- --test-threads=1`:
+  all 84 wallet connector tests passed, including rotated fake-wallet/HTTP
+  shares, stale-output mapping, and spending restored old-keyset proofs.
+
 Operation encoding migration plan:
 
 - Treat `FederationProtocolVersions.operation`, `consensus_item`, `rest_api`, and `session_outcome` as hard compatibility gates. A member must reject startup config, wallet metadata, private REST payloads, consensus items, session outcomes, operation admission, runtime replay, and catch-up material when any advertised or embedded major version differs from the current build.
