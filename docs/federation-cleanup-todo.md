@@ -284,3 +284,81 @@ defined interpretation adds schema and conflict surface without functionality.
   matching/conflict tests using regenerated fixtures.
 - Prove paid, failed, unpaid, pending, and unknown backend observations retain
   their existing behavior without the free-form field.
+
+## 6. Remove the production in-memory consensus backend
+
+**Status:** Todo
+
+### Problem
+
+Federation mode still exposes two selectable consensus backends even though
+AlephBFT is the production consensus system. `in_memory` is currently the
+default and provides a local append-log finalization path rather than
+multi-member Byzantine consensus. Keeping it constructible in production adds
+backend dispatch throughout the runtime and creates a dangerous configuration
+in which an operator can start something called a federation without real
+federation consensus.
+
+This task concerns the in-memory **consensus backend**. It must not blindly
+delete `InMemoryFederationJournal`, which is also used as a deterministic
+journal reconstruction/view type in tests and runtime validation. That type
+should be retained or renamed according to its actual remaining responsibility.
+
+### Cleanup
+
+- Make AlephBFT the only production federation consensus implementation.
+- Remove `FederationConsensusBackendKind::InMemory`, backend selection, aliases,
+  defaults, environment variables, generated-script switches, and config
+  documentation for `in_memory`.
+- Collapse runtime enums, adapters, and match branches that exist only to
+  dispatch between AlephBFT and the in-memory backend.
+- Remove `InMemoryFederationConsensus`,
+  `InMemoryFederationConsensusNetwork`, and
+  `InMemoryFederationConsensusAdapter` from production exports and code.
+- Remove local-finalization shortcuts and backend-specific errors or status
+  diagnostics that become impossible with one consensus implementation.
+- Replace tests with the real AlephBFT runtime, direct journal/application
+  tests, narrow `#[cfg(test)]` finalization fakes, or transport mocks according
+  to what each test actually verifies. Do not preserve a second fake consensus
+  engine under another name.
+- Audit `InMemoryFederationJournal` separately. Rename it to
+  `FederationJournal` or `FederationJournalView` if it survives solely as an
+  in-process ordered journal representation.
+
+### Known locations
+
+- `crates/cdk-common/src/federation/consensus.rs`: backend kind, runtime backend
+  enum, in-memory consensus engine, network, adapter, and backend-dispatch
+  tests.
+- `crates/cdk/src/mint/federation.rs`: `FederationRuntimeConfig` backend field
+  and its in-memory default constructor.
+- `crates/cdk-axum/src/lib.rs`: startup recovery, submission, readiness, and
+  finalization branches selected by backend kind.
+- `crates/cdk-axum/src/federation.rs`: runtime construction and journal recovery
+  helpers.
+- `crates/cdk-mintd/src/config.rs`, `env_vars/federation.rs`, `lib.rs`, and
+  `federation_setup.rs`: user-selectable backend configuration and generated
+  smoke scripts.
+- Mintd status and digest comparison code that reports or rejects mixed
+  consensus backend views.
+- `crates/cdk-common/src/federation/journal.rs` and its many callers: the
+  distinct journal-view type that requires an explicit keep/rename decision.
+- `docs/federated-cashu-refactoring-plan.md`, section R4, which already defines
+  the intended one-backend architecture and test replacement strategy.
+
+### Completion checks
+
+- No production config, CLI, environment variable, alias, or generated script
+  accepts `in_memory`, `memory`, or an equivalent value.
+- No production crate exports or constructs an in-memory federation consensus
+  engine or local-finality shortcut.
+- AlephBFT is the only federation runtime path from mintd startup through
+  proposal, finalization, journal application, restart, and catch-up.
+- Proposal admission, deterministic ordering, duplicate handling, below-quorum
+  non-finality, partition/heal, restart, and catch-up tests run against AlephBFT
+  or an appropriately narrower test boundary.
+- Direct journal tests continue covering canonical append, replay, rejection,
+  digest, and tamper detection without pretending to test consensus.
+- Search all production code, tests, generated tooling, examples, and docs for
+  backend-selection assumptions and stale in-memory terminology before marking
+  this item complete.
