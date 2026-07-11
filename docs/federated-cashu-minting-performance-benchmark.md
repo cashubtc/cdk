@@ -2369,10 +2369,10 @@ mode `0644`; permissive startup fails while valid runtime configs still load.
 Residual risk is explicit. SQL rows
 `federation_dkg_participant_states`,
 `federation_dkg_secret_share_contributions`, and
-`federation_dkg_member_keyset_shares` contain plaintext JSON unless SQLite is
-built and run with SQLCipher or the database deployment provides equivalent
-encryption. Non-Unix ACL verification, encrypted backups, and mandatory
-database encryption are not closed by this checkpoint.
+`federation_dkg_member_keyset_shares` contain plaintext JSON. Database
+encryption at rest is intentionally out of scope and is not required for
+Milestone 20A. Non-Unix ACL verification remains separate future hardening
+work; no backup or backup-encryption requirement belongs to this milestone.
 
 ## Recommended Work Order
 

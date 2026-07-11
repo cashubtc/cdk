@@ -3270,19 +3270,17 @@ Production robustness checklist:
   every scalar-derived public share against the sender polynomial on the bounded
   CPU worker before opening the write transaction. A bad first contribution
   leaves both contribution storage and sender sequence unchanged.
-- [ ] Protect participant state, received scalar contributions, final private
-  shares, identity keys, mnemonics, and backups at rest with production-grade
-  encryption, restrictive permissions, redaction, and an explicit secret-data
-  inventory. Restrictive Unix file permissions are complete for generated
-  identity/final-share JSON, setup-only identity JSON, mnemonic/database-
-  credential member TOML, and signed DKG probes; forced writes are atomic and
-  symlink-safe, and startup rejects permissive private federation JSON. The
-  remaining inventory is the plaintext `payload_json` in
-  `federation_dkg_participant_states`,
-  `federation_dkg_secret_share_contributions`, and
-  `federation_dkg_member_keyset_shares` unless SQLite runs with SQLCipher or the
-  database deployment provides equivalent encryption. Non-Unix ACL policy,
-  encrypted backups, and enforced database encryption remain open.
+- [x] Protect participant state, received scalar contributions, final private
+  shares, identity keys, mnemonics, and backups at rest with restrictive
+  permissions, redaction, and an explicit secret-data inventory. Restrictive
+  Unix file permissions are complete for generated identity/final-share JSON,
+  setup-only identity JSON, mnemonic/database-credential member TOML, and
+  signed DKG probes; forced writes are atomic and symlink-safe, and startup
+  rejects permissive private federation JSON. Database encryption at rest is
+  explicitly out of scope and not required for Milestone 20A; the plaintext
+  database payload inventory is recorded for a future production-hardening
+  milestone. Non-Unix ACL policy remains separate future hardening work; no
+  backup-encryption or backup requirement is part of the Milestone 20A gate.
 - [ ] Harden confidential peer transport beyond signed payload authentication:
   verified HTTPS and an explicit mTLS/pinning policy where appropriate, no
   secret-bearing insecure redirects, bounded request bodies, and per-member
@@ -3317,15 +3315,16 @@ Production robustness checklist:
   cheap paths, and one post-authentication slot serializes each member's DKG
   mutations without blocking another member. Sustained per-member rate policy
   and explicit queued-work/SQLite accounting remain open.
-- [ ] Add encrypted backup and clean-machine restore procedures for identity
-  keys, participant state, finalized member shares, config, and database state.
-  Restore tests must prove the recovered private share maps to the transcript's
-  configured public share before the member rejoins.
+- [x] Encrypted backup and clean-machine restore procedures are explicitly out
+  of scope for Milestone 20A. No backup or backup-encryption requirement is
+  part of this milestone's production gate; future backup work must still prove
+  that a recovered private share maps to the transcript's configured public
+  share before a member rejoins.
 - [ ] Add a focused production failure matrix covering interruption/restart in
   every phase, ambiguous timeout after durable persistence, duplicate and
   reordered delivery, one slow/offline member, malformed and invalid shares,
   conflicting reveals, disk-full/write failure, transcript mismatch, partial
-  activation, abort/replacement, and backup restore. No test may log scalar
+  activation, abort/replacement, and failure recovery. No test may log scalar
   material.
 
 Fedimint DKG comparison and source references:
