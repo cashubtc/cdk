@@ -60,6 +60,8 @@ const SMOKE_SCRIPT_FILE: &str = "smoke-local-federation.sh";
 const LIVE_DKG_MEMBER_CONFIG_FILE: &str = "dkg-live-config.toml";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const LIVE_DKG_FINAL_CONFIG_DIR: &str = "dkg-final";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const LIVE_DKG_SMOKE_SCRIPT_FILE: &str = "smoke-live-dkg-federation.sh";
 #[cfg(feature = "federation")]
 const DKG_SETUP_ROUTE_PROBE_DIR: &str = "dkg-setup-route-probe";
 
@@ -95,6 +97,7 @@ pub(crate) struct TrustedDealerArtifacts {
     pub(crate) public_config_path: PathBuf,
     pub(crate) dkg_setup_public_config_path: PathBuf,
     pub(crate) smoke_script_path: PathBuf,
+    pub(crate) live_dkg_smoke_script_path: PathBuf,
     pub(crate) member_artifacts: BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
 }
 
@@ -150,6 +153,10 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
         println!(
             "Run local federation smoke test: {}",
             artifacts.smoke_script_path.display()
+        );
+        println!(
+            "Run live DKG federation smoke test: {}",
+            artifacts.live_dkg_smoke_script_path.display()
         );
 
         return Ok(());
@@ -480,6 +487,14 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         args,
     )?;
     write_executable_text_file(&smoke_script_path, &smoke_script, args.force)?;
+    let live_dkg_smoke_script_path = generation.output_dir.join(LIVE_DKG_SMOKE_SCRIPT_FILE);
+    let live_dkg_smoke_script =
+        local_live_dkg_smoke_script(&dkg_setup_public_config_path, &member_artifacts, args)?;
+    write_executable_text_file(
+        &live_dkg_smoke_script_path,
+        &live_dkg_smoke_script,
+        args.force,
+    )?;
     print_trusted_dealer_stage("setup.smoke-script.done", setup_started_at);
     print_trusted_dealer_stage("setup.done", setup_started_at);
 
@@ -487,6 +502,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         public_config_path,
         dkg_setup_public_config_path,
         smoke_script_path,
+        live_dkg_smoke_script_path,
         member_artifacts,
     })
 }
@@ -2478,6 +2494,441 @@ printf 'local federation smoke test passed\n'
         prometheus_url_cases = prometheus_url_cases,
         postgres_schema_reset_url = postgres_schema_reset_url,
         postgres_schema_reset_cases = postgres_schema_reset_cases,
+    ))
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn local_live_dkg_smoke_script(
+    setup_public_config_path: &Path,
+    member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
+    args: &FederationTrustedDealerArgs,
+) -> Result<String> {
+    let members = member_artifacts
+        .keys()
+        .map(|member_id| member_id.get().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let primary_member = member_artifacts
+        .keys()
+        .next()
+        .ok_or_else(|| anyhow!("live DKG smoke needs at least one member"))?;
+    let interrupted_member = member_artifacts.keys().nth(1).unwrap_or(primary_member);
+    let held_member = member_artifacts
+        .keys()
+        .next_back()
+        .unwrap_or(primary_member);
+    let primary_final_public_config = member_artifacts
+        .get(primary_member)
+        .ok_or_else(|| anyhow!("missing primary member live DKG artifacts"))?
+        .live_dkg_final_config_dir
+        .join(PUBLIC_CONFIG_FILE);
+    let config_cases = member_path_cases(member_artifacts, |member| &member.live_dkg_config_path)?;
+    let work_dir_cases = member_path_cases(member_artifacts, |member| &member.live_dkg_work_dir)?;
+    let setup_private_config_cases = member_path_cases(member_artifacts, |member| {
+        &member.dkg_setup_private_config_path
+    })?;
+    let final_config_dir_cases =
+        member_path_cases(member_artifacts, |member| &member.live_dkg_final_config_dir)?;
+    let public_mint_url_cases =
+        member_string_cases(member_artifacts, |member| &member.public_mint_url);
+    let setup_public_config_path = shell_single_quote(&path_to_string(setup_public_config_path));
+    let primary_final_public_config =
+        shell_single_quote(&path_to_string(&primary_final_public_config));
+    let postgres_schema_reset_url = postgres_schema_reset_url(args)
+        .map(|url| shell_single_quote(&url))
+        .unwrap_or_else(|| "''".to_string());
+    let postgres_schema_reset_cases = postgres_schema_reset_cases(member_artifacts);
+    let unit = args.unit.to_lowercase();
+
+    Ok(format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
+SETUP_PUBLIC_CONFIG={setup_public_config_path}
+FINAL_PUBLIC_CONFIG={primary_final_public_config}
+POSTGRES_SCHEMA_RESET_URL={postgres_schema_reset_url}
+RESET_POSTGRES_SCHEMAS="${{RESET_POSTGRES_SCHEMAS:-0}}"
+MEMBERS=({members})
+PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
+INTERRUPTED_MEMBER="${{INTERRUPTED_MEMBER:-{interrupted_member}}}"
+HELD_MEMBER="${{HELD_MEMBER:-{held_member}}}"
+STATUS_RETRIES="${{STATUS_RETRIES:-240}}"
+STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
+SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-600}}"
+SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
+SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
+FEDERATION_CONSENSUS_BACKEND="${{FEDERATION_CONSENSUS_BACKEND:-aleph_bft}}"
+DKG_SETUP_PHASE=1
+PIDS=()
+
+member_config() {{
+  case "$1" in
+{config_cases}    *) return 1 ;;
+  esac
+}}
+
+member_work_dir() {{
+  case "$1" in
+{work_dir_cases}    *) return 1 ;;
+  esac
+}}
+
+member_setup_private_config() {{
+  case "$1" in
+{setup_private_config_cases}    *) return 1 ;;
+  esac
+}}
+
+member_final_config_dir() {{
+  case "$1" in
+{final_config_dir_cases}    *) return 1 ;;
+  esac
+}}
+
+member_final_private_config() {{
+  printf '%s/federation-private.json\n' "$(member_final_config_dir "$1")"
+}}
+
+member_mint_url() {{
+  case "$1" in
+{public_mint_url_cases}    *) return 1 ;;
+  esac
+}}
+
+postgres_member_schema() {{
+  case "$1" in
+{postgres_schema_reset_cases}    *) return 1 ;;
+  esac
+}}
+
+start_member() {{
+  local member="$1"
+  local config
+  local work_dir
+  local mintd_env=(CDK_MINTD_PROMETHEUS_ENABLED=false)
+  config="$(member_config "$member")"
+  work_dir="$(member_work_dir "$member")"
+  mkdir -p "$work_dir"
+  if [[ "$DKG_SETUP_PHASE" == "1" ]]; then
+    mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
+    mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=in_memory)
+  else
+    mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="$FEDERATION_CONSENSUS_BACKEND")
+    mintd_env+=(CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$SMOKE_OPERATION_TIMEOUT_SECONDS")
+  fi
+  env "${{mintd_env[@]}}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  PIDS[$member]=$!
+  printf 'started live DKG member %s with pid %s\n' "$member" "${{PIDS[$member]}}"
+}}
+
+stop_member() {{
+  local member="$1"
+  local pid="${{PIDS[$member]:-}}"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  unset 'PIDS[$member]'
+  printf 'stopped live DKG member %s\n' "$member"
+}}
+
+cleanup() {{
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    stop_member "$member"
+  done
+}}
+
+reset_postgres_schemas() {{
+  if [[ -z "$POSTGRES_SCHEMA_RESET_URL" ]]; then
+    return 0
+  fi
+  if [[ "$RESET_POSTGRES_SCHEMAS" != "1" ]]; then
+    printf 'set RESET_POSTGRES_SCHEMAS=1 before a generated PostgreSQL live DKG smoke\n' >&2
+    return 1
+  fi
+  if ! command -v psql >/dev/null 2>&1; then
+    printf 'psql is required for the PostgreSQL live DKG smoke\n' >&2
+    return 1
+  fi
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    local schema
+    schema="$(postgres_member_schema "$member")"
+    psql "$POSTGRES_SCHEMA_RESET_URL" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS \"$schema\" CASCADE; CREATE SCHEMA \"$schema\";" >/dev/null
+  done
+}}
+
+reset_live_dkg_state() {{
+  reset_postgres_schemas
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    rm -rf "$(member_work_dir "$member")" "$(member_final_config_dir "$member")"
+    mkdir -p "$(member_work_dir "$member")"
+  done
+}}
+
+status_field() {{
+  local line="$1"
+  local key="$2"
+  local field
+  for field in $line; do
+    case "$field" in
+      "$key"=*) printf '%s\n' "${{field#*=}}"; return 0 ;;
+    esac
+  done
+  return 1
+}}
+
+member_dkg_setup_line() {{
+  local member="$1"
+  "$CDK_MINTD_BIN" \
+    --work-dir "$(member_work_dir "$member")" \
+    --config "$(member_config "$member")" \
+    federation dkg-status \
+    --public-config "$SETUP_PUBLIC_CONFIG" \
+    --private-config "$(member_setup_private_config "$member")" \
+    --from-database --progress-only | awk '/^setup_records / {{ print; exit }}'
+}}
+
+member_dkg_records_complete() {{
+  local member="$1"
+  local line
+  line="$(member_dkg_setup_line "$member" 2>/dev/null)" || return 1
+  [[ "$(status_field "$line" keyset_shares || true)" == "1" && "$(status_field "$line" transcript_signatures || true)" == "${{#MEMBERS[@]}}" ]]
+}}
+
+wait_for_dkg_participant() {{
+  local member="$1"
+  local work_dir
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    local line
+    if line="$(member_dkg_setup_line "$member" 2>/dev/null)"; then
+      if [[ "$(status_field "$line" participant_states || true)" == "1" && "$(status_field "$line" participant_state_members || true)" == "$member" ]]; then
+        printf '%s\n' "$line"
+        return 0
+      fi
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not persist its live DKG participant state\n' "$member" >&2
+  member_dkg_setup_line "$member" >&2 || true
+  tail -n 100 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
+wait_for_commitment_count() {{
+  local member="$1"
+  local expected="$2"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    local line
+    if line="$(member_dkg_setup_line "$member" 2>/dev/null)" && [[ "$(status_field "$line" commitments || true)" == "$expected" ]]; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not collect %s partial DKG commitments\n' "$member" "$expected" >&2
+  member_dkg_setup_line "$member" >&2 || true
+  return 1
+}}
+
+wait_for_dkg_ready() {{
+  local member="$1"
+  local work_dir
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if member_dkg_records_complete "$member"; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not persist a complete live DKG record set\n' "$member" >&2
+  member_dkg_setup_line "$member" >&2 || true
+  tail -n 120 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
+export_final_config() {{
+  local member="$1"
+  "$CDK_MINTD_BIN" \
+    --work-dir "$(member_work_dir "$member")" \
+    --config "$(member_config "$member")" \
+    federation dkg-status \
+    --public-config "$SETUP_PUBLIC_CONFIG" \
+    --private-config "$(member_setup_private_config "$member")" \
+    --from-database --require-ready \
+    --final-config-dir "$(member_final_config_dir "$member")"
+}}
+
+compare_final_public_configs() {{
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    cmp -s "$FINAL_PUBLIC_CONFIG" "$(member_final_config_dir "$member")/federation-public.json" || {{
+      printf 'member %s assembled a different final DKG public config\n' "$member" >&2
+      return 1
+    }}
+  done
+}}
+
+wait_for_runtime_keysets() {{
+  local member="$1"
+  local mint_url
+  mint_url="$(member_mint_url "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if curl -fsS "$mint_url/v1/keysets" 2>/dev/null | grep -q '"id"'; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not activate the finalized DKG keyset after restart\n' "$member" >&2
+  tail -n 120 "$(member_work_dir "$member")/mintd.log" >&2 || true
+  return 1
+}}
+
+member_status_line() {{
+  local member="$1"
+  "$CDK_MINTD_BIN" federation status \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --private-config "$(member_final_private_config "$member")" \
+    --member "$member" --require-ready | awk '/^member / {{ print; exit }}'
+}}
+
+wait_for_member_status() {{
+  local member="$1"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if member_status_line "$member" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not become ready after DKG activation restart\n' "$member" >&2
+  member_status_line "$member" >&2 || true
+  tail -n 120 "$(member_work_dir "$member")/mintd.log" >&2 || true
+  return 1
+}}
+
+compare_digests() {{
+  "$CDK_MINTD_BIN" federation compare-digests \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --private-config "$(member_final_private_config "$PRIMARY_MEMBER")"
+}}
+
+wait_for_converged() {{
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if compare_digests >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'live DKG federation did not converge after activation\n' >&2
+  compare_digests >&2 || true
+  return 1
+}}
+
+validate_live_dkg_smoke() {{
+  if (( ${{#MEMBERS[@]}} < 3 )); then
+    printf 'live DKG interruption smoke requires at least three members\n' >&2
+    return 1
+  fi
+  member_config "$PRIMARY_MEMBER" >/dev/null || {{ printf 'unknown PRIMARY_MEMBER %s\n' "$PRIMARY_MEMBER" >&2; return 1; }}
+  member_config "$INTERRUPTED_MEMBER" >/dev/null || {{ printf 'unknown INTERRUPTED_MEMBER %s\n' "$INTERRUPTED_MEMBER" >&2; return 1; }}
+  member_config "$HELD_MEMBER" >/dev/null || {{ printf 'unknown HELD_MEMBER %s\n' "$HELD_MEMBER" >&2; return 1; }}
+  if [[ "$INTERRUPTED_MEMBER" == "$HELD_MEMBER" ]]; then
+    printf 'INTERRUPTED_MEMBER and HELD_MEMBER must differ\n' >&2
+    return 1
+  fi
+  if ! [[ "$STATUS_RETRIES" =~ ^[1-9][0-9]*$ && "$STATUS_SLEEP_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'STATUS_RETRIES and STATUS_SLEEP_SECONDS must be positive integers\n' >&2
+    return 1
+  fi
+}}
+
+trap cleanup EXIT INT TERM
+validate_live_dkg_smoke
+reset_live_dkg_state
+
+partial_member_count=$((${{#MEMBERS[@]}} - 1))
+for member in "${{MEMBERS[@]}}"; do
+  if [[ "$member" != "$HELD_MEMBER" ]]; then
+    start_member "$member"
+  fi
+done
+for member in "${{MEMBERS[@]}}"; do
+  if [[ "$member" != "$HELD_MEMBER" ]]; then
+    wait_for_dkg_participant "$member" >/dev/null
+    wait_for_commitment_count "$member" "$partial_member_count"
+  fi
+done
+
+interrupted_before="$(member_dkg_setup_line "$INTERRUPTED_MEMBER")"
+interrupted_ceremony_before="$(status_field "$interrupted_before" participant_state_ceremonies)"
+stop_member "$INTERRUPTED_MEMBER"
+start_member "$HELD_MEMBER"
+wait_for_dkg_participant "$HELD_MEMBER" >/dev/null
+if member_dkg_records_complete "$HELD_MEMBER"; then
+  printf 'live DKG completed while a required participant was offline\n' >&2
+  exit 1
+fi
+
+start_member "$INTERRUPTED_MEMBER"
+for member in "${{MEMBERS[@]}}"; do
+  wait_for_dkg_ready "$member"
+done
+interrupted_after="$(member_dkg_setup_line "$INTERRUPTED_MEMBER")"
+interrupted_ceremony_after="$(status_field "$interrupted_after" participant_state_ceremonies)"
+if [[ "$interrupted_ceremony_before" != "$interrupted_ceremony_after" || "$(status_field "$interrupted_after" participant_states)" != "1" ]]; then
+  printf 'interrupted member did not resume exactly one durable DKG ceremony\n' >&2
+  exit 1
+fi
+
+for member in "${{MEMBERS[@]}}"; do
+  export_final_config "$member"
+done
+compare_final_public_configs
+
+for member in "${{MEMBERS[@]}}"; do
+  stop_member "$member"
+done
+DKG_SETUP_PHASE=0
+for member in "${{MEMBERS[@]}}"; do
+  start_member "$member"
+done
+for member in "${{MEMBERS[@]}}"; do
+  wait_for_runtime_keysets "$member"
+  wait_for_member_status "$member"
+done
+wait_for_converged
+
+"$CDK_MINTD_BIN" federation smoke-operations \
+  --public-config "$FINAL_PUBLIC_CONFIG" \
+  --private-config "$(member_final_private_config "$PRIMARY_MEMBER")" \
+  --unit {unit} \
+  --mint-amount 16 \
+  --scenario standard \
+  --quote-retries "$SMOKE_QUOTE_RETRIES" \
+  --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+  --operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS"
+wait_for_converged
+
+printf 'live dealer-free DKG mint/swap/melt/restore smoke passed\n'
+"#,
+        setup_public_config_path = setup_public_config_path,
+        primary_final_public_config = primary_final_public_config,
+        postgres_schema_reset_url = postgres_schema_reset_url,
+        members = members,
+        primary_member = primary_member.get(),
+        interrupted_member = interrupted_member.get(),
+        held_member = held_member.get(),
+        config_cases = config_cases,
+        work_dir_cases = work_dir_cases,
+        setup_private_config_cases = setup_private_config_cases,
+        final_config_dir_cases = final_config_dir_cases,
+        public_mint_url_cases = public_mint_url_cases,
+        postgres_schema_reset_cases = postgres_schema_reset_cases,
+        unit = shell_single_quote(&unit),
     ))
 }
 

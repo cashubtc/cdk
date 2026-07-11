@@ -43,6 +43,7 @@ fn trusted_dealer_command_defaults_to_core_only_with_fakewallet_feature() {
     assert!(output_dir.join(PUBLIC_CONFIG_FILE).exists());
     assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
     assert!(!output_dir.join(SMOKE_SCRIPT_FILE).exists());
+    assert!(!output_dir.join(LIVE_DKG_SMOKE_SCRIPT_FILE).exists());
     for member_id in 1..=args.members {
         let member_dir = output_dir.join(format!("member-{member_id}"));
         assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
@@ -67,6 +68,7 @@ fn trusted_dealer_command_generates_local_fakewallet_files_only_when_requested()
     assert!(output_dir.join(PUBLIC_CONFIG_FILE).exists());
     assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
     assert!(output_dir.join(SMOKE_SCRIPT_FILE).exists());
+    assert!(output_dir.join(LIVE_DKG_SMOKE_SCRIPT_FILE).exists());
     for member_id in 1..=args.members {
         let member_dir = output_dir.join(format!("member-{member_id}"));
         assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
@@ -234,7 +236,10 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
 
     let smoke_script =
         std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+    let live_dkg_smoke_script = std::fs::read_to_string(&artifacts.live_dkg_smoke_script_path)
+        .expect("live DKG smoke script file");
     assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
+    assert!(live_dkg_smoke_script.starts_with("#!/usr/bin/env bash"));
     assert!(smoke_script.contains("federation status"));
     assert!(smoke_script.contains("federation dkg-status"));
     assert!(smoke_script.contains("federation payment-observations"));
@@ -342,6 +347,23 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         smoke_script.contains("\"$CDK_MINTD_BIN\" --work-dir \"$work_dir\" --config \"$config\"")
     );
     assert!(smoke_script.contains("env \"${mintd_env[@]}\" \"$CDK_MINTD_BIN\""));
+    assert!(live_dkg_smoke_script.contains("DKG_SETUP_PHASE=1"));
+    assert!(live_dkg_smoke_script.contains("HELD_MEMBER"));
+    assert!(live_dkg_smoke_script.contains("INTERRUPTED_MEMBER"));
+    assert!(live_dkg_smoke_script.contains("wait_for_commitment_count"));
+    assert!(live_dkg_smoke_script
+        .contains("live DKG completed while a required participant was offline"));
+    assert!(live_dkg_smoke_script.contains("participant_state_ceremonies"));
+    assert!(live_dkg_smoke_script.contains("--final-config-dir"));
+    assert!(live_dkg_smoke_script.contains("compare_final_public_configs"));
+    assert!(live_dkg_smoke_script.contains("DKG_SETUP_PHASE=0"));
+    assert!(live_dkg_smoke_script.contains("FEDERATION_CONSENSUS_BACKEND:-aleph_bft"));
+    assert!(live_dkg_smoke_script.contains("wait_for_runtime_keysets"));
+    assert!(live_dkg_smoke_script.contains("federation smoke-operations"));
+    assert!(live_dkg_smoke_script.contains("--scenario standard"));
+    assert!(
+        live_dkg_smoke_script.contains("live dealer-free DKG mint/swap/melt/restore smoke passed")
+    );
     assert!(smoke_script.contains("validate_smoke_settings()"));
     assert!(smoke_script.contains("require_positive_integer()"));
     assert!(smoke_script.contains("require_nonnegative_integer()"));
@@ -484,6 +506,18 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
             .permissions()
             .mode();
         assert_ne!(mode & 0o111, 0);
+        let live_dkg_mode = std::fs::metadata(&artifacts.live_dkg_smoke_script_path)
+            .expect("live DKG smoke script metadata")
+            .permissions()
+            .mode();
+        assert_ne!(live_dkg_mode & 0o111, 0);
+
+        let syntax = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&artifacts.live_dkg_smoke_script_path)
+            .status()
+            .expect("run bash syntax check");
+        assert!(syntax.success());
     }
 
     let mut live_dkg_ceremony_ids = BTreeSet::new();
@@ -667,6 +701,24 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         ));
         assert!(smoke_script.contains(&member_artifacts.public_mint_url));
         assert!(smoke_script.contains(&member_artifacts.prometheus_url));
+        assert!(live_dkg_smoke_script.contains(
+            &member_artifacts
+                .live_dkg_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(live_dkg_smoke_script.contains(
+            &member_artifacts
+                .live_dkg_work_dir
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(live_dkg_smoke_script.contains(
+            &member_artifacts
+                .live_dkg_final_config_dir
+                .to_string_lossy()
+                .to_string()
+        ));
     }
     assert_eq!(live_dkg_ceremony_ids.len(), 1);
 

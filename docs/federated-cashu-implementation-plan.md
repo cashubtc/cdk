@@ -2772,6 +2772,63 @@ Verified secure operator auto-start checkpoint:
 - The focused `federation_setup` gate passes all 14 tests with SQLite and Postgres live-DKG config parsing, one shared valid ceremony ID, exact denomination/timing policy, distinct member storage paths, and unchanged route-probe defaults.
 - `cargo check -p cdk-axum` and `cargo check -p cdk-mintd --features fakewallet,sqlite`: passed without federation features.
 - `cargo clippy -p cdk-axum --features federation --lib --no-deps -- -D warnings` and the equivalent mintd command reach this checkpoint without a new finding; they remain blocked by the existing 15 Axum and 9 mintd findings in unrelated older modules.
+
+Verified DKG hot-path checkpoint:
+
+- A fresh five-member process attempt exposed sustained full-core CPU use during
+  ceremony completion. Process sampling identified two repeated cryptographic
+  hot paths rather than AlephBFT or SQL locking: status/planner calls repeatedly
+  reevaluated every member polynomial for every denomination, and each
+  transcript-signature request independently rebuilt the same aggregate public
+  keyset.
+- The driver now derives and fully verifies a local keyset share once at the
+  durable `LocalKeysetShare` transition, caches pure plans while the durable
+  record view is unchanged, and moves the expensive derivation/planner work to
+  blocking workers so it cannot starve private REST. The persisted locally
+  derived share is the hot-path cache boundary for transcript hashing. Final
+  config export and startup activation still independently rederive all public
+  shares and reject any mismatch.
+- `cdk-mintd federation dkg-status --from-database --progress-only` reports
+  explicitly unchecked, redacted durable record counts without invoking the
+  planner or finalization verifier. Process polling can wait for one local
+  keyset share and all transcript-signature records, then perform the full
+  cryptographic check exactly once during export.
+- The sampled status command dropped from sustained full-core work under
+  contention to 0.80 user CPU seconds in the focused progress-only measurement.
+  The complete Axum DKG test group dropped from 128.63 seconds to 55.60 seconds
+  while retaining all full finalization checks.
+- `cargo test -p cdk-common --features federation dkg_driver -- --test-threads=1`:
+  all 3 planner tests passed, including equality between the cached transcript
+  hash and the fully rederived hash plus keyset-policy tamper rejection.
+- `cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads=1`:
+  all 5 transcript-signature route tests passed.
+- `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_dkg_status -- --test-threads=1`:
+  all 12 status, progress, reconstruction, and export tests passed.
+- `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`: passed.
+
+Verified live-DKG process-harness checkpoint:
+
+- Local federation generation now emits one executable
+  `smoke-live-dkg-federation.sh` alongside the existing trusted-dealer smoke.
+  It starts all but one member from setup-only configs, waits for durable partial
+  commitments, interrupts and restarts a second member, proves the ceremony
+  cannot complete while a required participant is offline, then waits for the
+  resumed durable ceremony records.
+- The harness exports every member's independently verified final public/private
+  config, byte-compares all public configs, restarts the same databases and
+  configs under AlephBFT, waits for runtime keyset activation and state-digest
+  convergence, and invokes the standard mint/swap/melt/restore wallet smoke.
+- `just fed-regtest-live-dkg` and `just fed-regtest-postgres-live-dkg` provide
+  SQLite and isolated-schema Postgres entry points. Both targets pass `just
+  --dry-run`; the generated script passes `bash -n` on Unix.
+- `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup::tests -- --test-threads=1`:
+  all 12 generation tests passed, including generated live-DKG shell syntax and
+  SQLite/Postgres config parsing.
+- The first real SQLite attempt verified partial commitment collection,
+  interruption, offline non-completion, and restart before exposing the repeated
+  public-key derivation hot path fixed in `c932b152d`. A clean post-fix process
+  rerun is still required; no end-to-end process success is claimed by this
+  checkpoint.
 - Remaining production-DKG gate: execute an interrupted and resumed multi-process ceremony with the generated live configs, restart every member onto the finalized keyset, and run mint/swap/melt/restore against it on SQLite and Postgres.
 
 ## Milestone 21: key rotation and federation upgrades

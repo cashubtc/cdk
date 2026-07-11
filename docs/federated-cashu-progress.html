@@ -432,15 +432,15 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, a bounded live executor over authenticated private REST, operator start/resume configuration, and redacted durable phase status. Three independent members can drive every phase through their signed routes, restart from durable private state, heal a partition, and derive one identical aggregate v3 keyset; real multi-process ceremony and restart activation remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, a bounded live executor over authenticated private REST, operator start/resume configuration, and a generated interruption/restart process harness. Three independent members can drive every phase through signed routes, restart from durable private state, heal a partition, and derive one identical aggregate v3 keyset; the repeated-derivation CPU hot path is fixed, while the clean multi-process ceremony and restart-activation rerun remains in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: generate live DKG member configs</span>
+          <span class="value">test: add live DKG process smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Local generation now gives every member a separate setup-only live-DKG config, durable work directory, and finalized-config destination. All configs commit to one shared generated ceremony ID and exact keyset policy, while remaining isolated from trusted-dealer runtime material and the existing manual route-probe fixtures.</span>
+          <span class="value">The generated SQLite/Postgres process harness now exercises partial commitments, one held member, interruption and durable resume, independent final-config export, AlephBFT activation restart, digest convergence, and the standard mint/swap/melt/restore wallet flow. Its generator, shell syntax, and command wiring are verified; a clean post-fix process run is still required before this gate can be marked complete.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -835,7 +835,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, a pure resumable phase planner, and a bounded authenticated REST executor to the existing durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. Mintd now exposes bounded start/resume configuration and redacted durable phase status. Production defaults require HTTPS for every member before any ceremony send or local participant-state creation; only an explicit development switch permits loopback HTTP. Three-member route tests prove ordered cumulative fanout, self-delivery, all-peer attempts, SQL restart, partition healing, identical aggregate public config, and distinct valid local shares. Remaining work is process-level ceremony interruption, resume, restart activation, and wallet operations using the resulting keyset.</p>
+            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, a pure resumable phase planner, and a bounded authenticated REST executor to the existing durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. Mintd now exposes bounded start/resume configuration and redacted durable phase status. Production defaults require HTTPS for every member before any ceremony send or local participant-state creation; only an explicit development switch permits loopback HTTP. Process sampling found that the first five-member run repeatedly reevaluated all public polynomials from status, planner, and transcript-signature paths. The driver now performs that work once when persisting the local share, caches unchanged plans, runs expensive derivation off async workers, and offers an explicitly unchecked record-count progress view. Full public-share rederivation remains mandatory at final export and startup. Three-member route tests prove ordered cumulative fanout, self-delivery, all-peer attempts, SQL restart, partition healing, identical aggregate public config, and distinct valid local shares. Remaining work is process-level ceremony interruption, resume, restart activation, and wallet operations using the resulting keyset.</p>
           </article>
         </div>
       </section>

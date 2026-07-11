@@ -1279,6 +1279,18 @@ fed-regtest-dkg-full dir="target/cdk-fed-regtest-dkg-full" members="5" threshold
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1"
   PROBE_DKG_SETUP_ROUTES=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
+# Run a dealer-free live DKG ceremony, interruption/resume, activation restart, and wallet smoke
+fed-regtest-live-dkg dir="target/cdk-fed-regtest-live-dkg" members="5" threshold="3" port_start="25985":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  FEDERATION_CONSENSUS_BACKEND=aleph_bft \
+    CDK_MINTD_BIN=target/debug/cdk-mintd \
+    bash "{{dir}}/smoke-live-dkg-federation.sh"
+
 # Generate local fake-wallet federation configs backed by PostgreSQL member schemas
 fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint" dkg_setup_route_probes="0":
   #!/usr/bin/env bash
@@ -1362,6 +1374,20 @@ fed-regtest-postgres-dkg-full dir="target/cdk-fed-regtest-postgres-dkg-full" mem
   just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}" "1"
   RESET_POSTGRES_SCHEMAS=1 PROBE_DKG_SETUP_ROUTES=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
+
+# Run the dealer-free live DKG ceremony and wallet smoke with PostgreSQL member schemas
+fed-regtest-postgres-live-dkg dir="target/cdk-fed-regtest-postgres-live-dkg" members="5" threshold="3" port_start="26985" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
+  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
+  RESET_POSTGRES_SCHEMAS=1 \
+    FEDERATION_CONSENSUS_BACKEND=aleph_bft \
+    CDK_MINTD_BIN=target/debug/cdk-mintd \
+    bash "{{dir}}/smoke-live-dkg-federation.sh"
 
 # Start generated PostgreSQL-backed fake-wallet federation members and leave them running
 fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
