@@ -2556,6 +2556,23 @@ partition, slow-member, malformed-share, conflict, transcript, partial
 activation, and replacement cases, the focused Milestone 20A production failure
 matrix is complete.
 
+### Confidential DKG transport policy
+
+Decision: **Kept** with the simple CDK policy. Production DKG uses the default
+HTTP transport: WebPKI certificate verification remains enabled, invalid
+certificates are never accepted, and redirects are disabled. Federation config
+commits each HTTPS endpoint and identity public key, while every private DKG
+request is signed by that configured identity. TLS therefore provides
+confidentiality and server endpoint authentication; federation signatures
+provide exact application peer authentication.
+
+The initial protocol does not add mandatory mTLS or a second static TLS-key pin
+set. Operators may enforce mTLS or SPKI policy at their controlled TLS proxy,
+but protocol identity remains the signed federation roster. Explicit plaintext
+is confined to the existing all-loopback development exception. The 1 MiB body
+cap, per-member in-flight slot, and per-member token bucket remain independent
+of TLS termination.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

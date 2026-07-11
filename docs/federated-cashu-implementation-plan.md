@@ -3129,7 +3129,7 @@ Verified harness checkpoint (2026-07-11):
   Axum DKG, five focused builder, 13 mintd status, 13 generator, six SQLite DKG,
   and SQL migration-parity tests pass; the Postgres activation test compiles.
 
-- [ ] Add a focused DKG performance harness that can run independently of
+- [x] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
   support fast phase-level probes and an optional real multi-process ceremony,
   use disposable isolated work directories and ports, stop every child process
@@ -3139,7 +3139,7 @@ Verified harness checkpoint (2026-07-11):
   20-of-14 federations, with one-denomination and standard eight-denomination
   variants. The one-denomination profile is the quick iteration gate; the
   20-of-14 eight-denomination profile is the large-federation acceptance gate.
-- [ ] Measure fresh participant generation, persisted participant reload and
+- [x] Measure fresh participant generation, persisted participant reload and
   validation, one unchanged planner tick, one changed-record planner tick,
   commitment/reveal ingestion, duplicate ingestion, secret-share verification,
   local keyset derivation, transcript derivation, and complete multi-process
@@ -3151,14 +3151,14 @@ Verified harness checkpoint (2026-07-11):
   with the same transcript hash, keyset ID, aggregate keys, and local public
   share mapping. Sampling must be low overhead and removable or explicitly
   benchmark-only.
-- [ ] Run the primary performance gate with release binaries. Keep one debug
+- [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.
-- [ ] Establish an unmodified baseline before each optimization series. For
+- [x] Establish an unmodified baseline before each optimization series. For
   noisy process measurements, run enough repetitions to report a median and
   range; preserve the exact member/threshold/denomination profile, build mode,
   machine power mode, and concurrency settings for before/after comparisons.
-- [ ] Treat "baseline before production-code changes" as a sequencing rule,
+- [x] Treat "baseline before production-code changes" as a sequencing rule,
   not a blanket ban on instrumentation. After the untouched baseline, the agent
   may add the smallest behavior-neutral timing spans, counters, tracing, or
   profiling hooks needed to answer a specific DKG performance question,
@@ -3175,7 +3175,7 @@ Verified harness checkpoint (2026-07-11):
   build mode, raw measurements, bottleneck classification, retained/rejected
   decision, and remaining risk. A dedicated DKG benchmark document may be split
   out later only if the combined benchmark note becomes difficult to navigate.
-- [ ] Evaluate one optimization at a time whenever practical. A candidate may
+- [x] Evaluate one optimization at a time whenever practical. A candidate may
   be retained only after the focused harness shows a repeatable improvement in
   its intended metric and all cryptographic/correctness gates remain unchanged.
   If it does not improve the intended metric, regressions outweigh the gain, or
@@ -3314,15 +3314,24 @@ Production robustness checklist:
   database payload inventory is recorded for a future production-hardening
   milestone. Non-Unix ACL policy remains separate future hardening work; no
   backup-encryption or backup requirement is part of the Milestone 20A gate.
-- [ ] Harden confidential peer transport beyond signed payload authentication:
+- [x] Harden confidential peer transport beyond signed payload authentication:
   verified HTTPS and an explicit mTLS/pinning policy where appropriate, no
   secret-bearing insecure redirects, bounded request bodies, and per-member
   admission/rate limits. Localhost plaintext remains an explicit development
   exception only. The request-body portion is complete for DKG: every setup
   route independently caps decoded JSON at 1 MiB and the maximum supported
-  64-by-64 reveal is 800,039 bytes. HTTPS verification, mTLS/pinning policy,
-  and redirect policy remain open. One nonblocking authenticated DKG slot and
-  one bounded token bucket per roster member prevent a member with concurrent
+  64-by-64 reveal is 800,039 bytes. The production DKG driver uses the default
+  HTTP transport, which verifies WebPKI TLS certificates and disables redirects;
+  it never enables invalid-certificate acceptance. The initial protocol policy
+  deliberately does not require mTLS or static TLS-key pinning: federation
+  identity signatures authenticate the exact configured sender at the
+  application layer, the config digest commits every identity key and HTTPS
+  endpoint, and verified TLS supplies confidentiality and endpoint server
+  authentication. Deployments may terminate TLS at a controlled reverse proxy;
+  mTLS/SPKI pinning remains optional deployment hardening rather than a second
+  protocol identity system. Plain HTTP is accepted only when explicitly enabled
+  and every member endpoint is loopback. One nonblocking authenticated DKG slot
+  and one bounded token bucket per roster member prevent a member with concurrent
   or sustained setup traffic from occupying another member's DKG capacity.
 - [x] Separate DKG completion from keyset activation with an explicit barrier.
   Every member must confirm the same federation ID, ceremony ID, transcript
