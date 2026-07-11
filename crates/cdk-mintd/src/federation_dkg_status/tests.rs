@@ -72,6 +72,26 @@ fn dkg_reveal_for_status(
     }
 }
 
+fn dkg_participant_state_for_status(
+    public_config: &FederationConfig,
+    participant: MemberId,
+) -> FederationDkgParticipantState {
+    FederationDkgParticipantState::generate(
+        public_config,
+        dkg_ceremony_id(),
+        participant,
+        FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1)].into_iter().collect(),
+        )
+        .expect("DKG keyset spec"),
+    )
+    .expect("DKG participant state")
+}
+
 fn dkg_secret_share_request_for_status(
     public_config: &FederationConfig,
     sender: MemberId,
@@ -286,9 +306,12 @@ fn dkg_status_report_marks_missing_transcript_signature_not_ready() {
 fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     let fixture = dkg_completion_fixture(member_id(2));
     let setup_summary = DkgSetupRecordSummary {
+        participant_states: 1,
         commitments: 3,
         reveals: 2,
         secret_share_contributions: 4,
+        participant_state_members: BTreeSet::from([member_id(2)]),
+        participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
         reveal_members: BTreeSet::from([member_id(1), member_id(2)]),
         secret_share_senders: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
@@ -306,10 +329,15 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     assert!(report.ready);
     assert!(report
         .text
-        .contains("setup_records commitments=3 reveals=2"));
+        .contains("setup_records participant_states=1 commitments=3 reveals=2"));
     assert!(report
         .text
-        .contains("secret_share_contributions=4 commitment_members=1,2,3"));
+        .contains("secret_share_contributions=4 participant_state_members=2"));
+    assert!(report.text.contains(&format!(
+        "participant_state_ceremonies={}",
+        dkg_ceremony_id()
+    )));
+    assert!(report.text.contains("commitment_members=1,2,3"));
     assert!(report.text.contains("reveal_members=1,2"));
     assert!(report.text.contains("secret_share_senders=1,2,3"));
     assert!(report.text.contains("secret_share_receivers=2"));
@@ -417,9 +445,12 @@ fn merge_dkg_records_deduplicates_database_records_already_supplied_from_files()
 fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready() {
     let fixture = dkg_completion_fixture(member_id(2));
     let setup_summary = DkgSetupRecordSummary {
+        participant_states: 1,
         commitments: 2,
         reveals: 1,
         secret_share_contributions: 1,
+        participant_state_members: BTreeSet::from([member_id(2)]),
+        participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2)]),
         reveal_members: BTreeSet::from([member_id(1)]),
         secret_share_senders: BTreeSet::from([member_id(1)]),
@@ -437,7 +468,12 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
     assert!(!report.ready);
     assert!(report
         .text
-        .contains("setup_records commitments=2 reveals=1"));
+        .contains("setup_records participant_states=1 commitments=2 reveals=1"));
+    assert!(report.text.contains("participant_state_members=2"));
+    assert!(report.text.contains(&format!(
+        "participant_state_ceremonies={}",
+        dkg_ceremony_id()
+    )));
     assert!(report.text.contains("secret_share_contributions=1"));
     assert!(report.text.contains("commitment_members=1,2"));
     assert!(report.text.contains("reveal_members=1"));
@@ -467,6 +503,8 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         member_id(2),
         51,
     );
+    let participant_state =
+        dkg_participant_state_for_status(&fixture.setup_public_config, member_id(2));
     let work_dir =
         std::env::temp_dir().join(format!("cdk_mintd_dkg_status_db_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -477,6 +515,9 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         .await
         .expect("open test database");
     let mut tx = db.begin_transaction().await.expect("begin transaction");
+    tx.add_federation_dkg_participant_state(&participant_state)
+        .await
+        .expect("persist local participant state");
     tx.add_federation_dkg_commitment(&commitment)
         .await
         .expect("persist setup commitment");
@@ -501,6 +542,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         .await
         .expect("read DKG records from database");
 
+    assert_eq!(records.participant_states, vec![participant_state]);
     assert_eq!(records.commitments, vec![commitment]);
     assert_eq!(records.reveals, vec![reveal]);
     assert_eq!(
@@ -519,7 +561,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     );
     assert!(report
         .text
-        .contains("setup_records commitments=1 reveals=1"));
+        .contains("setup_records participant_states=1 commitments=1 reveals=1"));
     assert!(report.text.contains("secret_share_contributions=1"));
     let _ = std::fs::remove_dir_all(&work_dir);
 }

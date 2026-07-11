@@ -590,6 +590,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_participant_state_persistence() {
+        cdk_common::database::mint::test::federation_dkg_participant_state_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_dkg_participant_state_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_dkg_member_keyset_share_persistence() {
         cdk_common::database::mint::test::federation_dkg_member_keyset_share_persistence(
             provide_mint_db(unique_federation_test_id(
@@ -704,6 +716,7 @@ mod test {
             "federation_config",
             "federation_signature_shares",
             "federation_dkg_setup_messages",
+            "federation_dkg_participant_states",
             "federation_dkg_member_keyset_shares",
             "federation_dkg_secret_share_contributions",
             "federation_dkg_transcript_signatures",
@@ -741,6 +754,7 @@ mod test {
             "idx_federation_signature_shares_operation_output",
             "idx_federation_signature_shares_blinded_message",
             "idx_federation_dkg_setup_member",
+            "idx_federation_dkg_participant_states_member",
             "idx_federation_dkg_member_keyset_shares_member",
             "idx_federation_dkg_secret_share_contributions_receiver",
             "idx_federation_dkg_transcript_signatures_member",

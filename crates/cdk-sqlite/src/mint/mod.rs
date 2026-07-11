@@ -213,6 +213,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_participant_state_persistence() {
+        cdk_common::database::mint::test::federation_dkg_participant_state_persistence(
+            provide_db("federation_dkg_participant_state_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_dkg_member_keyset_share_persistence() {
         cdk_common::database::mint::test::federation_dkg_member_keyset_share_persistence(
             provide_db("federation_dkg_member_keyset_share_persistence".to_string()).await,
@@ -362,6 +371,7 @@ mod test {
             "federation_config",
             "federation_signature_shares",
             "federation_dkg_setup_messages",
+            "federation_dkg_participant_states",
             "federation_dkg_member_keyset_shares",
             "federation_dkg_secret_share_contributions",
             "federation_dkg_transcript_signatures",
@@ -418,6 +428,7 @@ mod test {
                   'federation_payment_observations',
                   'federation_signature_shares',
                   'federation_dkg_setup_messages',
+                  'federation_dkg_participant_states',
                   'federation_dkg_member_keyset_shares',
                   'federation_dkg_secret_share_contributions',
                   'federation_dkg_transcript_signatures',
@@ -472,6 +483,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_dkg_setup_member"),
             "missing federation DKG setup member index"
+        );
+        assert!(
+            index_names.contains("idx_federation_dkg_participant_states_member"),
+            "missing federation DKG participant-state member index"
         );
         assert!(
             index_names.contains("idx_federation_dkg_member_keyset_shares_member"),

@@ -6,8 +6,9 @@ use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
-    FederationConfigDigest, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationConfigDigest, FederationConfigSnapshot, FederationDkgCeremonyId,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
@@ -506,6 +507,36 @@ fn sql_row_to_federation_dkg_reveal(
     Ok(reveal)
 }
 
+fn sql_row_to_federation_dkg_participant_state(
+    row: Vec<Column>,
+) -> Result<FederationDkgParticipantState, Error> {
+    unpack_into!(let (ceremony_id, member_id, payload_json) = row);
+    let ceremony_id = FederationDkgCeremonyId::from_hex(column_as_string!(&ceremony_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation DKG ceremony ID: {e}")))?;
+    let member_id = sql_member_id(member_id)?;
+    let state =
+        serde_json::from_str::<FederationDkgParticipantState>(&column_as_string!(&payload_json))
+            .map_err(|e| {
+                Error::Internal(format!(
+                    "Invalid federation DKG participant state JSON: {e}"
+                ))
+            })?;
+    if state.ceremony_id() != ceremony_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG participant-state ceremony mismatch: expected={ceremony_id}, found={}",
+            state.ceremony_id()
+        )));
+    }
+    if state.member_id() != member_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG participant-state member mismatch: expected={member_id}, found={}",
+            state.member_id()
+        )));
+    }
+
+    Ok(state)
+}
+
 fn sql_row_to_federation_dkg_secret_share(
     row: Vec<Column>,
 ) -> Result<FederationDkgSecretShareRequest, Error> {
@@ -610,6 +641,14 @@ fn federation_dkg_member_keyset_share_conflict_error(
     Error::Internal(format!(
         "Conflicting federation DKG keyset share for member {} keyset {}",
         share.member_id, share.keyset.id
+    ))
+}
+
+fn federation_dkg_participant_state_conflict_error(state: &FederationDkgParticipantState) -> Error {
+    Error::Internal(format!(
+        "Conflicting local federation DKG participant state for member {} ceremony {}",
+        state.member_id(),
+        state.ceremony_id()
     ))
 }
 
@@ -1377,6 +1416,36 @@ where
         .await?;
         if rows_affected == 0 {
             return Err(federation_dkg_secret_share_conflict_error(contribution));
+        }
+
+        Ok(())
+    }
+
+    async fn add_federation_dkg_participant_state(
+        &mut self,
+        state: &FederationDkgParticipantState,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_participant_states
+            (ceremony_id, member_id, payload_json)
+            VALUES
+            (:ceremony_id, :member_id, :payload_json)
+            ON CONFLICT (ceremony_id)
+            DO UPDATE SET
+                member_id = EXCLUDED.member_id,
+                payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_participant_states.member_id = EXCLUDED.member_id
+              AND federation_dkg_participant_states.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("ceremony_id", state.ceremony_id().to_string())
+        .bind("member_id", i64::from(state.member_id().get()))
+        .bind("payload_json", serde_json::to_string(state)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_participant_state_conflict_error(state));
         }
 
         Ok(())
@@ -2164,6 +2233,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_dkg_secret_share)
+        .collect()
+    }
+
+    async fn get_federation_dkg_participant_states(
+        &self,
+    ) -> Result<Vec<FederationDkgParticipantState>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT ceremony_id, member_id, payload_json
+            FROM federation_dkg_participant_states
+            ORDER BY ceremony_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_participant_state)
         .collect()
     }
 

@@ -6,9 +6,9 @@ use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgFinalizedMemberConfig,
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgTranscriptSignatureRequest, MemberConfigPrivate,
-    MemberId,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberId,
 };
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
@@ -86,6 +86,10 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
         .context("failed to open mint database for federation DKG status")?;
 
     Ok(DkgCompletionRecords {
+        participant_states: db
+            .get_federation_dkg_participant_states()
+            .await
+            .context("failed to read persisted local DKG participant states")?,
         commitments: db
             .get_federation_dkg_commitments()
             .await
@@ -146,6 +150,7 @@ fn apply_database_env_overrides(settings: &mut crate::config::Settings) -> Resul
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct DkgCompletionRecords {
+    participant_states: Vec<FederationDkgParticipantState>,
     commitments: Vec<FederationDkgParticipantCommitment>,
     reveals: Vec<FederationDkgParticipantCommitmentReveal>,
     secret_share_contributions: Vec<FederationDkgSecretShareRequest>,
@@ -175,9 +180,12 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct DkgSetupRecordSummary {
+    participant_states: usize,
     commitments: usize,
     reveals: usize,
     secret_share_contributions: usize,
+    participant_state_members: BTreeSet<MemberId>,
+    participant_state_ceremonies: BTreeSet<String>,
     commitment_members: BTreeSet<MemberId>,
     reveal_members: BTreeSet<MemberId>,
     secret_share_senders: BTreeSet<MemberId>,
@@ -187,9 +195,20 @@ struct DkgSetupRecordSummary {
 impl DkgSetupRecordSummary {
     fn from_records(records: &DkgCompletionRecords) -> Self {
         Self {
+            participant_states: records.participant_states.len(),
             commitments: records.commitments.len(),
             reveals: records.reveals.len(),
             secret_share_contributions: records.secret_share_contributions.len(),
+            participant_state_members: records
+                .participant_states
+                .iter()
+                .map(FederationDkgParticipantState::member_id)
+                .collect(),
+            participant_state_ceremonies: records
+                .participant_states
+                .iter()
+                .map(|state| state.ceremony_id().to_string())
+                .collect(),
             commitment_members: records
                 .commitments
                 .iter()
@@ -290,10 +309,13 @@ fn dkg_status_report_with_setup_records(
     ));
     if setup_records != &DkgSetupRecordSummary::default() {
         text.push_str(&format!(
-            "setup_records commitments={} reveals={} secret_share_contributions={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={}\n",
+            "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={}\n",
+            setup_records.participant_states,
             setup_records.commitments,
             setup_records.reveals,
             setup_records.secret_share_contributions,
+            display_member_set(&setup_records.participant_state_members),
+            display_string_set(&setup_records.participant_state_ceremonies),
             display_member_set(&setup_records.commitment_members),
             display_member_set(&setup_records.reveal_members),
             display_member_set(&setup_records.secret_share_senders),

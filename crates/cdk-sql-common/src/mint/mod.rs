@@ -558,6 +558,12 @@ mod federation_migration_tests {
         let postgres_dkg_member_keyset_shares = include_str!(
             "migrations/postgres/20260703150000_add_federation_dkg_member_keyset_shares.sql"
         );
+        let sqlite_dkg_participant_states = include_str!(
+            "migrations/sqlite/20260710130000_add_federation_dkg_participant_states.sql"
+        );
+        let postgres_dkg_participant_states = include_str!(
+            "migrations/postgres/20260710130000_add_federation_dkg_participant_states.sql"
+        );
         let sqlite_dkg_secret_share_contributions = include_str!(
             "migrations/sqlite/20260703154500_add_federation_dkg_secret_share_contributions.sql"
         );
@@ -791,6 +797,22 @@ mod federation_migration_tests {
                     "member_id",
                     "payload_json",
                     "idx_federation_dkg_member_keyset_shares_member",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_dkg_participant_states,
+            postgres_dkg_participant_states,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_dkg_participant_states",
+                    "ceremony_id",
+                    "member_id",
+                    "payload_json",
+                    "idx_federation_dkg_participant_states_member",
                 ],
             );
         }

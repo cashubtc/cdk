@@ -15,10 +15,10 @@ use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftNetworkRetryRecord,
     FederationAlephBftPendingOperationRecord, FederationConfigSnapshot,
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
-    FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalEntry, FederationJournalTip, FederationMemberStatusSnapshot,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
     FederationStateDigestCheckpoint, MemberId,
 };
@@ -767,6 +767,12 @@ pub trait FederationJournalTransaction {
         contribution: &FederationDkgSecretShareRequest,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one local restartable DKG participant state.
+    async fn add_federation_dkg_participant_state(
+        &mut self,
+        state: &FederationDkgParticipantState,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one completed local member DKG keyset share.
     async fn add_federation_dkg_member_keyset_share(
         &mut self,
@@ -929,6 +935,11 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_secret_share_contributions(
         &self,
     ) -> Result<Vec<FederationDkgSecretShareRequest>, Self::Err>;
+
+    /// Get all persisted local restartable DKG participant states.
+    async fn get_federation_dkg_participant_states(
+        &self,
+    ) -> Result<Vec<FederationDkgParticipantState>, Self::Err>;
 
     /// Get all persisted completed local member DKG keyset shares.
     async fn get_federation_dkg_member_keyset_shares(

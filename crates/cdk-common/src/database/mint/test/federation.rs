@@ -12,9 +12,9 @@ use crate::federation::{
     FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
     FederationConsensusItem, FederationDkgCeremonyId, FederationDkgCommitmentRound,
     FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgPublicCeremony,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
@@ -167,6 +167,26 @@ fn dkg_reveal(
             ],
         )]),
     }
+}
+
+fn dkg_participant_state(
+    public_config: &FederationConfig,
+    ceremony_id: FederationDkgCeremonyId,
+) -> FederationDkgParticipantState {
+    FederationDkgParticipantState::generate(
+        public_config,
+        ceremony_id,
+        member_id(1),
+        FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1)].into_iter().collect(),
+        )
+        .expect("DKG keyset spec"),
+    )
+    .expect("DKG participant state")
 }
 
 fn dkg_setup_state_from_db_records(
@@ -1468,6 +1488,57 @@ where
         .complete_round(&public_config)
         .expect("complete setup state")
         .is_some());
+}
+
+/// Assert local restartable DKG participant state persists idempotently by ceremony.
+pub async fn federation_dkg_participant_state_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let public_config = dkg_public_config();
+    let first = dkg_participant_state(&public_config, dkg_ceremony_id());
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_participant_state(&first)
+        .await
+        .expect("persist participant state");
+    tx.add_federation_dkg_participant_state(&first)
+        .await
+        .expect("idempotent participant-state replay");
+    tx.commit().await.expect("commit");
+    assert_eq!(
+        db.get_federation_dkg_participant_states()
+            .await
+            .expect("participant states"),
+        vec![first.clone()]
+    );
+
+    let conflicting = dkg_participant_state(&public_config, dkg_ceremony_id());
+    assert_ne!(conflicting, first);
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting state");
+    assert!(tx
+        .add_federation_dkg_participant_state(&conflicting)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback conflicting state");
+
+    let second_ceremony_id = FederationDkgCeremonyId::from_bytes([34; 32]);
+    let second = dkg_participant_state(&public_config, second_ceremony_id);
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin second ceremony");
+    tx.add_federation_dkg_participant_state(&second)
+        .await
+        .expect("persist second ceremony");
+    tx.commit().await.expect("commit second ceremony");
+    assert_eq!(
+        db.get_federation_dkg_participant_states()
+            .await
+            .expect("participant states"),
+        vec![first, second]
+    );
 }
 
 /// Assert private DKG secret-share contributions persist idempotently.
