@@ -122,7 +122,7 @@ if docker info > /dev/null 2>&1; then
     --network=host \
     -p ${WALLET_PORT}:${WALLET_PORT} \
     -e MINT_URL=${MINT_URL} \
-    cashubtc/nutshell:0.16.5 \
+    cashubtc/nutshell:0.20.2 \
     poetry run cashu -d
 else
   echo "Docker is not accessible, skipping Nutshell wallet container setup"

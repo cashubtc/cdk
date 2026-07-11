@@ -278,7 +278,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
             (proc, None, Some(path.clone()))
         }
         MintRuntime::Docker => {
-            println!("Sourcing nutshell mint from Docker container (cashubtc/nutshell:latest)...");
+            println!("Sourcing nutshell mint from Docker container (cashubtc/nutshell:0.20.2)...");
             let name = format!("nutshell_fuzz_{}", uuid::Uuid::new_v4());
             // Pre-clean container
             let _ = std::process::Command::new("docker")
@@ -317,7 +317,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
                     "MINT_RPC_SERVER_PORT=8086",
                     "-e",
                     "MINT_RPC_SERVER_MUTUAL_TLS=False",
-                    "cashubtc/nutshell:latest",
+                    "cashubtc/nutshell:0.20.2",
                     "poetry",
                     "run",
                     "mint",
@@ -433,6 +433,31 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     cleanup_guard.stop_nutshell();
     println!("Nutshell mint stopped successfully.");
     tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Fix permissions of nutshell database directory using Docker if running under Linux/UNIX
+    #[cfg(unix)]
+    {
+        println!("Fixing permissions of nutshell database directory using Docker...");
+        let uid_out = std::process::Command::new("id").arg("-u").output();
+        let gid_out = std::process::Command::new("id").arg("-g").output();
+        if let (Ok(uid_res), Ok(gid_res)) = (uid_out, gid_out) {
+            let uid = String::from_utf8_lossy(&uid_res.stdout).trim().to_string();
+            let gid = String::from_utf8_lossy(&gid_res.stdout).trim().to_string();
+            let _ = std::process::Command::new("docker")
+                .args([
+                    "run",
+                    "--rm",
+                    "-v",
+                    &format!("{}:/data", fuzz_dir.to_str().unwrap()),
+                    "cashubtc/nutshell:0.20.2",
+                    "chown",
+                    "-R",
+                    &format!("{}:{}", uid, gid),
+                    "/data",
+                ])
+                .output();
+        }
+    }
 
     // Find nutshell sqlite database
     let nutshell_db_path = find_sqlite_db(&fuzz_dir)
