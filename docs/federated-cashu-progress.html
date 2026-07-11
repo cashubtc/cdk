@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: classify DKG delivery failures</span>
+          <span class="value">bench: isolate DKG secret-share finalization</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Candidate 9 is retained without a speed claim. DKG retries now distinguish timeout, connection, local/remote admission, remote validation, storage/server failure, decode/response validation, and transport classes using fixed labels and optional status only. Private-looking source details are absent from classified diagnostics, and all 34 focused release DKG tests pass.</span>
+          <span class="value">Harness v5 isolates Candidate 10's pre-change cost. At eight denominations, one contribution verifies in 15.094ms, 33.756ms, and 56.148ms for 5-of-3, 11-of-8, and 20-of-14; one member's final derivation takes 159.791ms, 752.266ms, and 2.276s. The 20-member derivation is 40.5x slower before process contention.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Use the retained diagnostics in a bounded, smaller real-process probe to isolate first-time secret-share request lifetime into CPU derivation, database work, inbound admission, or transport timeout. Do not restart the large 20-member acceptance ceremony until that focused bottleneck is corrected.</span>
+          <span class="value">Implement Candidate 10: verify each incoming share before persistence, acknowledge the durable contribution without waiting for final derivation, and let the existing restartable driver derive the member keyset. Prove invalid-share rejection, restart equality, and after latency before another process ceremony.</span>
         </div>
       </aside>
     </header>

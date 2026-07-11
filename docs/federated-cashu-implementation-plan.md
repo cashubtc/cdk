@@ -3034,6 +3034,14 @@ Verified harness checkpoint (2026-07-11):
   classified value contains none of them. All 34 focused release Axum DKG tests
   pass; retry behavior, ceremony messages, persistence, phases, and activation
   are unchanged.
+- Harness v5 adds isolated single-contribution verification and single-member
+  final-derivation phases. At eight denominations, release medians are
+  15.094ms versus 159.791ms for 5-of-3, 33.756ms versus 752.266ms for 11-of-8,
+  and 56.148ms versus 2.276s for 20-of-14. The 20-member final derivation is
+  40.5x slower than validating one incoming contribution before any
+  multi-process CPU contention. This establishes the pre-change baseline for
+  decoupling durable contribution acknowledgement from final local derivation;
+  no production behavior changed in this harness checkpoint.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3183,6 +3191,14 @@ reference to the recorded measurements:
   other internal failures generic 500 without exposing response details. A
   redaction regression proves private-looking source messages are absent from
   every classified value. Outcome does not claim lower latency.
+- [ ] Validate each first-time secret-share contribution against its sender's
+  revealed polynomial before durable acceptance, then acknowledge the durable
+  contribution without coupling that HTTP request to final local keyset
+  derivation. Let the existing driver derive and persist the final member share
+  from complete durable records. Harness v5 baseline: at eight denominations,
+  one contribution verification versus one member derivation is 15.094ms versus
+  159.791ms (5-of-3), 33.756ms versus 752.266ms (11-of-8), and 56.148ms versus
+  2.276s (20-of-14). Outcome: pending implementation and after measurement.
 
 Production robustness checklist:
 

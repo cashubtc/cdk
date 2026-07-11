@@ -25,8 +25,8 @@ use cdk_common::nuts::nut01::{
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 4;
-const ALL_PHASES: [&str; 14] = [
+const HARNESS_VERSION: u16 = 5;
+const ALL_PHASES: [&str; 16] = [
     "participant_generation",
     "participant_generation_validated_by_construction",
     "participant_reload_validation",
@@ -36,9 +36,11 @@ const ALL_PHASES: [&str; 14] = [
     "commitment_ingestion",
     "reveal_ingestion",
     "duplicate_ingestion",
+    "single_secret_share_verification",
     "secret_share_verification",
     "public_keyset_derivation_reference",
     "public_keyset_derivation_aggregated",
+    "single_local_keyset_derivation",
     "local_keyset_derivation",
     "transcript_derivation",
 ];
@@ -413,6 +415,13 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                 || verify_received_secret_shares(&base.public_config, fixture),
             )?);
         }
+        if args.phases.contains("single_secret_share_verification") {
+            reports.push(measure_phase(
+                "single_secret_share_verification",
+                args.iterations,
+                || verify_one_received_secret_share(&base.public_config, fixture),
+            )?);
+        }
         if args.phases.contains("public_keyset_derivation_reference")
             || args.phases.contains("public_keyset_derivation_aggregated")
         {
@@ -467,6 +476,13 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                 "local_keyset_derivation",
                 args.iterations,
                 || derive_all_member_keyset_shares(&base.public_config, fixture),
+            )?);
+        }
+        if args.phases.contains("single_local_keyset_derivation") {
+            reports.push(measure_phase(
+                "single_local_keyset_derivation",
+                args.iterations,
+                || derive_one_member_keyset_share(&base.public_config, fixture),
             )?);
         }
     }
@@ -862,6 +878,61 @@ fn verify_received_secret_shares(
         }
     }
     Ok(verified)
+}
+
+fn verify_one_received_secret_share(
+    config: &FederationConfig,
+    fixture: &ParticipantFixture,
+) -> Result<usize> {
+    let (receiver, requests) = fixture
+        .contributions
+        .first_key_value()
+        .context("missing receiver contributions")?;
+    let request = requests.first().context("missing secret-share request")?;
+    request.validate_sender_receiver(config, request.sender, *receiver)?;
+    let reveal = fixture
+        .reveals
+        .iter()
+        .find(|reveal| reveal.member_id == request.sender)
+        .context("missing sender reveal")?;
+    let request_amounts = request
+        .secret_shares
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if request_amounts != reveal.keyset_spec.amounts {
+        bail!("secret contribution amount set did not match sender reveal");
+    }
+    for (amount, secret_share) in &request.secret_shares {
+        let commitments = reveal
+            .coefficient_commitments
+            .get(amount)
+            .context("missing amount commitments")?;
+        let expected = evaluate_public_key_commitments(receiver.to_bls_signer_id(), commitments)?;
+        if secret_share.public_key_share() != expected {
+            bail!("secret contribution did not match public polynomial");
+        }
+    }
+    Ok(request.secret_shares.len())
+}
+
+fn derive_one_member_keyset_share(
+    config: &FederationConfig,
+    fixture: &ParticipantFixture,
+) -> Result<FederationDkgMemberKeysetShare> {
+    let setup_state = ingest_reveals(config, fixture)?;
+    let round = setup_state
+        .complete_round(config)?
+        .context("complete fixture did not produce a DKG round")?;
+    let member = *config.members.keys().next().context("empty federation")?;
+    let incoming = fixture
+        .contributions
+        .get(&member)
+        .context("missing member contributions")?
+        .iter()
+        .map(|request| (request.sender, request.clone()))
+        .collect::<BTreeMap<_, _>>();
+    Ok(round.derive_member_keyset_share(config, &setup_state.reveals, member, &incoming)?)
 }
 
 fn derive_all_member_keyset_shares(

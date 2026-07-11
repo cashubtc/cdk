@@ -2173,6 +2173,51 @@ logging. It does not retroactively identify the exact receiver-side cause of the
 already preserved secret-share timeouts, and it does not close the process
 responsiveness gate.
 
+### Candidate 10 baseline: decouple contribution acknowledgement from derivation
+
+Decision: **Pending**. Harness-only baseline; no production behavior changed.
+
+Code tracing showed that the secret-share route calls final local keyset
+derivation before committing and acknowledging the last incoming contribution.
+The same derivation is already available in the restartable DKG driver from the
+complete durable record set. Harness v5 therefore adds two narrow release
+phases: verify one contribution against its sender's revealed polynomial, and
+derive one receiver's complete local keyset share.
+
+Command shape:
+
+```bash
+target/release/examples/dkg_performance \
+  --profile PROFILE --denominations eight --iterations ITERATIONS \
+  --timeout-secs 120 \
+  --phases single_secret_share_verification,single_local_keyset_derivation \
+  --pretty
+```
+
+Ten iterations were used at 5-of-3, five at 11-of-8, and three at 20-of-14.
+
+| Eight-denomination release phase | 5-of-3 | 11-of-8 | 20-of-14 |
+| --- | ---: | ---: | ---: |
+| One contribution verification median | 15.094ms | 33.756ms | 56.148ms |
+| Verification range | 14.942-15.328ms | 33.686-33.890ms | 55.837-56.329ms |
+| One member final derivation median | 159.791ms | 752.266ms | 2.276s |
+| Derivation range | 159.170-162.526ms | 751.440-755.082ms | 2.270-2.277s |
+| Derivation / verification | 10.6x | 22.3x | 40.5x |
+
+The 20-of-14 fixture setup took 25.054s, but each timed phase remained bounded
+and the run used one process with no REST, databases, daemons, or federation
+fanout. This does not reproduce the 60-second process timeout by itself. It does
+show that the final request carries a multi-second CPU obligation before normal
+system-wide contention, while every non-final first-time contribution needs
+only the much smaller sender-polynomial verification.
+
+The candidate is to verify each contribution before persistence, commit the
+contribution and authenticated sequence atomically, return its acknowledgement,
+and let the existing driver derive/persist the final member share from complete
+durable records. It can be retained only if invalid shares still fail before
+persistence, restart derives the same keyset, transcript/config equality remains
+unchanged, and the measured final HTTP path loses the derivation cost.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
