@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use cdk::federation::{
-    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
+    FederationDkgDriverPhase, FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
     ValidatedFederationDkgParticipantState,
 };
 
@@ -119,10 +120,28 @@ impl DkgDriverTestFederation {
     async fn drive_until_complete(&self, max_rounds: usize) -> usize {
         let mut attempted_deliveries = 0usize;
         for _ in 0..max_rounds {
-            let mut all_complete = true;
-            for member in &self.members {
-                let mut delivery_tracker = member.delivery_tracker.lock().await;
-                let outcome = run_federation_dkg_driver_tick(
+            let outcomes = self.drive_round().await;
+            attempted_deliveries += outcomes
+                .iter()
+                .map(|outcome| outcome.attempted_deliveries)
+                .sum::<usize>();
+            if outcomes
+                .iter()
+                .all(FederationDkgDriverTickOutcome::is_complete)
+            {
+                return attempted_deliveries;
+            }
+        }
+
+        panic!("DKG ceremony did not complete in {max_rounds} rounds");
+    }
+
+    async fn drive_round(&self) -> Vec<FederationDkgDriverTickOutcome> {
+        let mut outcomes = Vec::with_capacity(self.members.len());
+        for member in &self.members {
+            let mut delivery_tracker = member.delivery_tracker.lock().await;
+            outcomes.push(
+                run_federation_dkg_driver_tick(
                     &member.state,
                     &member.client,
                     &member.participant,
@@ -130,16 +149,10 @@ impl DkgDriverTestFederation {
                     &mut delivery_tracker,
                 )
                 .await
-                .expect("DKG driver tick");
-                attempted_deliveries += outcome.attempted_deliveries;
-                all_complete &= outcome.is_complete();
-            }
-            if all_complete {
-                return attempted_deliveries;
-            }
+                .expect("DKG driver tick"),
+            );
         }
-
-        panic!("DKG ceremony did not complete in {max_rounds} rounds");
+        outcomes
     }
 
     async fn restart_member(&mut self, index: usize) {
@@ -324,6 +337,95 @@ async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
             4
         );
     }
+}
+
+#[tokio::test]
+async fn dkg_driver_retries_response_lost_after_durable_persistence() {
+    let federation = DkgDriverTestFederation::new().await;
+    federation
+        .transport
+        .fail_post_responses_after_delivery("/federation/v1/dkg/commitments", 1);
+
+    let attempted_deliveries = federation.drive_until_complete(12).await;
+    assert_eq!(attempted_deliveries, 46);
+    federation.assert_complete_and_consistent().await;
+    for member in &federation.members {
+        let commitments = member
+            .db
+            .get_federation_dkg_commitments()
+            .await
+            .expect("durable commitments");
+        assert_eq!(
+            commitments
+                .iter()
+                .filter(|commitment| commitment.ceremony_id == federation.ceremony_id)
+                .count(),
+            3
+        );
+    }
+}
+
+#[tokio::test]
+async fn dkg_driver_restarts_safely_at_every_durable_phase() {
+    let mut federation = DkgDriverTestFederation::new().await;
+    let restart_phases = [
+        FederationDkgDriverPhase::Commitment,
+        FederationDkgDriverPhase::Reveal,
+        FederationDkgDriverPhase::SecretShares,
+        FederationDkgDriverPhase::LocalKeysetShare,
+        FederationDkgDriverPhase::TranscriptSignature,
+        FederationDkgDriverPhase::Activation,
+    ];
+    let mut restarted = HashSet::from([FederationDkgDriverPhase::Commitment]);
+    federation.restart_member(0).await;
+
+    let mut completed = false;
+    for _ in 0..24 {
+        let mut outcomes = Vec::with_capacity(federation.members.len());
+        for index in 0..federation.members.len() {
+            let outcome = {
+                let member = &federation.members[index];
+                let mut delivery_tracker = member.delivery_tracker.lock().await;
+                run_federation_dkg_driver_tick(
+                    &member.state,
+                    &member.client,
+                    &member.participant,
+                    FederationDkgSecretShareTransportPolicy::RequireHttps,
+                    &mut delivery_tracker,
+                )
+                .await
+                .expect("DKG driver phase-matrix tick")
+            };
+            let phase_before = outcome.phase_before;
+            let phase_after = outcome.phase_after;
+            outcomes.push(outcome);
+            if index == 0 {
+                let restart_phase = [phase_before, phase_after]
+                    .into_iter()
+                    .find(|phase| restart_phases.contains(phase) && !restarted.contains(phase));
+                if let Some(restart_phase) = restart_phase {
+                    restarted.insert(restart_phase);
+                    federation.restart_member(0).await;
+                }
+            }
+        }
+        if outcomes
+            .iter()
+            .all(FederationDkgDriverTickOutcome::is_complete)
+        {
+            completed = true;
+            break;
+        }
+    }
+
+    assert!(completed, "DKG did not complete after phase restart matrix");
+    assert!(restarted.contains(&FederationDkgDriverPhase::Commitment));
+    assert!(restarted.contains(&FederationDkgDriverPhase::Reveal));
+    assert!(restarted.contains(&FederationDkgDriverPhase::SecretShares));
+    assert!(restarted.contains(&FederationDkgDriverPhase::LocalKeysetShare));
+    assert!(restarted.contains(&FederationDkgDriverPhase::TranscriptSignature));
+    assert!(restarted.contains(&FederationDkgDriverPhase::Activation));
+    federation.assert_complete_and_consistent().await;
 }
 
 #[tokio::test]

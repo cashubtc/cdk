@@ -421,6 +421,7 @@ struct RouterFederationTransportRegistry {
 
 #[derive(Debug, Default)]
 struct RouterFederationTransportFaults {
+    post_response_failures_after_delivery: BTreeMap<String, usize>,
     aleph_bft_network_message_delays: VecDeque<Duration>,
     aleph_bft_network_message_duplicate_replays: usize,
     aleph_bft_network_message_reorder_once: bool,
@@ -466,6 +467,7 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                     .lock()
                     .map(|faults| {
                         (
+                            faults.post_response_failures_after_delivery.len(),
                             faults.aleph_bft_network_message_delays.len(),
                             faults.aleph_bft_network_message_duplicate_replays,
                             faults.aleph_bft_network_message_reorder_once,
@@ -521,6 +523,27 @@ impl RouterFederationTransport {
 }
 
 impl RouterFederationTransportRegistry {
+    fn fail_post_responses_after_delivery(&self, path_suffix: &str, count: usize) {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .post_response_failures_after_delivery
+            .insert(path_suffix.to_string(), count);
+    }
+
+    fn take_post_response_failure_after_delivery(&self, path: &str) -> bool {
+        let mut faults = self.faults.lock().expect("router transport faults lock");
+        let Some((_, remaining)) = faults
+            .post_response_failures_after_delivery
+            .iter_mut()
+            .find(|(suffix, remaining)| path.ends_with(suffix.as_str()) && **remaining > 0)
+        else {
+            return false;
+        };
+        *remaining = remaining.saturating_sub(1);
+        true
+    }
+
     fn with_missing_router_wait(self, timeout: Duration) -> Self {
         Self {
             missing_router_wait: timeout,
@@ -1401,6 +1424,11 @@ impl Transport for RouterFederationTransportRegistry {
         let response_body = response_body_result?;
         if is_aleph_bft_network_message && self.take_aleph_bft_network_message_duplicate_replay() {
             let _ = router_transport_post_once_bytes(&router, &path, payload_bytes).await;
+        }
+        if self.take_post_response_failure_after_delivery(&path) {
+            return Err(HttpError::Other(format!(
+                "simulated response loss after durable POST delivery for {path}"
+            )));
         }
 
         Ok(serde_json::from_slice(&response_body)?)

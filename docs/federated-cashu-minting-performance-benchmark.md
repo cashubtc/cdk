@@ -2503,10 +2503,32 @@ for audit. This adds no AlephBFT item or DKG message. Focused persistence,
 mintd restart/replacement, stale-activation, authenticated completion, and
 operator-status tests cover the transitions.
 
-Verified gate: 45/45 release Axum DKG tests, 19/19 release mintd DKG/status
+Current verified gate: 47/47 release Axum DKG tests, 19/19 release mintd DKG/status
 tests, six release builder DKG tests, seven release SQLite DKG persistence
 tests, migration parity, and a successful Postgres lifecycle test compile with
 `--no-run`.
+
+### Failure matrix: restart and ambiguous acknowledgement
+
+Decision: **Kept** as the first production failure-matrix checkpoint, with no
+speed claim. One authenticated three-member ceremony restarts the same member
+at every durable driver boundary: commitment, reveal, secret-share delivery,
+local keyset-share persistence, transcript signature, and activation. It still
+completes with the same finalized configuration and no regenerated participant
+secret state.
+
+A separate test transport delivers one commitment POST to the receiver, waits
+for its successful durable response, then discards that response. The sender
+records one ambiguous delivery failure and retries; the receiver takes the
+exact-duplicate path, all members converge, and the ceremony uses 46 delivery
+attempts instead of the 45 baseline while retaining exactly one commitment per
+roster member. This directly covers timeout/response loss after durable
+persistence without adding a production probe or retry branch.
+
+Together with existing partition, duplicate, invalid-share, conflicting-reveal,
+transcript-mismatch, partial-activation, and abort/replacement tests, this leaves
+the deterministic slow-member deadline and actual SQLite write-failure/disk-full
+rollback-and-recovery cases open.
 
 ## Recommended Work Order
 

@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add DKG ceremony lifecycle</span>
+          <span class="value">test: harden DKG failure recovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">DKG now has durable active, aborted, and complete ceremony states. Replacing an unfinished ceremony requires an explicit predecessor ID and atomically links both records; implicit replacement fails unchanged, completed ceremonies require the rotation workflow, historical artifacts remain auditable but cannot activate, and every replacement still needs exact all-member readiness. The 45 Axum DKG, 19 mintd DKG/status, six builder, seven SQLite persistence, migration-parity, and Postgres compile gates pass.</span>
+          <span class="value">The DKG failure matrix now restarts a member at all six durable phases and proves recovery after a commitment response is lost only after durable receiver persistence. Exact retry adds one delivery attempt, creates no duplicate record, and still converges. Existing tests cover partition recovery, invalid shares, conflicts, transcript mismatch, partial activation, and explicit replacement; all 47 focused Axum DKG tests pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue Milestone 20A with the focused production failure matrix across every phase, including ambiguous persistence timeouts, offline members, malformed shares, conflicting reveals, partial activation, replacement recovery, and disk/write failure. Database encryption at rest and backup/restore remain explicitly out of scope. Keep the interrupted 20-member process acceptance ceremony deferred until those focused gates justify another bounded run.</span>
+          <span class="value">Finish the Milestone 20A production failure matrix with a deterministic slow-member deadline case and a real SQLite write-failure/disk-full rollback-and-recovery gate. Database encryption at rest and backup/restore remain explicitly out of scope. Keep the interrupted 20-member process acceptance ceremony deferred until those focused gates justify another bounded run.</span>
         </div>
       </aside>
     </header>

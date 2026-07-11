@@ -3355,7 +3355,7 @@ Production robustness checklist:
   artifacts, and no AlephBFT item or additional DKG network phase is added.
   Focused SQL compare-and-set, mintd replacement/restart, mint-builder stale
   activation, authenticated completion, and status regressions pass.
-  The verified gate is 45/45 release Axum DKG tests, 19/19 release mintd
+  The current verified gate is 47/47 release Axum DKG tests, 19/19 release mintd
   DKG/status tests, six release builder DKG tests, seven release SQLite DKG
   persistence tests, migration parity, and a successful Postgres lifecycle
   test compile with `--no-run`.
@@ -3398,6 +3398,18 @@ Production robustness checklist:
   conflicting reveals, disk-full/write failure, transcript mismatch, partial
   activation, abort/replacement, and failure recovery. No test may log scalar
   material.
+  The first matrix checkpoint is complete: a three-member ceremony now restarts
+  one member immediately at commitment, reveal, secret-share delivery, local
+  keyset-share persistence, transcript signature, and activation boundaries,
+  then reaches the identical final config. A post-delivery transport fault also
+  drops one commitment response only after the receiver durably commits it;
+  the sender reports one failed attempt, retries the exact request, completes in
+  46 rather than 45 deliveries, and every database retains exactly three
+  current-ceremony commitments. Existing focused tests cover offline partition
+  recovery, exact duplicates, invalid shares, conflicting reveals, transcript
+  mismatch, partial activation, and explicit abort/replacement. The remaining
+  matrix work is a deterministic slow-member deadline case and a real SQLite
+  write-failure/disk-full rollback-and-recovery gate.
 
 Fedimint DKG comparison and source references:
 
