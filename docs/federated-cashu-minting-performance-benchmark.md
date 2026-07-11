@@ -1608,7 +1608,7 @@ isolation and in the full parallel Axum suite.
 ## Dealer-Free DKG Performance
 
 Milestone 20A starts with a benchmark-only harness over the pure `cdk-common`
-DKG state machine. Harness version 1 has no database, REST, AlephBFT, wallet, or
+DKG state machine. Harness version 2 has no database, REST, AlephBFT, wallet, or
 mint daemon dependency. It supports the `5-of-3`, `11-of-8`, and `20-of-14`
 profiles; one or eight denominations; phase selection; debug or release builds;
 raw samples; and a hard process timeout. The `just dkg-perf` recipe is the
@@ -1727,6 +1727,61 @@ Decision: the 20-of-14 eight-denomination baseline is **deferred**, not passed
 or failed as a ceremony. The current implementation already fails the preceding
 one-denomination quick gate by a wide margin, and no final transcript result was
 available from the interrupted run.
+
+### Candidate 1: trust-boundary participant validation
+
+Decision: **Kept** for its intended planner-tick metric.
+
+The production driver previously called the complete persisted participant
+validation on every changed-record planner rebuild. That validation rechecks
+every private contribution against its public polynomial even though the
+participant state is immutable for the life of the driver. Harness v2 compares
+the unchanged legacy planner with a non-serializable validated wrapper created
+after generation or durable reload. The wrapper owns immutable state through
+shared ownership and binds it to the complete validated public-config digest;
+the legacy planner still performs full validation for callers without that
+trust-boundary proof.
+
+Command shape for both profiles:
+
+```bash
+target/release/examples/dkg_performance \
+  --profile PROFILE --denominations one --iterations 10 \
+  --timeout-secs 120 \
+  --phases planner_unchanged,planner_validated_participant --pretty
+```
+
+| Release planner measurement | 5-of-3 | 11-of-8 |
+| --- | ---: | ---: |
+| Legacy full-validation median | 9.842ms | 48.160ms |
+| Legacy range | 9.781-9.965ms | 47.820-48.655ms |
+| Validated-participant median | 0.223ms | 0.844ms |
+| Validated range | 0.218-0.278ms | 0.827-0.962ms |
+| Median speedup | 44.1x | 57.1x |
+| Complete-fixture setup | 1.248s | 31.370s |
+| Correctness checks | all true | all true |
+
+Focused verification passed 30 `cdk-common` DKG tests and 7 permissioned
+`cdk-axum` DKG driver/route tests. Coverage includes persisted-state tampering,
+changed keyset policy, restart/resume, authenticated member delivery, and exact
+legacy/validated plan equality. No ceremony messages, phase ordering,
+persistence, REST admission, retries, activation, or cryptographic checks were
+changed.
+
+A separate bounded five-member debug process smoke did not complete. Every
+member persisted all five commitments and reveals but only four secret-share
+contributions; the same final sender timed out against all receivers at the
+existing ten-second peer-request deadline. Source tracing showed that the
+secret-share route performs final local keyset derivation before committing the
+last contribution. Concurrent debug derivation exceeded the request lifetime,
+so cancellation prevented that final contribution from becoming durable and
+retries repeated the work. The run was interrupted after this was established;
+no timeout increase or production behavior change was made.
+
+This process result neither invalidates the planner microbenchmark nor proves a
+full-ceremony improvement. It identifies the next bounded work: Candidate 2's
+aggregate-polynomial derivation, followed by a release process responsiveness
+gate. The 20-of-14 eight-denomination run remains deferred.
 
 ## Recommended Work Order
 

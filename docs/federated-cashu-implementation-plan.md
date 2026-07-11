@@ -2903,7 +2903,7 @@ Verified harness checkpoint (2026-07-11):
   no AlephBFT, wallet, mint daemon, REST, or database dependency. It supports
   explicit profile, denomination, build, iteration, phase, full-ceremony, and
   timeout controls and emits one machine-readable JSON report.
-- Harness v1 measures every requested pure phase, modeled canonical bytes and
+- Harness v2 measures every requested pure phase, modeled canonical bytes and
   durable record counts, and final transcript/key/share equality. An external
   permissioned `/usr/bin/time -lp` wrapper currently supplies wall, user,
   system, average CPU, and peak RSS. Peak-CPU sampling and real REST counters
@@ -2918,6 +2918,20 @@ Verified harness checkpoint (2026-07-11):
   fail the current implementation as a quick iteration gate. Do not spend CPU
   on the eight-denomination 20-of-14 acceptance run until focused optimization
   makes the one-denomination profile complete within the quick gate.
+- Candidate 1 is **Kept**. A non-serializable validated-participant wrapper now
+  performs full validation once after generation or durable reload, binds the
+  proof to the complete public-config digest, and reuses immutable participant
+  state across driver ticks. Ten-sample release medians fell from 9.842ms to
+  0.223ms at 5-of-3 (44.1x) and from 48.160ms to 0.844ms at 11-of-8 (57.1x),
+  with all transcript, keyset, public-share, and local secret/public equality
+  checks true. This is a planner-tick result, not a full-ceremony speed claim.
+- A bounded five-member debug process smoke reached all commitments/reveals but
+  repeatedly timed out the final member's secret-share request at the existing
+  ten-second peer deadline while every receiver performed final key derivation
+  before committing that contribution. The run was interrupted rather than
+  extended. This does not contradict Candidate 1, but it confirms that final
+  public-polynomial derivation and request-lifetime coupling remain the next
+  robustness bottleneck; no timeout or protocol behavior was changed.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -2981,10 +2995,13 @@ Optimization candidates, in expected priority order. Each item remains open
 until its benchmark outcome is annotated **Kept** or **Rejected** with a link or
 reference to the recorded measurements:
 
-- [ ] Validate immutable participant state once at the trust boundary rather
+- [x] Validate immutable participant state once at the trust boundary rather
   than on every driver tick and every planner rebuild. Preserve full validation
   after deserialization/restart and reject any persisted-state mismatch.
-  Outcome: pending.
+  Outcome: **Kept**. Harness v2 measured 44.1x and 57.1x lower planner rebuild
+  medians at 5-of-3 and 11-of-8 respectively. The reusable proof is
+  non-serializable, is recreated after generation/reload, binds the complete
+  config digest, and preserves full validation in the legacy planner API.
 - [ ] Aggregate public polynomial coefficients across participants before
   evaluating the aggregate polynomial for each federation member. Prove the
   optimized result is byte-for-byte equivalent to summing independently

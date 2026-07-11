@@ -8,6 +8,7 @@ use cdk::federation::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
     FederationDkgParticipantState, FederationError, MemberId,
+    ValidatedFederationDkgParticipantState,
 };
 use cdk_http_client::{Async, Transport};
 use futures::future::join_all;
@@ -247,11 +248,20 @@ pub(crate) async fn run_federation_dkg_driver_tick<T>(
 where
     T: Transport,
 {
+    let public_config = state
+        .mint
+        .federation_config()
+        .ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+        })?
+        .public_config();
+    let participant =
+        ValidatedFederationDkgParticipantState::new(public_config, participant.clone())?;
     let mut plan_cache = None;
     run_federation_dkg_driver_tick_with_cache(
         state,
         client,
-        participant,
+        &participant,
         secret_share_transport,
         &mut plan_cache,
     )
@@ -261,7 +271,7 @@ where
 async fn run_federation_dkg_driver_tick_with_cache<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
-    participant: &FederationDkgParticipantState,
+    participant: &ValidatedFederationDkgParticipantState,
     secret_share_transport: FederationDkgSecretShareTransportPolicy,
     plan_cache: &mut Option<FederationDkgPlanCache>,
 ) -> Result<FederationDkgDriverTickOutcome, cdk::Error>
@@ -274,14 +284,6 @@ where
     let public_config = runtime_config.public_config().clone();
     let private_config = runtime_config.private_config().clone();
     validate_federation_dkg_secret_share_transport(&public_config, secret_share_transport)?;
-    participant.validate(&public_config)?;
-    if participant.member_id() != private_config.member_id {
-        return Err(FederationError::MemberIdMismatch {
-            expected: private_config.member_id,
-            found: participant.member_id(),
-        }
-        .into());
-    }
 
     let records = load_federation_dkg_driver_records(state).await?;
     let plan = plan_federation_dkg_records(
@@ -374,7 +376,7 @@ async fn plan_federation_dkg_records(
     records: FederationDkgDriverRecords,
     public_config: &FederationConfig,
     private_config: &cdk::federation::MemberConfigPrivate,
-    participant: &FederationDkgParticipantState,
+    participant: &ValidatedFederationDkgParticipantState,
     plan_cache: &mut Option<FederationDkgPlanCache>,
 ) -> Result<FederationDkgDriverPlan, cdk::Error> {
     if let Some(cached) = plan_cache.as_ref() {
@@ -388,7 +390,11 @@ async fn plan_federation_dkg_records(
     let private_config = private_config.clone();
     let participant = participant.clone();
     let plan = tokio::task::spawn_blocking(move || {
-        records_for_plan.plan(&public_config, &private_config, &participant)
+        records_for_plan.plan_with_validated_participant(
+            &public_config,
+            &private_config,
+            &participant,
+        )
     })
     .await
     .map_err(|_| cdk::Error::Custom("federation DKG planner task failed".to_string()))??;
@@ -419,6 +425,7 @@ pub async fn run_federation_dkg_driver(
     )?;
     let participant =
         prepare_federation_dkg_participant_state(state, ceremony_id, keyset_spec).await?;
+    let participant = ValidatedFederationDkgParticipantState::new(&public_config, participant)?;
     let client = FederationRestPeerClient::new_with_config(
         Async::default(),
         &public_config,

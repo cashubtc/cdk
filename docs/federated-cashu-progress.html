@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has a bounded, machine-readable pure-DKG performance harness with 5-of-3, 11-of-8, and 20-of-14 profiles, one/eight-denomination variants, phase selection, release/debug modes, hard timeouts, and transcript/key/share equality checks; larger release baselines and the optional REST process runner remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has a bounded, machine-readable pure-DKG performance harness and its first retained optimization: immutable participant state is fully validated once after generation or reload, bound to the complete public config, and reused across driver ticks. Large release acceptance and the optional REST process runner remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add bounded DKG performance harness</span>
+          <span class="value">perf: reuse validated DKG participant state</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Harness v1 shows steep CPU-bound DKG scaling without memory pressure: release 5-of-3 completes in a 1.308-second median and 11-of-8 in 32.084 seconds with all equality checks true, while 20-of-14 one-denomination remained incomplete when interrupted after 1,116.72 seconds. The current implementation therefore fails the quick large-federation gate before any production optimization.</span>
+          <span class="value">Harness v2 shows the retained trust-boundary validation path reducing a changed planner rebuild from 9.842ms to 0.223ms at 5-of-3 and from 48.160ms to 0.844ms at 11-of-8, with every transcript, keyset, public-share, and secret/public equality check true. Thirty pure DKG tests and seven permissioned Axum driver/route tests pass. A bounded debug process smoke separately confirmed that final key derivation can exceed the existing ten-second request lifetime; no timeout or protocol behavior was changed.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Use short behavior-neutral subphase probes to separate immutable-state revalidation from repeated public-polynomial evaluation, then evaluate the listed optimization candidates one at a time. Defer the 20-of-14 eight-denomination acceptance run until its one-denomination quick profile completes within budget.</span>
+          <span class="value">Evaluate Candidate 2: aggregate public polynomial coefficients once before member evaluation, prove byte-for-byte equivalence and malformed-commitment rejection, then rerun bounded release phase and process responsiveness gates. Keep the 20-of-14 eight-denomination acceptance run deferred until the one-denomination quick profile becomes viable.</span>
         </div>
       </aside>
     </header>
@@ -672,6 +672,7 @@
             <div>
               <h3>Milestone 20A: optimize DKG performance and robustness</h3>
               <p>Objective: make dealer-free DKG fast, measurable, resource-bounded, and operationally safe for large federations without weakening ceremony verification.</p>
+              <p>Current result: Candidate 1 is retained. Reusing a fully validated, config-bound participant-state proof makes planner rebuilds 44.1x faster at 5-of-3 and 57.1x faster at 11-of-8; full-ceremony improvement is not yet claimed.</p>
               <p class="test-gate"><strong>Test gate:</strong> a focused phase-level harness quickly compares 5-of-3, 11-of-8, and 20-of-14 profiles; every candidate is retained or rejected from recorded before/after evidence; a release 20-of-14 eight-denomination ceremony completes within a documented budget with responsive REST, bounded retries, identical final transcripts, and the production secret-share, activation, abort, backup, and failure-matrix gates satisfied.</p>
             </div>
             <span class="status progress">In progress</span>

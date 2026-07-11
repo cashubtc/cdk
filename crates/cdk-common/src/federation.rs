@@ -44,7 +44,7 @@ pub use self::consensus::{
 };
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
-    FederationDkgDriverRecords,
+    FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,

@@ -2,15 +2,58 @@
 
 use core::fmt;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::{
-    FederationConfig, FederationDkgCommitmentRequest, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupState, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationError, MemberConfigPrivate, MemberId,
-    Result,
+    FederationConfig, FederationConfigDigest, FederationDkgCommitmentRequest,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupState,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationError,
+    MemberConfigPrivate, MemberId, Result,
 };
+
+/// Owned participant state that passed full validation at a trust boundary.
+///
+/// This proof is deliberately non-serializable. Reloaded state must construct a
+/// new proof, while an in-process driver may reuse one across immutable ticks.
+#[derive(Debug, Clone)]
+pub struct ValidatedFederationDkgParticipantState {
+    participant_state: Arc<FederationDkgParticipantState>,
+    config_digest: FederationConfigDigest,
+}
+
+impl ValidatedFederationDkgParticipantState {
+    /// Fully validate participant state and bind the proof to a federation.
+    pub fn new(
+        public_config: &FederationConfig,
+        participant_state: FederationDkgParticipantState,
+    ) -> Result<Self> {
+        participant_state.validate(public_config)?;
+        Ok(Self {
+            participant_state: Arc::new(participant_state),
+            config_digest: public_config.config_digest_for_validated_config()?,
+        })
+    }
+
+    /// Return the validated immutable participant state.
+    #[must_use]
+    pub fn participant_state(&self) -> &FederationDkgParticipantState {
+        self.participant_state.as_ref()
+    }
+
+    fn validate_binding(&self, public_config: &FederationConfig) -> Result<()> {
+        let config_digest = public_config.config_digest_for_validated_config()?;
+        if self.config_digest != config_digest {
+            return Err(FederationError::FederationConfigDigestMismatch {
+                member_id: self.participant_state.member_id(),
+                expected: self.config_digest,
+                found: config_digest,
+            });
+        }
+        Ok(())
+    }
+}
 
 /// Durable records used to plan one local member's next DKG work.
 ///
@@ -136,9 +179,22 @@ impl FederationDkgDriverRecords {
         private_config: &MemberConfigPrivate,
         participant_state: &FederationDkgParticipantState,
     ) -> Result<FederationDkgDriverPlan> {
+        let participant_state =
+            ValidatedFederationDkgParticipantState::new(public_config, participant_state.clone())?;
+        self.plan_with_validated_participant(public_config, private_config, &participant_state)
+    }
+
+    /// Select the next work using participant state validated at the load boundary.
+    pub fn plan_with_validated_participant(
+        &self,
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        participant_state: &ValidatedFederationDkgParticipantState,
+    ) -> Result<FederationDkgDriverPlan> {
         public_config.validate()?;
         private_config.validate_against_public(public_config)?;
-        participant_state.validate(public_config)?;
+        participant_state.validate_binding(public_config)?;
+        let participant_state = participant_state.participant_state();
         let local_member = private_config.member_id;
         if participant_state.member_id() != local_member {
             return Err(FederationError::MemberIdMismatch {
@@ -508,6 +564,38 @@ mod tests {
             .values()
             .map(|state| state.secret_share_request(receiver).expect("secret share"))
             .collect()
+    }
+
+    #[test]
+    fn validated_participant_plan_matches_full_validation_and_binds_federation() {
+        let (public_config, private_configs, participants) = setup();
+        let local_member = member_id(2);
+        let private_config = private_configs.get(&local_member).expect("private config");
+        let participant_state = participants.get(&local_member).expect("participant state");
+        let records = FederationDkgDriverRecords::default();
+        let expected = records
+            .plan(&public_config, private_config, participant_state)
+            .expect("fully validated plan");
+        let validated =
+            ValidatedFederationDkgParticipantState::new(&public_config, participant_state.clone())
+                .expect("validated participant");
+        let actual = records
+            .plan_with_validated_participant(&public_config, private_config, &validated)
+            .expect("plan using trust-boundary validation");
+        assert_eq!(actual, expected);
+
+        let mut different_config = public_config.clone();
+        different_config
+            .payment_observation_policy
+            .max_pending_quotes += 1;
+        assert!(matches!(
+            validated.validate_binding(&different_config),
+            Err(FederationError::FederationConfigDigestMismatch {
+                member_id,
+                expected: _,
+                found: _,
+            }) if member_id == local_member
+        ));
     }
 
     #[test]

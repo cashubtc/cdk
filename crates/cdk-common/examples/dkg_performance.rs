@@ -15,18 +15,19 @@ use cdk_common::federation::{
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupState,
     FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams,
+    MemberConfigPublic, MemberId, ThresholdParams, ValidatedFederationDkgParticipantState,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::evaluate_public_key_commitments;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 1;
-const ALL_PHASES: [&str; 10] = [
+const HARNESS_VERSION: u16 = 2;
+const ALL_PHASES: [&str; 11] = [
     "participant_generation",
     "participant_reload_validation",
     "planner_unchanged",
+    "planner_validated_participant",
     "planner_changed_record",
     "commitment_ingestion",
     "reveal_ingestion",
@@ -314,6 +315,7 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
         .transpose()?;
     let fixture_setup_us = duration_us(fixture_start.elapsed());
     let needs_complete = args.phases.contains("planner_unchanged")
+        || args.phases.contains("planner_validated_participant")
         || args.phases.contains("planner_changed_record")
         || args.phases.contains("transcript_derivation")
         || args.include_full_ceremony;
@@ -423,6 +425,25 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                     .plan(&base.public_config, private_config, participant)
                     .map_err(Into::into)
             })?);
+        }
+        if args.phases.contains("planner_validated_participant") {
+            let participant = ValidatedFederationDkgParticipantState::new(
+                &base.public_config,
+                participant.clone(),
+            )?;
+            reports.push(measure_phase(
+                "planner_validated_participant",
+                args.iterations,
+                || {
+                    complete_records
+                        .plan_with_validated_participant(
+                            &base.public_config,
+                            private_config,
+                            &participant,
+                        )
+                        .map_err(Into::into)
+                },
+            )?);
         }
         if args.phases.contains("planner_changed_record") {
             let mut changed_records = complete_records.clone();
