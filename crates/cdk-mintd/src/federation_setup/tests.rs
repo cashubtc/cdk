@@ -512,6 +512,42 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
             .mode();
         assert_ne!(live_dkg_mode & 0o111, 0);
 
+        for member in artifacts.member_artifacts.values() {
+            for private_path in [
+                &member.private_config_path,
+                &member.dkg_setup_private_config_path,
+                &member.config_path,
+                &member.dkg_setup_config_path,
+                &member.live_dkg_config_path,
+            ] {
+                let mode = std::fs::metadata(private_path)
+                    .expect("private generated file metadata")
+                    .permissions()
+                    .mode();
+                assert_eq!(
+                    mode & 0o077,
+                    0,
+                    "private generated file must not grant group/other access: {}",
+                    private_path.display()
+                );
+            }
+            for entry in
+                std::fs::read_dir(&member.dkg_setup_request_dir).expect("DKG route probe directory")
+            {
+                let path = entry.expect("DKG route probe entry").path();
+                let mode = std::fs::metadata(&path)
+                    .expect("DKG route probe metadata")
+                    .permissions()
+                    .mode();
+                assert_eq!(
+                    mode & 0o077,
+                    0,
+                    "signed DKG route probe must be private: {}",
+                    path.display()
+                );
+            }
+        }
+
         let syntax = std::process::Command::new("bash")
             .arg("-n")
             .arg(&artifacts.live_dkg_smoke_script_path)
@@ -1150,6 +1186,58 @@ fn trusted_dealer_artifacts_refuse_to_overwrite_without_force() {
     let mut forced_args = args;
     forced_args.force = true;
     generate_trusted_dealer_artifacts(&forced_args).expect("forced generation");
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn private_writer_creates_and_repairs_restrictive_permissions() {
+    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::PermissionsExt;
+
+    let output_dir = temp_output_dir("private_writer_permissions");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let path = output_dir.join("member-private.json");
+
+    write_private_text_file(&path, "first", false).expect("create private file");
+    let created_mode = std::fs::metadata(&path)
+        .expect("created private file metadata")
+        .permissions()
+        .mode();
+    assert_eq!(created_mode & 0o077, 0);
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("make fixture permissive");
+    write_private_text_file(&path, "second", true).expect("repair private file");
+    let repaired_mode = std::fs::metadata(&path)
+        .expect("repaired private file metadata")
+        .permissions()
+        .mode();
+    assert_eq!(repaired_mode & 0o077, 0);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("repaired private contents"),
+        "second"
+    );
+
+    let symlink_target = output_dir.join("symlink-target");
+    let symlink_path = output_dir.join("symlink-private.json");
+    std::fs::write(&symlink_target, "untouched").expect("symlink target");
+    symlink(&symlink_target, &symlink_path).expect("private file symlink fixture");
+    write_private_text_file(&symlink_path, "replacement", true)
+        .expect("atomically replace private file symlink");
+    assert_eq!(
+        std::fs::read_to_string(&symlink_target).expect("symlink target contents"),
+        "untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&symlink_path).expect("replaced symlink contents"),
+        "replacement"
+    );
+    assert!(!std::fs::symlink_metadata(&symlink_path)
+        .expect("replaced symlink metadata")
+        .file_type()
+        .is_symlink());
 
     let _ = std::fs::remove_dir_all(&output_dir);
 }

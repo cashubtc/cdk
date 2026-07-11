@@ -3083,6 +3083,18 @@ Verified harness checkpoint (2026-07-11):
   release. Active ceremony state without its per-member map fails closed with
   HTTP 503. The existing global 128-request admission remains the aggregate
   bound. Sustained per-member request-rate policy remains open.
+- The restrictive-secret-file checkpoint is **Kept** without claiming complete
+  at-rest encryption. Generated final/setup private JSON, member TOML files
+  containing mnemonics or database credentials, and signed DKG route-probe
+  files now use a dedicated private writer. On Unix, first creation uses
+  `create_new` at mode `0600`; forced replacement writes and syncs a same-
+  directory `0600` temporary file and atomically renames it, so a pre-existing
+  symlink is replaced rather than followed. Mint startup rejects private
+  federation config files with any group/other permission bits. Thirteen local
+  generator, two backend-agnostic core-generator, and six startup release tests
+  pass, including forced mode repair, symlink-target preservation, all generated
+  secret-bearing artifacts, valid startup, and permissive-file rejection.
+  Non-Unix ACL enforcement and database payload encryption remain open below.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3261,7 +3273,16 @@ Production robustness checklist:
 - [ ] Protect participant state, received scalar contributions, final private
   shares, identity keys, mnemonics, and backups at rest with production-grade
   encryption, restrictive permissions, redaction, and an explicit secret-data
-  inventory.
+  inventory. Restrictive Unix file permissions are complete for generated
+  identity/final-share JSON, setup-only identity JSON, mnemonic/database-
+  credential member TOML, and signed DKG probes; forced writes are atomic and
+  symlink-safe, and startup rejects permissive private federation JSON. The
+  remaining inventory is the plaintext `payload_json` in
+  `federation_dkg_participant_states`,
+  `federation_dkg_secret_share_contributions`, and
+  `federation_dkg_member_keyset_shares` unless SQLite runs with SQLCipher or the
+  database deployment provides equivalent encryption. Non-Unix ACL policy,
+  encrypted backups, and enforced database encryption remain open.
 - [ ] Harden confidential peer transport beyond signed payload authentication:
   verified HTTPS and an explicit mTLS/pinning policy where appropriate, no
   secret-bearing insecure redirects, bounded request bodies, and per-member

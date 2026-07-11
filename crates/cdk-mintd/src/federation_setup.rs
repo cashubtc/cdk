@@ -6,6 +6,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "federation")]
 use std::str::FromStr;
+#[cfg(all(feature = "federation", unix))]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "federation")]
 use std::time::Instant;
 
@@ -64,6 +66,8 @@ const LIVE_DKG_FINAL_CONFIG_DIR: &str = "dkg-final";
 const LIVE_DKG_SMOKE_SCRIPT_FILE: &str = "smoke-live-dkg-federation.sh";
 #[cfg(feature = "federation")]
 const DKG_SETUP_ROUTE_PROBE_DIR: &str = "dkg-setup-route-probe";
+#[cfg(all(feature = "federation", unix))]
+static PRIVATE_FILE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,11 +311,11 @@ fn generate_trusted_dealer_core_generation(
         std::fs::create_dir_all(&member_dir)
             .with_context(|| format!("failed to create {}", member_dir.display()))?;
         let private_config_path = member_dir.join(PRIVATE_CONFIG_FILE);
-        write_json_file(&private_config_path, private_config, args.force)?;
+        write_private_json_file(&private_config_path, private_config, args.force)?;
         let dkg_setup_private_config =
             dkg_setup_private_config(private_config, &dkg_setup_public_config)?;
         let dkg_setup_private_config_path = member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE);
-        write_json_file(
+        write_private_json_file(
             &dkg_setup_private_config_path,
             &dkg_setup_private_config,
             args.force,
@@ -422,7 +426,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             &database_config,
             args.deterministic_test_seed.as_deref(),
         )?;
-        write_text_file(&config_path, &config_toml, args.force)?;
+        write_private_text_file(&config_path, &config_toml, args.force)?;
         let dkg_setup_config_toml = member_config_toml(
             member_id,
             &args.host,
@@ -438,7 +442,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             &database_config,
             args.deterministic_test_seed.as_deref(),
         )?;
-        write_text_file(&dkg_setup_config_path, &dkg_setup_config_toml, args.force)?;
+        write_private_text_file(&dkg_setup_config_path, &dkg_setup_config_toml, args.force)?;
         let mut live_dkg_config_toml = member_config_toml(
             member_id,
             &args.host,
@@ -455,7 +459,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             args.deterministic_test_seed.as_deref(),
         )?;
         live_dkg_config_toml.push_str(&live_dkg_config_suffix);
-        write_text_file(&live_dkg_config_path, &live_dkg_config_toml, args.force)?;
+        write_private_text_file(&live_dkg_config_path, &live_dkg_config_toml, args.force)?;
 
         member_artifacts.insert(
             *member_id,
@@ -1299,7 +1303,7 @@ where
         )?,
     };
     request.verify(public_config, receiver_id)?;
-    write_json_file(path, &request, force)
+    write_private_json_file(path, &request, force)
 }
 
 #[cfg(feature = "federation")]
@@ -1482,6 +1486,15 @@ where
 }
 
 #[cfg(feature = "federation")]
+fn write_private_json_file<T>(path: &Path, value: &T, force: bool) -> Result<()>
+where
+    T: serde::Serialize + ?Sized,
+{
+    let json = serde_json::to_string_pretty(value)?;
+    write_private_text_file(path, &format!("{json}\n"), force)
+}
+
+#[cfg(feature = "federation")]
 fn write_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         bail!(
@@ -1494,6 +1507,82 @@ fn write_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     std::fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
+}
+
+#[cfg(feature = "federation")]
+fn write_private_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "{} already exists; pass --force to overwrite generated federation material",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    #[cfg(unix)]
+    if force {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("federation-private");
+        let sequence = PRIVATE_FILE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary_path = path.with_file_name(format!(
+            ".{file_name}.{}.{sequence}.tmp",
+            std::process::id()
+        ));
+        let result = (|| {
+            write_private_file_contents(&temporary_path, contents, true)?;
+            std::fs::rename(&temporary_path, path).with_context(|| {
+                format!(
+                    "failed to atomically replace private file {}",
+                    path.display()
+                )
+            })
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary_path);
+        }
+        return result;
+    }
+
+    write_private_file_contents(path, contents, !force)
+}
+
+#[cfg(feature = "federation")]
+fn write_private_file_contents(path: &Path, contents: &str, create_new: bool) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    match create_new {
+        true => {
+            options.create_new(true);
+        }
+        false => {
+            options.create(true).truncate(true);
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("failed to create private file {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to restrict private file {}", path.display()))?;
+    }
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("failed to write private file {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync private file {}", path.display()))
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]

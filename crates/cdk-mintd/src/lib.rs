@@ -634,6 +634,7 @@ fn configure_federation(
         &public_config,
         federation.allow_development_payment_observation_policy,
     )?;
+    validate_private_federation_config_file(private_config_path)?;
     let private_config: MemberConfigPrivate =
         read_federation_json(private_config_path, "private federation config")?;
     let runtime_config = FederationRuntimeConfig::new_with_consensus_backend(
@@ -651,6 +652,35 @@ fn configure_federation(
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation")]
+fn validate_private_federation_config_file(path: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(path).with_context(|| {
+        format!(
+            "failed to inspect private federation config {}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        bail!(
+            "private federation config must be a regular file: {}",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            bail!(
+                "private federation config permissions must not grant group or other access: path={}, mode={mode:03o}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -2276,10 +2306,21 @@ mod tests {
         let private_config_path = temp_seed_file(&format!("fed_private_config_{label}"));
         fs::write(&public_config_path, public_config_json)
             .expect("public config should be written");
-        fs::write(&private_config_path, private_config_json)
-            .expect("private config should be written");
+        write_private_config_fixture(&private_config_path, &private_config_json);
 
         (public_config_path, private_config_path)
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    fn write_private_config_fixture(path: &Path, contents: &str) {
+        fs::write(path, contents).expect("private config should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("private config permissions");
+        }
     }
 
     #[test]
@@ -2461,17 +2502,16 @@ mod tests {
             serde_json::to_string(&bundle.public_config).expect("public config json"),
         )
         .expect("public config should be written");
-        fs::write(
+        write_private_config_fixture(
             &private_config_path,
-            serde_json::to_string(
+            &serde_json::to_string(
                 bundle
                     .private_configs
                     .get(&member_id)
                     .expect("private config"),
             )
             .expect("private config json"),
-        )
-        .expect("private config should be written");
+        );
 
         for consensus_backend in [
             config::FederationConsensusBackend::InMemory,
@@ -2887,6 +2927,56 @@ mod tests {
         let _ = fs::remove_file(private_config_path);
     }
 
+    #[cfg(all(feature = "federation", feature = "sqlite", unix))]
+    #[tokio::test]
+    async fn configure_federation_rejects_permissive_private_config_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        let (bundle, member_id) = single_member_trusted_dealer_bundle();
+        let private_config_json = serde_json::to_string(
+            bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private config"),
+        )
+        .expect("private config json");
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "permissive_private_config",
+            serde_json::to_string(&bundle.public_config).expect("public config json"),
+            private_config_json,
+        );
+        fs::set_permissions(&private_config_path, fs::Permissions::from_mode(0o644))
+            .expect("make private config permissive");
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+
+        let err = configure_federation(&settings, builder)
+            .expect_err("permissive private config must fail startup");
+        assert!(
+            err.to_string()
+                .contains("must not grant group or other access"),
+            "startup error should explain private config permissions: {err}"
+        );
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
     async fn configure_federation_requires_paths_when_enabled() {
@@ -3016,8 +3106,7 @@ mod tests {
             let private_config_path = temp_seed_file(&format!("fed_private_config_{case}"));
             fs::write(&public_config_path, public_config_json)
                 .expect("public config should be written");
-            fs::write(&private_config_path, &private_config_json)
-                .expect("private config should be written");
+            write_private_config_fixture(&private_config_path, &private_config_json);
 
             let settings = config::Settings {
                 federation: Some(config::Federation {

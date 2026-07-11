@@ -2337,6 +2337,43 @@ The complete focused Axum DKG suite passes 40/40 tests. This establishes
 concurrency fairness and same-sender mutation serialization, not a sustained
 requests-per-second policy; authenticated rate limiting remains open.
 
+### Private DKG file-at-rest permissions
+
+Decision: **Kept** as a secret-file hardening checkpoint. No performance claim
+and no complete database-encryption claim are made.
+
+The secret inventory found four generated filesystem classes outside the mint
+database:
+
+- final and setup-only member private JSON contain identity keys and, after
+  completion, final key shares;
+- generated member TOML contains a mnemonic and can contain database
+  credentials;
+- optional signed DKG route-probe JSON includes private scalar contributions;
+- finalized DKG export already used its own mode-`0600` writer.
+
+The first three classes previously used the generic writer and inherited the
+process umask. They now use one dedicated private writer. On Unix, a new file is
+opened with `create_new` and mode `0600`. A forced overwrite writes and syncs a
+new mode-`0600` file in the same directory, then atomically renames it over the
+destination. A regression places a symlink at the destination and proves force
+replacement leaves the symlink target unchanged. Mint startup independently
+rejects a private federation config with any group/other permission bits.
+
+Verification: all 13 release local federation-setup tests, both backend-agnostic
+core-generator tests, and all six focused release federation-startup tests
+pass. Coverage checks every generated member private JSON, setup-only JSON,
+normal/setup/live TOML, and signed route-probe file; forced overwrite repairs
+mode `0644`; permissive startup fails while valid runtime configs still load.
+
+Residual risk is explicit. SQL rows
+`federation_dkg_participant_states`,
+`federation_dkg_secret_share_contributions`, and
+`federation_dkg_member_keyset_shares` contain plaintext JSON unless SQLite is
+built and run with SQLCipher or the database deployment provides equivalent
+encryption. Non-Unix ACL verification, encrypted backups, and mandatory
+database encryption are not closed by this checkpoint.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
