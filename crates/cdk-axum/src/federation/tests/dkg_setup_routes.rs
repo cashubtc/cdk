@@ -275,6 +275,7 @@ async fn saturated_dkg_member_admission_does_not_block_another_member() {
     let held_permit = admissions
         .get(&first_peer.member_id)
         .expect("first peer admission")
+        .in_flight
         .clone()
         .try_acquire_owned()
         .expect("hold first peer admission");
@@ -322,6 +323,81 @@ async fn saturated_dkg_member_admission_does_not_block_another_member() {
         .expect("member sequences after retry");
     assert_eq!(sequences.get(&first_peer.member_id), Some(&1));
     assert_eq!(sequences.get(&second_peer.member_id), Some(&1));
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_dkg_commitments()
+            .await
+            .expect("commitments")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
+    let (mut state, public_config, local_private, first_peer, second_peer) =
+        federation_route_state_three_with_local_private().await;
+    state.federation_dkg_member_admission = Some(crate::federation_dkg_member_admission(
+        &public_config,
+        1,
+        std::time::Duration::from_millis(10),
+    ));
+    let first_commitment = dkg_commitment_request(&public_config, first_peer.member_id, 21);
+    let first_request = signed_dkg_commitment_request(
+        &public_config,
+        &first_peer,
+        local_private.member_id,
+        1,
+        first_commitment.clone(),
+    );
+    let limited_retry = signed_dkg_commitment_request(
+        &public_config,
+        &first_peer,
+        local_private.member_id,
+        2,
+        first_commitment.clone(),
+    );
+    let second_request = signed_dkg_commitment_request(
+        &public_config,
+        &second_peer,
+        local_private.member_id,
+        1,
+        dkg_commitment_request(&public_config, second_peer.member_id, 31),
+    );
+
+    let _ = post_dkg_commitment(State(state.clone()), Json(first_request))
+        .await
+        .expect("first member request");
+    let limited = post_dkg_commitment(State(state.clone()), Json(limited_retry.clone()))
+        .await
+        .expect_err("same member must exhaust its request bucket");
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    let _ = post_dkg_commitment(State(state.clone()), Json(second_request))
+        .await
+        .expect("another member retains an independent request bucket");
+
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences before refill");
+    assert_eq!(sequences.get(&first_peer.member_id), Some(&1));
+    assert_eq!(sequences.get(&second_peer.member_id), Some(&1));
+
+    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    let _ = post_dkg_commitment(State(state.clone()), Json(limited_retry))
+        .await
+        .expect("same request is retryable after token refill");
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences after refill");
+    assert_eq!(sequences.get(&first_peer.member_id), Some(&2));
     assert_eq!(
         state
             .mint

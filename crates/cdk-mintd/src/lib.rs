@@ -808,6 +808,12 @@ fn federation_dkg_auto_start_config(
     if federation.dkg.retry_delay_ms == 0 {
         bail!("federation.dkg.retry_delay_ms must be greater than zero");
     }
+    if !(1..=64).contains(&federation.dkg.member_request_burst) {
+        bail!("federation.dkg.member_request_burst must be between 1 and 64");
+    }
+    if federation.dkg.member_request_refill_ms < 10 {
+        bail!("federation.dkg.member_request_refill_ms must be at least 10");
+    }
     let amounts = federation
         .dkg
         .amounts
@@ -839,6 +845,10 @@ fn federation_dkg_auto_start_config(
             max_ticks: federation.dkg.max_ticks,
             retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
             secret_share_transport,
+            member_request_burst: federation.dkg.member_request_burst,
+            member_request_refill_interval: std::time::Duration::from_millis(
+                federation.dkg.member_request_refill_ms,
+            ),
         },
     }))
 }
@@ -2676,6 +2686,8 @@ mod tests {
                     amounts: vec![1, 2, 4],
                     max_ticks: 17,
                     retry_delay_ms: 23,
+                    member_request_burst: 11,
+                    member_request_refill_ms: 29,
                     allow_insecure_localhost: true,
                 },
                 ..config::Federation::default()
@@ -2699,6 +2711,11 @@ mod tests {
         assert_eq!(
             config.driver.retry_delay,
             std::time::Duration::from_millis(23)
+        );
+        assert_eq!(config.driver.member_request_burst, 11);
+        assert_eq!(
+            config.driver.member_request_refill_interval,
+            std::time::Duration::from_millis(29)
         );
         assert_eq!(
             config.driver.secret_share_transport,
@@ -2770,6 +2787,39 @@ mod tests {
                     ..config::FederationDkg::default()
                 },
                 "retry_delay_ms",
+            ),
+            (
+                "zero member request burst",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1],
+                    member_request_burst: 0,
+                    ..config::FederationDkg::default()
+                },
+                "member_request_burst",
+            ),
+            (
+                "excessive member request burst",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1],
+                    member_request_burst: 65,
+                    ..config::FederationDkg::default()
+                },
+                "member_request_burst",
+            ),
+            (
+                "member request refill below minimum",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1],
+                    member_request_refill_ms: 9,
+                    ..config::FederationDkg::default()
+                },
+                "member_request_refill_ms",
             ),
             (
                 "duplicate amounts",

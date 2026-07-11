@@ -2374,6 +2374,39 @@ encryption at rest is intentionally out of scope and is not required for
 Milestone 20A. Non-Unix ACL verification remains separate future hardening
 work; no backup or backup-encryption requirement belongs to this milestone.
 
+### Sustained authenticated-member DKG admission
+
+Decision: **Kept** as a resource-bound robustness checkpoint, with no speed
+claim. The prior one-in-flight-request semaphore prevented concurrent mutation
+by one authenticated sender but allowed an unlimited sequence of requests as
+soon as each permit was released.
+
+Each roster member now has an independent token bucket attached to that same
+nonblocking admission record. The production default allows a 16-request burst
+and restores one token every 250ms. Mint startup rejects a burst outside
+`1..=64` or a refill interval below 10ms. The limiter exists only while a
+validated live DKG ceremony is active and is checked after signed-roster
+authentication but before ceremony payload validation, CPU admission, sequence
+advancement, or database mutation. Exhaustion returns retryable HTTP 429 and
+does not consume another member's capacity.
+
+The bounded-work accounting is now explicit: no more than 64 per-member DKG
+requests can be in flight or waiting behind the single DKG CPU worker, the
+existing private REST admission caps aggregate work at 128, each route body is
+at most 1 MiB, and SQLite's shared database write gate admits one explicit
+transaction writer. There is no new queue, background task, durable rate
+record, ceremony message, or retry phase.
+
+Focused verification:
+
+- 42/42 release `cdk-axum` DKG tests pass. The new route regression exhausts
+  one sender, proves its sequence and DKG records do not change, admits an
+  independent sender, and accepts the exact first sender retry after refill.
+- 3/3 release `cdk-mintd` DKG auto-start policy tests pass, including invalid
+  zero/excessive burst and sub-10ms refill configurations.
+- 13/13 release local federation-generation tests pass with the bounded policy
+  emitted in every generated live-DKG member config.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

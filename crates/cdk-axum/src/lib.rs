@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[cfg(feature = "federation")]
 use std::sync::Mutex;
 #[cfg(feature = "federation")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use auth::create_auth_router;
@@ -68,7 +68,8 @@ type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinaliza
 #[cfg(feature = "federation")]
 type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
 #[cfg(feature = "federation")]
-type FederationDkgMemberAdmissionHandle = Arc<BTreeMap<MemberId, Arc<tokio::sync::Semaphore>>>;
+type FederationDkgMemberAdmissionHandle =
+    Arc<BTreeMap<MemberId, Arc<FederationDkgMemberAdmission>>>;
 #[cfg(feature = "federation")]
 type FederationInvalidOperationAlertHandle =
     Arc<tokio::sync::Mutex<FederationInvalidOperationAlertTracker>>;
@@ -104,15 +105,79 @@ const FEDERATION_INVALID_OPERATION_ALERT_WINDOW: std::time::Duration =
 static FEDERATION_DKG_CPU_ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[cfg(feature = "federation")]
+#[derive(Debug)]
+struct FederationDkgMemberAdmission {
+    in_flight: Arc<tokio::sync::Semaphore>,
+    rate_limit: Mutex<FederationDkgMemberRateLimit>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug)]
+struct FederationDkgMemberRateLimit {
+    capacity: usize,
+    available: usize,
+    refill_interval: Duration,
+    last_refill: Instant,
+}
+
+#[cfg(feature = "federation")]
+impl FederationDkgMemberRateLimit {
+    fn new(capacity: usize, refill_interval: Duration) -> Self {
+        Self {
+            capacity,
+            available: capacity,
+            refill_interval,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn try_acquire_at(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last_refill);
+        let refill_count = elapsed.as_nanos() / self.refill_interval.as_nanos();
+        if refill_count >= self.capacity as u128 {
+            self.available = self.capacity;
+            self.last_refill = now;
+        } else if refill_count > 0 {
+            let refill_count =
+                usize::try_from(refill_count).expect("bounded DKG request refill count fits usize");
+            self.available = self.capacity.min(self.available + refill_count);
+            self.last_refill += self.refill_interval
+                * u32::try_from(refill_count).expect("bounded DKG request refill count fits u32");
+        }
+
+        match self.available.checked_sub(1) {
+            Some(remaining) => {
+                self.available = remaining;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
 fn federation_dkg_member_admission(
     public_config: &FederationConfig,
+    member_request_burst: usize,
+    member_request_refill_interval: Duration,
 ) -> FederationDkgMemberAdmissionHandle {
     Arc::new(
         public_config
             .members
             .keys()
             .copied()
-            .map(|member_id| (member_id, Arc::new(tokio::sync::Semaphore::new(1))))
+            .map(|member_id| {
+                (
+                    member_id,
+                    Arc::new(FederationDkgMemberAdmission {
+                        in_flight: Arc::new(tokio::sync::Semaphore::new(1)),
+                        rate_limit: Mutex::new(FederationDkgMemberRateLimit::new(
+                            member_request_burst,
+                            member_request_refill_interval,
+                        )),
+                    }),
+                )
+            })
             .collect(),
     )
 }
@@ -1373,6 +1438,22 @@ mod tests {
             }
             _ => panic!("expected halted status"),
         }
+    }
+
+    #[test]
+    fn dkg_member_rate_limit_refills_without_exceeding_capacity() {
+        let mut rate_limit = FederationDkgMemberRateLimit::new(2, Duration::from_millis(100));
+        let start = rate_limit.last_refill;
+
+        assert!(rate_limit.try_acquire_at(start));
+        assert!(rate_limit.try_acquire_at(start));
+        assert!(!rate_limit.try_acquire_at(start));
+        assert!(!rate_limit.try_acquire_at(start + Duration::from_millis(99)));
+        assert!(rate_limit.try_acquire_at(start + Duration::from_millis(100)));
+        assert!(!rate_limit.try_acquire_at(start + Duration::from_millis(100)));
+        assert!(rate_limit.try_acquire_at(start + Duration::from_secs(1)));
+        assert!(rate_limit.try_acquire_at(start + Duration::from_secs(1)));
+        assert!(!rate_limit.try_acquire_at(start + Duration::from_secs(1)));
     }
 
     #[cfg(feature = "federation")]
@@ -4135,10 +4216,6 @@ async fn create_mint_router_with_custom_cache_inner(
             ))
         });
     #[cfg(feature = "federation")]
-    let federation_dkg_member_admission = federation_consensus
-        .as_ref()
-        .and_then(|_| mint.federation_config())
-        .map(|config| federation_dkg_member_admission(config.public_config()));
     let mut state = MintState {
         mint,
         cache: Arc::new(cache),
@@ -4167,7 +4244,7 @@ async fn create_mint_router_with_custom_cache_inner(
             ))
         }),
         #[cfg(feature = "federation")]
-        federation_dkg_member_admission,
+        federation_dkg_member_admission: None,
         #[cfg(feature = "federation")]
         federation_invalid_operation_alerts: federation_consensus.as_ref().map(|_| {
             Arc::new(tokio::sync::Mutex::new(
@@ -4211,6 +4288,16 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     {
         state.federation_dkg_auto_start_config = federation_dkg_config.clone().map(Arc::new);
+        state.federation_dkg_member_admission = match federation_dkg_config.as_ref() {
+            Some(config) => state.mint.federation_config().map(|runtime_config| {
+                federation_dkg_member_admission(
+                    runtime_config.public_config(),
+                    config.driver.member_request_burst,
+                    config.driver.member_request_refill_interval,
+                )
+            }),
+            None => None,
+        };
     }
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();

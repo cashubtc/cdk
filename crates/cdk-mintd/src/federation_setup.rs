@@ -1195,6 +1195,8 @@ input_fee_ppk = {input_fee_ppk}
 {expiry}amounts = [{amounts}]
 max_ticks = 1200
 retry_delay_ms = 250
+member_request_burst = 16
+member_request_refill_ms = 250
 allow_insecure_localhost = {allow_insecure_localhost}
 "#,
         ceremony_id = toml_string(&ceremony_id.to_string())?,

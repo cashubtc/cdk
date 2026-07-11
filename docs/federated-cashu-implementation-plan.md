@@ -3070,8 +3070,8 @@ Verified harness checkpoint (2026-07-11):
   coefficients) serializes to 800,039 bytes, leaving 248,537 bytes of route
   headroom. An authenticated request padded past the cap returns HTTP 413 with
   no sequence or DKG record mutation. Thirty-five common, 40 permissioned
-  release Axum, and three mintd startup DKG tests pass. Sustained member-rate
-  policy and transport confidentiality remain open gates below.
+  release Axum, and three mintd startup DKG tests pass. Transport
+  confidentiality remains an open gate below.
 - The fair-member-admission checkpoint is **Kept** without a speed claim. Each
   configured sender now has one nonblocking post-authentication DKG slot at
   each receiver, matching the protocol's sequential per-sender phase flow. A
@@ -3082,7 +3082,8 @@ Verified harness checkpoint (2026-07-11):
   second sender's commitment, then accepts the first sender's exact retry after
   release. Active ceremony state without its per-member map fails closed with
   HTTP 503. The existing global 128-request admission remains the aggregate
-  bound. Sustained per-member request-rate policy remains open.
+  bound. A bounded token bucket now supplies the sustained per-member policy
+  described in the next checkpoint.
 - The restrictive-secret-file checkpoint is **Kept** without claiming complete
   at-rest encryption. Generated final/setup private JSON, member TOML files
   containing mnemonics or database credentials, and signed DKG route-probe
@@ -3094,7 +3095,19 @@ Verified harness checkpoint (2026-07-11):
   generator, two backend-agnostic core-generator, and six startup release tests
   pass, including forced mode repair, symlink-target preservation, all generated
   secret-bearing artifacts, valid startup, and permissive-file rejection.
-  Non-Unix ACL enforcement and database payload encryption remain open below.
+  Non-Unix ACL enforcement and database payload encryption remain recorded as
+  out-of-scope residual risks below.
+- The sustained authenticated-member admission checkpoint is **Kept** without
+  a speed claim. The existing per-member in-flight slot now carries an
+  independent token bucket created only for a validated active ceremony. The
+  default permits a 16-request burst and restores one token every 250ms;
+  startup restricts bursts to 1..=64 and refuses refill intervals below 10ms.
+  Exhaustion returns retryable HTTP 429 after roster authentication but before
+  ceremony validation, sequence advancement, expensive DKG work, or database
+  mutation. A focused route regression exhausts one member, proves another
+  member remains admissible, verifies the rejected retry leaves its sequence
+  unchanged, and accepts that exact retry after refill. All 42 release Axum DKG
+  tests, three mintd DKG policy tests, and 13 generated-config tests pass.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3288,9 +3301,9 @@ Production robustness checklist:
   exception only. The request-body portion is complete for DKG: every setup
   route independently caps decoded JSON at 1 MiB and the maximum supported
   64-by-64 reveal is 800,039 bytes. HTTPS verification, mTLS/pinning policy,
-  redirect policy and sustained per-member rate policy remain open. One
-  nonblocking authenticated DKG slot per roster member now prevents a member
-  with an in-flight setup request from occupying another member's DKG slot.
+  and redirect policy remain open. One nonblocking authenticated DKG slot and
+  one bounded token bucket per roster member prevent a member with concurrent
+  or sustained setup traffic from occupying another member's DKG capacity.
 - [ ] Separate DKG completion from keyset activation with an explicit barrier.
   Every member must confirm the same federation ID, ceremony ID, transcript
   hash, roster, keyset policy, keyset ID, aggregate keys, and public shares
@@ -3307,14 +3320,19 @@ Production robustness checklist:
   now reject messages outside the exact active in-memory ceremony/keyset policy
   before persistence; durable multi-ceremony record keys and lifecycle semantics
   remain open.
-- [ ] Bound CPU, memory, blocking workers, SQLite writers, and queued work per
+- [x] Bound CPU, memory, blocking workers, SQLite writers, and queued work per
   authenticated peer. A compromised roster member must not exhaust a receiver
   with validly signed duplicate or oversized DKG requests. Ceremony dimensions
   are now capped at 64 members and 64 denominations, DKG route bodies at 1 MiB,
   expensive DKG CPU work remains semaphore-bounded, exact duplicates use their
   cheap paths, and one post-authentication slot serializes each member's DKG
-  mutations without blocking another member. Sustained per-member rate policy
-  and explicit queued-work/SQLite accounting remain open.
+  mutations without blocking another member. The per-member token bucket
+  bounds sustained traffic at a configurable 1..=64-request burst and a refill
+  interval of at least 10ms. With the 64-member roster cap, at most 64 DKG
+  requests can wait behind the single CPU worker; the existing global private
+  REST cap is 128, admission never queues on either nonblocking request
+  semaphore, and SQLite's shared per-database write gate admits one explicit
+  transaction writer at a time.
 - [x] Encrypted backup and clean-machine restore procedures are explicitly out
   of scope for Milestone 20A. No backup or backup-encryption requirement is
   part of this milestone's production gate; future backup work must still prove

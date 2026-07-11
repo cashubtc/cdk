@@ -1976,6 +1976,8 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
         ))),
         federation_dkg_member_admission: Some(crate::federation_dkg_member_admission(
             &public_config,
+            FederationDkgDriverRunConfig::default().member_request_burst,
+            FederationDkgDriverRunConfig::default().member_request_refill_interval,
         )),
         federation_invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
             crate::FederationInvalidOperationAlertTracker::default(),

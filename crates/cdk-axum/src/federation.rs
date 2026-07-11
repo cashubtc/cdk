@@ -216,7 +216,7 @@ fn acquire_private_dkg_member_admission(
         )
             .into_response());
     };
-    match admission.clone().try_acquire_owned() {
+    let permit = match admission.in_flight.clone().try_acquire_owned() {
         Ok(permit) => Ok(Some(permit)),
         Err(tokio::sync::TryAcquireError::NoPermits) => {
             tracing::warn!(
@@ -242,7 +242,36 @@ fn acquire_private_dkg_member_admission(
             )
                 .into_response())
         }
+    }?;
+    let allowed = match admission.rate_limit.lock() {
+        Ok(mut rate_limit) => rate_limit.try_acquire_at(std::time::Instant::now()),
+        Err(_) => {
+            tracing::error!(
+                member_id = %sender,
+                request_kind = ?kind,
+                "Federation DKG member rate admission is unavailable"
+            );
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "federation DKG member admission is unavailable",
+            )
+                .into_response());
+        }
+    };
+    if !allowed {
+        tracing::warn!(
+            member_id = %sender,
+            request_kind = ?kind,
+            "Federation DKG member request rate limit exceeded"
+        );
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "federation DKG member request rate limit exceeded",
+        )
+            .into_response());
     }
+
+    Ok(permit)
 }
 
 #[instrument(skip_all)]

@@ -38,6 +38,10 @@ pub struct FederationDkgDriverRunConfig {
     pub retry_delay: Duration,
     /// Confidentiality policy applied before any ceremony message is sent.
     pub secret_share_transport: FederationDkgSecretShareTransportPolicy,
+    /// Number of authenticated DKG requests one member may burst per receiver.
+    pub member_request_burst: usize,
+    /// Interval at which one authenticated DKG request token is restored.
+    pub member_request_refill_interval: Duration,
 }
 
 impl Default for FederationDkgDriverRunConfig {
@@ -46,6 +50,8 @@ impl Default for FederationDkgDriverRunConfig {
             max_ticks: 64,
             retry_delay: Duration::from_secs(1),
             secret_share_transport: FederationDkgSecretShareTransportPolicy::RequireHttps,
+            member_request_burst: 16,
+            member_request_refill_interval: Duration::from_millis(250),
         }
     }
 }
@@ -94,6 +100,17 @@ impl FederationDkgDriverRunConfig {
         if self.retry_delay.is_zero() {
             return Err(cdk::Error::Custom(
                 "federation DKG driver retry delay must be greater than zero".to_string(),
+            ));
+        }
+        if !(1..=64).contains(&self.member_request_burst) {
+            return Err(cdk::Error::Custom(
+                "federation DKG member request burst must be between 1 and 64".to_string(),
+            ));
+        }
+        if self.member_request_refill_interval < Duration::from_millis(10) {
+            return Err(cdk::Error::Custom(
+                "federation DKG member request refill interval must be at least 10 milliseconds"
+                    .to_string(),
             ));
         }
 
@@ -1079,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn run_config_rejects_zero_values() {
+    fn run_config_rejects_unbounded_values() {
         assert!(FederationDkgDriverRunConfig {
             max_ticks: 0,
             retry_delay: Duration::from_secs(1),
@@ -1090,6 +1107,24 @@ mod tests {
         assert!(FederationDkgDriverRunConfig {
             max_ticks: 1,
             retry_delay: Duration::ZERO,
+            ..FederationDkgDriverRunConfig::default()
+        }
+        .validate()
+        .is_err());
+        assert!(FederationDkgDriverRunConfig {
+            member_request_burst: 0,
+            ..FederationDkgDriverRunConfig::default()
+        }
+        .validate()
+        .is_err());
+        assert!(FederationDkgDriverRunConfig {
+            member_request_burst: 65,
+            ..FederationDkgDriverRunConfig::default()
+        }
+        .validate()
+        .is_err());
+        assert!(FederationDkgDriverRunConfig {
+            member_request_refill_interval: Duration::from_millis(9),
             ..FederationDkgDriverRunConfig::default()
         }
         .validate()
