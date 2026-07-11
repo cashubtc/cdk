@@ -184,6 +184,67 @@ fn acquire_private_rest_admission(
     }
 }
 
+fn acquire_private_dkg_member_admission(
+    state: &MintState,
+    sender: cdk::federation::MemberId,
+    kind: FederationRestMessageKind,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Response> {
+    let Some(admissions) = state.federation_dkg_member_admission.as_ref() else {
+        if state.federation_dkg_auto_start_config.is_none() {
+            return Ok(None);
+        }
+        tracing::error!(
+            member_id = %sender,
+            request_kind = ?kind,
+            "Federation DKG member admission is unavailable for an active ceremony"
+        );
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "federation DKG member admission is unavailable",
+        )
+            .into_response());
+    };
+    let Some(admission) = admissions.get(&sender) else {
+        tracing::error!(
+            member_id = %sender,
+            request_kind = ?kind,
+            "Federation DKG member admission is missing"
+        );
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "federation DKG member admission is unavailable",
+        )
+            .into_response());
+    };
+    match admission.clone().try_acquire_owned() {
+        Ok(permit) => Ok(Some(permit)),
+        Err(tokio::sync::TryAcquireError::NoPermits) => {
+            tracing::warn!(
+                member_id = %sender,
+                request_kind = ?kind,
+                "Federation DKG member request is already in progress"
+            );
+            Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "federation DKG member request is already in progress",
+            )
+                .into_response())
+        }
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            tracing::error!(
+                member_id = %sender,
+                request_kind = ?kind,
+                "Federation DKG member admission is closed"
+            );
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "federation DKG member admission is closed",
+            )
+                .into_response())
+        }
+    }
+}
+
 #[instrument(skip_all)]
 async fn post_operation(
     State(state): State<MintState>,

@@ -68,6 +68,8 @@ type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinaliza
 #[cfg(feature = "federation")]
 type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
 #[cfg(feature = "federation")]
+type FederationDkgMemberAdmissionHandle = Arc<BTreeMap<MemberId, Arc<tokio::sync::Semaphore>>>;
+#[cfg(feature = "federation")]
 type FederationInvalidOperationAlertHandle =
     Arc<tokio::sync::Mutex<FederationInvalidOperationAlertTracker>>;
 #[cfg(feature = "federation")]
@@ -100,6 +102,20 @@ const FEDERATION_INVALID_OPERATION_ALERT_WINDOW: std::time::Duration =
 // The blocking closure owns the permit so cancellation cannot admit
 // overlapping uncancellable DKG work.
 static FEDERATION_DKG_CPU_ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+#[cfg(feature = "federation")]
+fn federation_dkg_member_admission(
+    public_config: &FederationConfig,
+) -> FederationDkgMemberAdmissionHandle {
+    Arc::new(
+        public_config
+            .members
+            .keys()
+            .copied()
+            .map(|member_id| (member_id, Arc::new(tokio::sync::Semaphore::new(1))))
+            .collect(),
+    )
+}
 
 #[cfg(feature = "federation")]
 async fn run_federation_dkg_cpu_task<T, E, F>(
@@ -1562,6 +1578,8 @@ pub struct MintState {
     federation_finalizer: Option<FederationFinalizationHandle>,
     #[cfg(feature = "federation")]
     federation_private_rest_admission: Option<FederationRestAdmissionHandle>,
+    #[cfg(feature = "federation")]
+    federation_dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
     #[cfg(feature = "federation")]
     federation_invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     #[cfg(feature = "federation")]
@@ -4116,6 +4134,11 @@ async fn create_mint_router_with_custom_cache_inner(
                 FederationSyncState::for_consensus_backend(config.consensus_backend()),
             ))
         });
+    #[cfg(feature = "federation")]
+    let federation_dkg_member_admission = federation_consensus
+        .as_ref()
+        .and_then(|_| mint.federation_config())
+        .map(|config| federation_dkg_member_admission(config.public_config()));
     let mut state = MintState {
         mint,
         cache: Arc::new(cache),
@@ -4143,6 +4166,8 @@ async fn create_mint_router_with_custom_cache_inner(
                 federation_peer_sync_config.private_rest_inbound_concurrency_limit,
             ))
         }),
+        #[cfg(feature = "federation")]
+        federation_dkg_member_admission,
         #[cfg(feature = "federation")]
         federation_invalid_operation_alerts: federation_consensus.as_ref().map(|_| {
             Arc::new(tokio::sync::Mutex::new(

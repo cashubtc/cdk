@@ -265,6 +265,113 @@ async fn private_dkg_router_rejects_oversized_signed_body_before_persistence() {
 }
 
 #[tokio::test]
+async fn saturated_dkg_member_admission_does_not_block_another_member() {
+    let (state, public_config, local_private, first_peer, second_peer) =
+        federation_route_state_three_with_local_private().await;
+    let admissions = state
+        .federation_dkg_member_admission
+        .as_ref()
+        .expect("DKG member admission");
+    let held_permit = admissions
+        .get(&first_peer.member_id)
+        .expect("first peer admission")
+        .clone()
+        .try_acquire_owned()
+        .expect("hold first peer admission");
+    let first_request = signed_dkg_commitment_request(
+        &public_config,
+        &first_peer,
+        local_private.member_id,
+        1,
+        dkg_commitment_request(&public_config, first_peer.member_id, 21),
+    );
+    let second_request = signed_dkg_commitment_request(
+        &public_config,
+        &second_peer,
+        local_private.member_id,
+        1,
+        dkg_commitment_request(&public_config, second_peer.member_id, 31),
+    );
+
+    let saturated = post_dkg_commitment(State(state.clone()), Json(first_request.clone()))
+        .await
+        .expect_err("saturated member must fail fast");
+    assert_eq!(saturated.status(), StatusCode::TOO_MANY_REQUESTS);
+    let _ = post_dkg_commitment(State(state.clone()), Json(second_request))
+        .await
+        .expect("independent member remains admissible");
+
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences");
+    assert!(!sequences.contains_key(&first_peer.member_id));
+    assert_eq!(sequences.get(&second_peer.member_id), Some(&1));
+    drop(held_permit);
+
+    let _ = post_dkg_commitment(State(state.clone()), Json(first_request))
+        .await
+        .expect("saturated member can retry the same request");
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences after retry");
+    assert_eq!(sequences.get(&first_peer.member_id), Some(&1));
+    assert_eq!(sequences.get(&second_peer.member_id), Some(&1));
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_federation_dkg_commitments()
+            .await
+            .expect("commitments")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn active_dkg_route_fails_closed_without_member_admission() {
+    let (mut state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    state.federation_dkg_member_admission = None;
+    let request = signed_dkg_commitment_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        dkg_commitment_request(&public_config, peer_private.member_id, 21),
+    );
+
+    let response = post_dkg_commitment(State(state.clone()), Json(request))
+        .await
+        .expect_err("active DKG without member admission must fail closed");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_dkg_commitments()
+        .await
+        .expect("commitments")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn private_dkg_setup_routes_accept_exact_duplicates_and_advance_sequence() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

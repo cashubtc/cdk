@@ -3069,9 +3069,20 @@ Verified harness checkpoint (2026-07-11):
   The maximum supported signed reveal shape (64 amounts by 64 G2
   coefficients) serializes to 800,039 bytes, leaving 248,537 bytes of route
   headroom. An authenticated request padded past the cap returns HTTP 413 with
-  no sequence or DKG record mutation. Thirty-five common, 38 permissioned
-  release Axum, and three mintd startup DKG tests pass. Per-member admission and
-  transport confidentiality remain open gates below.
+  no sequence or DKG record mutation. Thirty-five common, 40 permissioned
+  release Axum, and three mintd startup DKG tests pass. Sustained member-rate
+  policy and transport confidentiality remain open gates below.
+- The fair-member-admission checkpoint is **Kept** without a speed claim. Each
+  configured sender now has one nonblocking post-authentication DKG slot at
+  each receiver, matching the protocol's sequential per-sender phase flow. A
+  sender with an in-flight request receives HTTP 429 for another DKG request;
+  it cannot occupy another authenticated member's slot or race its own DKG
+  state mutation. The focused three-member regression holds one sender's slot,
+  proves its request leaves sequence and commitments unchanged, accepts a
+  second sender's commitment, then accepts the first sender's exact retry after
+  release. Active ceremony state without its per-member map fails closed with
+  HTTP 503. The existing global 128-request admission remains the aggregate
+  bound. Sustained per-member request-rate policy remains open.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3258,7 +3269,9 @@ Production robustness checklist:
   exception only. The request-body portion is complete for DKG: every setup
   route independently caps decoded JSON at 1 MiB and the maximum supported
   64-by-64 reveal is 800,039 bytes. HTTPS verification, mTLS/pinning policy,
-  redirect policy, and per-member admission remain open.
+  redirect policy and sustained per-member rate policy remain open. One
+  nonblocking authenticated DKG slot per roster member now prevents a member
+  with an in-flight setup request from occupying another member's DKG slot.
 - [ ] Separate DKG completion from keyset activation with an explicit barrier.
   Every member must confirm the same federation ID, ceremony ID, transcript
   hash, roster, keyset policy, keyset ID, aggregate keys, and public shares
@@ -3279,9 +3292,10 @@ Production robustness checklist:
   authenticated peer. A compromised roster member must not exhaust a receiver
   with validly signed duplicate or oversized DKG requests. Ceremony dimensions
   are now capped at 64 members and 64 denominations, DKG route bodies at 1 MiB,
-  expensive DKG CPU work remains semaphore-bounded, and exact duplicates use
-  their cheap paths. Fair per-member concurrency/rate admission and explicit
-  queued-work/SQLite accounting remain open.
+  expensive DKG CPU work remains semaphore-bounded, exact duplicates use their
+  cheap paths, and one post-authentication slot serializes each member's DKG
+  mutations without blocking another member. Sustained per-member rate policy
+  and explicit queued-work/SQLite accounting remain open.
 - [ ] Add encrypted backup and clean-machine restore procedures for identity
   keys, participant state, finalized member shares, config, and database state.
   Restore tests must prove the recovered private share maps to the transcript's

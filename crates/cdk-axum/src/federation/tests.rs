@@ -1974,6 +1974,9 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
         federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
             FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
         ))),
+        federation_dkg_member_admission: Some(crate::federation_dkg_member_admission(
+            &public_config,
+        )),
         federation_invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
             crate::FederationInvalidOperationAlertTracker::default(),
         ))),

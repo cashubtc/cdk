@@ -2296,7 +2296,7 @@ Verification:
 
 - 35 `cdk-common` release DKG tests pass, including 65-member and 65-amount
   rejection plus the maximum-shape wire-size assertion;
-- 38 permissioned `cdk-axum` release DKG tests pass, including inactive-route,
+- 40 permissioned `cdk-axum` release DKG tests pass, including inactive-route,
   wrong-ceremony,
   wrong-policy, and a valid signed request padded over 1 MiB returning HTTP 413
   without sequence or DKG-record persistence;
@@ -2308,6 +2308,34 @@ This checkpoint prevents oversized setup work and cross-ceremony route
 ingestion. It does not yet provide fair per-member concurrency/rate limiting,
 encrypted-at-rest DKG material, mTLS/pinning, a durable activation barrier, or
 abort/reconfiguration semantics.
+
+### Fair authenticated-member DKG admission
+
+Decision: **Kept** as a fairness and mutation-serialization bound. No speed
+improvement is claimed.
+
+The prior global private-REST semaphore limits aggregate in-flight work to 128
+requests, but all authenticated members share it. It therefore could not prove
+that one member's long-running or duplicated DKG request left an independent
+slot for another member after authentication. DKG phase delivery is sequential
+per sender and receiver, so concurrent state-mutating requests from the same
+sender are not needed for healthy progress.
+
+Each receiver now constructs one nonblocking DKG semaphore slot for every
+member in its validated roster. All five setup routes authenticate the signed
+request first, then acquire the sender's slot before active-ceremony validation,
+cryptographic work, or persistence. A second in-flight request from that sender
+returns HTTP 429 immediately. There is no wait queue, timer, retry-policy
+change, durable admission state, ceremony message, or consensus traffic.
+
+The focused three-member release regression manually holds one sender's slot.
+That sender's signed commitment receives HTTP 429 and leaves its sequence and
+commitment absent; a second sender's commitment succeeds while the first slot
+is held; after release, the first sender's exact sequence-1 request succeeds.
+Active ceremony state without the per-member map fails closed with HTTP 503.
+The complete focused Axum DKG suite passes 40/40 tests. This establishes
+concurrency fairness and same-sender mutation serialization, not a sustained
+requests-per-second policy; authenticated rate limiting remains open.
 
 ## Recommended Work Order
 

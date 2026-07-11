@@ -11,8 +11,8 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, federation_error_response, federation_runtime_config,
-    verify_federation_request,
+    acquire_private_dkg_member_admission, acquire_private_rest_admission,
+    federation_error_response, federation_runtime_config, verify_federation_request,
 };
 
 fn dkg_error_response(err: cdk::Error) -> Response {
@@ -67,6 +67,11 @@ pub(super) async fn post_dkg_readiness(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReadiness)
             .await?;
+    let _member_permit = acquire_private_dkg_member_admission(
+        &state,
+        verified.sender,
+        FederationRestMessageKind::DkgReadiness,
+    )?;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -98,6 +103,11 @@ pub(super) async fn post_dkg_commitment(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgCommitment)
             .await?;
+    let _member_permit = acquire_private_dkg_member_admission(
+        &state,
+        verified.sender,
+        FederationRestMessageKind::DkgCommitment,
+    )?;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -135,6 +145,11 @@ pub(super) async fn post_dkg_reveal(
     let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReveal)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
+    let _member_permit = acquire_private_dkg_member_admission(
+        &state,
+        verified.sender,
+        FederationRestMessageKind::DkgReveal,
+    )?;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -171,6 +186,11 @@ pub(super) async fn post_dkg_secret_share(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgSecretShare)
             .await?;
+    let _member_permit = acquire_private_dkg_member_admission(
+        &state,
+        verified.sender,
+        FederationRestMessageKind::DkgSecretShare,
+    )?;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -215,6 +235,11 @@ pub(super) async fn post_dkg_transcript_signature(
         FederationRestMessageKind::DkgTranscriptSignature,
     )
     .await?;
+    let _member_permit = acquire_private_dkg_member_admission(
+        &state,
+        verified.sender,
+        FederationRestMessageKind::DkgTranscriptSignature,
+    )?;
     let _dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
