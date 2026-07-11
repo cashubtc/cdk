@@ -78,6 +78,7 @@ use super::aleph_bft_runtime::{CdkAlephBftActivityHint, CdkAlephBftKeychain, Cdk
 use super::*;
 
 mod aleph_bft_routes;
+mod dkg_driver;
 mod dkg_setup_routes;
 mod dkg_transcript_signature;
 mod private_operation_route;

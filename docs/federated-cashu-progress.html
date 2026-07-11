@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a real local dealer-free DKG participant, strict ceremony domain separation, and a complete identity-signed public ceremony transcript: each member generates only its own BLS polynomials, commits to one keyset policy and ceremony ID, and independently rederives the aggregate v3 keyset from the signed audit record. Live ceremony orchestration and confidential production share transport remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, and a bounded live executor over authenticated private REST. Three independent members can drive every phase through their real signed routes, restart from durable private state, heal a partition, and derive one identical aggregate v3 keyset; mintd operator wiring and confidential production share transport remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add resumable DKG phase planner</span>
+          <span class="value">feat: drive DKG over authenticated REST</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A pure, stateless planner now validates the local durable DKG view and emits only the next legal work: commitment, reveal, per-recipient shares, local keyset persistence, deterministic transcript signature, or complete. Every gate requires all members from the preceding phase. Later phases carry earlier outbound artifacts so retries can heal a lagging peer without separate acknowledgement state, while custom debug output reports counts and public IDs only.</span>
+          <span class="value">The DKG executor persists or reloads private participant state before sending, runs ordered phase batches through the existing signed peer client, includes self-delivery, attempts every configured receiver concurrently, and reloads SQL after each bounded tick. Completed members retain cumulative idempotent artifacts until a failure-free terminal round, so asymmetric loss of a final transcript signature cannot strand a recovering peer.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Execute the planner over the existing authenticated REST client with bounded retries, ordered cumulative fanout, self-delivery, atomic local keyset persistence, and restart/resume tests. Confidential non-local private-share transport remains a later gate.</span>
+          <span class="value">Add mintd configuration and redacted process status for starting or resuming one ceremony, then reject non-local secret-share delivery unless it uses HTTPS, mTLS, or a recipient-encrypted envelope, with explicit localhost-only development support.</span>
         </div>
       </aside>
     </header>
@@ -835,7 +835,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, and a pure resumable phase planner to the existing authenticated setup routes, durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. The planner advances only through all-member durable gates and emits cumulative idempotent artifacts so later retries can repair earlier delivery loss. Private participant state is durable by ceremony ID in both SQL backends, conflicting regeneration fails, deterministic transcript signing avoids restart conflicts, and operator/debug output remains redacted. Remaining work is bounded live REST execution and confidential production secret-share transport.</p>
+            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, a pure resumable phase planner, and a bounded authenticated REST executor to the existing durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. Three-member route tests prove ordered cumulative fanout, self-delivery, all-peer attempts, SQL restart, partition healing, identical aggregate public config, and distinct valid local shares. Completed members continue idempotent rebroadcast until a failure-free terminal round, preventing asymmetric final-message loss without another acknowledgement protocol. Remaining work is mintd start/monitor configuration, confidential non-local private-share delivery, and process-level ceremony execution.</p>
           </article>
         </div>
       </section>
@@ -851,10 +851,10 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: execute the pure DKG phase plan over
-          bounded authenticated REST with ordered cumulative fanout,
-          self-delivery, atomic local persistence, and restart/resume. Confidential
-          non-local private share delivery follows that checkpoint. The wider
+          Current verification target: wire the bounded DKG executor into mintd
+          start/resume configuration and redacted process status, then enforce
+          confidential non-local private-share delivery with explicit localhost
+          development support. The wider
           process baseline continues to broaden generated process-level
           AlephBFT coverage into larger member matrices, longer partition
           windows, and repeated runs now that five-member AlephBFT DKG process
@@ -981,7 +981,7 @@
           </article>
           <article class="item">
             <h3>Distributed key generation</h3>
-            <p>Connect the pure phase plan to bounded authenticated REST fanout with ordered cumulative delivery, self-delivery, atomic local persistence, explicit restart/resume, and operator status gates, then require confidential non-local share delivery.</p>
+            <p>Expose the bounded authenticated REST executor through mintd start/resume configuration and redacted process status, then require HTTPS, mTLS, or recipient-encrypted envelopes for non-local private shares while retaining explicit localhost-only development support.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

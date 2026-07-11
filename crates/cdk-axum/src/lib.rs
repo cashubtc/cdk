@@ -48,7 +48,10 @@ mod custom_router;
 #[cfg(feature = "federation")]
 mod federation;
 #[cfg(feature = "federation")]
-pub use self::federation::FederationPeerSyncConfig;
+pub use self::federation::{
+    run_federation_dkg_driver, FederationDkgDriverRunConfig, FederationDkgDriverRunOutcome,
+    FederationDkgDriverTickOutcome, FederationPeerSyncConfig,
+};
 mod router_handlers;
 mod ws;
 

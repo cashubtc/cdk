@@ -2669,7 +2669,7 @@ Implementation checklist:
   - [ ] Add the live per-member ceremony driver with durable local state, phase gates, authenticated REST fanout, bounded retries, restart/resume, and operator-visible progress.
     - [x] Persist the versioned local participant state by ceremony ID in both SQL backends. Exact replay is idempotent, regeneration under the same ceremony is rejected, multiple ceremony IDs can coexist, and status exposes only record counts, member IDs, and public ceremony IDs.
     - [x] Add a pure phase planner over the local participant state plus durable commitments, reveals, incoming contributions, keyset shares, and transcript signatures. It emits commitment, reveal, per-recipient shares, local keyset persistence, deterministic transcript signature, or complete only when the preceding all-member gate is durable. Later phases retain earlier outbound artifacts so lagging peers can recover without a separate acknowledgement protocol.
-    - [ ] Execute planned phases over authenticated private REST with bounded retries, self-delivery, restart/resume, and explicit terminal/conflict handling.
+    - [x] Execute planned phases over authenticated private REST with bounded retries, self-delivery, restart/resume, and explicit terminal/conflict handling. Phase batches are ordered, all configured receivers are attempted concurrently within a phase, every send uses the existing signed roster-authenticated route, and a completed member keeps a cumulative rebroadcast plan until one failure-free terminal round prevents asymmetric final-signature loss from stranding a peer.
     - [ ] Add operator configuration and process-level status for starting and monitoring one live ceremony.
   - [ ] Require confidential transport for private secret-share contributions in production (HTTPS/mTLS or recipient-encrypted envelopes), while retaining explicit localhost development support.
 - [x] Run DKG over authenticated private REST setup routes, accepting DKG messages only from identity public keys in the federation roster.
@@ -2700,6 +2700,7 @@ Tests and success criteria:
 - [x] Restart activation and database-backed status reconstruction rederive each keyset from its persisted public ceremony before accepting transcript signatures, with no new table or consensus phase.
 - [x] Local participant state survives SQL restart without exposing scalar material through status; exact replay succeeds, conflicting same-ceremony regeneration fails, and a later ceremony persists independently.
 - [x] The pure driver planner advances through commitment, reveal, secret-share, local-keyset, transcript-signature, and complete phases only from a valid durable view; out-of-order and cross-ceremony records fail closed, repeated signature planning is deterministic, and planner `Debug` output excludes private shares.
+- [x] Three independent members complete the ceremony through authenticated private REST, persist one valid local share each, and independently assemble an identical final public config. A partitioned sender attempts every configured receiver, remains incomplete, reloads its exact private participant state from SQL after restart, and converges after the links heal.
 - [x] Restart during setup can resume or safely restart.
 - [x] Key rotation creates a new aggregate keyset accepted by all members.
 - [x] Old keysets remain verifiable until final expiry.
@@ -2745,6 +2746,17 @@ Verified resumable phase-planner checkpoint:
 - `cargo test -p cdk-common --features federation dkg -- --test-threads=1`: all 29 focused DKG tests passed with the planner included.
 - `cargo check -p cashu -p cdk-common`: passed without federation features.
 - `cargo clippy -p cdk-common --features federation --lib --no-deps -- -D warnings` remains blocked by the same 19 pre-existing federation findings and reports no planner finding.
+
+Verified authenticated REST driver checkpoint:
+
+- `cargo test -p cdk-axum --features federation dkg_driver -- --nocapture`: all 5 bounded-config, participant-policy, authenticated three-member completion, all-peer fanout, partition, restart, and convergence tests passed.
+- `cargo test -p cdk-common --features federation dkg_driver`: all 3 pure planner tests passed after extending the complete phase with cumulative idempotent rebroadcast artifacts.
+- `cargo test -p cdk-axum --features federation dkg -- --test-threads=1`: all 23 driver, signed-route, transcript-signature, restart-activation, peer-client, and HTTP DKG tests passed.
+- `cargo test -p cdk-common --features federation dkg -- --test-threads=1`: all 29 DKG cryptography, planner, transcript, ceremony-domain, and signed-transport tests passed.
+- `cargo check -p cdk-axum --features federation`: passed before the focused route tests.
+- `cargo check -p cdk-axum`: passed without federation features.
+- The driver returns only phase/progress counters and member IDs, never secret-share values; transport failures remain retryable and no acknowledgement table, consensus item, or extra DKG phase was added.
+- `cargo clippy -p cdk-axum --features federation --lib --no-deps -- -D warnings` reaches the new driver without a new finding and remains blocked by 15 pre-existing Axum findings elsewhere.
 
 ## Milestone 21: key rotation and federation upgrades
 

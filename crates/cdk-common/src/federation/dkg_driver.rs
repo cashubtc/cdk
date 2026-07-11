@@ -323,24 +323,6 @@ impl FederationDkgDriverRecords {
             ..base_progress
         };
 
-        if matching_signatures.len() == member_count {
-            FederationDkgFinalizedMemberConfig::from_records(
-                public_config,
-                private_config,
-                std::slice::from_ref(stored_keyset_share),
-                &matching_signatures.values().copied().collect::<Vec<_>>(),
-            )?;
-            return Ok(Self::plan_for_phase(
-                FederationDkgDriverPhase::Complete,
-                progress,
-                None,
-                None,
-                BTreeMap::new(),
-                None,
-                None,
-            ));
-        }
-
         let transcript_signature = matching_signatures.get(&local_member).copied().unwrap_or(
             FederationDkgTranscriptSignatureRequest::new(
                 final_public_config.federation_id,
@@ -352,6 +334,25 @@ impl FederationDkgDriverRecords {
                 )?,
             ),
         );
+
+        if matching_signatures.len() == member_count {
+            FederationDkgFinalizedMemberConfig::from_records(
+                public_config,
+                private_config,
+                std::slice::from_ref(stored_keyset_share),
+                &matching_signatures.values().copied().collect::<Vec<_>>(),
+            )?;
+            return Ok(Self::plan_for_phase(
+                FederationDkgDriverPhase::Complete,
+                progress,
+                Some(commitment),
+                Some(reveal),
+                secret_shares,
+                None,
+                Some(transcript_signature),
+            ));
+        }
+
         Ok(Self::plan_for_phase(
             FederationDkgDriverPhase::TranscriptSignature,
             progress,
@@ -597,8 +598,10 @@ mod tests {
             .expect("complete plan");
         assert_eq!(complete.phase, FederationDkgDriverPhase::Complete);
         assert_eq!(complete.progress.transcript_signature_count, 3);
-        assert!(complete.commitment.is_none());
-        assert!(complete.secret_shares.is_empty());
+        assert!(complete.commitment.is_some());
+        assert!(complete.reveal.is_some());
+        assert_eq!(complete.secret_shares.len(), 3);
+        assert_eq!(complete.transcript_signature, Some(local_signature));
     }
 
     #[test]
