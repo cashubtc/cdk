@@ -2969,6 +2969,19 @@ Verified harness checkpoint (2026-07-11):
   DKG driver, route, persistence, transcript, invalid-share, and restart tests
   pass. This scheduler-level result does not replace the real multi-process
   REST responsiveness and process-CPU gate.
+- Candidate 5 is **Kept**. Commitment, reveal, secret-share, and transcript
+  signature persistence now detect an exact durable record before rebuilding
+  accumulated DKG state. They persist only the newer authenticated member
+  sequence; conflicting records still take the existing fail-closed path before
+  sequence advancement. Reveal replays additionally revalidate their durable
+  prior commitment.
+- The dominant completed secret-share replay fell from a 7.579ms ten-sample
+  release median to 4us (about 1,895x) and completes while the DKG CPU permit is
+  deliberately held, proving no keyset derivation occurs. Twenty-nine focused
+  release DKG tests pass, including ten repeated completed-share replays,
+  signed-route duplicates for every setup phase, one durable record per
+  artifact, monotonic sequence advancement, immutable derived keysets, and all
+  prior conflict/invalid-share checks.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3066,10 +3079,14 @@ reference to the recorded measurements:
   reload validation, planning, and member-share derivation and remains held
   across waiter cancellation. No CPU-time reduction is claimed; real-process
   CPU and private REST latency remain an acceptance gate below.
-- [ ] Add exact-duplicate fast paths for commitment, reveal, secret-share, and
+- [x] Add exact-duplicate fast paths for commitment, reveal, secret-share, and
   transcript-signature ingestion before rebuilding accumulated setup state.
   Conflicting duplicates must still fail before sequence advancement or record
-  replacement. Outcome: pending.
+  replacement. Outcome: **Kept**. A completed secret-share replay improves from
+  7.579ms to 4us in the same release fixture and succeeds with the DKG CPU
+  permit held. Exact replays preserve only the new authenticated sequence;
+  durable artifact/keyset counts remain unchanged, reveal replays recheck their
+  prior commitment, and all conflicting duplicate tests remain fail-closed.
 - [ ] Stop rebroadcasting phase artifacts to peers that returned a verified
   acknowledgement, while preserving idempotent recovery after ambiguous timeout
   or restart. Prefer a simple bounded delivery tracker over a new consensus

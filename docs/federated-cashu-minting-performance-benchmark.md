@@ -1942,6 +1942,53 @@ still record process user/system CPU, peak CPU, private REST attempt/timeout
 counts, and status/info request latency before Candidate 4 can support the
 large-federation acceptance claim.
 
+### Candidate 5: exact-duplicate persistence fast paths
+
+Decision: **Kept** for idempotent DKG replay handling.
+
+Before this candidate, every exact replay followed nearly the same path as a
+new artifact. Commitment and reveal replays rebuilt accumulated setup state;
+transcript-signature replays recomputed the expected transcript hash; and a
+completed secret-share replay loaded the full ceremony and rederived the local
+member keyset. The database writes were idempotent, but the cryptographic and
+state-reconstruction work had already happened.
+
+The retained path first loads the narrow durable artifact collection. If the
+same record is present exactly, it writes only the newer authenticated member
+sequence and returns. It does not replace the artifact or derived keyset.
+Reveal replays also locate the durable prior commitment and validate the reveal
+against it. Secret-share validation and transcript-signature authentication
+still happen before duplicate classification. A same-key record with different
+content remains a conflict and cannot advance the sequence.
+
+The dominant completed secret-share path was measured with ten release samples
+in the same two-member route-derived fixture:
+
+| Completed secret-share replay | Before | After |
+| --- | ---: | ---: |
+| Median persistence time | 7.579ms | 4us |
+| Relative improvement | - | about 1,895x |
+| Re-enters DKG CPU derivation | yes | no |
+
+The retained regression acquires the sole DKG CPU permit before issuing ten
+exact completed-share replays. Every replay completes inside a 100ms bound,
+the sender sequence advances through all ten requests, and the previously
+derived keyset-share collection remains byte-identical. This mechanically
+proves the fast path does not wait for or invoke final keyset derivation.
+
+Twenty-nine permissioned release DKG tests pass. New coverage sends exact
+signed commitment, reveal, secret-share, and transcript-signature requests with
+new monotonic sequences, confirms one durable artifact of each type, and checks
+the final sequence. Existing tests continue to reject conflicting commitment,
+reveal, secret-share, and transcript-signature records before sequence
+persistence, along with wrong receiver, cross-ceremony, bad share, bad
+signature, and wrong transcript hash cases.
+
+The 1,895x result applies to the completed secret-share hot path, not every
+duplicate class. Commitment and reveal duplicates are cheaper to begin with;
+their retained value is avoiding repeated state reconstruction and retry-wave
+amplification while preserving exact idempotency semantics.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

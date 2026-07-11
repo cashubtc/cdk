@@ -33,13 +33,23 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
             peer_private.member_id,
         )
         .expect("transcript signature ack");
+    let duplicate = signed_dkg_transcript_signature_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        5,
+        payload,
+    );
+    let _ = post_dkg_transcript_signature(State(state.clone()), Json(duplicate))
+        .await
+        .expect("exact transcript signature accepted");
     let sequences = state
         .mint
         .localstore()
         .get_federation_member_sequences()
         .await
         .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&4));
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&5));
     let signatures = state
         .mint
         .localstore()

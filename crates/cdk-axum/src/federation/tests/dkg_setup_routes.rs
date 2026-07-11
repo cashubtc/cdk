@@ -106,6 +106,137 @@ async fn private_dkg_setup_routes_accept_signed_peer_requests() {
 }
 
 #[tokio::test]
+async fn private_dkg_setup_routes_accept_exact_duplicates_and_advance_sequence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let commitment = dkg_commitment_request(&public_config, peer_private.member_id, 21);
+    let reveal = dkg_reveal_request(&public_config, peer_private.member_id, 21);
+    let secret_share =
+        dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
+
+    for sequence in 1..=2 {
+        let request = signed_dkg_commitment_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            sequence,
+            commitment,
+        );
+        let _ = post_dkg_commitment(State(state.clone()), Json(request))
+            .await
+            .expect("exact commitment accepted");
+    }
+    for sequence in 3..=4 {
+        let request = signed_dkg_reveal_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            sequence,
+            reveal.clone(),
+        );
+        let _ = post_dkg_reveal(State(state.clone()), Json(request))
+            .await
+            .expect("exact reveal accepted");
+    }
+    for sequence in 5..=6 {
+        let request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            sequence,
+            secret_share.clone(),
+        );
+        let _ = post_dkg_secret_share(State(state.clone()), Json(request))
+            .await
+            .expect("exact secret share accepted");
+    }
+
+    let db = state.mint.localstore();
+    assert_eq!(
+        db.get_federation_member_sequences()
+            .await
+            .expect("member sequences")
+            .get(&peer_private.member_id),
+        Some(&6)
+    );
+    assert_eq!(
+        db.get_federation_dkg_commitments()
+            .await
+            .expect("commitments")
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.get_federation_dkg_reveals()
+            .await
+            .expect("reveals")
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("secret-share contributions")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn completed_secret_share_duplicate_skips_cpu_derivation() {
+    let (state, _, _, peer_private, _) = route_derived_dkg_transcript_fixture().await;
+    let db = state.mint.localstore();
+    let contribution = db
+        .get_federation_dkg_secret_share_contributions()
+        .await
+        .expect("secret-share contributions")
+        .into_iter()
+        .find(|contribution| contribution.sender == peer_private.member_id)
+        .expect("peer contribution");
+    let keyset_shares_before = db
+        .get_federation_dkg_member_keyset_shares()
+        .await
+        .expect("member keyset shares");
+    let cpu_permit = crate::FEDERATION_DKG_CPU_ADMISSION
+        .acquire()
+        .await
+        .expect("DKG CPU permit");
+
+    for sequence in 4..14 {
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            state.persist_federation_dkg_secret_share_contribution(
+                &contribution,
+                peer_private.member_id,
+                sequence,
+            ),
+        )
+        .await
+        .expect("exact duplicate does not wait for CPU derivation")
+        .expect("exact duplicate persists sequence");
+    }
+    drop(cpu_permit);
+
+    assert_eq!(
+        db.get_federation_member_sequences()
+            .await
+            .expect("member sequences")
+            .get(&peer_private.member_id),
+        Some(&13)
+    );
+    assert_eq!(
+        db.get_federation_dkg_member_keyset_shares()
+            .await
+            .expect("member keyset shares"),
+        keyset_shares_before
+    );
+}
+
+#[tokio::test]
 async fn private_dkg_secret_share_route_rejects_wrong_receiver_before_sequence() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

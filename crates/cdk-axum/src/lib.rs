@@ -2815,10 +2815,18 @@ impl MintState {
         sequence: u64,
     ) -> Result<(), cdk::Error> {
         let public_config = self.federation_public_config()?;
+        let db = self.mint.localstore();
+        let existing_commitments = db.get_federation_dkg_commitments().await?;
+        if existing_commitments
+            .iter()
+            .any(|existing| existing == commitment)
+        {
+            commitment.validate_against_config(&public_config)?;
+            return self.persist_federation_sequence(sender, sequence).await;
+        }
         let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
         setup_state.insert_commitment(&public_config, *commitment)?;
 
-        let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_commitment(commitment).await?;
         tx.set_federation_member_sequence(sender, sequence).await?;
@@ -2834,10 +2842,25 @@ impl MintState {
         sequence: u64,
     ) -> Result<(), cdk::Error> {
         let public_config = self.federation_public_config()?;
+        let db = self.mint.localstore();
+        let existing_reveals = db.get_federation_dkg_reveals().await?;
+        if existing_reveals.iter().any(|existing| existing == reveal) {
+            let commitments = db.get_federation_dkg_commitments().await?;
+            let commitment = commitments
+                .iter()
+                .find(|commitment| commitment.member_id == reveal.member_id)
+                .ok_or_else(|| {
+                    cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
+                        member_id: reveal.member_id,
+                        reason: "missing prior commitment".to_string(),
+                    })
+                })?;
+            commitment.validate_reveal(reveal, &public_config)?;
+            return self.persist_federation_sequence(sender, sequence).await;
+        }
         let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
         setup_state.insert_reveal(&public_config, reveal.clone())?;
 
-        let db = self.mint.localstore();
         let completed_keyset_share = self
             .derive_federation_dkg_member_keyset_share_if_ready(&public_config, &setup_state, None)
             .await?;
@@ -2886,6 +2909,12 @@ impl MintState {
                 },
             ));
         }
+        if existing_contributions
+            .iter()
+            .any(|existing| existing == contribution)
+        {
+            return self.persist_federation_sequence(sender, sequence).await;
+        }
         let setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
         let ceremony_id = setup_state.ceremony_id.ok_or_else(|| {
             cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
@@ -2930,21 +2959,6 @@ impl MintState {
     ) -> Result<(), cdk::Error> {
         let public_config = self.federation_public_config()?;
         signature.validate_sender(&public_config, sender)?;
-        let expected_hash = self
-            .expected_federation_dkg_transcript_hash(&public_config)
-            .await?;
-        if signature.transcript_hash != expected_hash {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgTranscriptMismatch {
-                    reason: format!(
-                        "transcript signature hash {} does not match locally derived DKG transcript {}",
-                        signature.transcript_hash,
-                        expected_hash
-                    ),
-                },
-            ));
-        }
-
         let db = self.mint.localstore();
         let existing_signatures = db.get_federation_dkg_transcript_signatures().await?;
         if existing_signatures.iter().any(|existing| {
@@ -2957,6 +2971,26 @@ impl MintState {
                     reason: format!(
                         "conflicting transcript signature for member {} transcript {}",
                         signature.signer, signature.transcript_hash
+                    ),
+                },
+            ));
+        }
+        if existing_signatures
+            .iter()
+            .any(|existing| existing == signature)
+        {
+            return self.persist_federation_sequence(sender, sequence).await;
+        }
+        let expected_hash = self
+            .expected_federation_dkg_transcript_hash(&public_config)
+            .await?;
+        if signature.transcript_hash != expected_hash {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "transcript signature hash {} does not match locally derived DKG transcript {}",
+                        signature.transcript_hash,
+                        expected_hash
                     ),
                 },
             ));
