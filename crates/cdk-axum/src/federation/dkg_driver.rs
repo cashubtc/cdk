@@ -184,6 +184,31 @@ impl FederationDkgDeliveryTotals {
     }
 }
 
+fn trace_federation_dkg_driver_tick(
+    local_member: MemberId,
+    ceremony_id: &FederationDkgCeremonyId,
+    tick: usize,
+    outcome: &FederationDkgDriverTickOutcome,
+) {
+    if !matches!(
+        std::env::var("CDK_MINTD_FEDERATION_DKG_TRACE_TICKS").as_deref(),
+        Ok("1")
+    ) {
+        return;
+    }
+    tracing::info!(
+        %local_member,
+        %ceremony_id,
+        tick,
+        phase_before = ?outcome.phase_before,
+        phase_after = ?outcome.phase_after,
+        attempted_deliveries = outcome.attempted_deliveries,
+        successful_deliveries = outcome.successful_deliveries,
+        failed_deliveries = outcome.failed_deliveries,
+        "Federation DKG driver tick metrics"
+    );
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct DeliverySummary {
     pub(crate) attempted: usize,
@@ -825,6 +850,7 @@ pub async fn run_federation_dkg_driver(
     let mut ticks = 1;
     let mut delivery_totals = FederationDkgDeliveryTotals::default();
     delivery_totals.record(&last_tick);
+    trace_federation_dkg_driver_tick(local_member, &ceremony_id, ticks, &last_tick);
     while !last_tick.is_complete() && ticks < driver_config.max_ticks {
         tokio::time::sleep(driver_config.retry_delay).await;
         last_tick = run_federation_dkg_driver_tick_with_cache(
@@ -836,8 +862,9 @@ pub async fn run_federation_dkg_driver(
             &mut delivery_tracker,
         )
         .await?;
-        delivery_totals.record(&last_tick);
         ticks = ticks.saturating_add(1);
+        delivery_totals.record(&last_tick);
+        trace_federation_dkg_driver_tick(local_member, &ceremony_id, ticks, &last_tick);
     }
 
     if last_tick.is_complete() {

@@ -365,15 +365,23 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("DKG_CAPTURE_METRICS"));
     assert!(live_dkg_smoke_script.contains("DKG_METRICS_INTERVAL_SECONDS"));
     assert!(live_dkg_smoke_script.contains("sample_dkg_metrics"));
+    assert!(live_dkg_smoke_script.contains("record_metrics_member_pid"));
+    assert!(live_dkg_smoke_script.contains("member-$member.pid"));
     assert!(live_dkg_smoke_script.contains("average_cpu_percent"));
     assert!(live_dkg_smoke_script.contains("total_user_seconds"));
     assert!(live_dkg_smoke_script.contains("total_system_seconds"));
     assert!(live_dkg_smoke_script.contains("dkg_rest samples="));
-    assert!(live_dkg_smoke_script.contains("attempted_deliveries="));
+    assert!(live_dkg_smoke_script.contains("startup_failures="));
+    assert!(live_dkg_smoke_script.contains("runtime_failures="));
+    assert!(live_dkg_smoke_script.contains("Federation DKG driver tick metrics"));
+    assert!(live_dkg_smoke_script.contains("duplicate_successes="));
     assert!(live_dkg_smoke_script.contains(">> \"$work_dir/mintd.log\""));
     assert!(live_dkg_smoke_script.contains("HELD_MEMBER"));
     assert!(live_dkg_smoke_script.contains("INTERRUPTED_MEMBER"));
-    assert!(live_dkg_smoke_script.contains("wait_for_commitment_count"));
+    assert!(live_dkg_smoke_script.contains("wait_for_interrupt_checkpoint"));
+    assert!(live_dkg_smoke_script.contains("wait_for_dkg_driver_metric_completion"));
+    assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05"));
+    assert!(live_dkg_smoke_script.contains("keyset_shares || true)\" == \"0"));
     assert!(live_dkg_smoke_script
         .contains("live DKG completed while a required participant was offline"));
     assert!(live_dkg_smoke_script.contains("participant_state_ceremonies"));

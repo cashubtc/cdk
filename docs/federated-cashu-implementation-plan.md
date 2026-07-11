@@ -3155,12 +3155,24 @@ Verified harness checkpoint (2026-07-11):
   accounting. It preserves logs across setup restarts, samples each member's
   CPU percentage, RSS, user time, and system time, and sums CPU time across PID
   changes caused by intentional setup restarts. It probes the primary member's
-  `/v1/info` latency/status, records setup wall time, and prints every driver's
-  aggregate attempt/success/failure totals from low-noise completion/exhaustion
-  logs. Raw process and REST CSV files are retained under `dkg-metrics`, and the
-  generated scripts pass `bash -n`. This item remains open until an explicitly
-  resumed large process run records the values; the previously stopped
-  20-member run was not restarted merely to validate the collector.
+  `/v1/info` latency/status, records setup wall time, and prints exact
+  attempt/success/failure, timeout, and duplicate-success totals from opt-in
+  per-tick events. Raw process and REST CSV files are retained under
+  `dkg-metrics`, and the generated scripts pass `bash -n`.
+
+  A release 5-of-3, eight-denomination validation completed interrupted setup
+  and restart in 10 seconds, then passed activation plus mint/swap/melt/restore.
+  All members produced the same transcript, keyset, aggregate keys, and local
+  public-share mapping. Across five members it used 36.14 user CPU seconds and
+  0.30 system CPU seconds, peaked at 42,352 KiB RSS per member, and completed
+  146 artifact deliveries: 130 successful, 16 expected connection failures
+  while the interrupted member was offline, zero timeouts, and five exact
+  duplicate successes after its in-memory acknowledgement tracker restarted.
+  Nine post-listener `/v1/info` probes succeeded with zero runtime failures;
+  peak latency under setup load was 0.500 seconds. This item remains open until
+  an explicitly resumed large process run records the full acceptance profile;
+  the previously stopped 20-member run was not restarted merely to validate
+  the collector.
 - [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.

@@ -2590,16 +2590,18 @@ Cashu server architecture.
 
 ### Large-process accounting collector
 
-Decision: **Kept** as opt-in benchmark tooling, with no ceremony result yet.
+Decision: **Kept** as opt-in benchmark tooling, with one bounded validation
+result and no large-acceptance result yet.
 `DKG_CAPTURE_METRICS=1` on the generated live-DKG runner now records setup wall
 time and one CSV sample stream per process containing member, PID, CPU percent,
 RSS, user CPU time, and system CPU time. A second stream probes the primary
 member's `/v1/info` HTTP status and latency throughout setup. The runner emits
 average/peak CPU, peak RSS, total user/system CPU, average/peak REST latency,
-and the aggregate delivery attempts/successes/failures logged by each bounded
-driver invocation. User and system CPU totals take the maximum observed value
-for each PID and sum those values per member, so the intentional setup restart
-does not discard the first process incarnation's work.
+and exact per-tick delivery attempts/successes/failures, timeout counts, and
+duplicate successes across interrupted process invocations. User and system CPU
+totals take the maximum observed value for each PID and sum those values per
+member, so the intentional setup restart does not discard the first process
+incarnation's work.
 
 Member logs append across the intentional interruption/restart instead of being
 overwritten. Metrics stop at the setup completion boundary before activation
@@ -2608,6 +2610,42 @@ is disabled by default, contains no ceremony scalars, changes no DKG message or
 retry, and generated scripts are syntax-checked with `bash -n` in the focused
 generator test. Per the operator's stop request, the 20-member process ceremony
 was not rerun; the acceptance measurement remains explicitly open.
+
+The first release collector validation used five members, threshold three, and
+the standard eight denominations. It exposed and fixed two harness-only races:
+the old smoke waited for participant state while one member was held before the
+new all-member readiness barrier, and the background sampler inherited a stale
+shell PID array before exiting under `pipefail` when the interrupted PID died.
+The corrected smoke crosses readiness with the full roster, catches a durable
+pre-keyset checkpoint at 50ms cadence, tracks current PIDs through files shared
+with the sampler, takes a final sample before every stop, and waits for every
+opt-in driver metric stream to flush. No production ceremony behavior changed.
+
+Verified result:
+
+| Member | Avg CPU | Peak CPU | Peak RSS KiB | User s | System s | Attempted | Successful | Failed | Duplicate successes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 57.45% | 135.50% | 42,352 | 7.65 | 0.07 | 29 | 25 | 4 | 0 |
+| 2, interrupted/restarted | 48.99% | 143.80% | 41,376 | 7.32 | 0.07 | 30 | 30 | 0 | 5 |
+| 3 | 71.76% | 112.40% | 41,648 | 7.58 | 0.06 | 29 | 25 | 4 | 0 |
+| 4 | 45.79% | 146.80% | 41,712 | 7.22 | 0.05 | 29 | 25 | 4 | 0 |
+| 5 | 46.46% | 99.50% | 41,744 | 6.37 | 0.05 | 29 | 25 | 4 | 0 |
+
+Setup wall time was 10 seconds. Aggregate process CPU was 36.14 user seconds
+and 0.30 system seconds. Delivery totals were 146 attempted, 130 successful,
+and 16 expected connection failures while member 2 was offline, with zero
+timeouts. The five duplicate successes are exactly the interrupted member's
+commitment broadcast after its intentionally volatile acknowledgement tracker
+reset. `/v1/info` produced one pre-listener startup miss followed by nine
+successes, zero runtime failures, 98.296ms mean latency, and 499.509ms peak
+latency. All members finalized the same transcript/keyset and eight local public
+amount shares. Activation and the standard mint/swap/melt/restore smoke then
+passed in 5.045 seconds. CPU percentages above 100% represent bounded
+multi-threaded cryptographic work, not sampling error.
+
+Focused release verification after the harness correction: all 49 Axum DKG
+tests and all 15 mintd federation-setup/generator tests passed. The generated
+scripts also pass `bash -n` through the generator regression.
 
 ## Recommended Work Order
 

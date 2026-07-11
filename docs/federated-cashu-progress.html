@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add DKG process accounting</span>
+          <span class="value">fix: align DKG smoke with readiness barrier</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The focused DKG production failure matrix is complete. It covers all six restart boundaries, response loss after durable persistence, partition and slow-member recovery, malformed and conflicting artifacts, partial activation, explicit replacement, and a real SQLite second-write failure whose rollback leaves no partial commitment or sequence before exact retry succeeds.</span>
+          <span class="value">A release 5-of-3, eight-denomination process ceremony now crosses the all-member readiness barrier, interrupts one member before keyset derivation, resumes the same durable state, and completes setup in 10 seconds before passing activation plus mint/swap/melt/restore. The collector measured 36.14 user CPU seconds, 0.30 system CPU seconds, 42,352 KiB peak per-member RSS, zero delivery timeouts, zero post-start REST failures, and exactly five duplicate successes caused by the intentional acknowledgement-tracker reset.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">The remaining Milestone 20A item is one explicitly resumed large acceptance run. The generated runner is now ready to capture setup wall time, per-member average/peak CPU and RSS, total user/system CPU across setup restarts, live info-endpoint latency, and aggregate private REST delivery totals while preserving logs across interruption. The focused harness, optimization decisions, transport policy, activation, replacement, 49-test Axum DKG gate, and failure matrix are complete.</span>
+          <span class="value">The remaining Milestone 20A item is one explicitly resumed 20-of-14 acceptance run. The generated runner is verified on the bounded five-member profile and now captures setup wall time, per-member average/peak CPU and RSS, total user/system CPU across restarts, live info-endpoint latency, and exact private REST attempt, failure, timeout, and duplicate totals. The focused harness, optimization decisions, transport policy, activation, replacement, and failure matrix are complete.</span>
         </div>
       </aside>
     </header>

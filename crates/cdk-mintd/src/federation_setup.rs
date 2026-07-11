@@ -2646,6 +2646,8 @@ INTERRUPTED_MEMBER="${{INTERRUPTED_MEMBER:-{interrupted_member}}}"
 HELD_MEMBER="${{HELD_MEMBER:-{held_member}}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-240}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
+INTERRUPT_CHECKPOINT_RETRIES=2400
+INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-600}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
@@ -2698,6 +2700,23 @@ postgres_member_schema() {{
   esac
 }}
 
+record_metrics_member_pid() {{
+  local member="$1"
+  local pid="$2"
+  if [[ "$DKG_CAPTURE_METRICS" != "1" ]]; then
+    return 0
+  fi
+  mkdir -p "$DKG_METRICS_DIR"
+  printf '%s\n' "$pid" > "$DKG_METRICS_DIR/member-$member.pid"
+}}
+
+clear_metrics_member_pid() {{
+  local member="$1"
+  if [[ "$DKG_CAPTURE_METRICS" == "1" ]]; then
+    rm -f "$DKG_METRICS_DIR/member-$member.pid"
+  fi
+}}
+
 start_member() {{
   local member="$1"
   local config
@@ -2709,12 +2728,17 @@ start_member() {{
   if [[ "$DKG_SETUP_PHASE" == "1" ]]; then
     mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
     mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=in_memory)
+    if [[ "$DKG_CAPTURE_METRICS" == "1" ]]; then
+      mintd_env+=(CDK_MINTD_FEDERATION_DKG_TRACE_TICKS=1)
+      mintd_env+=(RUST_LOG=warn,cdk_axum::federation::dkg_driver=info)
+    fi
   else
     mintd_env+=(CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="$FEDERATION_CONSENSUS_BACKEND")
     mintd_env+=(CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$SMOKE_OPERATION_TIMEOUT_SECONDS")
   fi
   env "${{mintd_env[@]}}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" >> "$work_dir/mintd.log" 2>&1 &
   PIDS[$member]=$!
+  record_metrics_member_pid "$member" "${{PIDS[$member]}}"
   printf 'started live DKG member %s with pid %s\n' "$member" "${{PIDS[$member]}}"
 }}
 
@@ -2724,6 +2748,10 @@ stop_member() {{
   if [[ -z "$pid" ]]; then
     return 0
   fi
+  if [[ "$DKG_CAPTURE_METRICS" == "1" && -f "$DKG_METRICS_DIR/process.csv" ]]; then
+    sample_member_metrics "$member" "$(date +%s)" || true
+  fi
+  clear_metrics_member_pid "$member"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   unset 'PIDS[$member]'
@@ -2738,20 +2766,29 @@ cleanup() {{
   done
 }}
 
+sample_member_metrics() {{
+  local member="$1"
+  local sampled_at="$2"
+  local pid_file="$DKG_METRICS_DIR/member-$member.pid"
+  local pid
+  if [[ ! -f "$pid_file" ]] || ! read -r pid < "$pid_file"; then
+    return 0
+  fi
+  local sample
+  if ! sample="$(ps -p "$pid" -o %cpu= -o rss= -o utime= -o stime= 2>/dev/null | awk 'NF {{ print $1 "," $2 "," $3 "," $4; exit }}')"; then
+    return 0
+  fi
+  if [[ -n "$sample" ]]; then
+    printf '%s,%s,%s,%s\n' "$sampled_at" "$member" "$pid" "$sample" >> "$DKG_METRICS_DIR/process.csv"
+  fi
+}}
+
 sample_dkg_metrics() {{
   local sampled_at
   sampled_at="$(date +%s)"
   local member
   for member in "${{MEMBERS[@]}}"; do
-    local pid="${{PIDS[$member]:-}}"
-    if [[ -z "$pid" ]]; then
-      continue
-    fi
-    local sample
-    sample="$(ps -p "$pid" -o %cpu= -o rss= -o utime= -o stime= 2>/dev/null | awk 'NF {{ print $1 "," $2 "," $3 "," $4; exit }}')"
-    if [[ -n "$sample" ]]; then
-      printf '%s,%s,%s,%s\n' "$sampled_at" "$member" "$pid" "$sample" >> "$DKG_METRICS_DIR/process.csv"
-    fi
+    sample_member_metrics "$member" "$sampled_at"
   done
 
   local info_sample
@@ -2762,8 +2799,6 @@ sample_dkg_metrics() {{
 }}
 
 run_metrics_monitor() {{
-  printf 'sampled_at,member,pid,cpu_percent,rss_kb,user_time,system_time\n' > "$DKG_METRICS_DIR/process.csv"
-  printf 'sampled_at,http_status,time_total_seconds\n' > "$DKG_METRICS_DIR/rest.csv"
   while true; do
     sample_dkg_metrics
     sleep "$DKG_METRICS_INTERVAL_SECONDS"
@@ -2775,6 +2810,9 @@ start_metrics_monitor() {{
     return 0
   fi
   mkdir -p "$DKG_METRICS_DIR"
+  rm -f "$DKG_METRICS_DIR"/member-*.pid
+  printf 'sampled_at,member,pid,cpu_percent,rss_kb,user_time,system_time\n' > "$DKG_METRICS_DIR/process.csv"
+  printf 'sampled_at,http_status,time_total_seconds\n' > "$DKG_METRICS_DIR/rest.csv"
   run_metrics_monitor &
   METRICS_PID=$!
 }}
@@ -2826,15 +2864,36 @@ report_dkg_metrics() {{
     NR > 1 {{
       samples += 1; latency += $3;
       if ($3 > peak_latency) peak_latency = $3;
-      if ($2 >= 200 && $2 < 300) successes += 1; else failures += 1;
+      if ($2 >= 200 && $2 < 300) {{
+        successes += 1; seen_success = 1;
+      }} else if (seen_success) {{
+        runtime_failures += 1;
+      }} else {{
+        startup_failures += 1;
+      }}
     }}
     END {{
-      if (samples > 0) printf "dkg_rest samples=%d successes=%d failures=%d average_seconds=%.6f peak_seconds=%.6f\n", samples, successes, failures, latency / samples, peak_latency;
+      if (samples > 0) printf "dkg_rest samples=%d successes=%d startup_failures=%d runtime_failures=%d average_seconds=%.6f peak_seconds=%.6f\n", samples, successes, startup_failures, runtime_failures, latency / samples, peak_latency;
     }}
   ' "$DKG_METRICS_DIR/rest.csv"
   local member
   for member in "${{MEMBERS[@]}}"; do
-    grep 'attempted_deliveries=' "$(member_work_dir "$member")/mintd.log" | grep 'Federation DKG' || true
+    awk -v member="$member" '
+      /Federation DKG driver tick metrics/ {{
+        for (field = 1; field <= NF; field += 1) {{
+          split($field, value, "=");
+          if (value[1] == "attempted_deliveries") attempted += value[2];
+          if (value[1] == "successful_deliveries") successful += value[2];
+          if (value[1] == "failed_deliveries") failed += value[2];
+        }}
+      }}
+      /Federation DKG delivery failed/ && /failure_kind="timeout"/ {{ timeouts += 1 }}
+      END {{
+        unique = {member_count} * 5;
+        duplicates = successful > unique ? successful - unique : 0;
+        printf "dkg_delivery member=%s attempted=%d successful=%d failed=%d timeouts=%d duplicate_successes=%d\n", member, attempted, successful, failed, timeouts, duplicates;
+      }}
+    ' "$(member_work_dir "$member")/mintd.log"
   done
   printf 'dkg_metrics_dir=%s\n' "$DKG_METRICS_DIR"
 }}
@@ -2918,18 +2977,50 @@ wait_for_dkg_participant() {{
   return 1
 }}
 
-wait_for_commitment_count() {{
+wait_for_interrupt_checkpoint() {{
   local member="$1"
-  local expected="$2"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
+  local work_dir
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 "$INTERRUPT_CHECKPOINT_RETRIES"); do
     local line
-    if line="$(member_dkg_setup_line "$member" 2>/dev/null)" && [[ "$(status_field "$line" commitments || true)" == "$expected" ]]; then
+    if line="$(member_dkg_setup_line "$member" 2>/dev/null)"; then
+      local tick_metric_ready=1
+      if [[ "$DKG_CAPTURE_METRICS" == "1" ]] && ! grep -q 'Federation DKG driver tick metrics' "$work_dir/mintd.log"; then
+        tick_metric_ready=0
+      fi
+      if [[ "$tick_metric_ready" == "1" && "$(status_field "$line" participant_states || true)" == "1" && "$(status_field "$line" commitments || true)" == "${{#MEMBERS[@]}}" && "$(status_field "$line" keyset_shares || true)" == "0" ]]; then
+        printf '%s\n' "$line"
+        return 0
+      fi
+      if [[ "$(status_field "$line" keyset_shares || true)" == "1" ]]; then
+        printf 'member %s passed the intended pre-keyset interruption checkpoint\n' "$member" >&2
+        printf '%s\n' "$line" >&2
+        return 1
+      fi
+    fi
+    sleep "$INTERRUPT_CHECKPOINT_SLEEP_SECONDS"
+  done
+  printf 'member %s did not reach the durable pre-keyset interruption checkpoint\n' "$member" >&2
+  member_dkg_setup_line "$member" >&2 || true
+  tail -n 100 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
+wait_for_dkg_driver_metric_completion() {{
+  local member="$1"
+  if [[ "$DKG_CAPTURE_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local work_dir
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 200); do
+    if grep -q 'Federation DKG ceremony completed' "$work_dir/mintd.log"; then
       return 0
     fi
-    sleep "$STATUS_SLEEP_SECONDS"
+    sleep "$INTERRUPT_CHECKPOINT_SLEEP_SECONDS"
   done
-  printf 'member %s did not collect %s partial DKG commitments\n' "$member" "$expected" >&2
-  member_dkg_setup_line "$member" >&2 || true
+  printf 'member %s did not flush its completed DKG driver metrics\n' "$member" >&2
+  tail -n 100 "$work_dir/mintd.log" >&2 || true
   return 1
 }}
 
@@ -3057,25 +3148,19 @@ validate_live_dkg_smoke
 reset_live_dkg_state
 DKG_SETUP_STARTED_SECONDS=$SECONDS
 
-partial_member_count=$((${{#MEMBERS[@]}} - 1))
+start_metrics_monitor
 for member in "${{MEMBERS[@]}}"; do
   if [[ "$member" != "$HELD_MEMBER" ]]; then
     start_member "$member"
   fi
 done
-start_metrics_monitor
-for member in "${{MEMBERS[@]}}"; do
-  if [[ "$member" != "$HELD_MEMBER" ]]; then
-    wait_for_dkg_participant "$member" >/dev/null
-    wait_for_commitment_count "$member" "$partial_member_count"
-  fi
-done
+start_member "$HELD_MEMBER"
 
-interrupted_before="$(member_dkg_setup_line "$INTERRUPTED_MEMBER")"
+interrupted_before="$(wait_for_interrupt_checkpoint "$INTERRUPTED_MEMBER")"
 interrupted_ceremony_before="$(status_field "$interrupted_before" participant_state_ceremonies)"
 stop_member "$INTERRUPTED_MEMBER"
-start_member "$HELD_MEMBER"
 wait_for_dkg_participant "$HELD_MEMBER" >/dev/null
+sleep "$STATUS_SLEEP_SECONDS"
 if member_dkg_records_complete "$HELD_MEMBER"; then
   printf 'live DKG completed while a required participant was offline\n' >&2
   exit 1
@@ -3085,8 +3170,16 @@ start_member "$INTERRUPTED_MEMBER"
 for member in "${{MEMBERS[@]}}"; do
   wait_for_dkg_ready "$member"
 done
+for member in "${{MEMBERS[@]}}"; do
+  wait_for_dkg_driver_metric_completion "$member"
+done
+sample_dkg_metrics
 stop_metrics_monitor
+for member in "${{MEMBERS[@]}}"; do
+  stop_member "$member"
+done
 report_dkg_metrics
+DKG_CAPTURE_METRICS=0
 interrupted_after="$(member_dkg_setup_line "$INTERRUPTED_MEMBER")"
 interrupted_ceremony_after="$(status_field "$interrupted_after" participant_state_ceremonies)"
 if [[ "$interrupted_ceremony_before" != "$interrupted_ceremony_after" || "$(status_field "$interrupted_after" participant_states)" != "1" ]]; then
@@ -3099,9 +3192,6 @@ for member in "${{MEMBERS[@]}}"; do
 done
 compare_final_public_configs
 
-for member in "${{MEMBERS[@]}}"; do
-  stop_member "$member"
-done
 DKG_SETUP_PHASE=0
 for member in "${{MEMBERS[@]}}"; do
   start_member "$member"
@@ -3138,6 +3228,7 @@ printf 'live dealer-free DKG mint/swap/melt/restore smoke passed\n'
         final_config_dir_cases = final_config_dir_cases,
         public_mint_url_cases = public_mint_url_cases,
         postgres_schema_reset_cases = postgres_schema_reset_cases,
+        member_count = member_artifacts.len(),
         unit = shell_single_quote(&unit),
     ))
 }
