@@ -2768,6 +2768,56 @@ export error, and still compares every final public config byte-for-byte before
 restart. This is benchmark-runner throughput only; production DKG behavior is
 unchanged.
 
+### Candidates 13-16: residual timeout isolation
+
+Candidate 13, a process-local transcript-hash cache, is **Rejected**. The exact
+eight-denomination 5-of-3 derivation takes a 200us median (200-203us), so it
+cannot explain a ten-second request timeout. Moving it behind the shared CPU
+semaphore would add queueing. The cache, test, and temporary harness phases were
+removed after this measurement.
+
+Candidate 14, setting `TOKIO_WORKER_THREADS=2` for each local daemon, is
+**Rejected**. On the same 20-of-14 profile it completed in 121 seconds but
+increased timeouts from 243 to 516: 114 secret-share, 400 activation, and two
+reveal timeouts. Mean/peak info latency regressed to 351.051ms/6.072s. No runtime
+setting or production code was retained.
+
+Candidate 15, proactively assembling each finalized config before activation
+fanout, is **Rejected**. It removed activation request timeouts but duplicated
+expensive finalized-config work while earlier phases were still converging. The
+bounded run remained incomplete when stopped after 139 seconds, with 540 total
+timeouts and one runtime info-probe failure. All preparation code was removed.
+
+Candidate 16, bounding each driver's artifact fanout, is **Kept** at four
+concurrent requests in deterministic roster order. Readiness remains unchanged;
+commitment, reveal, secret-share, transcript-signature, and activation delivery
+still attempt every unacknowledged member in each tick, but no sender can open
+up to 64 simultaneous artifact requests. Existing per-request deadlines,
+validated acknowledgements, volatile restart behavior, and retries are
+unchanged.
+
+| Release 20-of-14 fanout result | Unbounded | Bound 4, sorted |
+|---|---:|---:|
+| Setup wall | 116s | 130s |
+| Aggregate user/system CPU | 1,724.13s / 9.28s | 1,418.67s / 13.36s |
+| Attempts/failures/timeouts | 2,311 / 291 / 243 | 2,096 / 76 / 37 |
+| Runtime info failures | 0 | 0 |
+| Peak per-member RSS | 96,544 KiB | 93,248 KiB |
+
+The bound reduces timeouts by 84.8% and failures by 73.9% while remaining under
+the 180-second budget. Two follow-up variants were rejected. Rotating each
+sender's target order made all receivers initialize expensive activation state
+at once and increased timeouts to 76 with a 140-second setup. Serial concurrency
+one initially showed zero timeouts but completed in 248 seconds, recorded 12
+late timeouts, and exceeded the budget. The sorted four-request result is the
+measured balance; the stricter zero-self-timeout success criterion remains open.
+
+The same series exposed a benchmark-runner signal bug. A shared
+`trap cleanup EXIT INT TERM` performed cleanup but let Bash continue after
+Ctrl-C. Generated runners now trap EXIT for cleanup and map INT/TERM to exit
+status 130, causing the EXIT cleanup to run exactly once. A live process run
+confirmed immediate member shutdown and status 130.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

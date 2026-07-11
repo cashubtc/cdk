@@ -374,6 +374,9 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("dkg_metrics_result="));
     assert!(live_dkg_smoke_script.contains("report_dkg_metrics setup_failure"));
     assert!(live_dkg_smoke_script.contains("DKG_METRICS_REPORTED"));
+    assert!(live_dkg_smoke_script.contains("trap cleanup EXIT"));
+    assert!(live_dkg_smoke_script.contains("trap handle_signal INT TERM"));
+    assert!(live_dkg_smoke_script.contains("exit 130"));
     assert!(live_dkg_smoke_script.contains("startup_failures="));
     assert!(live_dkg_smoke_script.contains("runtime_failures="));
     assert!(live_dkg_smoke_script.contains("Federation DKG driver tick metrics"));

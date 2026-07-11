@@ -3096,6 +3096,22 @@ Verified harness checkpoint (2026-07-11):
   1,724.13 user CPU seconds, 243 recovered timeouts, zero runtime info failures,
   byte-identical final configs, and a 7.834-second mint/swap/check-state/melt/
   restore smoke after restart. The documented release budget is 180 seconds.
+- Candidate 13, caching the locally derived transcript hash, is **Rejected**:
+  the exact 5-of-3/eight-denomination derivation is only 200us and cannot explain
+  a ten-second timeout. Candidate 14, limiting each daemon to two Tokio workers,
+  is **Rejected** after increasing the 20-member timeout count from 243 to 516.
+  Candidate 15, proactively rebuilding finalized configs before activation, is
+  **Rejected** after an unfinished 139-second run accumulated 540 timeouts and
+  one runtime info-probe failure. All three implementations were removed.
+- Candidate 16 is **Kept** for bounded artifact fanout. Each driver now has at
+  most four commitment, reveal, secret-share, transcript-signature, or activation
+  requests in flight while still attempting every unacknowledged member each
+  tick. The controlled 20-member run completed in 130 seconds with 37 timeouts,
+  down 84.8% from 243, and 76 failures, down 73.9% from 291. User CPU fell from
+  1,724.13 to 1,418.67 seconds and peak RSS from 96,544 to 93,248 KiB. Rotated
+  target order increased timeouts to 76; serial delivery took 248 seconds and
+  still recorded 12 late timeouts, so both variants are **Rejected**. The
+  zero-self-timeout success criterion remains open.
 - The bounded-admission robustness checkpoint is **Kept** without a speed
   claim. Dealer-free DKG now accepts at most 64 roster members and 64
   denomination keys, while broader standalone and trusted-dealer configuration
@@ -3200,7 +3216,9 @@ Verified harness checkpoint (2026-07-11):
   summary exactly once with an explicit `setup_failure` marker when setup exits
   early. A bounded synthetic failure using a non-starting binary exited nonzero,
   cleaned up all three child PIDs, and reported REST plus zeroed delivery totals
-  without launching a real federation.
+  without launching a real federation. INT/TERM now exit with status 130 and
+  invoke EXIT cleanup exactly once; a live process run confirmed immediate
+  shutdown instead of continuing after Ctrl-C.
 
   A release 5-of-3, eight-denomination validation completed interrupted setup
   and restart in 10 seconds, then passed activation plus mint/swap/melt/restore.
@@ -3232,6 +3250,10 @@ Verified harness checkpoint (2026-07-11):
   recovered timeouts, and zero runtime `/v1/info` failures. Every member
   exported the same final public config and restarted with its own private
   share; mint, swap, check-state, melt, and restore passed in 7.834 seconds.
+  Candidate 16 then bounded artifact fanout at four concurrent requests and
+  completed in 130 seconds with 1,418.67 user CPU seconds, 93,248 KiB peak RSS,
+  2,096 deliveries, 76 failures, and 37 timeouts. This is the retained large
+  process profile while the stricter zero-timeout criterion remains open.
 - [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.
@@ -3392,6 +3414,27 @@ reference to the recorded measurements:
   final configs, and passing wallet operations. The ordinary checked APIs remain
   available and unchanged, while the validated-config variants retain every
   activation binding and signature check.
+- [x] Cache the locally derived transcript hash if exact phase timing shows it
+  is material to delivery latency. Outcome: **Rejected**. Harness v6 measures
+  the exact 5-of-3/eight-denomination derivation at only 200us, far below the
+  ten-second request deadline. The cache and its temporary probes were removed.
+- [x] Reduce per-daemon Tokio worker counts to limit one-host CPU contention.
+  Outcome: **Rejected**. Two workers increased the controlled 20-of-14 timeout
+  count from 243 to 516 and regressed mean/peak info latency to
+  351.051ms/6.072s. No runtime setting or production change was retained.
+- [x] Proactively prepare the finalized config before activation fanout.
+  Outcome: **Rejected**. The controlled run remained incomplete at 139 seconds,
+  accumulated 540 delivery timeouts, and produced one runtime info-probe
+  failure because it duplicated expensive finalized-config work during phase
+  convergence. The preparation code was removed.
+- [x] Bound each driver's artifact fanout while retaining delivery to every
+  unacknowledged member. Outcome: **Kept** at four concurrent requests in
+  deterministic roster order. The controlled 20-of-14 run completed in 130
+  seconds and reduced recovered timeouts from 243 to 37 and total failures from
+  291 to 76, while user CPU fell from 1,724.13 to 1,418.67 seconds and peak RSS
+  from 96,544 to 93,248 KiB. Rotated order increased timeouts to 76; serial
+  delivery took 248 seconds and still recorded 12 late timeouts, so both
+  variants are **Rejected**. The zero-self-timeout criterion remains open.
 
 Production robustness checklist:
 

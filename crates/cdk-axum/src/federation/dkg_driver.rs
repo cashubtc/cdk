@@ -14,11 +14,14 @@ use cdk::federation::{
 };
 use cdk_http_client::{Async, HttpError, Transport};
 use futures::future::join_all;
+use futures::{stream, StreamExt};
 
 use crate::MintState;
 
 use super::peer_client::{FederationRestPeerClient, FederationRestPeerClientError};
 use super::sync_config::FederationPeerSyncConfig;
+
+const FEDERATION_DKG_DELIVERY_CONCURRENCY: usize = 4;
 
 /// Confidentiality policy for dealer-free DKG secret-share delivery.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -617,7 +620,7 @@ where
             request,
             public_config.members.keys().copied(),
         );
-        let results = join_all(targets.into_iter().map(|member_id| {
+        let results = stream::iter(targets.into_iter().map(|member_id| {
             let member = public_config
                 .member(member_id)
                 .expect("tracked DKG commitment receiver must be configured");
@@ -628,6 +631,8 @@ where
                 )
             }
         }))
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
         .await;
         let acknowledged = record_delivery_results("commitment", results, &mut delivery);
         record_broadcast_acknowledgements(&mut delivery_tracker.commitment, request, &acknowledged);
@@ -639,7 +644,7 @@ where
             request,
             public_config.members.keys().copied(),
         );
-        let results = join_all(targets.into_iter().map(|member_id| {
+        let results = stream::iter(targets.into_iter().map(|member_id| {
             let member = public_config
                 .member(member_id)
                 .expect("tracked DKG reveal receiver must be configured");
@@ -650,30 +655,42 @@ where
                 )
             }
         }))
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
         .await;
         let acknowledged = record_delivery_results("reveal", results, &mut delivery);
         record_broadcast_acknowledgements(&mut delivery_tracker.reveal, request, &acknowledged);
     }
 
     if !plan.secret_shares.is_empty() {
-        let deliveries = plan
+        let targets = plan
             .secret_shares
             .iter()
             .filter(|(receiver, request)| {
                 delivery_tracker.secret_shares.get(receiver) != Some(*request)
             })
-            .map(|(receiver, request)| {
-                let member = public_config
-                    .member(*receiver)
-                    .expect("validated DKG plan receiver must be configured");
-                async move {
-                    (
-                        member.member_id,
-                        client.submit_dkg_secret_share(member, request).await,
-                    )
-                }
-            });
-        let results = join_all(deliveries).await;
+            .map(|(receiver, _)| *receiver)
+            .collect::<Vec<_>>();
+        let deliveries = targets.into_iter().map(|receiver| {
+            let member = public_config
+                .member(receiver)
+                .expect("validated DKG plan receiver must be configured");
+            let request = plan
+                .secret_shares
+                .get(&receiver)
+                .expect("validated DKG plan request must be configured")
+                .clone();
+            async move {
+                (
+                    member.member_id,
+                    client.submit_dkg_secret_share(member, &request).await,
+                )
+            }
+        });
+        let results = stream::iter(deliveries)
+            .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
         let acknowledged = record_delivery_results("secret share", results, &mut delivery);
         for member_id in acknowledged {
             if let Some(request) = plan.secret_shares.get(&member_id) {
@@ -694,7 +711,7 @@ where
             request,
             public_config.members.keys().copied(),
         );
-        let results = join_all(targets.into_iter().map(|member_id| {
+        let results = stream::iter(targets.into_iter().map(|member_id| {
             let member = public_config
                 .member(member_id)
                 .expect("tracked DKG transcript receiver must be configured");
@@ -707,6 +724,8 @@ where
                 )
             }
         }))
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
         .await;
         let acknowledged = record_delivery_results("transcript signature", results, &mut delivery);
         record_broadcast_acknowledgements(
@@ -722,7 +741,7 @@ where
             request,
             public_config.members.keys().copied(),
         );
-        let results = join_all(targets.into_iter().map(|member_id| {
+        let results = stream::iter(targets.into_iter().map(|member_id| {
             let member = public_config
                 .member(member_id)
                 .expect("tracked DKG activation receiver must be configured");
@@ -733,6 +752,8 @@ where
                 )
             }
         }))
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
         .await;
         let acknowledged = record_delivery_results("activation", results, &mut delivery);
         record_broadcast_acknowledgements(&mut delivery_tracker.activation, request, &acknowledged);

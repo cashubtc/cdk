@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has a passing 20-member, threshold-14, eight-denomination release ceremony and a measured trust-boundary activation optimization. Fresh DKG waits for exact readiness, rejects each bad share before persistence, bounds authenticated work, and requires every roster member to confirm the exact transcript/config digest before any keyset activates.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has a passing 20-member, threshold-14, eight-denomination release ceremony with validated-config reuse and bounded artifact delivery. Fresh DKG waits for exact readiness, rejects each bad share before persistence, bounds authenticated work, and requires every roster member to confirm the exact transcript/config digest before any keyset activates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: reuse validated DKG activation configs</span>
+          <span class="value">perf: bound DKG artifact fanout</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A pre-fix 20-of-14 release run failed after 467 seconds because every activation request repeated full threshold-key and transcript validation. Harness v6 measures 1.300 seconds versus 1.527 milliseconds per 20-member activation check; the fresh process run completed setup in 116 seconds, exported identical configs, restarted all members, and passed mint/swap/check-state/melt/restore in 7.834 seconds.</span>
+          <span class="value">Bounding each driver's commitment, reveal, secret-share, transcript-signature, and activation fanout at four concurrent requests completed the controlled 20-of-14 release ceremony in 130 seconds. Compared with the 116-second unbounded run, recovered request timeouts fell from 243 to 37, total failures fell from 291 to 76, aggregate user CPU fell from 1,724.13 to 1,418.67 seconds, and every runtime info probe still succeeded.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">The 180-second large-federation budget and state-equality gates pass, but the run still recorded 243 recovered self-request timeouts: 168 transcript-signature, 53 activation, and 22 secret-share deliveries. The next measured checkpoint is to remove repeated transcript-hash derivation from request lifetime without weakening validation or extending timeouts.</span>
+          <span class="value">The 180-second budget, exact state-equality, restart, and wallet-operation gates pass, but the stricter zero-self-timeout condition remains open with 37 recovered timeouts. Transcript-hash caching, two-worker daemons, proactive finalized-config preparation, rotated delivery order, and serialized delivery were measured and rejected; the next checkpoint is to isolate the remaining contention without extending deadlines or weakening validation.</span>
         </div>
       </aside>
     </header>
@@ -672,8 +672,8 @@
             <div>
               <h3>Milestone 20A: optimize DKG performance and robustness</h3>
               <p>Objective: make dealer-free DKG fast, measurable, resource-bounded, and operationally safe for large federations without weakening ceremony verification.</p>
-              <p>Current result: the release 20-of-14, eight-denomination ceremony completes in 116 seconds inside a conservative 180-second budget. Reusing already-validated immutable configs cuts one 20-member activation check from a 1.300-second median to 1.527 milliseconds, reduces aggregate setup user CPU from 6,989.29 to 1,724.13 seconds, and preserves every activation binding and signature check. Every member exports the same public config, restarts with its own private share, and completes wallet operations. Dealer-free setup remains capped at 64 members, 64 denominations, and 1 MiB per DKG route, with fair bounded admission, explicit abort/replacement, and an all-member activation barrier. Database encryption and backup/restore are explicitly out of scope.</p>
-              <p class="test-gate"><strong>Test gate:</strong> phase benchmarks, the 180-second process budget, responsive REST, identical final configs, restart, and mint/swap/melt/restore pass. The final open liveness condition is removing the 243 recovered self-request timeouts observed under one-host 20-member CPU contention without extending deadlines or weakening validation.</p>
+              <p>Current result: the release 20-of-14, eight-denomination ceremony completes in 130 seconds inside a conservative 180-second budget with artifact fanout bounded at four requests per driver. Reusing already-validated immutable configs cuts one 20-member activation check from a 1.300-second median to 1.527 milliseconds; bounded fanout then reduces recovered timeouts from 243 to 37, failures from 291 to 76, and aggregate user CPU from 1,724.13 to 1,418.67 seconds. Every member reaches the same final configuration and the validated restart and wallet-operation checkpoint remains passing. Dealer-free setup remains capped at 64 members, 64 denominations, and 1 MiB per DKG route, with fair bounded admission, explicit abort/replacement, and an all-member activation barrier. Database encryption and backup/restore are explicitly out of scope.</p>
+              <p class="test-gate"><strong>Test gate:</strong> phase benchmarks, the 180-second process budget, responsive REST, identical final configs, restart, and mint/swap/melt/restore pass. The final open liveness condition is removing the 37 recovered self-request timeouts observed under one-host 20-member CPU contention without extending deadlines or weakening validation.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>

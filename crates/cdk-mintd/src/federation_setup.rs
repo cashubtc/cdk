@@ -3197,7 +3197,13 @@ validate_live_dkg_smoke() {{
   fi
 }}
 
-trap cleanup EXIT INT TERM
+handle_signal() {{
+  trap - INT TERM
+  exit 130
+}}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
 validate_live_dkg_smoke
 reset_live_dkg_state
 DKG_SETUP_STARTED_SECONDS=$SECONDS
