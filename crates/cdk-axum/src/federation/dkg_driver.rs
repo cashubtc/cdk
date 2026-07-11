@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgCeremonyId,
-    FederationDkgDriverPhase, FederationDkgDriverProgress, FederationDkgDriverRecords,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantState,
-    FederationError, MemberId,
+    FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
+    FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantState, FederationError, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use futures::future::join_all;
@@ -151,6 +151,12 @@ struct DeliverySummary {
     failed_members: BTreeSet<MemberId>,
 }
 
+#[derive(Clone)]
+struct FederationDkgPlanCache {
+    records: FederationDkgDriverRecords,
+    plan: FederationDkgDriverPlan,
+}
+
 impl DeliverySummary {
     fn record(&mut self, member_id: MemberId, accepted: bool) {
         self.attempted = self.attempted.saturating_add(1);
@@ -231,11 +237,33 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
 /// batches remain ordered, while deliveries within one phase run concurrently.
 /// Later plans rebroadcast earlier artifacts, allowing lagging members to catch
 /// up without a separate acknowledgement journal.
+#[cfg(test)]
 pub(crate) async fn run_federation_dkg_driver_tick<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
     participant: &FederationDkgParticipantState,
     secret_share_transport: FederationDkgSecretShareTransportPolicy,
+) -> Result<FederationDkgDriverTickOutcome, cdk::Error>
+where
+    T: Transport,
+{
+    let mut plan_cache = None;
+    run_federation_dkg_driver_tick_with_cache(
+        state,
+        client,
+        participant,
+        secret_share_transport,
+        &mut plan_cache,
+    )
+    .await
+}
+
+async fn run_federation_dkg_driver_tick_with_cache<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    participant: &FederationDkgParticipantState,
+    secret_share_transport: FederationDkgSecretShareTransportPolicy,
+    plan_cache: &mut Option<FederationDkgPlanCache>,
 ) -> Result<FederationDkgDriverTickOutcome, cdk::Error>
 where
     T: Transport,
@@ -256,7 +284,14 @@ where
     }
 
     let records = load_federation_dkg_driver_records(state).await?;
-    let plan = records.plan(&public_config, &private_config, participant)?;
+    let plan = plan_federation_dkg_records(
+        records,
+        &public_config,
+        &private_config,
+        participant,
+        plan_cache,
+    )
+    .await?;
     let phase_before = plan.phase;
     let mut delivery = DeliverySummary::default();
 
@@ -316,7 +351,14 @@ where
     }
 
     let records = load_federation_dkg_driver_records(state).await?;
-    let next_plan = records.plan(&public_config, &private_config, participant)?;
+    let next_plan = plan_federation_dkg_records(
+        records,
+        &public_config,
+        &private_config,
+        participant,
+        plan_cache,
+    )
+    .await?;
     Ok(FederationDkgDriverTickOutcome {
         phase_before,
         phase_after: next_plan.phase,
@@ -326,6 +368,35 @@ where
         failed_deliveries: delivery.failed,
         failed_members: delivery.failed_members.into_iter().collect(),
     })
+}
+
+async fn plan_federation_dkg_records(
+    records: FederationDkgDriverRecords,
+    public_config: &FederationConfig,
+    private_config: &cdk::federation::MemberConfigPrivate,
+    participant: &FederationDkgParticipantState,
+    plan_cache: &mut Option<FederationDkgPlanCache>,
+) -> Result<FederationDkgDriverPlan, cdk::Error> {
+    if let Some(cached) = plan_cache.as_ref() {
+        if cached.records == records {
+            return Ok(cached.plan.clone());
+        }
+    }
+
+    let records_for_plan = records.clone();
+    let public_config = public_config.clone();
+    let private_config = private_config.clone();
+    let participant = participant.clone();
+    let plan = tokio::task::spawn_blocking(move || {
+        records_for_plan.plan(&public_config, &private_config, &participant)
+    })
+    .await
+    .map_err(|_| cdk::Error::Custom("federation DKG planner task failed".to_string()))??;
+    *plan_cache = Some(FederationDkgPlanCache {
+        records,
+        plan: plan.clone(),
+    });
+    Ok(plan)
 }
 
 /// Run a bounded number of idempotent DKG ticks with the default HTTP transport.
@@ -356,21 +427,24 @@ pub async fn run_federation_dkg_driver(
     )
     .map_err(|err| cdk::Error::Custom(err.to_string()))?;
 
-    let mut last_tick = run_federation_dkg_driver_tick(
+    let mut plan_cache = None;
+    let mut last_tick = run_federation_dkg_driver_tick_with_cache(
         state,
         &client,
         &participant,
         driver_config.secret_share_transport,
+        &mut plan_cache,
     )
     .await?;
     let mut ticks = 1;
     while !last_tick.is_complete() && ticks < driver_config.max_ticks {
         tokio::time::sleep(driver_config.retry_delay).await;
-        last_tick = run_federation_dkg_driver_tick(
+        last_tick = run_federation_dkg_driver_tick_with_cache(
             state,
             &client,
             &participant,
             driver_config.secret_share_transport,
+            &mut plan_cache,
         )
         .await?;
         ticks = ticks.saturating_add(1);

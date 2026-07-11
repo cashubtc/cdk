@@ -25,14 +25,13 @@ use cdk::federation::{
     FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
     FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
-    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
-    FEDERATION_REST_API_VERSION,
+    FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationStatus, FederationRestSequenceTracker,
+    FederationSessionOutcome, FederationStateDigestCheckpoint, FederationSubmitOperationResponse,
+    MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -2943,82 +2942,20 @@ impl MintState {
             .localstore()
             .get_federation_dkg_member_keyset_shares()
             .await?;
-        let mut keysets_by_id = BTreeMap::new();
-        let mut ceremonies_by_keyset_id = BTreeMap::new();
-        for share in keyset_shares {
-            if share.federation_id != setup_public_config.federation_id {
-                return Err(cdk::Error::Federation(
-                    FederationError::FederationIdMismatch {
-                        expected: setup_public_config.federation_id,
-                        found: share.federation_id,
-                    },
-                ));
-            }
+        for share in &keyset_shares {
             if share.member_id != local_member {
                 return Err(cdk::Error::Federation(FederationError::MemberIdMismatch {
                     expected: local_member,
                     found: share.member_id,
                 }));
             }
-            let ceremony_keyset = share
-                .public_ceremony
-                .derive_federated_keyset(setup_public_config)?;
-            if ceremony_keyset != share.keyset {
-                return Err(cdk::Error::Federation(
-                    FederationError::DkgTranscriptMismatch {
-                        reason: format!(
-                            "public DKG ceremony does not match local keyset share {}",
-                            share.keyset.id
-                        ),
-                    },
-                ));
-            }
-            let keyset_id = share.keyset.id;
-            let keyset = share.keyset.clone();
-            match keysets_by_id.insert(keyset_id, keyset.clone()) {
-                Some(existing) if existing != keyset => {
-                    return Err(cdk::Error::Federation(
-                        FederationError::DkgTranscriptMismatch {
-                            reason: format!("conflicting local DKG keyset {keyset_id}"),
-                        },
-                    ));
-                }
-                Some(_) | None => {}
-            }
-            let public_ceremony = share.public_ceremony;
-            match ceremonies_by_keyset_id.insert(keyset_id, public_ceremony.clone()) {
-                Some(existing) if existing != public_ceremony => {
-                    return Err(cdk::Error::Federation(
-                        FederationError::DkgTranscriptMismatch {
-                            reason: format!(
-                                "conflicting local public DKG ceremony for keyset {keyset_id}"
-                            ),
-                        },
-                    ));
-                }
-                Some(_) | None => {}
-            }
         }
-        if keysets_by_id.is_empty() {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgTranscriptMismatch {
-                    reason: "missing local DKG keyset share before transcript signature"
-                        .to_string(),
-                },
-            ));
-        }
-
-        let mut final_public_config = setup_public_config.clone();
-        final_public_config.keysets = keysets_by_id.into_values().collect();
-        final_public_config.setup_transcript = None;
-        final_public_config.validate()?;
-        let public_ceremonies = ceremonies_by_keyset_id.into_values().collect::<Vec<_>>();
-
-        Ok(FederationDkgTranscript::hash_for_config(
-            FederationDkgSetupMethod::PedersenDkg,
-            &final_public_config,
-            &public_ceremonies,
-        )?)
+        Ok(
+            FederationDkgMemberKeysetShare::transcript_hash_for_locally_derived_records(
+                setup_public_config,
+                &keyset_shares,
+            )?,
+        )
     }
 
     async fn derive_federation_dkg_member_keyset_share_if_ready(
@@ -3096,12 +3033,18 @@ impl MintState {
             return Ok(None);
         }
 
-        let keyset_share = round.derive_member_keyset_share(
-            public_config,
-            &setup_state.reveals,
-            local_member,
-            &participant_secret_shares,
-        )?;
+        let public_config = public_config.clone();
+        let reveals = setup_state.reveals.clone();
+        let keyset_share = tokio::task::spawn_blocking(move || {
+            round.derive_member_keyset_share(
+                &public_config,
+                &reveals,
+                local_member,
+                &participant_secret_shares,
+            )
+        })
+        .await
+        .map_err(|_| cdk::Error::Custom("federation DKG derivation task failed".to_string()))??;
         Ok(Some(keyset_share))
     }
 

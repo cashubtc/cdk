@@ -310,6 +310,8 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
         commitments: 3,
         reveals: 2,
         secret_share_contributions: 4,
+        keyset_shares: 1,
+        transcript_signatures: 3,
         participant_state_members: BTreeSet::from([member_id(2)]),
         participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
@@ -334,7 +336,8 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
         .contains("setup_records participant_states=1 commitments=3 reveals=2"));
     assert!(report
         .text
-        .contains("secret_share_contributions=4 participant_state_members=2"));
+        .contains("secret_share_contributions=4 keyset_shares=1 transcript_signatures=3"));
+    assert!(report.text.contains("participant_state_members=2"));
     assert!(report.text.contains(&format!(
         "participant_state_ceremonies={}",
         dkg_ceremony_id()
@@ -512,6 +515,8 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
         commitments: 2,
         reveals: 1,
         secret_share_contributions: 1,
+        keyset_shares: 0,
+        transcript_signatures: 0,
         participant_state_members: BTreeSet::from([member_id(2)]),
         participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2)]),
@@ -554,6 +559,38 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
     ] {
         assert!(!report.text.contains(private_fragment));
     }
+}
+
+#[test]
+fn dkg_progress_report_uses_record_counts_without_finalization() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let records =
+        DkgCompletionRecords {
+            participant_states: vec![dkg_participant_state_for_status(
+                &fixture.setup_public_config,
+                member_id(2),
+            )],
+            commitments: vec![FederationDkgParticipantCommitment::from_reveal(
+                &dkg_reveal_for_status(&fixture.setup_public_config, member_id(1), 41),
+            )
+            .expect("commitment")],
+            keyset_shares: vec![fixture.keyset_share],
+            transcript_signatures: fixture.transcript_signatures,
+            ..DkgCompletionRecords::default()
+        };
+    let summary = DkgSetupRecordSummary::from_record_counts(&records);
+    let report = dkg_progress_report(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        &summary,
+    );
+
+    assert!(report.contains("DKG progress for member 2"));
+    assert!(report.contains("participant_states=1 commitments=1"));
+    assert!(report.contains("keyset_shares=1 transcript_signatures=3"));
+    assert!(report.contains("driver_phase=unchecked"));
+    assert!(!report.contains("finalized_ready"));
+    assert!(!report.contains("secret_shares"));
 }
 
 #[cfg(feature = "sqlite")]

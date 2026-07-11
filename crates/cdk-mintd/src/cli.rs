@@ -94,6 +94,14 @@ pub struct FederationDkgStatusArgs {
     /// Read persisted DKG completion records from the configured mint database.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub from_database: bool,
+    /// Report redacted durable record counts without cryptographic finalization checks.
+    #[arg(
+        long,
+        action = clap::ArgAction::SetTrue,
+        requires = "from_database",
+        conflicts_with_all = ["require_ready", "final_config_dir"]
+    )]
+    pub progress_only: bool,
     /// Completed local DKG keyset-share JSON record. Repeat for multiple keysets.
     #[arg(long = "keyset-share")]
     pub keyset_shares: Vec<PathBuf>,
@@ -443,6 +451,7 @@ mod tests {
             Some(PathBuf::from("member-1/federation-private.json"))
         );
         assert!(status.from_database);
+        assert!(!status.progress_only);
         assert_eq!(
             status.keyset_shares,
             vec![PathBuf::from("member-1/dkg-keyset-share.json")]
@@ -457,6 +466,33 @@ mod tests {
             Some(PathBuf::from("member-1/finalized"))
         );
         assert!(status.force);
+    }
+
+    #[test]
+    fn parses_federation_dkg_progress_only_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "dkg-status",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--from-database",
+            "--progress-only",
+        ])
+        .expect("DKG progress command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::DkgStatus(status) = federation.command else {
+            panic!("expected federation dkg-status command");
+        };
+        assert!(status.from_database);
+        assert!(status.progress_only);
+        assert!(!status.require_ready);
+        assert!(status.final_config_dir.is_none());
     }
 
     #[cfg(feature = "fakewallet")]

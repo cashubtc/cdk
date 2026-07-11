@@ -42,6 +42,14 @@ pub(crate) async fn run_dkg_status_command(
     )?;
     if args.from_database {
         let database_records = read_database_records(cli_args).await?;
+        if args.progress_only {
+            let setup_summary = DkgSetupRecordSummary::from_record_counts(&database_records);
+            print!(
+                "{}",
+                dkg_progress_report(&public_config, &private_config, &setup_summary)
+            );
+            return Ok(());
+        }
         merge_dkg_records(
             &mut keyset_shares,
             &mut transcript_signatures,
@@ -319,6 +327,8 @@ struct DkgSetupRecordSummary {
     commitments: usize,
     reveals: usize,
     secret_share_contributions: usize,
+    keyset_shares: usize,
+    transcript_signatures: usize,
     participant_state_members: BTreeSet<MemberId>,
     participant_state_ceremonies: BTreeSet<String>,
     commitment_members: BTreeSet<MemberId>,
@@ -330,6 +340,49 @@ struct DkgSetupRecordSummary {
 }
 
 impl DkgSetupRecordSummary {
+    fn from_record_counts(records: &DkgCompletionRecords) -> Self {
+        Self {
+            participant_states: records.participant_states.len(),
+            commitments: records.commitments.len(),
+            reveals: records.reveals.len(),
+            secret_share_contributions: records.secret_share_contributions.len(),
+            keyset_shares: records.keyset_shares.len(),
+            transcript_signatures: records.transcript_signatures.len(),
+            participant_state_members: records
+                .participant_states
+                .iter()
+                .map(FederationDkgParticipantState::member_id)
+                .collect(),
+            participant_state_ceremonies: records
+                .participant_states
+                .iter()
+                .map(|state| state.ceremony_id().to_string())
+                .collect(),
+            commitment_members: records
+                .commitments
+                .iter()
+                .map(|commitment| commitment.member_id)
+                .collect(),
+            reveal_members: records
+                .reveals
+                .iter()
+                .map(|reveal| reveal.member_id)
+                .collect(),
+            secret_share_senders: records
+                .secret_share_contributions
+                .iter()
+                .map(|contribution| contribution.sender)
+                .collect(),
+            secret_share_receivers: records
+                .secret_share_contributions
+                .iter()
+                .map(|contribution| contribution.receiver)
+                .collect(),
+            driver_phase: None,
+            driver_error: None,
+        }
+    }
+
     fn from_records(
         records: &DkgCompletionRecords,
         public_config: &FederationConfig,
@@ -365,42 +418,9 @@ impl DkgSetupRecordSummary {
         };
 
         Self {
-            participant_states: records.participant_states.len(),
-            commitments: records.commitments.len(),
-            reveals: records.reveals.len(),
-            secret_share_contributions: records.secret_share_contributions.len(),
-            participant_state_members: records
-                .participant_states
-                .iter()
-                .map(FederationDkgParticipantState::member_id)
-                .collect(),
-            participant_state_ceremonies: records
-                .participant_states
-                .iter()
-                .map(|state| state.ceremony_id().to_string())
-                .collect(),
-            commitment_members: records
-                .commitments
-                .iter()
-                .map(|commitment| commitment.member_id)
-                .collect(),
-            reveal_members: records
-                .reveals
-                .iter()
-                .map(|reveal| reveal.member_id)
-                .collect(),
-            secret_share_senders: records
-                .secret_share_contributions
-                .iter()
-                .map(|contribution| contribution.sender)
-                .collect(),
-            secret_share_receivers: records
-                .secret_share_contributions
-                .iter()
-                .map(|contribution| contribution.receiver)
-                .collect(),
             driver_phase,
             driver_error,
+            ..Self::from_record_counts(records)
         }
     }
 }
@@ -434,6 +454,19 @@ fn dkg_status_report(
         transcript_signatures,
         &DkgSetupRecordSummary::default(),
     )
+}
+
+fn dkg_progress_report(
+    setup_public_config: &FederationConfig,
+    local_private_config: &MemberConfigPrivate,
+    setup_records: &DkgSetupRecordSummary,
+) -> String {
+    let mut text = format!(
+        "Federation {} DKG progress for member {}\n",
+        setup_public_config.federation_id, local_private_config.member_id
+    );
+    append_setup_record_summary(&mut text, setup_records, "unchecked");
+    text
 }
 
 fn dkg_status_report_with_setup_records(
@@ -480,27 +513,15 @@ fn dkg_status_report_with_setup_records(
         display_member_set(&transcript_signers)
     ));
     if setup_records != &DkgSetupRecordSummary::default() {
-        text.push_str(&format!(
-            "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={}\n",
-            setup_records.participant_states,
-            setup_records.commitments,
-            setup_records.reveals,
-            setup_records.secret_share_contributions,
-            display_member_set(&setup_records.participant_state_members),
-            display_string_set(&setup_records.participant_state_ceremonies),
-            display_member_set(&setup_records.commitment_members),
-            display_member_set(&setup_records.reveal_members),
-            display_member_set(&setup_records.secret_share_senders),
-            display_member_set(&setup_records.secret_share_receivers),
-            setup_records
-                .driver_phase
-                .map(dkg_driver_phase_label)
-                .unwrap_or(if setup_records.driver_error.is_some() {
-                    "invalid"
-                } else {
-                    "not_started"
-                })
-        ));
+        let phase = setup_records
+            .driver_phase
+            .map(dkg_driver_phase_label)
+            .unwrap_or(if setup_records.driver_error.is_some() {
+                "invalid"
+            } else {
+                "not_started"
+            });
+        append_setup_record_summary(&mut text, setup_records, phase);
         if let Some(reason) = setup_records.driver_error.as_deref() {
             text.push_str(&format!("driver_error={reason}\n"));
         }
@@ -570,6 +591,28 @@ fn dkg_status_report_with_setup_records(
             DkgStatusReport { text, ready: false }
         }
     }
+}
+
+fn append_setup_record_summary(
+    text: &mut String,
+    setup_records: &DkgSetupRecordSummary,
+    phase: &str,
+) {
+    text.push_str(&format!(
+        "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} keyset_shares={} transcript_signatures={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={phase}\n",
+        setup_records.participant_states,
+        setup_records.commitments,
+        setup_records.reveals,
+        setup_records.secret_share_contributions,
+        setup_records.keyset_shares,
+        setup_records.transcript_signatures,
+        display_member_set(&setup_records.participant_state_members),
+        display_string_set(&setup_records.participant_state_ceremonies),
+        display_member_set(&setup_records.commitment_members),
+        display_member_set(&setup_records.reveal_members),
+        display_member_set(&setup_records.secret_share_senders),
+        display_member_set(&setup_records.secret_share_receivers),
+    ));
 }
 
 fn display_string_set(values: &BTreeSet<String>) -> String {

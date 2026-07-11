@@ -4,11 +4,10 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use super::{
-    FederationConfig, FederationDkgCommitmentRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationConfig, FederationDkgCommitmentRequest, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupState, FederationDkgTranscriptSignature,
     FederationDkgTranscriptSignatureRequest, FederationError, MemberConfigPrivate, MemberId,
     Result,
 };
@@ -250,12 +249,6 @@ impl FederationDkgDriverRecords {
                 reason: "complete DKG records did not produce a commitment round".to_string(),
             },
         )?;
-        let derived_keyset_share = round.derive_member_keyset_share(
-            public_config,
-            &setup_state.reveals,
-            local_member,
-            &incoming_contributions,
-        )?;
         let matching_keyset_shares = self
             .keyset_shares
             .iter()
@@ -270,6 +263,12 @@ impl FederationDkgDriverRecords {
             });
         }
         let Some(stored_keyset_share) = matching_keyset_shares.first().copied() else {
+            let derived_keyset_share = round.derive_member_keyset_share(
+                public_config,
+                &setup_state.reveals,
+                local_member,
+                &incoming_contributions,
+            )?;
             return Ok(Self::plan_for_phase(
                 FederationDkgDriverPhase::LocalKeysetShare,
                 base_progress,
@@ -280,10 +279,14 @@ impl FederationDkgDriverRecords {
                 None,
             ));
         };
-        if stored_keyset_share != &derived_keyset_share {
+        if stored_keyset_share.federation_id != public_config.federation_id
+            || stored_keyset_share.member_id != local_member
+            || stored_keyset_share.public_ceremony.commitment_round != round
+            || stored_keyset_share.public_ceremony.reveals != setup_state.reveals
+        {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: format!(
-                    "stored local keyset share does not match ceremony {}",
+                    "stored local keyset share does not match durable ceremony {}",
                     participant_state.ceremony_id()
                 ),
             });
@@ -292,12 +295,11 @@ impl FederationDkgDriverRecords {
         let mut final_public_config = public_config.clone();
         final_public_config.keysets = vec![stored_keyset_share.keyset.clone()];
         final_public_config.setup_transcript = None;
-        final_public_config.validate()?;
-        let transcript_hash = FederationDkgTranscript::hash_for_config(
-            FederationDkgSetupMethod::PedersenDkg,
-            &final_public_config,
-            std::slice::from_ref(&stored_keyset_share.public_ceremony),
-        )?;
+        let transcript_hash =
+            FederationDkgMemberKeysetShare::transcript_hash_for_locally_derived_records(
+                public_config,
+                std::slice::from_ref(stored_keyset_share),
+            )?;
         let mut matching_signatures = BTreeMap::new();
         for signature in self
             .transcript_signatures
@@ -336,12 +338,6 @@ impl FederationDkgDriverRecords {
         );
 
         if matching_signatures.len() == member_count {
-            FederationDkgFinalizedMemberConfig::from_records(
-                public_config,
-                private_config,
-                std::slice::from_ref(stored_keyset_share),
-                &matching_signatures.values().copied().collect::<Vec<_>>(),
-            )?;
             return Ok(Self::plan_for_phase(
                 FederationDkgDriverPhase::Complete,
                 progress,
@@ -391,7 +387,8 @@ mod tests {
 
     use super::*;
     use crate::federation::{
-        FederationDkgCeremonyId, FederationDkgKeysetSpec, MemberConfigPublic, ThresholdParams,
+        FederationDkgCeremonyId, FederationDkgKeysetSpec, FederationDkgSetupMethod,
+        FederationDkgTranscript, MemberConfigPublic, ThresholdParams,
     };
     use crate::mint_url::MintUrl;
     use crate::{Amount, CurrencyUnit, SecretKey};
@@ -558,6 +555,31 @@ mod tests {
         let keyset_share = keyset_plan
             .derived_keyset_share
             .expect("derived keyset share");
+        let mut final_public_config = public_config.clone();
+        final_public_config.keysets = vec![keyset_share.keyset.clone()];
+        let fully_validated_hash = FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+            std::slice::from_ref(&keyset_share.public_ceremony),
+        )
+        .expect("fully validated transcript hash");
+        let locally_derived_hash =
+            FederationDkgMemberKeysetShare::transcript_hash_for_locally_derived_records(
+                &public_config,
+                std::slice::from_ref(&keyset_share),
+            )
+            .expect("locally derived transcript hash");
+        assert_eq!(locally_derived_hash, fully_validated_hash);
+        let mut mismatched_keyset_share = keyset_share.clone();
+        mismatched_keyset_share.keyset.active = false;
+        assert!(matches!(
+            FederationDkgMemberKeysetShare::transcript_hash_for_locally_derived_records(
+                &public_config,
+                std::slice::from_ref(&mismatched_keyset_share),
+            ),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason.contains("keyset policy mismatch")
+        ));
         records.keyset_shares.push(keyset_share.clone());
 
         let signature_plan = records

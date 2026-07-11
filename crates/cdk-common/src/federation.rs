@@ -1922,6 +1922,117 @@ pub struct FederationDkgMemberKeysetShare {
     pub secret_shares: BTreeMap<Amount, BlsSecretKeyShare>,
 }
 
+impl FederationDkgMemberKeysetShare {
+    /// Hash locally derived durable DKG output without reevaluating public polynomials.
+    ///
+    /// This is the hot-path cache boundary used while collecting transcript
+    /// signatures. Callers must supply records produced locally by
+    /// [`FederationDkgCommitmentRound::derive_member_keyset_share`]. Final
+    /// startup activation and config export still use
+    /// [`FederationDkgFinalizedMemberConfig::from_records`] to independently
+    /// rederive and verify all public shares.
+    pub fn transcript_hash_for_locally_derived_records(
+        setup_public_config: &FederationConfig,
+        keyset_shares: &[Self],
+    ) -> Result<FederationDkgTranscriptHash> {
+        setup_public_config.validate()?;
+        if !setup_public_config.keysets.is_empty() || setup_public_config.setup_transcript.is_some()
+        {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "locally derived DKG records require a setup-only public config"
+                    .to_string(),
+            });
+        }
+        let local_member = keyset_shares
+            .first()
+            .ok_or_else(|| FederationError::DkgTranscriptMismatch {
+                reason: "missing local DKG keyset share before transcript signature".to_string(),
+            })?
+            .member_id;
+        let mut keysets_by_id = BTreeMap::new();
+        let mut ceremonies_by_keyset_id = BTreeMap::new();
+        for share in keyset_shares {
+            if share.federation_id != setup_public_config.federation_id {
+                return Err(FederationError::FederationIdMismatch {
+                    expected: setup_public_config.federation_id,
+                    found: share.federation_id,
+                });
+            }
+            if share.member_id != local_member {
+                return Err(FederationError::MemberIdMismatch {
+                    expected: local_member,
+                    found: share.member_id,
+                });
+            }
+            share
+                .public_ceremony
+                .validate_against_config(setup_public_config)?;
+            share
+                .keyset
+                .validate_metadata(&setup_public_config.members)?;
+            let keyset_spec = &share
+                .public_ceremony
+                .reveals
+                .values()
+                .next()
+                .ok_or_else(|| FederationError::DkgTranscriptMismatch {
+                    reason: "locally derived DKG ceremony has no reveals".to_string(),
+                })?
+                .keyset_spec;
+            let keyset_amounts = share
+                .keyset
+                .aggregate_keys
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if share.keyset.unit != keyset_spec.unit
+                || share.keyset.active != keyset_spec.active
+                || share.keyset.input_fee_ppk != keyset_spec.input_fee_ppk
+                || share.keyset.final_expiry != keyset_spec.final_expiry
+                || keyset_amounts != keyset_spec.amounts
+            {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "locally derived DKG keyset policy mismatch for {}",
+                        share.keyset.id
+                    ),
+                });
+            }
+            match keysets_by_id.insert(share.keyset.id, share.keyset.clone()) {
+                Some(existing) if existing != share.keyset => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!("conflicting local DKG keyset {}", share.keyset.id),
+                    });
+                }
+                Some(_) | None => {}
+            }
+            match ceremonies_by_keyset_id.insert(share.keyset.id, share.public_ceremony.clone()) {
+                Some(existing) if existing != share.public_ceremony => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting local public DKG ceremony for keyset {}",
+                            share.keyset.id
+                        ),
+                    });
+                }
+                Some(_) | None => {}
+            }
+        }
+
+        let mut final_public_config = setup_public_config.clone();
+        final_public_config.keysets = keysets_by_id.into_values().collect();
+        final_public_config.setup_transcript = None;
+        final_public_config.validate_wallet_runtime_metadata()?;
+        let public_ceremonies = ceremonies_by_keyset_id.into_values().collect::<Vec<_>>();
+        let payload = FederationDkgTranscript::payload_from_canonical_ceremonies(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+            public_ceremonies,
+        );
+        FederationDkgTranscriptHash::for_payload(&payload)
+    }
+}
+
 impl FederatedKeyset {
     /// Create a federated keyset with a computed NUT-02 v3 keyset ID.
     pub fn new(
@@ -3744,7 +3855,19 @@ impl FederationDkgTranscript {
         ceremonies: &[FederationDkgPublicCeremony],
     ) -> Result<FederationDkgTranscriptPayload> {
         let ceremonies = Self::canonical_ceremonies(setup_method, public_config, ceremonies)?;
-        Ok(FederationDkgTranscriptPayload {
+        Ok(Self::payload_from_canonical_ceremonies(
+            setup_method,
+            public_config,
+            ceremonies,
+        ))
+    }
+
+    fn payload_from_canonical_ceremonies(
+        setup_method: FederationDkgSetupMethod,
+        public_config: &FederationConfig,
+        ceremonies: Vec<FederationDkgPublicCeremony>,
+    ) -> FederationDkgTranscriptPayload {
+        FederationDkgTranscriptPayload {
             setup_method,
             federation_id: public_config.federation_id,
             threshold_params: public_config.threshold_params,
@@ -3768,7 +3891,7 @@ impl FederationDkgTranscript {
                 })
                 .collect(),
             ceremonies,
-        })
+        }
     }
 
     /// Derive the transcript hash that members must sign for this setup method and config.
