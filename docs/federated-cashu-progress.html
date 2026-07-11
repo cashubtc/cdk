@@ -432,15 +432,15 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, a bounded live executor over authenticated private REST, operator start/resume configuration, and a generated interruption/restart process harness. Three independent members can drive every phase through signed routes, restart from durable private state, heal a partition, and derive one identical aggregate v3 keyset; the repeated-derivation CPU hot path is fixed, while the clean multi-process ceremony and restart-activation rerun remains in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are now certified. Milestone 20 has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, a bounded live executor over authenticated private REST, operator start/resume configuration, and a generated interruption/restart process harness; the clean multi-process ceremony and restart-activation rerun remains in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover AlephBFT increasing-sequence forks</span>
+          <span class="value">test: certify federated release criteria</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Live upstream AlephBFT regressions now certify malformed and same-sequence rejection plus a true increasing-sequence fork from two same-identity runtimes restored at one checkpoint. At most one fork variant enters the journal, later honest work finalizes, and all five states retain identical order and materialized digests; delayed, reordered, duplicated, partitioned, and combined fault delivery remains green.</span>
+          <span class="value">The complete value-operation window now passes against both 4-member/threshold-3 and 5-member/threshold-3 live upstream AlephBFT federations with one member offline. Mint, swap, restore, check-state, melt, payment observation, certified catch-up, duplicate-payment prevention, journal order, and materialized-state convergence are verified at minimum and spare quorum.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -710,7 +710,7 @@
             <div>
               <h3>Milestone 26: unified federated wallet errors and recovery</h3>
               <p>Objective: preserve normal Cashu wallet errors and saga recovery after a threshold-consensus business outcome, while keeping unavailable quorum, pending finalization, timeouts, invalid shares, and inconsistent member views explicitly ambiguous.</p>
-              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by 363 shared-core, 81 wallet-federation, 153 SQLite, four receive-recovery, and the now-426-test Axum gate, plus definitive and ambiguous live CLI smokes.</p>
+              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by 363 shared-core, 81 wallet-federation, 153 SQLite, four receive-recovery, and the now-436-test Axum gate, plus definitive and ambiguous live CLI smokes.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -892,9 +892,9 @@
           network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
           forced direct swap and change melt pass with all members live, one member offline, and a
           behaviorally verified 30-second payment delay member. The complete
-          federation-enabled Axum regression gate now covers 426 passing tests,
-          with 424 sandbox-compatible cases plus two real-listener cases verified
-          outside the managed network sandbox. This includes real-HTTP wallet
+          federation-enabled Axum regression gate now covers 436 passing tests,
+          with 434 sandbox-compatible cases plus two real-listener cases verified
+          with network permission. This includes real-HTTP wallet
           aggregation, rotated-keyset restore,
           automatic session rotation, state-digest checkpoints, equivocation,
           fail-closed stale session-range evidence, and production-paced

@@ -1,6 +1,8 @@
 # Federated Cashu with CDK: implementation plan
 This is a working checklist for adding federated Cashu mint support to CDK while keeping the public Cashu wallet-to-mint protocol as close as possible to today's NUT endpoints. The plan assumes BLS blind signatures are the federation signing scheme, with locally generated key shares first and real DKG later.
 
+Sandbox test note: run localhost-listener and real-network tests with network permission enabled from the first attempt (an escalated `cargo test ...` invocation in Codex), because `127.0.0.1:0` bind failures without it are environmental rather than regressions.
+
 ## Grand vision
 
 The grand vision of this project is to evolve Cashu from a single-operator Chaumian eCash mint into a federated, threshold-secured eCash system where multiple mint members can run on independent servers, coordinate all state transitions through consensus, and jointly issue, swap, and melt Cashu tokens using BLS threshold blind signatures. Federation mode should preserve the existing Cashu wallet-to-mint protocol as much as possible while giving users stronger security and fault tolerance: no single operator should be able to inflate, censor, or unilaterally corrupt mint state, and the federation should continue operating when some members are offline as long as the signing and consensus thresholds are met. Every safety-critical mint operation must be serialized by the federation, stored in a shared consensus journal, replayable after outages, and applied deterministically so all honest members converge on the same database state. Wallets must be able to talk to multiple members, verify and aggregate threshold signature shares into ordinary Cashu proofs, and reject inconsistent federation metadata or bad shares. The system should start with static trusted-dealer key generation, fakewallet as a configured development payment backend, private REST networking, and locally testable consensus scaffolding, then grow toward durable storage, catch-up, member authentication, DKG, key rotation, and full mint/swap/melt integration. Federation is explicitly v3/BLS-only, standalone CDK behavior must remain unchanged, and the implementation should favor simple CDK-native designs while borrowing Fedimint's core safety lessons around consensus-before-signing, authenticated peers, deterministic state machines, and robust recovery.
@@ -131,7 +133,8 @@ Resolved blocking bugs:
 - AlephBFT startup status now says the precise condition, live network finality
   is not active yet, instead of the obsolete claim that the backend is not
   production-ready in the build. The fail-closed behavior is unchanged.
-- Milestone 4A remains in progress for explicitly unchecked work such as deeper
+- Milestone 4A's release criteria are now complete. Its remaining explicitly
+  unchecked work includes deeper
   bounded retry/backpressure certification and round/consensus-height
   observability. Atomic mint and swap apply failure-injection coverage is now
   complete; melt payment-side-effect boundary coverage remains open. The exact
@@ -139,8 +142,10 @@ Resolved blocking bugs:
   value/conflict, and partition restart/catch-up matrices are complete.
 - Current verification is explicit: all focused activity-wake tests, the
   default-cadence probe, mintd/CLI feature checks, and fresh five- and
-  11-process gates pass. The federation-enabled Axum suite covers 426 passing
-  tests, including the self-partition, below-quorum full value-operation,
+  11-process gates pass. The federation-enabled Axum suite covers 436 passing
+  tests in one permissioned run. This surface includes 4-member and
+  5-member one-offline full value-operation/catch-up windows, the self-partition,
+  below-quorum full value-operation,
   production-paced above-quorum basic recovery, and below-finality conflicting
   swap plus melt side-effect matrices.
 
@@ -1667,9 +1672,9 @@ AlephBFT and consensus unit tests:
   for restarted members. The new below-finality value/conflict regression uses
   genuine threshold-minted proofs and verifies zero pre-finality signature or
   payment leakage followed by deterministic recovery and final-lagger
-  convergence. Verification passed all 424 sandbox-compatible tests
+  convergence. Verification passed all 434 sandbox-compatible tests
   in the federation-enabled Axum suite, while the two real-listener tests
-  passed separately outside the managed network sandbox, for 426 covered
+  passed with network permission, for 436 covered
   tests total. Federation-enabled and federation-disabled compile checks also
   remain covered.
 
@@ -1965,7 +1970,7 @@ Race and wallet scenario tests:
 
 Success criteria:
 
-- [ ] No federated mint, swap, melt, restore, or change-output path can return a
+- [x] No federated mint, swap, melt, restore, or change-output path can return a
   usable signature share unless the exact operation was accepted by AlephBFT or
   was already accepted earlier and retrieved from durable state. Current
   coverage includes submit-response validation that rejects tampered embedded
@@ -1973,20 +1978,36 @@ Success criteria:
   public paths, plus startup readiness coverage proving restore/check-state
   reads fail closed while replayed journal history is still awaiting quorum
   session-outcome verification and reopen only after that quorum evidence is
-  present.
-- [ ] Every safety-critical federation mutation is reachable from ordered
+  present. The final route audit also verifies that public mint, swap, melt, and
+  restore paths return only persisted responses and that every returned share is
+  reconstructed from accepted-journal provenance; orphan signature rows remain
+  invisible to restore.
+- [x] Every safety-critical federation mutation is reachable from ordered
   consensus apply, replay, or catch-up; no public route commits those mutations
-  directly.
-- [ ] Mint, swap, and melt public APIs are idempotent across duplicate requests,
+  directly. Public handlers submit canonical envelopes and read durable outcomes,
+  while direct standalone-value methods fail closed when federation mode is
+  active; the federation-enabled Axum gate exercises apply, replay, restart, and
+  catch-up boundaries.
+- [x] Mint, swap, and melt public APIs are idempotent across duplicate requests,
   retries, timeouts, accepted-before-request races, member restarts, and catch-up.
-- [ ] Wallet behavior remains close to current CDK behavior: request, wait for
+  Exact duplicate, joined-waiter, conflicting-operation, SQLite partial-apply,
+  restart, and catch-up regressions cover all three operation families without
+  duplicate signing, spending, quote mutation, or outgoing payment.
+- [x] Wallet behavior remains close to current CDK behavior: request, wait for
   compatible member responses, verify shares, aggregate threshold BLS signatures,
-  and return ordinary Cashu proofs/responses.
-- [ ] AlephBFT-backed 4-member and 5-member integration tests pass for mint,
+  and return ordinary Cashu proofs/responses. The 84-test wallet federation gate
+  and live CLI smokes use the existing wallet connector and saga paths.
+- [x] AlephBFT-backed 4-member and 5-member integration tests pass for mint,
   swap, melt, restore, check-state, restart, offline member, catch-up, duplicate
-  submission, and conflicting operation scenarios.
-- [ ] Standalone non-federated mint and wallet tests remain unchanged, including
-  non-federation keyset support.
+  submission, and conflicting operation scenarios. The shared one-offline value
+  window now passes as both 4-member/threshold-3 and 5-member/threshold-3 live
+  upstream AlephBFT tests, including certified catch-up, identical journal and
+  materialized-state digests, and exactly one outgoing melt payment; the fault,
+  duplicate, and conflict matrices remain covered by the surrounding live suite.
+- [x] Standalone non-federated mint and wallet tests remain unchanged, including
+  non-federation keyset support. The feature-off CDK library gate passes all 513
+  tests, including legacy standalone keyset and restore behavior; its three
+  localhost listener cases pass when run with network permission.
 
 ## Milestone 5: federation DB journal and state digests
 
@@ -3513,10 +3534,11 @@ Verified implementation result:
   Quote visibility, restore, and check-state retain their established
   threshold-view and fallback behavior.
 - Verification passed: 363 `cdk-common` tests, 81 complete federation wallet
-  tests, 153 `cdk-sqlite` tests, four receive recovery tests, and all 426
-  federation-enabled Axum tests (424 in the managed sandbox plus the two real
-  loopback-listener tests outside it). A fresh five-member/threshold-three live
-  AlephBFT CLI smoke returned `Token Already Spent` on repeated receive and then
+  tests, 153 `cdk-sqlite` tests, four receive recovery tests, and all 436
+  federation-enabled Axum tests (434 sandbox-compatible plus the two real
+  loopback-listener tests with network permission). A fresh
+  five-member/threshold-three live AlephBFT CLI smoke returned
+  `Token Already Spent` on repeated receive and then
   completed melt, restore, balance, and full convergence. The paired
   insufficient-threshold smoke timed out ambiguously and produced no proofs.
 

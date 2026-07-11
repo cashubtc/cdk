@@ -13484,7 +13484,21 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
 }
 
 #[tokio::test]
-async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_duplicate_payment() {
+async fn aleph_bft_live_four_member_one_offline_value_window_catches_up_without_duplicate_payment()
+{
+    run_aleph_bft_live_one_member_offline_value_window(4).await;
+}
+
+#[tokio::test]
+async fn aleph_bft_live_five_member_one_offline_value_window_catches_up_without_duplicate_payment()
+{
+    run_aleph_bft_live_one_member_offline_value_window(5).await;
+}
+
+async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
+    assert!(matches!(member_count, 4 | 5));
+    let connected_member_count = usize::from(member_count - 1);
+    let required_observations = member_count - 1;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 256,
@@ -13492,18 +13506,18 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
     };
     let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
     let payment_policy = FederationPaymentObservationPolicy::member_quorum(
-        4,
+        required_observations,
         FederationPaymentTrustModel::SharedBackendReadOnly,
     );
     let (mut session, make_payment_calls) =
         start_multi_member_aleph_bft_live_session_with_payment_policy(
-            5,
+            member_count,
             3,
             live_options.clone(),
             payment_policy,
         )
         .await
-        .expect("five-member live value-operation session");
+        .expect("multi-member live value-operation session");
     let runtime_config = session.states[0]
         .mint
         .federation_config()
@@ -13513,7 +13527,7 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
         usize::from(session.public_config.threshold_params.signature_threshold);
     let mut expected_operation_ids = Vec::new();
 
-    let offline_index = 4usize;
+    let offline_index = connected_member_count;
     let offline_member = session.private_configs[offline_index].member_id;
     *session.states[offline_index]
         .federation_aleph_bft_network_inbound
@@ -13564,7 +13578,7 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
     }
     expected_operation_ids.push(mint_quote_operation_id);
 
-    for observer in 1..=4 {
+    for observer in 1..=required_observations {
         let observation = mint_payment_observation_envelope_for_member(
             &session.states[0],
             &mint_quote_id,
@@ -13754,7 +13768,7 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
     assert_eq!(make_payment_calls[offline_index].load(Ordering::SeqCst), 0);
 
     let mut melt_payment_operation_ids = Vec::new();
-    for observer_index in 0..4 {
+    for observer_index in 0..connected_member_count {
         let observer_config = session.states[observer_index]
             .mint
             .federation_config()
@@ -13823,7 +13837,7 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
                 .await
                 .expect("connected melt payment observations")
                 .len(),
-            4
+            connected_member_count
         );
     }
 
@@ -13943,7 +13957,7 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
             .await
             .expect("caught-up mint payment observations")
             .len(),
-        4
+        connected_member_count
     );
     assert_eq!(
         caught_up
@@ -13956,7 +13970,7 @@ async fn aleph_bft_live_one_member_offline_value_window_catches_up_without_dupli
             .await
             .expect("caught-up melt payment observations")
             .len(),
-        4
+        connected_member_count
     );
     assert_eq!(
         caught_up
