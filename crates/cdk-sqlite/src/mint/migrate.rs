@@ -20,7 +20,7 @@ use chrono::NaiveDateTime;
 
 use super::MintSqliteDatabase;
 
-const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.1";
+const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
 const CHUNK_SIZE: i64 = 2000;
 
 enum MigratedPromise {
