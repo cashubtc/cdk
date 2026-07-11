@@ -1217,7 +1217,7 @@ AlephBFT and consensus unit tests:
   4-member and 5-member adapter finalization regressions, which include
   duplicate finalized operations from different members and assert duplicate
   finalized-item status without adding a second journal outcome.
-- [ ] Delayed, reordered, and duplicated AlephBFT network messages do not change
+- [x] Delayed, reordered, and duplicated AlephBFT network messages do not change
   the final accepted order seen by honest members.
   Private REST stand-in coverage now proves exact duplicate finalized-unit
   delivery is idempotent at the route/apply boundary and does not append another
@@ -1291,7 +1291,9 @@ AlephBFT and consensus unit tests:
   Focused long unavailable-window coverage now proves multiple operations can
   remain durably pending without pre-finality state mutation while one member is
   unavailable, then converge in the same accepted order after that member
-  returns. Longer process-level partition coverage remains open.
+  returns. The focused duplicate/delay, deterministic reorder, and combined
+  five-member reorder/duplicate/delay live-session tests all pass against the
+  upstream AlephBFT runtime and compare the honest members' accepted order.
 - [ ] Byzantine equivocation or malformed unit data from one member is rejected
   or ignored without causing honest members to diverge.
   Private REST stand-in coverage now proves a signed finalized-unit payload
@@ -1312,7 +1314,7 @@ AlephBFT and consensus unit tests:
   equivocation attempt in a BFT-sized federation and proves a subsequent honest
   operation finalizes across every member without order divergence. Broader
   production AlephBFT equivocation handling remains open.
-- [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
+- [x] Consensus stalls safely when fewer than the BFT quorum are connected and
   resumes when enough members return.
   Private REST stand-in coverage now proves a 3-member/threshold-3 broadcast
   that reaches only one remote acknowledgement fails closed with the local unit
@@ -1331,10 +1333,12 @@ AlephBFT and consensus unit tests:
   autonomously and exactly once after a fourth member returns without client
   resubmission. Durable pending-work activity leases renew only while real work
   remains and become fully idle after finality.
-  Production AlephBFT catch-up across full process restart remains open until
-  durable AlephBFT backup/session replay can reconstruct unfinalized units;
-  orphan network retry rows without that backup are now deleted at startup
-  instead of being replayed unsafely.
+  `aleph_bft_live_sessions_finalize_after_unavailable_member_returns` and
+  `aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_members`
+  pass against the router-started upstream runtime. Full-process restart
+  matrices remain a separate operational-hardening gate; orphan retry rows
+  without reconstructable backup state are deleted rather than replayed
+  unsafely.
 - [x] Add a live private-REST AlephBFT regression for the exact
   self-partitioned proposer case: keep the submitting member's public/client
   route usable while its federation transport to the other members is
