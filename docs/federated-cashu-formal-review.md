@@ -149,9 +149,9 @@ sorting, operation-size limits, and golden vector stability.
 
 ## Open Risks
 
-- The local deterministic consensus driver is not Byzantine fault tolerant.
-- Production DKG is not complete; trusted-dealer setup remains a development and
-  test bridge.
+- Production deployment still needs independent external security review and
+  repeated geographically distributed AlephBFT, TLS, payment-backend, and
+  disaster-recovery drills beyond the local/regtest matrices.
 - External independent implementations should not treat operation version 1 as a
   permanent wire standard until the federation protocol is explicitly frozen.
 - Postgres live integration coverage still depends on an available Postgres
@@ -159,7 +159,7 @@ sorting, operation-size limits, and golden vector stability.
 
 ## Review Conclusion
 
-The reviewed invariants are sufficient for continued feature-gated development
-and local/regtest federation work. They are not sufficient for mainnet
-production operation until the BFT decision source and production DKG blockers
-above are closed.
+The reviewed invariants, AlephBFT decision source, and dealer-free DKG are
+sufficient for continued feature-gated development and production-readiness
+testing. They are not by themselves a mainnet launch approval; the independent
+review and deployment exercises above remain required.

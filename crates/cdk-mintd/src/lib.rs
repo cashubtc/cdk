@@ -42,8 +42,8 @@ use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
     FederationConfig, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgKeysetSpec, FederationPaymentObservationContext,
-    FederationPaymentVerificationPolicy, MemberConfigPrivate,
+    FederationDkgCeremonyState, FederationDkgKeysetSpec, FederationDkgSetupMethod,
+    FederationPaymentObservationContext, FederationPaymentVerificationPolicy, MemberConfigPrivate,
 };
 // internal crate modules
 #[cfg(feature = "prometheus")]
@@ -75,14 +75,18 @@ pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federation_digest_compare;
 #[cfg(feature = "federation")]
+mod federation_dkg_setup;
+#[cfg(feature = "federation")]
 mod federation_dkg_status;
+#[cfg(feature = "federation")]
+mod federation_files;
 #[cfg(feature = "federation")]
 mod federation_inspect;
 #[cfg(feature = "federation")]
 mod federation_payment_observations;
 #[cfg(feature = "federation")]
 mod federation_quarantine;
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
 mod federation_setup;
 #[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
 mod federation_smoke;
@@ -105,6 +109,15 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
             cli::CliCommand::Federation(federation) => match &federation.command {
                 cli::FederationCommand::CompareDigests(compare) => {
                     federation_digest_compare::run_compare_digests_command(args, compare).await?;
+                }
+                cli::FederationCommand::DkgMember(member) => {
+                    federation_dkg_setup::run_dkg_member_command(member)?;
+                }
+                cli::FederationCommand::DkgRoster(roster) => {
+                    federation_dkg_setup::run_dkg_roster_command(roster)?;
+                }
+                cli::FederationCommand::DkgBind(bind) => {
+                    federation_dkg_setup::run_dkg_bind_command(bind)?;
                 }
                 cli::FederationCommand::DkgStatus(status) => {
                     federation_dkg_status::run_dkg_status_command(args, status).await?;
@@ -129,7 +142,8 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                     )
                     .await?;
                 }
-                cli::FederationCommand::TrustedDealer(args) => {
+                #[cfg(feature = "federation-test-utils")]
+                cli::FederationCommand::TestTrustedDealer(args) => {
                     federation_setup::run_trusted_dealer_command(args)?;
                 }
                 #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
@@ -631,6 +645,7 @@ fn configure_federation(
     })?;
 
     let public_config = read_public_federation_config(public_config_path)?;
+    validate_federation_setup_method_startup_policy(&public_config)?;
     validate_federation_payment_observation_startup_policy(
         &public_config,
         federation.allow_development_payment_observation_policy,
@@ -653,6 +668,24 @@ fn configure_federation(
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation")]
+fn validate_federation_setup_method_startup_policy(public_config: &FederationConfig) -> Result<()> {
+    if public_config
+        .setup_transcript
+        .as_ref()
+        .is_some_and(|transcript| {
+            transcript.payload.setup_method == FederationDkgSetupMethod::TrustedDealer
+        })
+    {
+        #[cfg(not(feature = "federation-test-utils"))]
+        bail!(
+            "trusted-dealer federation configs are test-only; run dealer-free Pedersen DKG for production"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -2450,6 +2483,31 @@ mod tests {
         .expect("trusted dealer bundle");
 
         (bundle, member_id)
+    }
+
+    #[cfg(all(
+        feature = "federation",
+        feature = "sqlite",
+        not(feature = "federation-test-utils")
+    ))]
+    #[test]
+    fn production_startup_rejects_trusted_dealer_transcript() {
+        let (bundle, _) = single_member_trusted_dealer_bundle();
+        let err = validate_federation_setup_method_startup_policy(&bundle.public_config)
+            .expect_err("production startup must reject trusted-dealer setup");
+        assert!(err.to_string().contains("test-only"));
+    }
+
+    #[cfg(all(
+        feature = "federation",
+        feature = "sqlite",
+        feature = "federation-test-utils"
+    ))]
+    #[test]
+    fn test_utils_startup_accepts_trusted_dealer_transcript() {
+        let (bundle, _) = single_member_trusted_dealer_bundle();
+        validate_federation_setup_method_startup_policy(&bundle.public_config)
+            .expect("test-utils build accepts trusted-dealer setup");
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]

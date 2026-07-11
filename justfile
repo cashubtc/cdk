@@ -588,8 +588,8 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
   if [[ "{{dkg_setup_route_probes}}" == "1" ]]; then
     dkg_probe_arg="--dkg-setup-route-probes"
   fi
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
-  target/debug/cdk-mintd federation trusted-dealer \
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
+  target/debug/cdk-mintd federation test-trusted-dealer \
     --output-dir "{{dir}}" \
     --force \
     --local-fakewallet-configs \
@@ -605,10 +605,10 @@ fed-regtest-check:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke -- --test-threads 1
-  cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1
-  cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1
-  cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_dkg_status -- --test-threads 1
+  cargo test -p cdk-mintd --features federation-test-utils,sqlite federation_smoke -- --test-threads 1
+  cargo test -p cdk-mintd --features federation-test-utils,sqlite smoke_operations -- --test-threads 1
+  cargo test -p cdk-mintd --features federation-test-utils,sqlite federation_setup -- --test-threads 1
+  cargo test -p cdk-mintd --features federation-test-utils,sqlite federation_dkg_status -- --test-threads 1
 
 # Run the generated local fake-wallet federation smoke
 fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
@@ -807,7 +807,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
     echo "started slow member ${member} with pid $(cat "$pid_file")"
   }
   cargo build -p cdk-cli --features federation
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   trap 'just fed-regtest-stop "{{dir}}"' EXIT
@@ -1011,7 +1011,7 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
     return 1
   }
   cargo build -p cdk-cli --features federation
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
   just fed-regtest-clean "{{bad_dir}}" >/dev/null 2>&1 || true
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
@@ -1086,7 +1086,7 @@ fed-regtest-cli-smoke-insufficient-valid-advertisements dir="target/cdk-fed-regt
     echo "started mismatched member ${member} with pid $(cat "$pid_file")"
   }
   cargo build -p cdk-cli --features federation
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
   just fed-regtest-clean "{{bad_dir}}" >/dev/null 2>&1 || true
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
@@ -1160,7 +1160,7 @@ fed-regtest-cli-smoke-missing-metadata dir="target/cdk-fed-regtest-cli-missing-m
     echo "started standalone member ${member} with pid $(cat "$pid_file")"
   }
   cargo build -p cdk-cli --features federation
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   trap 'just fed-regtest-stop "{{dir}}"' EXIT
@@ -1329,8 +1329,8 @@ fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" 
   if [[ "{{dkg_setup_route_probes}}" == "1" ]]; then
     dkg_probe_arg="--dkg-setup-route-probes"
   fi
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
-  target/debug/cdk-mintd federation trusted-dealer \
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,postgres,prometheus
+  target/debug/cdk-mintd federation test-trusted-dealer \
     --output-dir "{{dir}}" \
     --force \
     --local-fakewallet-configs \
@@ -1427,7 +1427,7 @@ fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" thr
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
   else
-    cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
+    cargo build -p cdk-mintd --features federation-test-utils,sqlite,postgres,prometheus
   fi
   for member in $(seq 1 "{{members}}"); do
     work_dir="{{dir}}/member-${member}/work"
@@ -1450,7 +1450,7 @@ fed-regtest-postgres-status dir="target/cdk-fed-regtest-postgres" signer="1":
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,postgres,prometheus
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     echo "missing federation public config: {{dir}}/federation-public.json" >&2
     echo "run: just fed-regtest-postgres-generate" >&2
@@ -1500,7 +1500,7 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   else
-    cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+    cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   fi
   for member in $(seq 1 "{{members}}"); do
     work_dir="{{dir}}/member-${member}/work"
@@ -1537,7 +1537,7 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest" build="1":
   fi
   mkdir -p "$work_dir"
   if [[ "{{build}}" == "1" ]]; then
-    cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+    cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   fi
   nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
   echo "$!" > "$pid_file"
@@ -1600,7 +1600,7 @@ fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
+  cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     echo "missing federation public config: {{dir}}/federation-public.json" >&2
     echo "run: just fed-regtest-generate" >&2

@@ -463,7 +463,7 @@ Implementation checklist:
 - [x] Define deterministic member ordering and reject duplicate member IDs.
 - [x] Generate Cashu keyset IDs from aggregate public keys, not member share public keys.
 - [x] Force all generated federation keysets to Cashu keyset v3 (`KeySetVersion::Version02`).
-- [x] Add `cdk-mintd federation trusted-dealer` to generate N member config files for tests.
+- [x] Add the test-only `cdk-mintd federation test-trusted-dealer` command to generate N member config files for local/regtest use.
 - [x] Add `cdk-mintd federation inspect` to print non-secret config and keyset IDs.
 - [x] Add config validation to ensure each local identity private key matches the configured identity public key.
 - [x] Add config validation to ensure secret shares match declared public shares.
@@ -2707,7 +2707,7 @@ Objective: replace trusted-dealer setup with dealer-free DKG.
 Implementation checklist:
 
 - [x] Add DKG setup phases, commitments/reveals, secret-share contributions, transcript signatures, and local member keyset-share derivation.
-- [ ] Complete a production-ready dealer-free Pedersen DKG replacement for BLS G2, using Fedimint's DKG as a reference.
+- [x] Complete a production-ready dealer-free Pedersen DKG replacement for BLS G2, using Fedimint's DKG as a reference.
   - [x] Add an explicit DKG keyset specification binding unit, activation, input fee, expiry, and denomination set into every participant commitment/reveal and the final derived-key transcript.
   - [x] Add a versioned, restartable private participant state that generates only the local member's random polynomials, emits per-recipient contributions, drops and zeroizes the original coefficients, validates its own reload, and redacts secret material from `Debug`.
   - [x] Simulate five independent members at threshold three and prove every receiver derives the same v3 aggregate keyset after private-state serialization/reload.
@@ -2719,6 +2719,7 @@ Implementation checklist:
     - [x] Execute planned phases over authenticated private REST with bounded retries, self-delivery, restart/resume, and explicit terminal/conflict handling. Phase batches are ordered, all configured receivers are attempted concurrently within a phase, every send uses the existing signed roster-authenticated route, and a completed member keeps a cumulative rebroadcast plan until one failure-free terminal round prevents asymmetric final-signature loss from stranding a peer.
     - [x] Add operator configuration and process-level status for starting and monitoring one live ceremony. Mintd accepts one shared ceremony ID, exact keyset policy, bounded tick/retry controls, and an explicit loopback-development switch; database-backed status applies the same pure planner to durable records and reports only the redacted current phase or redacted validation failure. Once complete, an explicit status option exports the independently assembled final public client config and local private member config with overwrite protection and `0600` private-file permissions, matching the setup-to-runtime handoff used by Fedimint without coupling wallets to mint storage.
   - [x] Require confidential transport for private secret-share contributions in production (HTTPS/mTLS or recipient-encrypted envelopes), while retaining explicit localhost development support. The default policy validates every member endpoint as HTTPS before participant state is created or any ceremony message is sent. Plain HTTP is accepted only under the explicit development switch and only when every endpoint is `localhost`, IPv4 loopback, or IPv6 loopback; the switch cannot authorize a remote HTTP host.
+  - [x] Replace centralized identity bootstrap with independent operator enrollment. `dkg-member` creates exactly one local secp256k1 identity and emits a public enrollment plus a restrictive `0600` unbound private config; `dkg-roster` consumes only public enrollments, derives the roster/federation ID, commits a production payment-observation policy, and emits the setup-only public config plus a fresh ceremony TOML; `dkg-bind` verifies and binds each local identity to that roster without ever exposing it to the roster coordinator. Duplicate members, mismatched identities, embedded URL credentials, remote plaintext peer APIs, invalid thresholds, duplicate denominations, and non-setup configs fail before output.
 - [x] Run DKG over authenticated private REST setup routes, accepting DKG messages only from identity public keys in the federation roster.
 - [x] Include federation ID, unique ceremony ID, member roster, member identity public keys, participant order, commitments/reveals, keyset policy, BLS public shares, and aggregate public keys in the final DKG transcript. Pedersen transcripts require exactly one unique, complete public ceremony per keyset in canonical keyset order; trusted-dealer transcripts require none.
 - [x] Require each participant to sign the final DKG transcript with its federation identity key. Private REST transcript-signature acceptance now also requires the receiver to have a locally derived DKG keyset-share record, rejects transcript hashes that do not match that local final public config before advancing the sender sequence, and rejects alternate valid randomized signatures for an already accepted signer/transcript pair before private REST sequence persistence.
@@ -2729,7 +2730,7 @@ Implementation checklist:
 - [x] Persist the final roster hash and DKG transcript hash in each member config.
 - [x] Database-backed DKG status merges persisted completion records with file-supplied recovery records idempotently, so reusing the same keyset-share or transcript-signature record during migration does not inflate readiness counts.
 - [x] Support key rotation through consensus as a federation operation.
-- [ ] Make trusted-dealer mode test-only once production DKG is complete.
+- [x] Make trusted-dealer mode test-only once production DKG is complete. The generator, CLI argument types, and implementation compile only for tests or the explicit `federation-test-utils` feature; local recipes use the renamed `test-trusted-dealer` command. Production startup rejects a final config whose signed setup transcript declares `trusted_dealer`, while the explicit test-utils build retains local/regtest admission.
 
 Tests and success criteria:
 
@@ -2751,6 +2752,23 @@ Tests and success criteria:
 - [x] Restart during setup can resume or safely restart.
 - [x] Key rotation creates a new aggregate keyset accepted by all members.
 - [x] Old keysets remain verifiable until final expiry.
+
+Verified production-bootstrap closure:
+
+- `cargo check --release -p cdk-mintd --features federation`: passed with the
+  trusted-dealer implementation excluded from the production build.
+- Five focused production setup tests pass for independent three-member
+  enrollment/roster/binding, restrictive private permissions, duplicate-member
+  rejection, wrong-identity rejection, remote plaintext-peer rejection, and
+  colliding-output refusal before any file is written.
+- All 15 production federation CLI parser tests pass, including the three DKG
+  setup commands and proof that `test-trusted-dealer` is not exposed.
+- Production startup rejects a trusted-dealer transcript; the explicit
+  `federation-test-utils` startup and renamed CLI command accept it for regtest.
+  Both trusted-dealer core generator regressions still pass behind that feature.
+- All 35 focused `cdk-common` dealer-free DKG tests pass unchanged, covering
+  derivation, reload, transcript, transport, size bounds, invalid shares, and
+  ceremony/policy binding.
 
 Verified dealer-free participant checkpoint:
 

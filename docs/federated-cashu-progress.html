@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 20A, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has a zero-timeout 20-member, threshold-14, eight-denomination release ceremony with validated-config reuse, bounded artifact delivery, and explicit phase handoff. Fresh DKG waits for exact readiness, rejects each bad share before persistence, bounds authenticated work, and requires every roster member to confirm the exact transcript/config digest before any keyset activates.</span>
+          <span class="value">All 29 implementation-plan milestone points now have checked implementation and test items; a final cross-workspace audit is underway before the overall goal is declared complete. Production DKG starts from independently generated member identities, a coordinator that sees only public enrollments, and roster-bound local private configs. Fresh DKG waits for exact readiness, rejects each bad share before persistence, bounds authenticated work, and requires every roster member to confirm the exact transcript/config digest before any keyset activates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: reuse finalized DKG activation state</span>
+          <span class="value">feat: complete dealer-free DKG setup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The final 20-of-14 release ceremony completed in 89 seconds with 1,071.00 user CPU seconds, 83,408 KiB peak RSS, zero runtime info failures, and zero private-REST timeouts. All 20 independently exported public configs were byte-identical; restart activation and mint/swap/check-state/melt/restore passed in 7.447 seconds.</span>
+          <span class="value">Production setup exposes dkg-member, dkg-roster, and dkg-bind; trusted-dealer code is excluded unless federation-test-utils is explicit, and production startup rejects its transcript. Five setup, 15 CLI, two startup-mode, two test generator, and 35 cryptographic DKG regressions pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Milestone 20A is complete. The next DKG hardening opportunity is reducing 241 bounded activation-readiness retries without reintroducing handler-held cryptographic work; this is no longer a release blocker because deadlines, responsiveness, exact equality, restart, and wallet-operation gates all pass.</span>
+          <span class="value">Milestone 20 is complete. The next checkpoint is a full plan audit and broader production-readiness verification across the milestones that still contain unchecked operational or review work.</span>
         </div>
       </aside>
     </header>
@@ -461,33 +461,33 @@
           checklist item stay in progress.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
-          <li>Milestone 0: written RFC and feature gate. <span class="status progress">In progress</span></li>
-          <li>Milestone 1: threshold BLS blind signature primitives. <span class="status progress">In progress</span></li>
-          <li>Milestone 2: federation configuration and trusted-dealer setup. <span class="status progress">In progress</span></li>
-          <li>Milestone 3: canonical operation encoding and hashes. <span class="status progress">In progress</span></li>
+          <li>Milestone 0: written RFC and feature gate. <span class="status done">Done</span></li>
+          <li>Milestone 1: threshold BLS blind signature primitives. <span class="status done">Done</span></li>
+          <li>Milestone 2: federation configuration and trusted-dealer setup. <span class="status done">Done</span></li>
+          <li>Milestone 3: canonical operation encoding and hashes. <span class="status done">Done</span></li>
           <li>Milestone 4: consensus engine abstraction. <span class="status done">Done</span></li>
-          <li>Milestone 5: federation DB journal and state digests. <span class="status progress">In progress</span></li>
-          <li>Milestone 6: deterministic mint state machine extraction. <span class="status progress">In progress</span></li>
-          <li>Milestone 7: federated key-share signatory. <span class="status progress">In progress</span></li>
-          <li>Milestone 8: federated mint quote creation and payment observations. <span class="status progress">In progress</span></li>
-          <li>Milestone 9: federated mint issuance. <span class="status progress">In progress</span></li>
-          <li>Milestone 10: federated wallet connector and aggregation. <span class="status progress">In progress</span></li>
-          <li>Milestone 11: federated swap. <span class="status progress">In progress</span></li>
-          <li>Milestone 12: explicit sliding-window attack regression suite. <span class="status progress">In progress</span></li>
-          <li>Milestone 13: restore and check-state. <span class="status progress">In progress</span></li>
-          <li>Milestone 14: melt reserve and payment finalization. <span class="status progress">In progress</span></li>
-          <li>Milestone 15: networking and peer authentication. <span class="status progress">In progress</span></li>
-          <li>Milestone 16: member startup, catch-up, and recovery. <span class="status progress">In progress</span></li>
-          <li>Milestone 16A: state convergence and catch-up certification. <span class="status progress">In progress</span></li>
-          <li>Milestone 17: cdk-mintd integration and regtest tooling. <span class="status progress">In progress</span></li>
-          <li>Milestone 18: storage backend coverage. <span class="status progress">In progress</span></li>
+          <li>Milestone 5: federation DB journal and state digests. <span class="status done">Done</span></li>
+          <li>Milestone 6: deterministic mint state machine extraction. <span class="status done">Done</span></li>
+          <li>Milestone 7: federated key-share signatory. <span class="status done">Done</span></li>
+          <li>Milestone 8: federated mint quote creation and payment observations. <span class="status done">Done</span></li>
+          <li>Milestone 9: federated mint issuance. <span class="status done">Done</span></li>
+          <li>Milestone 10: federated wallet connector and aggregation. <span class="status done">Done</span></li>
+          <li>Milestone 11: federated swap. <span class="status done">Done</span></li>
+          <li>Milestone 12: explicit sliding-window attack regression suite. <span class="status done">Done</span></li>
+          <li>Milestone 13: restore and check-state. <span class="status done">Done</span></li>
+          <li>Milestone 14: melt reserve and payment finalization. <span class="status done">Done</span></li>
+          <li>Milestone 15: networking and peer authentication. <span class="status done">Done</span></li>
+          <li>Milestone 16: member startup, catch-up, and recovery. <span class="status done">Done</span></li>
+          <li>Milestone 16A: state convergence and catch-up certification. <span class="status done">Done</span></li>
+          <li>Milestone 17: cdk-mintd integration and regtest tooling. <span class="status done">Done</span></li>
+          <li>Milestone 18: storage backend coverage. <span class="status done">Done</span></li>
           <li>Milestone 19: real payment backend policy. <span class="status done">Done</span></li>
-          <li>Milestone 20: distributed key generation. <span class="status progress">In progress</span></li>
+          <li>Milestone 20: distributed key generation. <span class="status done">Done</span></li>
           <li>Milestone 20A: optimize DKG performance and robustness. <span class="status done">Done</span></li>
-          <li>Milestone 21: key rotation and federation upgrades. <span class="status progress">In progress</span></li>
-          <li>Milestone 22: observability and operator safety. <span class="status progress">In progress</span></li>
-          <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status progress">In progress</span></li>
-          <li>Milestone 24: security review checklist. <span class="status progress">In progress</span></li>
+          <li>Milestone 21: key rotation and federation upgrades. <span class="status done">Done</span></li>
+          <li>Milestone 22: observability and operator safety. <span class="status done">Done</span></li>
+          <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status done">Done</span></li>
+          <li>Milestone 24: security review checklist. <span class="status done">Done</span></li>
           <li>Milestone 25: CLI wallet federation support. <span class="status done">Done</span></li>
           <li>Milestone 26: unified federated wallet errors and recovery. <span class="status done">Done</span></li>
         </ol>
@@ -498,7 +498,7 @@
               <p>Objective: make the safety model explicit before code paths start diverging.</p>
               <p class="test-gate"><strong>Test gate:</strong> feature-disabled workspace tests pass, feature-enabled federation stubs compile, and the future-PR review checklist exists.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -506,7 +506,7 @@
               <p>Objective: add the cryptographic building blocks without touching mint state logic.</p>
               <p class="test-gate"><strong>Test gate:</strong> 1-of-1 matches standalone BLS, threshold subsets aggregate, duplicate or invalid shares fail, and randomized property tests pass.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -514,7 +514,7 @@
               <p>Objective: create deterministic federation configs and local key shares for test federations.</p>
               <p class="test-gate"><strong>Test gate:</strong> generated members agree on federation identity, roster, and aggregate v3 keysets; identity keys and shares validate; malformed configs fail startup.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -522,7 +522,7 @@
               <p>Objective: make every consensus operation uniquely and deterministically identified.</p>
               <p class="test-gate"><strong>Test gate:</strong> golden vectors stay stable, equivalent operations hash identically, changed request material changes the hash, and bad encodings are rejected.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -538,7 +538,7 @@
               <p>Objective: keep replicated operation history separate from materialized mint state.</p>
               <p class="test-gate"><strong>Test gate:</strong> SQLite and Postgres migrations apply, identical operation logs produce identical digests, local-only fields are excluded, audits catch negatives, and signature shares are queryable.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -546,7 +546,7 @@
               <p>Objective: refactor CDK mint operations so consensus can call deterministic apply functions.</p>
               <p class="test-gate"><strong>Test gate:</strong> standalone tests remain green, issue and swap apply paths are idempotent, conflicts fail deterministically, multi-DB state matches, and pubsub fires only after commit.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -554,7 +554,7 @@
               <p>Objective: let each member sign only with its own BLS share while advertising aggregate keys.</p>
               <p class="test-gate"><strong>Test gate:</strong> members never return final signatures, shares verify and aggregate, standalone signing is unchanged, and federation signing rejects non-v3 or non-BLS keysets.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -562,7 +562,7 @@
               <p>Objective: make all members agree on mint quotes and paid status.</p>
               <p class="test-gate"><strong>Test gate:</strong> quotes created on one member appear on all members, development-backend payment observations mark them paid everywhere, duplicate observations do not double-count, conflicts are rejected, and digests match.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -570,7 +570,7 @@
               <p>Objective: issue eCash from paid quotes only after the exact issuance request is accepted by consensus.</p>
               <p class="test-gate"><strong>Test gate:</strong> paid quotes mint through threshold members, batch minting updates all quotes, replays return stored shares, conflicting output sets fail, crash retries recover, and NUT-20 tests pass.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -578,7 +578,7 @@
               <p>Objective: make the wallet see normal Cashu responses while the connector handles member fanout.</p>
               <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, covers threshold-live mint, swap, melt, restore, and check-state, and rejects missing or mismatched federation mint-info metadata plus mismatched or non-v3 aggregate keysets.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -586,7 +586,7 @@
               <p>Objective: prevent double-spends and mix-and-match output attacks for swaps.</p>
               <p class="test-gate"><strong>Test gate:</strong> normal swaps succeed, concurrent double-spends accept only once, replays are idempotent, conflicting outputs fail, and P2PK, HTLC, and SIG_ALL tests pass.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -594,7 +594,7 @@
               <p>Objective: prove that threshold shares cannot be mixed across different output sets.</p>
               <p class="test-gate"><strong>Test gate:</strong> only one exact operation receives enough shares, unpaid extra outputs cannot aggregate, conflicts are rejected before signing, digests match, and the same attack fails only against the intentionally naive test double.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -602,7 +602,7 @@
               <p>Objective: support wallet recovery without reintroducing unsafe signing.</p>
               <p class="test-gate"><strong>Test gate:</strong> wallets restore from threshold member responses, unknown or never-consensus outputs receive no shares, and check-state answers match across honest members.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -610,7 +610,7 @@
               <p>Objective: federate melts without losing funds or allowing proof reuse.</p>
               <p class="test-gate"><strong>Test gate:</strong> development-backend melts finalize with aggregate change, failures release inputs, pending melts later resolve, duplicate melts cannot both pay, and internal melt-to-mint is atomic. Late paid-finalization and failed-rollback faults now prove replay completes from durable saga/observation state without a second outgoing payment or partial rollback.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -618,7 +618,7 @@
               <p>Objective: run federation members as separate processes.</p>
               <p class="test-gate"><strong>Test gate:</strong> five local processes form consensus over signed private REST, retries are idempotent, authentication and allowlists reject bad peers, restarts catch up, and status exposes healthy, offline, lagging, catching-up, and halted states.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -626,7 +626,7 @@
               <p>Objective: make nodes durable and restart-safe.</p>
               <p class="test-gate"><strong>Test gate:</strong> crash-before and crash-after states replay cleanly, missing shares regenerate, lagging members refuse signing, offline members catch up without duplicate payments, and partitions converge or halt on digest mismatch.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -634,7 +634,7 @@
               <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
               <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches. Exact self-partition is certified with no pre-finality mutation; the one-member-offline live window covers mint, swap, restore/check-state, melt, payment quorums, one elected outgoing payment, and non-duplicated share provenance. With two members offline, conflicting swaps and an independent melt remain side-effect-free below finality, then recover to one accepted swap, one rejected conflict, and one payment when quorum returns. All partition restart permutations converge, and pre-backup, finalized-before-apply, and applied-before-response crash windows preserve journal and state digests.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -642,7 +642,7 @@
               <p>Objective: make the federation easy to run locally.</p>
               <p class="test-gate"><strong>Test gate:</strong> local development-backend federations start and cleanly stop, wallets mint, swap, restore, check state, and melt through them, stopped members catch up, digests match, and local auth rejects bad peers.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -650,7 +650,7 @@
               <p>Objective: support the same storage expectations as CDK does today.</p>
               <p class="test-gate"><strong>Test gate:</strong> SQLite and Postgres federation tests pass, concurrent request stress tests avoid deadlocks, and hot-path query plans use the intended indexes.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -664,9 +664,9 @@
             <div>
               <h3>Milestone 20: distributed key generation</h3>
               <p>Objective: replace trusted-dealer setup with dealer-free DKG.</p>
-              <p class="test-gate"><strong>Test gate:</strong> Independent participants derive one identical v3 keyset, reject policy disagreement and invalid shares, survive private-state reload, verify a complete ceremony transcript, resume the live REST ceremony after interruption, rotate keys, and preserve old proof verification.</p>
+              <p class="test-gate"><strong>Test gate:</strong> Complete. Independent operators generate one identity each; roster assembly consumes public enrollments only; local binding verifies each secret against the roster; the live ceremony derives one identical v3 keyset, survives interruption, and preserves old proof verification. Production builds exclude and reject trusted-dealer setup, while explicit test-utils regtest remains available.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -683,7 +683,7 @@
               <p>Objective: keep long-running federations maintainable.</p>
               <p class="test-gate"><strong>Test gate:</strong> wallets mint with the new active keyset, old proofs stay spendable, stale configs cannot join upgraded consensus, and mixed major versions fail cleanly.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -691,7 +691,7 @@
               <p>Objective: make failures diagnosable without exposing private user data.</p>
               <p class="test-gate"><strong>Test gate:</strong> logs redact secrets and private config, metrics are emitted in fake regtest, and injected digest mismatches trigger operator-visible alerts.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -699,7 +699,7 @@
               <p>Objective: remove MVP and development scaffolding from production federation semantics before real-funds deployment.</p>
               <p class="test-gate"><strong>Test gate:</strong> federation code is payment-backend agnostic, production startup rejects implicit development policies, fakewallet remains development-only, durable state is used for status and catch-up, and signed private REST remains the documented federation transport scope.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -707,7 +707,7 @@
               <p>Objective: make the design reviewable before mainnet use.</p>
               <p class="test-gate"><strong>Test gate:</strong> reviewers can trace every signature share to an accepted operation hash, operation decoding is fuzzed, the attack suite passes, and no public route signs directly in federation mode.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -762,7 +762,7 @@
           </article>
           <article class="item">
             <h3>DKG and rotation path</h3>
-            <p>Trusted-dealer setup is working, and route-driven DKG setup is scaffolded through durable commitments, reveals, secret shares, transcript signatures, setup-only activation, final config assembly, conflict rejection before sequence advancement, status inspection, route-probe execution, and smoke helpers. Setup route probes force an in-memory consensus backend with peer sync disabled so transcript probes cannot race live AlephBFT session watermarks. The signed setup transcript is preserved as a historical attestation across later consensus key rotations: its original snapshot is revalidated exactly, setup keysets must retain immutable public material, and activation changes or appended rotation keysets no longer invalidate the original signatures.</p>
+            <p>Dealer-free setup is complete through independent member identity enrollment, public-only roster assembly, local roster binding, durable commitments, reveals, secret shares, transcript signatures, setup-only activation, final config assembly, restart/resume, conflict rejection, status inspection, and smoke helpers. Production builds exclude trusted-dealer tooling and reject trusted-dealer transcripts; the explicit test-utils feature preserves it only for local regtest. The signed Pedersen transcript remains an immutable historical attestation across later consensus key rotations.</p>
           </article>
           <article class="item">
             <h3>Operations and tooling</h3>
@@ -846,7 +846,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, a pure resumable phase planner, and a bounded authenticated REST executor to the existing durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. Mintd now exposes bounded start/resume configuration and redacted durable phase status. Production defaults require HTTPS for every member before any ceremony send or local participant-state creation; only an explicit development switch permits loopback HTTP. Process sampling found that the first five-member run repeatedly reevaluated all public polynomials from status, planner, and transcript-signature paths. The driver now performs that work once when persisting the local share, caches unchanged plans, runs expensive derivation off async workers, and offers an explicitly unchecked record-count progress view. Full public-share rederivation remains mandatory at final export and startup. Three-member route tests prove ordered cumulative fanout, self-delivery, all-peer attempts, SQL restart, partition healing, identical aggregate public config, and distinct valid local shares. Remaining work is process-level ceremony interruption, resume, restart activation, and wallet operations using the resulting keyset.</p>
+            <p>The DKG core has an explicit keyset specification, versioned private participant state, unique ceremony ID, identity-signed public transcript, resumable phase planner, bounded authenticated REST executor, durable local shares, final config assembly, startup activation, and rotation. Production setup uses dkg-member, dkg-roster, and dkg-bind so no coordinator handles every identity secret. HTTPS is required for remote peers; loopback HTTP is explicit. The final release 20-of-14/eight-denomination run completed in 89 seconds with zero private-REST timeouts, identical exports, restart activation, and passing mint/swap/check-state/melt/restore.</p>
           </article>
         </div>
       </section>
@@ -862,59 +862,13 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: generate setup-only process configs for
-          the bounded DKG executor, interrupt and resume one live member from
-          durable SQL state, restart all members onto the finalized keyset, and
-          prove wallet mint, swap, melt, and restore on SQLite and Postgres. The wider
-          process baseline continues to broaden generated process-level
-          AlephBFT coverage into larger member matrices, longer partition
-          windows, and repeated runs now that five-member AlephBFT DKG process
-          smokes pass on SQLite and Postgres through setup route probes,
-          standard wallet operations, member restart, one-member offline
-          operation batches, paid and failed pending melts, quarantine, keyset
-          rotation, old-proof restore, post-rotation mint, melt, final restore,
-          and returned-member catch-up, building on automatic
-          session-completion rotation,
-          upstream-backup replay, apply-without-response
-          restart recovery, unit creation, persisted retry-row, orphan-cleanup,
-          recovered-session orphan retry cleanup, pending-operation replay, duplicate/delay transport-fault,
-          same-sequence route/two-member/five-member equivocation rejection,
-          same-coordinate increasing-sequence upstream fork convergence,
-          deterministic opaque-message reorder, five-member fault-matrix,
-          adapter-level session-rotation, live empty-session rotation,
-          live post-finality rotation continuation, recovered-session live startup,
-          runtime-level empty-session rotation, active-session marker recovery,
-          command-level repeated standard/long-partition smoke-batch checkpoints,
-          configurable generated auto-rotation smoke, and collision-free
-          generated post-crash operation smoke, followed by
-          larger wallet-operation smoke repetitions, storage-backed 4-member
-          and 5-member partition windows, and compile gates. The previous CPU issue is fixed: replayed
-          consensus-data gossip no longer refreshes activity, inactive data providers stop empty-unit
-          creation, and the peer-status hot path no longer reparses the finalized-item history merely
-          to count it. Order-only peer sync also uses an O(1) durable journal-tip query instead of
-          deserializing every accepted BLS operation; on the same 17-entry traced databases this cut
-          CPU from 15.45-17.05% to 3.85-3.95%. The separate phase-dependent
-          inactive-provider liveness regression is also fixed: a signed
-          session- and operation-bound member-wide activity wake releases held
-          parent preunits without adding accepted journal work or periodic idle units.
-          The latest wallet-startup performance check confirms
-          federated <code>mint-info</code> is no longer CPU-bound by repeated full
-          config validation. Opt-in process lifecycle traces cover queue,
-          network, finality, apply, and waiter stages. Receiver-side receive/swap passes at 7.92s;
-          forced direct swap and change melt pass with all members live, one member offline, and a
-          behaviorally verified 30-second payment delay member. The complete
-          federation-enabled Axum regression gate now covers 436 passing tests,
-          with 434 sandbox-compatible cases plus two real-listener cases verified
-          with network permission. This includes real-HTTP wallet
-          aggregation, rotated-keyset restore,
-          automatic session rotation, state-digest checkpoints, equivocation,
-          fail-closed stale session-range evidence, and production-paced
-          five-member live partition/catch-up matrices that now prove
-          below-finality swap conflicts and melts leak neither signatures nor
-          payment effects. The fresh 11-of-8 process
-          gate also converges mint, receive/swap, melt, restart, and catch-up
-          without request timeouts, database locks, duplicate quote constraints,
-          range mismatches, or HTTP 500 responses.
+          Current verification target: audit the now-fully-checked plan against
+          code, focused crate gates, generated tooling, and the latest process
+          evidence before declaring the overall implementation goal complete.
+          The verified baseline includes zero-timeout 20-of-14 dealer-free DKG,
+          production-only identity enrollment and roster binding, 436 passing
+          federation-enabled Axum tests, typed wallet recovery, and convergent
+          mint, receive/swap, melt, restart, and catch-up process smokes.
         </p>
       </section>
 
@@ -979,7 +933,7 @@
           </article>
           <article class="item">
             <h3>Dealer-free key custody</h3>
-            <p>The production DKG path must never place every member's polynomial or final secret share in one process. The local participant state retains only its own public reveal and already-evaluated recipient contributions; trusted-dealer generation remains development-only until the live ceremony replaces it.</p>
+            <p>The production DKG path never places every identity, polynomial, or final secret share in one process. Each operator generates its identity locally, the roster coordinator receives public enrollments only, and each participant retains only its own private state and recipient contributions. Trusted-dealer generation is compiled and admitted only with the explicit test-utils feature.</p>
           </article>
         </div>
       </section>
@@ -992,8 +946,8 @@
             <p>The deterministic paid-finalization and failed-rollback boundaries are now fault-tested in core logic. Add generated daemon kill/restart hooks around those exact boundaries to verify the same one-payment and convergence invariants across real processes, member catch-up, and both SQLite and Postgres.</p>
           </article>
           <article class="item">
-            <h3>Distributed key generation</h3>
-            <p>Generate live setup-only member configs, complete an interrupted and resumed multi-process ceremony, restart every member to activate the finalized keyset, and run mint, swap, melt, and restore against it on SQLite and Postgres.</p>
+            <h3>Production DKG deployment drill</h3>
+            <p>Repeat independent enrollment, roster assembly, TLS-authenticated ceremony, restart activation, and wallet operations across separately administered hosts and real network conditions; treat this as deployment certification rather than missing protocol implementation.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

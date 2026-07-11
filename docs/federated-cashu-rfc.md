@@ -10,11 +10,14 @@ The public wallet-to-mint Cashu API should remain close to today's NUT endpoints
 
 ## Initial Scope
 
-The first implementation phase is intentionally conservative:
+The first implementation phase was intentionally conservative:
 
 - Add feature gates and inert mint setup types.
 - Preserve standalone mint and wallet behavior.
-- Use trusted-dealer key shares for local tests before real DKG.
+- Use trusted-dealer key shares for local tests before real DKG. This historical
+  bridge is now restricted to the explicit `federation-test-utils` feature;
+  production setup uses independent member enrollment and dealer-free Pedersen
+  DKG.
 - Use fake wallet payment backends for mint and melt happy paths and scripted failure paths.
 - Add deterministic consensus and networking in later milestones before any member can safely return threshold signing shares.
 
