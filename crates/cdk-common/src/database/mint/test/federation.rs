@@ -9,9 +9,10 @@ use crate::error::{Error, ErrorResponse};
 use crate::federation::{
     FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationDkgCeremonyId, FederationDkgCommitmentRound,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationAlephBftUnitPayload, FederationConfig, FederationConfigDigest,
+    FederationConfigSnapshot, FederationConsensusItem, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -1705,6 +1706,58 @@ where
         .await
         .expect("transcript signatures after conflict");
     assert_eq!(signatures, vec![first_signature, second_signature]);
+}
+
+/// Assert finalized-config activation confirmations persist idempotently by ceremony/member.
+pub async fn federation_dkg_activation_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let setup_config = dkg_public_config();
+    let final_config = dkg_finalized_public_config(&setup_config);
+    let first_activation =
+        FederationDkgActivationRequest::sign(dkg_ceremony_id(), &final_config, &private_member(1))
+            .expect("first activation");
+    let second_activation =
+        FederationDkgActivationRequest::sign(dkg_ceremony_id(), &final_config, &private_member(2))
+            .expect("second activation");
+    let mut conflicting_activation = first_activation;
+    conflicting_activation.final_config_digest = FederationConfigDigest::from_bytes([99; 32]);
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_activation(&first_activation)
+        .await
+        .expect("persist first activation");
+    tx.add_federation_dkg_activation(&first_activation)
+        .await
+        .expect("idempotent first activation replay");
+    tx.add_federation_dkg_activation(&second_activation)
+        .await
+        .expect("persist second activation");
+    tx.commit().await.expect("commit activations");
+
+    let activations = db
+        .get_federation_dkg_activations()
+        .await
+        .expect("DKG activations");
+    assert_eq!(activations, vec![first_activation, second_activation]);
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting activation");
+    assert!(tx
+        .add_federation_dkg_activation(&conflicting_activation)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting activation");
+    assert_eq!(
+        db.get_federation_dkg_activations()
+            .await
+            .expect("activations after conflict"),
+        vec![first_activation, second_activation]
+    );
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.

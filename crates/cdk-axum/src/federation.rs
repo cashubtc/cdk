@@ -82,8 +82,8 @@ pub use self::dkg_driver::{
     FederationDkgSecretShareTransportPolicy,
 };
 use self::dkg_routes::{
-    post_dkg_commitment, post_dkg_readiness, post_dkg_reveal, post_dkg_secret_share,
-    post_dkg_transcript_signature,
+    post_dkg_activation, post_dkg_commitment, post_dkg_readiness, post_dkg_reveal,
+    post_dkg_secret_share, post_dkg_transcript_signature,
 };
 use self::payment_observation::payment_observation_report_summaries;
 #[cfg(test)]
@@ -134,6 +134,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             "/dkg/transcript-signatures",
             post(post_dkg_transcript_signature),
         )
+        .route("/dkg/activations", post(post_dkg_activation))
         .layer(DefaultBodyLimit::max(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES));
 
     Router::new()

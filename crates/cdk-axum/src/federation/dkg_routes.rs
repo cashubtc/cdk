@@ -1,10 +1,10 @@
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
-    redact_federation_operator_message, FederationDkgCommitmentRequest,
-    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationRestMessageKind,
-    FederationSignedRequest,
+    redact_federation_operator_message, FederationDkgActivationRequest,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -261,6 +261,56 @@ pub(super) async fn post_dkg_transcript_signature(
         federation_id,
         local_member,
         FederationRestMessageKind::DkgTranscriptSignature,
+        payload.payload.signer,
+    )))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_dkg_activation(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationDkgActivationRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgActivation)?;
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgActivation)
+            .await?;
+    let _member_permit = acquire_private_dkg_member_admission(
+        &state,
+        verified.sender,
+        FederationRestMessageKind::DkgActivation,
+    )?;
+    let dkg_config = active_dkg_config(&state)?;
+    if payload.payload.ceremony_id != dkg_config.ceremony_id {
+        return Err(federation_error_response(
+            cdk::federation::FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation belongs to another ceremony".to_string(),
+            },
+        ));
+    }
+    let runtime_config = federation_runtime_config(&state)?;
+    let finalized = state
+        .federation_dkg_finalized_member_config()
+        .await
+        .map_err(dkg_error_response)?;
+    payload
+        .payload
+        .validate_sender(
+            runtime_config.public_config(),
+            &finalized.public_config,
+            verified.sender,
+        )
+        .map_err(federation_error_response)?;
+    let federation_id = runtime_config.federation_id();
+    let local_member = runtime_config.member_id();
+    state
+        .persist_federation_dkg_activation(&payload.payload, verified.sender, verified.sequence)
+        .await
+        .map_err(dkg_error_response)?;
+
+    Ok(Json(FederationDkgSetupResponse::new(
+        federation_id,
+        local_member,
+        FederationRestMessageKind::DkgActivation,
         payload.payload.signer,
     )))
 }

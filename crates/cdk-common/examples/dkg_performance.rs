@@ -1121,6 +1121,7 @@ fn complete_records_for(
             .clone(),
         keyset_shares: vec![keyset_share.clone()],
         transcript_signatures: transcript_signatures.to_vec(),
+        activations: Vec::new(),
     }
 }
 

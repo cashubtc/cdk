@@ -14,11 +14,12 @@ use super::{DbTransactionFinalizer, Error};
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftNetworkRetryRecord,
     FederationAlephBftPendingOperationRecord, FederationConfigSnapshot,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalEntry, FederationJournalTip, FederationMemberStatusSnapshot,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservationContext,
+    FederationDkgActivationRequest, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
+    FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
     FederationStateDigestCheckpoint, MemberId,
 };
@@ -785,6 +786,12 @@ pub trait FederationJournalTransaction {
         signature: &FederationDkgTranscriptSignatureRequest,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one member's finalized-config activation confirmation.
+    async fn add_federation_dkg_activation(
+        &mut self,
+        activation: &FederationDkgActivationRequest,
+    ) -> Result<(), Self::Err>;
+
     /// Get payment observations for one quote and context inside this transaction.
     async fn get_federation_payment_observations(
         &mut self,
@@ -950,6 +957,11 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_transcript_signatures(
         &self,
     ) -> Result<Vec<FederationDkgTranscriptSignatureRequest>, Self::Err>;
+
+    /// Get all persisted DKG finalized-config activation confirmations.
+    async fn get_federation_dkg_activations(
+        &self,
+    ) -> Result<Vec<FederationDkgActivationRequest>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

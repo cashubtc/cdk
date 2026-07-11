@@ -23,7 +23,8 @@ use cdk::federation::{
     FederationAlephBftFinalityMode, FederationAlephBftFinalizedItem,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
     FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
@@ -3107,6 +3108,65 @@ impl MintState {
         tx.commit().await?;
         self.record_federation_sequence(sender, sequence).await;
         Ok(())
+    }
+
+    pub(crate) async fn persist_federation_dkg_activation(
+        &self,
+        activation: &FederationDkgActivationRequest,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let public_config = self.federation_public_config()?;
+        activation.validate_signature_sender(&public_config, sender)?;
+        let db = self.mint.localstore();
+        let existing_activations = db.get_federation_dkg_activations().await?;
+        if existing_activations.iter().any(|existing| {
+            existing.ceremony_id == activation.ceremony_id
+                && existing.signer == activation.signer
+                && existing != activation
+        }) {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "conflicting DKG activation for member {} ceremony {}",
+                        activation.signer, activation.ceremony_id
+                    ),
+                },
+            ));
+        }
+        if existing_activations
+            .iter()
+            .any(|existing| existing == activation)
+        {
+            return self.persist_federation_sequence(sender, sequence).await;
+        }
+
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_dkg_activation(activation).await?;
+        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.commit().await?;
+        self.record_federation_sequence(sender, sequence).await;
+        Ok(())
+    }
+
+    pub(crate) async fn federation_dkg_finalized_member_config(
+        &self,
+    ) -> Result<FederationDkgFinalizedMemberConfig, cdk::Error> {
+        let runtime_config = self.mint.federation_config().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+        })?;
+        let setup_public_config = runtime_config.public_config();
+        let local_private_config = runtime_config.private_config();
+        let db = self.mint.localstore();
+        let keyset_shares = db.get_federation_dkg_member_keyset_shares().await?;
+        let transcript_signatures = db.get_federation_dkg_transcript_signatures().await?;
+        FederationDkgFinalizedMemberConfig::from_records(
+            setup_public_config,
+            local_private_config,
+            &keyset_shares,
+            &transcript_signatures,
+        )
+        .map_err(Into::into)
     }
 
     async fn expected_federation_dkg_transcript_hash(

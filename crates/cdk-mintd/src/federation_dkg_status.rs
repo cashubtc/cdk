@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationConfig, FederationDkgDriverPhase,
-    FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
+    FederationDkgDriverPhase, FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberId,
 };
 
@@ -40,6 +41,7 @@ pub(crate) async fn run_dkg_status_command(
         &args.transcript_signatures,
         "DKG transcript-signature record",
     )?;
+    let mut activations = read_record_files(&args.activations, "DKG activation record")?;
     if args.from_database {
         let database_records = read_database_records(cli_args).await?;
         if args.progress_only {
@@ -53,6 +55,7 @@ pub(crate) async fn run_dkg_status_command(
         merge_dkg_records(
             &mut keyset_shares,
             &mut transcript_signatures,
+            &mut activations,
             database_records.clone(),
         );
         let setup_summary =
@@ -62,6 +65,7 @@ pub(crate) async fn run_dkg_status_command(
             &private_config,
             &keyset_shares,
             &transcript_signatures,
+            &activations,
             &setup_summary,
         );
         let written_configs = maybe_write_finalized_configs(
@@ -70,6 +74,7 @@ pub(crate) async fn run_dkg_status_command(
             &private_config,
             &keyset_shares,
             &transcript_signatures,
+            &activations,
         )?;
         print!("{}", report.text);
         print_written_config_status(written_configs.as_ref());
@@ -81,11 +86,12 @@ pub(crate) async fn run_dkg_status_command(
         return Ok(());
     }
 
-    let report = dkg_status_report(
+    let report = dkg_status_report_with_activations(
         &public_config,
         &private_config,
         &keyset_shares,
         &transcript_signatures,
+        &activations,
     );
     let written_configs = maybe_write_finalized_configs(
         args,
@@ -93,6 +99,7 @@ pub(crate) async fn run_dkg_status_command(
         &private_config,
         &keyset_shares,
         &transcript_signatures,
+        &activations,
     )?;
     print!("{}", report.text);
     print_written_config_status(written_configs.as_ref());
@@ -110,6 +117,7 @@ fn maybe_write_finalized_configs(
     private_config: &MemberConfigPrivate,
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+    activations: &[FederationDkgActivationRequest],
 ) -> Result<Option<(PathBuf, PathBuf)>> {
     let Some(output_dir) = args.final_config_dir.as_deref() else {
         return Ok(None);
@@ -119,6 +127,7 @@ fn maybe_write_finalized_configs(
         private_config,
         keyset_shares,
         transcript_signatures,
+        activations,
     )?;
     write_finalized_member_config(output_dir, &finalized, args.force).map(Some)
 }
@@ -128,23 +137,44 @@ fn finalized_member_config(
     private_config: &MemberConfigPrivate,
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+    activations: &[FederationDkgActivationRequest],
 ) -> Result<FederationDkgFinalizedMemberConfig> {
-    if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
-        public_config.validate()?;
-        private_config.validate_against_public(public_config)?;
-        return Ok(FederationDkgFinalizedMemberConfig {
-            public_config: public_config.clone(),
-            private_config: private_config.clone(),
-        });
+    let (setup_public_config, finalized) =
+        if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
+            public_config.validate()?;
+            private_config.validate_against_public(public_config)?;
+            let mut setup_public_config = public_config.clone();
+            setup_public_config.keysets.clear();
+            setup_public_config.setup_transcript = None;
+            (
+                setup_public_config,
+                FederationDkgFinalizedMemberConfig {
+                    public_config: public_config.clone(),
+                    private_config: private_config.clone(),
+                },
+            )
+        } else {
+            (
+                public_config.clone(),
+                FederationDkgFinalizedMemberConfig::from_records(
+                    public_config,
+                    private_config,
+                    keyset_shares,
+                    transcript_signatures,
+                )?,
+            )
+        };
+    if finalized
+        .public_config
+        .setup_transcript
+        .as_ref()
+        .is_some_and(|transcript| {
+            transcript.payload.setup_method == FederationDkgSetupMethod::PedersenDkg
+        })
+    {
+        finalized.validate_activation_records(&setup_public_config, activations)?;
     }
-
-    FederationDkgFinalizedMemberConfig::from_records(
-        public_config,
-        private_config,
-        keyset_shares,
-        transcript_signatures,
-    )
-    .map_err(Into::into)
+    Ok(finalized)
 }
 
 fn write_finalized_member_config(
@@ -253,6 +283,10 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
             .get_federation_dkg_transcript_signatures()
             .await
             .context("failed to read persisted DKG transcript-signature records")?,
+        activations: db
+            .get_federation_dkg_activations()
+            .await
+            .context("failed to read persisted DKG activation records")?,
     })
 }
 
@@ -299,15 +333,18 @@ struct DkgCompletionRecords {
     secret_share_contributions: Vec<FederationDkgSecretShareRequest>,
     keyset_shares: Vec<FederationDkgMemberKeysetShare>,
     transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
+    activations: Vec<FederationDkgActivationRequest>,
 }
 
 fn merge_dkg_records(
     keyset_shares: &mut Vec<FederationDkgMemberKeysetShare>,
     transcript_signatures: &mut Vec<FederationDkgTranscriptSignatureRequest>,
+    activations: &mut Vec<FederationDkgActivationRequest>,
     records: DkgCompletionRecords,
 ) {
     extend_unique(keyset_shares, records.keyset_shares);
     extend_unique(transcript_signatures, records.transcript_signatures);
+    extend_unique(activations, records.activations);
 }
 
 fn extend_unique<T>(target: &mut Vec<T>, source: Vec<T>)
@@ -329,6 +366,7 @@ struct DkgSetupRecordSummary {
     secret_share_contributions: usize,
     keyset_shares: usize,
     transcript_signatures: usize,
+    activations: usize,
     participant_state_members: BTreeSet<MemberId>,
     participant_state_ceremonies: BTreeSet<String>,
     commitment_members: BTreeSet<MemberId>,
@@ -348,6 +386,7 @@ impl DkgSetupRecordSummary {
             secret_share_contributions: records.secret_share_contributions.len(),
             keyset_shares: records.keyset_shares.len(),
             transcript_signatures: records.transcript_signatures.len(),
+            activations: records.activations.len(),
             participant_state_members: records
                 .participant_states
                 .iter()
@@ -402,6 +441,7 @@ impl DkgSetupRecordSummary {
                     secret_share_contributions: records.secret_share_contributions.clone(),
                     keyset_shares: records.keyset_shares.clone(),
                     transcript_signatures: records.transcript_signatures.clone(),
+                    activations: records.activations.clone(),
                 };
                 match driver_records.plan(public_config, private_config, participant) {
                     Ok(plan) => (Some(plan.phase), None),
@@ -441,17 +481,35 @@ struct DkgStatusReport {
     ready: bool,
 }
 
+#[cfg(test)]
 fn dkg_status_report(
     setup_public_config: &FederationConfig,
     local_private_config: &MemberConfigPrivate,
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
 ) -> DkgStatusReport {
+    dkg_status_report_with_activations(
+        setup_public_config,
+        local_private_config,
+        keyset_shares,
+        transcript_signatures,
+        &[],
+    )
+}
+
+fn dkg_status_report_with_activations(
+    setup_public_config: &FederationConfig,
+    local_private_config: &MemberConfigPrivate,
+    keyset_shares: &[FederationDkgMemberKeysetShare],
+    transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+    activations: &[FederationDkgActivationRequest],
+) -> DkgStatusReport {
     dkg_status_report_with_setup_records(
         setup_public_config,
         local_private_config,
         keyset_shares,
         transcript_signatures,
+        activations,
         &DkgSetupRecordSummary::default(),
     )
 }
@@ -474,6 +532,7 @@ fn dkg_status_report_with_setup_records(
     local_private_config: &MemberConfigPrivate,
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+    activations: &[FederationDkgActivationRequest],
     setup_records: &DkgSetupRecordSummary,
 ) -> DkgStatusReport {
     let keyset_ids = keyset_shares
@@ -488,6 +547,10 @@ fn dkg_status_report_with_setup_records(
         .iter()
         .map(|signature| signature.signer)
         .collect::<BTreeSet<_>>();
+    let activation_signers = activations
+        .iter()
+        .map(|activation| activation.signer)
+        .collect::<BTreeSet<_>>();
     let setup_transcript = setup_public_config
         .setup_transcript
         .as_ref()
@@ -500,17 +563,19 @@ fn dkg_status_report_with_setup_records(
         setup_public_config.federation_id, local_private_config.member_id
     ));
     text.push_str(&format!(
-        "setup_transcript={} setup_keysets={} keyset_share_records={} transcript_signature_records={}\n",
+        "setup_transcript={} setup_keysets={} keyset_share_records={} transcript_signature_records={} activation_records={}\n",
         setup_transcript,
         setup_public_config.keysets.len(),
         keyset_shares.len(),
-        transcript_signatures.len()
+        transcript_signatures.len(),
+        activations.len()
     ));
     text.push_str(&format!(
-        "keyset_share_ids={} transcript_hashes={} transcript_signers={}\n",
+        "keyset_share_ids={} transcript_hashes={} transcript_signers={} activation_signers={}\n",
         display_string_set(&keyset_ids),
         display_string_set(&transcript_hashes),
-        display_member_set(&transcript_signers)
+        display_member_set(&transcript_signers),
+        display_member_set(&activation_signers)
     ));
     if setup_records != &DkgSetupRecordSummary::default() {
         let phase = setup_records
@@ -530,6 +595,28 @@ fn dkg_status_report_with_setup_records(
     if !setup_public_config.keysets.is_empty()
         && !local_private_config.keyset_secret_shares.is_empty()
     {
+        let finalized = FederationDkgFinalizedMemberConfig {
+            public_config: setup_public_config.clone(),
+            private_config: local_private_config.clone(),
+        };
+        let mut stripped_setup = setup_public_config.clone();
+        stripped_setup.keysets.clear();
+        stripped_setup.setup_transcript = None;
+        if setup_public_config
+            .setup_transcript
+            .as_ref()
+            .is_some_and(|transcript| {
+                transcript.payload.setup_method == FederationDkgSetupMethod::PedersenDkg
+            })
+        {
+            if let Err(err) = finalized.validate_activation_records(&stripped_setup, activations) {
+                text.push_str(&format!(
+                    "finalized_ready=false reason={}\n",
+                    redact_federation_operator_message(&err.to_string())
+                ));
+                return DkgStatusReport { text, ready: false };
+            }
+        }
         let transcript = setup_public_config.setup_transcript.as_ref();
         let transcript_hash = transcript
             .map(|transcript| transcript.transcript_hash.to_string())
@@ -560,6 +647,15 @@ fn dkg_status_report_with_setup_records(
         transcript_signatures,
     ) {
         Ok(finalized) => {
+            if let Err(err) =
+                finalized.validate_activation_records(setup_public_config, activations)
+            {
+                text.push_str(&format!(
+                    "finalized_ready=false reason={}\n",
+                    redact_federation_operator_message(&err.to_string())
+                ));
+                return DkgStatusReport { text, ready: false };
+            }
             let transcript = finalized.public_config.setup_transcript.as_ref();
             let transcript_hash = transcript
                 .map(|transcript| transcript.transcript_hash.to_string())
@@ -599,13 +695,14 @@ fn append_setup_record_summary(
     phase: &str,
 ) {
     text.push_str(&format!(
-        "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} keyset_shares={} transcript_signatures={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={phase}\n",
+        "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} keyset_shares={} transcript_signatures={} activations={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={phase}\n",
         setup_records.participant_states,
         setup_records.commitments,
         setup_records.reveals,
         setup_records.secret_share_contributions,
         setup_records.keyset_shares,
         setup_records.transcript_signatures,
+        setup_records.activations,
         display_member_set(&setup_records.participant_state_members),
         display_string_set(&setup_records.participant_state_ceremonies),
         display_member_set(&setup_records.commitment_members),
@@ -649,6 +746,7 @@ fn dkg_driver_phase_label(phase: FederationDkgDriverPhase) -> &'static str {
         FederationDkgDriverPhase::SecretShares => "share_delivery",
         FederationDkgDriverPhase::LocalKeysetShare => "local_keyset_share",
         FederationDkgDriverPhase::TranscriptSignature => "transcript_signature",
+        FederationDkgDriverPhase::Activation => "activation",
         FederationDkgDriverPhase::Complete => "complete",
     }
 }

@@ -2788,7 +2788,7 @@ member_dkg_records_complete() {{
   local member="$1"
   local line
   line="$(member_dkg_setup_line "$member" 2>/dev/null)" || return 1
-  [[ "$(status_field "$line" keyset_shares || true)" == "1" && "$(status_field "$line" transcript_signatures || true)" == "${{#MEMBERS[@]}}" ]]
+  [[ "$(status_field "$line" keyset_shares || true)" == "1" && "$(status_field "$line" transcript_signatures || true)" == "${{#MEMBERS[@]}}" && "$(status_field "$line" activations || true)" == "${{#MEMBERS[@]}}" ]]
 }}
 
 wait_for_dkg_participant() {{

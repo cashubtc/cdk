@@ -15,8 +15,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAlephBftFinalizedItem, FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload,
-    FederationConfig, FederationConsensusBackendKind, FederationDkgCeremonyId,
-    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationConfig, FederationConfigDigest, FederationConsensusBackendKind,
+    FederationDkgCeremonyId, FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -36,6 +36,8 @@ const FEDERATION_REST_BODY_HASH_VERSION: &[u8] = b"cdk-federation-rest-body-v1";
 const FEDERATION_REST_SIGNATURE_VERSION: &[u8] = b"cdk-federation-rest-signature-v1";
 const FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-session-outcome-signature-v1";
+const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
+    b"cdk-federation-dkg-activation-signature-v1";
 
 /// Private federation REST message kind covered by member signatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,6 +55,8 @@ pub enum FederationRestMessageKind {
     DkgSecretShare,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
+    /// Confirm that one member assembled the exact finalized DKG config.
+    DkgActivation,
     /// Submit one operation envelope to a peer.
     SubmitOperation,
     /// Wake a peer's idle AlephBFT creator for newly admitted consensus work.
@@ -74,6 +78,7 @@ impl FederationRestMessageKind {
             Self::DkgReveal => b"dkg_reveal",
             Self::DkgSecretShare => b"dkg_secret_share",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
+            Self::DkgActivation => b"dkg_activation",
             Self::SubmitOperation => b"submit_operation",
             Self::AlephBftActivity => b"aleph_bft_activity",
             Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
@@ -932,6 +937,192 @@ impl FederationDkgTranscriptSignatureRequest {
             })?;
         self.signature.verify(self.transcript_hash, member)
     }
+}
+
+/// Signed confirmation that one member assembled the exact finalized DKG config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgActivationRequest {
+    /// Federation whose finalized configuration is being confirmed.
+    pub federation_id: FederationId,
+    /// Dealer-free ceremony that produced the finalized keyset.
+    pub ceremony_id: FederationDkgCeremonyId,
+    /// Member confirming readiness to activate.
+    pub signer: MemberId,
+    /// Complete public setup transcript hash confirmed by this member.
+    pub transcript_hash: FederationDkgTranscriptHash,
+    /// Digest of the complete finalized public federation config.
+    pub final_config_digest: FederationConfigDigest,
+    /// Identity signature over the domain-separated activation binding.
+    pub signature: FederationDkgTranscriptSignature,
+}
+
+impl FederationDkgActivationRequest {
+    /// Sign an activation confirmation after complete final config assembly.
+    pub fn sign(
+        ceremony_id: FederationDkgCeremonyId,
+        final_public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        final_public_config.validate()?;
+        let mut setup_public_config = final_public_config.clone();
+        setup_public_config.keysets.clear();
+        setup_public_config.setup_transcript = None;
+        let mut identity_config = private_config.clone();
+        identity_config.keyset_secret_shares.clear();
+        identity_config.setup_transcript_hash = None;
+        identity_config.validate_against_public(&setup_public_config)?;
+        let transcript = final_public_config
+            .setup_transcript
+            .as_ref()
+            .ok_or_else(|| FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation requires a complete setup transcript".to_string(),
+            })?;
+        if !transcript
+            .payload
+            .ceremonies
+            .iter()
+            .any(|ceremony| ceremony.ceremony_id() == ceremony_id)
+        {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: format!(
+                    "DKG activation ceremony {ceremony_id} is absent from the final transcript"
+                ),
+            });
+        }
+        let signer = private_config.member_id;
+        let transcript_hash = transcript.transcript_hash;
+        let final_config_digest = final_public_config.config_digest_for_validated_config()?;
+        let signing_hash = dkg_activation_signing_hash(
+            final_public_config.federation_id,
+            ceremony_id,
+            signer,
+            transcript_hash,
+            final_config_digest,
+        );
+        let signature =
+            FederationDkgTranscriptSignature::sign_no_aux_rand(signing_hash, private_config)?;
+        Ok(Self {
+            federation_id: final_public_config.federation_id,
+            ceremony_id,
+            signer,
+            transcript_hash,
+            final_config_digest,
+            signature,
+        })
+    }
+
+    /// Validate an activation confirmation against setup and finalized configs.
+    pub fn validate_sender(
+        &self,
+        setup_public_config: &FederationConfig,
+        final_public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
+        setup_public_config.validate()?;
+        final_public_config.validate()?;
+        self.validate_signature_sender(setup_public_config, sender)?;
+        if self.federation_id != setup_public_config.federation_id
+            || final_public_config.federation_id != setup_public_config.federation_id
+        {
+            return Err(FederationError::FederationIdMismatch {
+                expected: setup_public_config.federation_id,
+                found: self.federation_id,
+            });
+        }
+
+        let mut expected_setup = final_public_config.clone();
+        expected_setup.keysets.clear();
+        expected_setup.setup_transcript = None;
+        if &expected_setup != setup_public_config {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation final config does not extend the setup config".to_string(),
+            });
+        }
+        let transcript = final_public_config
+            .setup_transcript
+            .as_ref()
+            .ok_or_else(|| FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation requires a complete setup transcript".to_string(),
+            })?;
+        if !transcript
+            .payload
+            .ceremonies
+            .iter()
+            .any(|ceremony| ceremony.ceremony_id() == self.ceremony_id)
+        {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: format!(
+                    "DKG activation ceremony {} is absent from the final transcript",
+                    self.ceremony_id
+                ),
+            });
+        }
+        if self.transcript_hash != transcript.transcript_hash {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation transcript hash mismatch".to_string(),
+            });
+        }
+        let expected_digest = final_public_config.config_digest_for_validated_config()?;
+        if self.final_config_digest != expected_digest {
+            return Err(FederationError::FederationConfigDigestMismatch {
+                member_id: self.signer,
+                expected: expected_digest,
+                found: self.final_config_digest,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate the signed activation payload before final-config comparison.
+    pub fn validate_signature_sender(
+        &self,
+        setup_public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
+        setup_public_config.validate()?;
+        ensure_dkg_payload_sender(self.signer, sender)?;
+        if self.federation_id != setup_public_config.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: setup_public_config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        let member =
+            setup_public_config
+                .member(self.signer)
+                .ok_or(FederationError::MissingMember {
+                    member_id: self.signer,
+                })?;
+        self.signature.verify(
+            dkg_activation_signing_hash(
+                self.federation_id,
+                self.ceremony_id,
+                self.signer,
+                self.transcript_hash,
+                self.final_config_digest,
+            ),
+            member,
+        )
+    }
+}
+
+fn dkg_activation_signing_hash(
+    federation_id: FederationId,
+    ceremony_id: FederationDkgCeremonyId,
+    signer: MemberId,
+    transcript_hash: FederationDkgTranscriptHash,
+    final_config_digest: FederationConfigDigest,
+) -> FederationDkgTranscriptHash {
+    let mut transcript = Vec::with_capacity(
+        FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION.len() + 32 + 32 + 2 + 32 + 32,
+    );
+    transcript.extend_from_slice(FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION);
+    transcript.extend_from_slice(&federation_id.to_bytes());
+    transcript.extend_from_slice(&ceremony_id.to_bytes());
+    transcript.extend_from_slice(&signer.get().to_be_bytes());
+    transcript.extend_from_slice(&transcript_hash.to_bytes());
+    transcript.extend_from_slice(&final_config_digest.to_bytes());
+    FederationDkgTranscriptHash::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
 }
 
 /// Response acknowledging a validated DKG setup payload.

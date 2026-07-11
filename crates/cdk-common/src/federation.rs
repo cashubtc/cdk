@@ -89,15 +89,15 @@ pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationAlephBftNetworkRetryRecord, FederationDkgCommitmentRequest,
-    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FEDERATION_REST_API_VERSION,
-    FEDERATION_SESSION_OUTCOME_VERSION,
+    FederationAlephBftNetworkRetryRecord, FederationDkgActivationRequest,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationRestSignature, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FEDERATION_REST_API_VERSION, FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
@@ -4475,6 +4475,83 @@ impl FederationDkgFinalizedMemberConfig {
             public_config,
             private_config,
         })
+    }
+
+    /// Require every roster member to confirm every ceremony in this final config.
+    pub fn validate_activation_records(
+        &self,
+        setup_public_config: &FederationConfig,
+        activation_records: &[FederationDkgActivationRequest],
+    ) -> Result<()> {
+        self.public_config.validate()?;
+        self.private_config
+            .validate_against_public(&self.public_config)?;
+        let transcript = self
+            .public_config
+            .setup_transcript
+            .as_ref()
+            .ok_or_else(|| FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation requires a complete setup transcript".to_string(),
+            })?;
+        transcript.validate_setup_lineage_against_config(&self.public_config)?;
+        let mut activation_public_config = self.public_config.clone();
+        activation_public_config.keysets = transcript
+            .payload
+            .keysets
+            .iter()
+            .map(FederationDkgKeysetTranscript::federated_keyset)
+            .collect();
+        activation_public_config.setup_transcript = Some(transcript.clone());
+        activation_public_config.validate()?;
+        transcript.validate_against_config(&activation_public_config)?;
+        let ceremony_ids = transcript
+            .payload
+            .ceremonies
+            .iter()
+            .map(FederationDkgPublicCeremony::ceremony_id)
+            .collect::<BTreeSet<_>>();
+        if ceremony_ids.is_empty() {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation transcript has no dealer-free ceremonies".to_string(),
+            });
+        }
+
+        let mut confirmations = BTreeMap::new();
+        for activation in activation_records
+            .iter()
+            .filter(|activation| ceremony_ids.contains(&activation.ceremony_id))
+        {
+            activation.validate_sender(
+                setup_public_config,
+                &activation_public_config,
+                activation.signer,
+            )?;
+            let coordinate = (activation.ceremony_id, activation.signer);
+            match confirmations.insert(coordinate, *activation) {
+                Some(existing) if existing != *activation => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting DKG activation for member {} ceremony {}",
+                            activation.signer, activation.ceremony_id
+                        ),
+                    });
+                }
+                Some(_) | None => {}
+            }
+        }
+
+        for ceremony_id in ceremony_ids {
+            for member_id in self.public_config.members.keys() {
+                if !confirmations.contains_key(&(ceremony_id, *member_id)) {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "missing DKG activation for member {member_id} ceremony {ceremony_id}"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 

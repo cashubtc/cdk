@@ -249,6 +249,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_activation_persistence() {
+        cdk_common::database::mint::test::federation_dkg_activation_persistence(
+            provide_db("federation_dkg_activation_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-concurrent-{}.sqlite",

@@ -6,13 +6,14 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationConfig, FederationConsensusBackendKind, FederationDkgCommitmentRequest,
-    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_REST_API_VERSION,
+    FederationConfig, FederationConsensusBackendKind, FederationDkgActivationRequest,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
@@ -408,6 +409,32 @@ where
             self.federation_id,
             member.member_id,
             FederationRestMessageKind::DkgTranscriptSignature,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_dkg_activation(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationDkgActivationRequest,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.validate_signature_sender(&self.public_config, self.private_config.member_id)?;
+        let request =
+            self.signed_request(member, FederationRestMessageKind::DkgActivation, *request)?;
+        let response: FederationDkgSetupResponse = self
+            .http_post_with_timeout(
+                member,
+                "dkg/activations",
+                "DKG activation submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            FederationRestMessageKind::DkgActivation,
             self.private_config.member_id,
         )?;
         Ok(response)

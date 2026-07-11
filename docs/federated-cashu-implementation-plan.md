@@ -3108,6 +3108,26 @@ Verified harness checkpoint (2026-07-11):
   member remains admissible, verifies the rejected retry leaves its sequence
   unchanged, and accepts that exact retry after refill. All 42 release Axum DKG
   tests, three mintd DKG policy tests, and 13 generated-config tests pass.
+- The explicit all-member activation barrier is **Kept** as a safety checkpoint,
+  without a speed claim. Complete transcript signatures now justify an
+  `Activation` phase rather than immediate completion. Each member signs a
+  domain-separated confirmation binding federation ID, ceremony ID, signer,
+  complete transcript hash, and final public-config digest; that transcript
+  and digest commit the roster, threshold/keyset policy, keyset ID, aggregate
+  keys, every public share, and the exact collected transcript signatures.
+  Confirmations use the existing authenticated private REST fanout, one new
+  idempotent ceremony/member SQL record, and no AlephBFT item or wallet phase.
+  Durable confirmations are verified against the signed setup-time finalized
+  config reconstructed from the transcript, so later permitted keyset-state
+  changes do not invalidate the original ceremony evidence.
+  Only all roster confirmations make the driver complete or let startup
+  advertise/sign with the keyset. A setup-only member remains inert while one
+  confirmation is missing, and even a directly supplied finalized Pedersen-DKG
+  config fails startup without matching durable evidence. Trusted-dealer and
+  standalone activation remain unchanged. The three-member authenticated
+  artifact minimum rises from 36 to 45 deliveries. Thirty-five common DKG, 43
+  Axum DKG, five focused builder, 13 mintd status, 13 generator, six SQLite DKG,
+  and SQL migration-parity tests pass; the Postgres activation test compiles.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3304,11 +3324,16 @@ Production robustness checklist:
   and redirect policy remain open. One nonblocking authenticated DKG slot and
   one bounded token bucket per roster member prevent a member with concurrent
   or sustained setup traffic from occupying another member's DKG capacity.
-- [ ] Separate DKG completion from keyset activation with an explicit barrier.
+- [x] Separate DKG completion from keyset activation with an explicit barrier.
   Every member must confirm the same federation ID, ceremony ID, transcript
   hash, roster, keyset policy, keyset ID, aggregate keys, and public shares
   before any member advertises or signs with the keyset. Partial activation
-  fails closed and is operator-visible.
+  fails closed and is operator-visible. The final signed confirmation binds the
+  complete transcript and final-config digest, is persisted by ceremony/member,
+  and is required from the full roster by the planner, `dkg-status`, config
+  export, setup-record startup activation, and direct finalized-config startup.
+  A digest/signature mismatch fails before sequence or activation-record
+  mutation, while exact retry remains idempotent.
 - [ ] Define explicit abort and roster-reconfiguration semantics. This
   cooperative DKG requires every configured participant, not merely the signing
   threshold; one unavailable or malicious member must lead to a clear durable
@@ -3367,6 +3392,10 @@ Fedimint DKG comparison and source references:
   rejects. CDK should prefer the smallest design that preserves commit-before-
   reveal, authenticated/confidential shares, immediate verification,
   deterministic final keys, restart safety, and bounded resource use.
+- Fedimint exchanges and compares every peer's consensus-config checksum before
+  config generation returns. CDK adopts that all-peer checksum barrier in a
+  restart-safe REST form: identity-signed final-config-digest confirmations are
+  durable and revalidated at startup instead of relying on one live P2P call.
 
 Tests and success criteria:
 

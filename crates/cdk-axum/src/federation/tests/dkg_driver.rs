@@ -231,6 +231,11 @@ impl DkgDriverTestFederation {
                 .await
                 .expect("transcript signatures");
             assert_eq!(transcript_signatures.len(), 3);
+            let activations = db
+                .get_federation_dkg_activations()
+                .await
+                .expect("DKG activations");
+            assert_eq!(activations.len(), 3);
             let finalized = FederationDkgFinalizedMemberConfig::from_records(
                 &self.public_config,
                 &member.private_config,
@@ -256,8 +261,66 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
     let federation = DkgDriverTestFederation::new().await;
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 36);
+    assert_eq!(attempted_deliveries, 45);
     federation.assert_complete_and_consistent().await;
+}
+
+#[tokio::test]
+async fn dkg_activation_mismatch_fails_before_sequence_or_record_mutation() {
+    let federation = DkgDriverTestFederation::new().await;
+    let _ = federation.drive_until_complete(12).await;
+    let receiver = &federation.members[0];
+    let sender = &federation.members[1];
+    let before_activations = receiver
+        .db
+        .get_federation_dkg_activations()
+        .await
+        .expect("activations before mismatch");
+    let before_sequences = receiver
+        .db
+        .get_federation_member_sequences()
+        .await
+        .expect("sequences before mismatch");
+    let mut tampered = *before_activations
+        .iter()
+        .find(|activation| activation.signer == sender.private_config.member_id)
+        .expect("sender activation");
+    tampered.final_config_digest = cdk::federation::FederationConfigDigest::from_bytes([99; 32]);
+    let sequence = before_sequences
+        .get(&sender.private_config.member_id)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(1);
+    let request = FederationSignedRequest::new_signed(
+        federation.public_config.federation_id,
+        receiver.private_config.member_id,
+        sequence,
+        FederationRestMessageKind::DkgActivation,
+        tampered,
+        &sender.private_config,
+    )
+    .expect("signed tampered activation");
+
+    let response = post_dkg_activation(State(receiver.state.clone()), Json(request))
+        .await
+        .expect_err("tampered activation must fail");
+    assert!(response.status().is_client_error());
+    assert_eq!(
+        receiver
+            .db
+            .get_federation_dkg_activations()
+            .await
+            .expect("activations after mismatch"),
+        before_activations
+    );
+    assert_eq!(
+        receiver
+            .db
+            .get_federation_member_sequences()
+            .await
+            .expect("sequences after mismatch"),
+        before_sequences
+    );
 }
 
 #[tokio::test]

@@ -4,12 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use cdk::federation::{
-    redact_federation_operator_message, FederationConfig, FederationDkgCeremonyId,
-    FederationDkgCommitmentRequest, FederationDkgDriverPhase, FederationDkgDriverPlan,
-    FederationDkgDriverProgress, FederationDkgDriverRecords, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
-    MemberId, ValidatedFederationDkgParticipantState,
+    redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgDriverPhase,
+    FederationDkgDriverPlan, FederationDkgDriverProgress, FederationDkgDriverRecords,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationError, MemberId,
+    ValidatedFederationDkgParticipantState,
 };
 use cdk_http_client::{Async, HttpError, Transport};
 use futures::future::join_all;
@@ -188,6 +189,7 @@ pub(crate) struct FederationDkgDeliveryTracker {
     reveal: Option<TrackedDkgBroadcast<FederationDkgRevealRequest>>,
     secret_shares: BTreeMap<MemberId, FederationDkgSecretShareRequest>,
     transcript_signature: Option<TrackedDkgBroadcast<FederationDkgTranscriptSignatureRequest>>,
+    activation: Option<TrackedDkgBroadcast<FederationDkgActivationRequest>>,
 }
 
 fn pending_broadcast_targets<T, I>(
@@ -667,6 +669,28 @@ where
         );
     }
 
+    if let Some(request) = plan.activation.as_ref() {
+        let targets = pending_broadcast_targets(
+            &mut delivery_tracker.activation,
+            request,
+            public_config.members.keys().copied(),
+        );
+        let results = join_all(targets.into_iter().map(|member_id| {
+            let member = public_config
+                .member(member_id)
+                .expect("tracked DKG activation receiver must be configured");
+            async move {
+                (
+                    member.member_id,
+                    client.submit_dkg_activation(member, request).await,
+                )
+            }
+        }))
+        .await;
+        let acknowledged = record_delivery_results("activation", results, &mut delivery);
+        record_broadcast_acknowledgements(&mut delivery_tracker.activation, request, &acknowledged);
+    }
+
     let records = load_federation_dkg_driver_records(state).await?;
     let next_plan = plan_federation_dkg_records(
         records,
@@ -887,6 +911,7 @@ async fn load_federation_dkg_driver_records(
         secret_share_contributions: db.get_federation_dkg_secret_share_contributions().await?,
         keyset_shares: db.get_federation_dkg_member_keyset_shares().await?,
         transcript_signatures: db.get_federation_dkg_transcript_signatures().await?,
+        activations: db.get_federation_dkg_activations().await?,
     })
 }
 

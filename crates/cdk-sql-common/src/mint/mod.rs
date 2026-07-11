@@ -576,6 +576,10 @@ mod federation_migration_tests {
         let postgres_dkg_transcript_signatures = include_str!(
             "migrations/postgres/20260703153000_add_federation_dkg_transcript_signatures.sql"
         );
+        let sqlite_dkg_activations =
+            include_str!("migrations/sqlite/20260711170000_add_federation_dkg_activations.sql");
+        let postgres_dkg_activations =
+            include_str!("migrations/postgres/20260711170000_add_federation_dkg_activations.sql");
         let sqlite_operation_rejection =
             include_str!("migrations/sqlite/20260710120000_add_federation_operation_rejection.sql");
         let postgres_operation_rejection = include_str!(
@@ -845,6 +849,19 @@ mod federation_migration_tests {
                     "member_id",
                     "payload_json",
                     "idx_federation_dkg_transcript_signatures_member",
+                ],
+            );
+        }
+
+        for migration in [sqlite_dkg_activations, postgres_dkg_activations] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_dkg_activations",
+                    "ceremony_id",
+                    "member_id",
+                    "payload_json",
+                    "idx_federation_dkg_activations_member",
                 ],
             );
         }

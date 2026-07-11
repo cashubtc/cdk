@@ -6,8 +6,12 @@ use std::sync::Arc;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
+#[cfg(all(feature = "federation", test))]
+use cdk_common::federation::FederationDkgActivationRequest;
 #[cfg(feature = "federation")]
-use cdk_common::federation::{FederationDkgFinalizedMemberConfig, FederationError};
+use cdk_common::federation::{
+    FederationDkgFinalizedMemberConfig, FederationDkgSetupMethod, FederationError,
+};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut02::KeySetVersion;
 use cdk_common::nut04::MintMethodOptions;
@@ -177,6 +181,24 @@ impl MintBuilder {
         if !runtime_config.public_config().keysets.is_empty()
             || runtime_config.public_config().setup_transcript.is_some()
         {
+            let public_config = runtime_config.public_config();
+            if public_config
+                .setup_transcript
+                .as_ref()
+                .is_some_and(|transcript| {
+                    transcript.payload.setup_method == FederationDkgSetupMethod::PedersenDkg
+                })
+            {
+                let mut setup_public_config = public_config.clone();
+                setup_public_config.keysets.clear();
+                setup_public_config.setup_transcript = None;
+                let finalized = FederationDkgFinalizedMemberConfig {
+                    public_config: public_config.clone(),
+                    private_config: runtime_config.private_config().clone(),
+                };
+                let activations = self.localstore.get_federation_dkg_activations().await?;
+                finalized.validate_activation_records(&setup_public_config, &activations)?;
+            }
             return Ok(());
         }
 
@@ -191,6 +213,7 @@ impl MintBuilder {
             .localstore
             .get_federation_dkg_transcript_signatures()
             .await?;
+        let activations = self.localstore.get_federation_dkg_activations().await?;
 
         if keyset_shares.is_empty() && transcript_signatures.is_empty() {
             return Ok(());
@@ -211,6 +234,19 @@ impl MintBuilder {
             &transcript_signatures,
         ) {
             Ok(finalized) => {
+                match finalized.validate_activation_records(&setup_public_config, &activations) {
+                    Ok(()) => {}
+                    Err(FederationError::DkgTranscriptMismatch { reason })
+                        if reason.contains("missing DKG activation") =>
+                    {
+                        tracing::info!(
+                            %reason,
+                            "Federation DKG startup activation waiting for all-member confirmation"
+                        );
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err.into()),
+                }
                 let member_id = finalized.private_config.member_id;
                 let keyset_count = finalized.public_config.keysets.len();
                 self.federation_config = Some(FederationRuntimeConfig::new_with_consensus_backend(
@@ -1143,6 +1179,7 @@ mod tests {
         final_public_config: FederationConfig,
         keyset_share: FederationDkgMemberKeysetShare,
         transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
+        activations: Vec<FederationDkgActivationRequest>,
     }
 
     #[cfg(feature = "federation")]
@@ -1301,6 +1338,18 @@ mod tests {
         .expect("pedersen transcript");
         final_public_config.setup_transcript = Some(transcript);
         final_public_config.validate().expect("final public config");
+        let activations = bundle
+            .private_configs
+            .values()
+            .map(|private_config| {
+                FederationDkgActivationRequest::sign(
+                    ceremony_id,
+                    &final_public_config,
+                    private_config,
+                )
+                .expect("activation confirmation")
+            })
+            .collect();
 
         let local_private_config = bundle
             .private_configs
@@ -1323,6 +1372,7 @@ mod tests {
             final_public_config,
             keyset_share,
             transcript_signatures,
+            activations,
         }
     }
 
@@ -1331,6 +1381,7 @@ mod tests {
         localstore: &Arc<MintSqliteDatabase>,
         keyset_share: &FederationDkgMemberKeysetShare,
         transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+        activations: &[FederationDkgActivationRequest],
     ) {
         let mut tx = MintDatabase::begin_transaction(localstore.as_ref())
             .await
@@ -1342,6 +1393,11 @@ mod tests {
             tx.add_federation_dkg_transcript_signature(signature)
                 .await
                 .expect("persist dkg transcript signature");
+        }
+        for activation in activations {
+            tx.add_federation_dkg_activation(activation)
+                .await
+                .expect("persist DKG activation");
         }
         tx.commit().await.expect("commit dkg records");
     }
@@ -1439,6 +1495,7 @@ mod tests {
             &localstore,
             &fixture.keyset_share,
             &fixture.transcript_signatures,
+            &fixture.activations,
         )
         .await;
 
@@ -1480,6 +1537,60 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn dkg_completion_waits_for_every_member_activation() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let mut fixture = dkg_completion_fixture(member_id(2));
+        fixture
+            .activations
+            .retain(|activation| activation.signer != member_id(3));
+        persist_dkg_completion_records(
+            &localstore,
+            &fixture.keyset_share,
+            &fixture.transcript_signatures,
+            &fixture.activations,
+        )
+        .await;
+
+        let mint = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect("setup mint remains available before all-member activation");
+        let runtime_config = mint.federation_config().expect("setup federation config");
+        assert!(runtime_config.public_config().keysets.is_empty());
+        assert!(runtime_config.public_config().setup_transcript.is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn finalized_dkg_config_cannot_bypass_activation_records() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let fixture = dkg_completion_fixture(member_id(2));
+        let finalized = FederationDkgFinalizedMemberConfig::from_records(
+            fixture.setup_runtime_config.public_config(),
+            fixture.setup_runtime_config.private_config(),
+            std::slice::from_ref(&fixture.keyset_share),
+            &fixture.transcript_signatures,
+        )
+        .expect("finalized member config");
+        let runtime_config =
+            FederationRuntimeConfig::new(finalized.public_config, finalized.private_config)
+                .expect("finalized runtime config");
+
+        let err = builder
+            .with_federation_config(runtime_config)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect_err("finalized config without durable activation evidence must fail");
+        assert!(matches!(
+            err,
+            Error::Federation(FederationError::DkgTranscriptMismatch { reason })
+                if reason.contains("missing DKG activation")
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federated_builder_skips_standalone_rotation_with_active_aggregate_keyset() {
         let (builder, localstore) = builder_with_bolt11_processor().await;
         let fixture = dkg_completion_fixture(member_id(2));
@@ -1487,6 +1598,7 @@ mod tests {
             &localstore,
             &fixture.keyset_share,
             &fixture.transcript_signatures,
+            &fixture.activations,
         )
         .await;
         let rotations = Arc::new(AtomicUsize::new(0));
@@ -1519,6 +1631,7 @@ mod tests {
             &localstore,
             &fixture.keyset_share,
             &fixture.transcript_signatures,
+            &fixture.activations,
         )
         .await;
 
@@ -1553,6 +1666,7 @@ mod tests {
             &localstore,
             &fixture.keyset_share,
             &fixture.transcript_signatures,
+            &fixture.activations,
         )
         .await;
 

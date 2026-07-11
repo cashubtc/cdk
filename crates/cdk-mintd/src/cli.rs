@@ -108,6 +108,9 @@ pub struct FederationDkgStatusArgs {
     /// DKG transcript-signature JSON record. Repeat for every collected member signature.
     #[arg(long = "transcript-signature")]
     pub transcript_signatures: Vec<PathBuf>,
+    /// DKG finalized-config activation JSON record. Repeat for every member confirmation.
+    #[arg(long = "activation")]
+    pub activations: Vec<PathBuf>,
     /// Fail if final DKG config material cannot be assembled from the supplied records.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_ready: bool,

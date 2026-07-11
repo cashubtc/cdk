@@ -959,6 +959,17 @@ async fn federation_restart_activates_driver_derived_dkg_records() {
             .await
             .expect("persist transcript signature");
     }
+    for private_config in [&setup_local_private, &setup_peer_private] {
+        let activation = FederationDkgActivationRequest::sign(
+            keyset_share.public_ceremony.ceremony_id(),
+            &final_public_config,
+            private_config,
+        )
+        .expect("activation confirmation");
+        tx.add_federation_dkg_activation(&activation)
+            .await
+            .expect("persist activation confirmation");
+    }
     tx.commit().await.expect("commit transcript signatures");
 
     let restarted = federation_route_state_for_private_with_db(

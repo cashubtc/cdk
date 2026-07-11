@@ -17,6 +17,7 @@ struct DkgCompletionFixture {
     setup_private_config: MemberConfigPrivate,
     keyset_share: FederationDkgMemberKeysetShare,
     transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
+    activations: Vec<FederationDkgActivationRequest>,
 }
 
 fn member_id(id: u16) -> MemberId {
@@ -219,12 +220,32 @@ fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
     setup_private_config
         .validate_against_public(&setup_public_config)
         .expect("setup private config");
+    let finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &setup_public_config,
+        &setup_private_config,
+        std::slice::from_ref(&keyset_share),
+        &transcript_signatures,
+    )
+    .expect("finalized member config");
+    let activations = bundle
+        .private_configs
+        .values()
+        .map(|private_config| {
+            FederationDkgActivationRequest::sign(
+                dkg_ceremony_id(),
+                &finalized.public_config,
+                private_config,
+            )
+            .expect("activation confirmation")
+        })
+        .collect();
 
     DkgCompletionFixture {
         setup_public_config,
         setup_private_config,
         keyset_share,
         transcript_signatures,
+        activations,
     }
 }
 
@@ -254,11 +275,12 @@ fn test_cli_args(work_dir: PathBuf) -> CLIArgs {
 fn dkg_status_report_marks_finalized_records_ready_without_leaking_private_shares() {
     let fixture = dkg_completion_fixture(member_id(2));
 
-    let report = dkg_status_report(
+    let report = dkg_status_report_with_activations(
         &fixture.setup_public_config,
         &fixture.setup_private_config,
         std::slice::from_ref(&fixture.keyset_share),
         &fixture.transcript_signatures,
+        &fixture.activations,
     );
 
     assert!(report.ready);
@@ -303,6 +325,27 @@ fn dkg_status_report_marks_missing_transcript_signature_not_ready() {
 }
 
 #[test]
+fn dkg_status_report_marks_missing_activation_not_ready() {
+    let mut fixture = dkg_completion_fixture(member_id(2));
+    fixture
+        .activations
+        .retain(|activation| activation.signer != member_id(3));
+
+    let report = dkg_status_report_with_activations(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+        &fixture.activations,
+    );
+
+    assert!(!report.ready);
+    assert!(report.text.contains("activation_records=2"));
+    assert!(report.text.contains("finalized_ready=false"));
+    assert!(report.text.contains("missing DKG activation for member 3"));
+}
+
+#[test]
 fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     let fixture = dkg_completion_fixture(member_id(2));
     let setup_summary = DkgSetupRecordSummary {
@@ -312,6 +355,7 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
         secret_share_contributions: 4,
         keyset_shares: 1,
         transcript_signatures: 3,
+        activations: 3,
         participant_state_members: BTreeSet::from([member_id(2)]),
         participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
@@ -327,6 +371,7 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
         &fixture.setup_private_config,
         std::slice::from_ref(&fixture.keyset_share),
         &fixture.transcript_signatures,
+        &fixture.activations,
         &setup_summary,
     );
 
@@ -395,24 +440,29 @@ fn merge_dkg_records_appends_database_records_to_file_records() {
     let fixture = dkg_completion_fixture(member_id(2));
     let mut keyset_shares = Vec::new();
     let mut transcript_signatures = fixture.transcript_signatures[..1].to_vec();
+    let mut activations = fixture.activations[..1].to_vec();
 
     merge_dkg_records(
         &mut keyset_shares,
         &mut transcript_signatures,
+        &mut activations,
         DkgCompletionRecords {
             keyset_shares: vec![fixture.keyset_share.clone()],
             transcript_signatures: fixture.transcript_signatures[1..].to_vec(),
+            activations: fixture.activations[1..].to_vec(),
             ..DkgCompletionRecords::default()
         },
     );
 
     assert_eq!(keyset_shares, vec![fixture.keyset_share.clone()]);
     assert_eq!(transcript_signatures, fixture.transcript_signatures);
-    let report = dkg_status_report(
+    assert_eq!(activations, fixture.activations);
+    let report = dkg_status_report_with_activations(
         &fixture.setup_public_config,
         &fixture.setup_private_config,
         &keyset_shares,
         &transcript_signatures,
+        &activations,
     );
     assert!(report.ready);
     assert!(report.text.contains("finalized_ready=true"));
@@ -423,24 +473,29 @@ fn merge_dkg_records_deduplicates_database_records_already_supplied_from_files()
     let fixture = dkg_completion_fixture(member_id(2));
     let mut keyset_shares = vec![fixture.keyset_share.clone()];
     let mut transcript_signatures = fixture.transcript_signatures.clone();
+    let mut activations = fixture.activations.clone();
 
     merge_dkg_records(
         &mut keyset_shares,
         &mut transcript_signatures,
+        &mut activations,
         DkgCompletionRecords {
             keyset_shares: vec![fixture.keyset_share.clone()],
             transcript_signatures: fixture.transcript_signatures.clone(),
+            activations: fixture.activations.clone(),
             ..DkgCompletionRecords::default()
         },
     );
 
     assert_eq!(keyset_shares, vec![fixture.keyset_share.clone()]);
     assert_eq!(transcript_signatures, fixture.transcript_signatures);
-    let report = dkg_status_report(
+    assert_eq!(activations, fixture.activations);
+    let report = dkg_status_report_with_activations(
         &fixture.setup_public_config,
         &fixture.setup_private_config,
         &keyset_shares,
         &transcript_signatures,
+        &activations,
     );
     assert!(report.ready);
     assert!(report.text.contains("keyset_share_records=1"));
@@ -501,6 +556,7 @@ fn finalized_dkg_config_export_requires_complete_records() {
         &fixture.setup_private_config,
         &[],
         &[],
+        &[],
     )
     .expect_err("incomplete DKG records fail");
 
@@ -517,6 +573,7 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
         secret_share_contributions: 1,
         keyset_shares: 0,
         transcript_signatures: 0,
+        activations: 0,
         participant_state_members: BTreeSet::from([member_id(2)]),
         participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2)]),
@@ -530,6 +587,7 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
     let report = dkg_status_report_with_setup_records(
         &fixture.setup_public_config,
         &fixture.setup_private_config,
+        &[],
         &[],
         &[],
         &setup_summary,
@@ -576,6 +634,7 @@ fn dkg_progress_report_uses_record_counts_without_finalization() {
             .expect("commitment")],
             keyset_shares: vec![fixture.keyset_share],
             transcript_signatures: fixture.transcript_signatures,
+            activations: fixture.activations,
             ..DkgCompletionRecords::default()
         };
     let summary = DkgSetupRecordSummary::from_record_counts(&records);
@@ -637,6 +696,11 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
             .await
             .expect("persist transcript signature");
     }
+    for activation in &fixture.activations {
+        tx.add_federation_dkg_activation(activation)
+            .await
+            .expect("persist activation");
+    }
     tx.commit().await.expect("commit DKG records");
     drop(db);
 
@@ -653,6 +717,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     );
     assert_eq!(records.keyset_shares, vec![fixture.keyset_share]);
     assert_eq!(records.transcript_signatures, fixture.transcript_signatures);
+    assert_eq!(records.activations, fixture.activations);
     let setup_summary = DkgSetupRecordSummary::from_records(
         &records,
         &fixture.setup_public_config,
@@ -663,6 +728,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         &fixture.setup_private_config,
         &records.keyset_shares,
         &records.transcript_signatures,
+        &records.activations,
         &setup_summary,
     );
     assert!(report

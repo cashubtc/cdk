@@ -6,8 +6,8 @@ use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
-    FederationConfigDigest, FederationConfigSnapshot, FederationDkgCeremonyId,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationConfigDigest, FederationConfigSnapshot, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
@@ -622,6 +622,32 @@ fn sql_row_to_federation_dkg_transcript_signature(
     Ok(signature)
 }
 
+fn sql_row_to_federation_dkg_activation(
+    row: Vec<Column>,
+) -> Result<FederationDkgActivationRequest, Error> {
+    unpack_into!(let (ceremony_id, member_id, payload_json) = row);
+    let ceremony_id = FederationDkgCeremonyId::from_hex(column_as_string!(&ceremony_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation DKG ceremony ID: {e}")))?;
+    let member_id = sql_member_id(member_id)?;
+    let activation =
+        serde_json::from_str::<FederationDkgActivationRequest>(&column_as_string!(&payload_json))
+            .map_err(|e| Error::Internal(format!("Invalid federation DKG activation JSON: {e}")))?;
+    if activation.ceremony_id != ceremony_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG activation ceremony mismatch: expected={ceremony_id}, found={}",
+            activation.ceremony_id
+        )));
+    }
+    if activation.signer != member_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG activation member mismatch: expected={member_id}, found={}",
+            activation.signer
+        )));
+    }
+
+    Ok(activation)
+}
+
 fn federation_state_digest_conflict_error(checkpoint: &FederationStateDigestCheckpoint) -> Error {
     Error::Internal(format!(
         "Conflicting federation state digest checkpoint for operation index {}",
@@ -710,6 +736,13 @@ fn federation_dkg_transcript_signature_conflict_error(
     Error::Internal(format!(
         "Conflicting federation DKG transcript signature for member {} transcript {}",
         signature.signer, signature.transcript_hash
+    ))
+}
+
+fn federation_dkg_activation_conflict_error(activation: &FederationDkgActivationRequest) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation DKG activation for member {} ceremony {}",
+        activation.signer, activation.ceremony_id
     ))
 }
 
@@ -1510,6 +1543,33 @@ where
         Ok(())
     }
 
+    async fn add_federation_dkg_activation(
+        &mut self,
+        activation: &FederationDkgActivationRequest,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_activations
+            (ceremony_id, member_id, payload_json)
+            VALUES
+            (:ceremony_id, :member_id, :payload_json)
+            ON CONFLICT (ceremony_id, member_id)
+            DO UPDATE SET payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_activations.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("ceremony_id", activation.ceremony_id.to_string())
+        .bind("member_id", i64::from(activation.signer.get()))
+        .bind("payload_json", serde_json::to_string(activation)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_activation_conflict_error(activation));
+        }
+
+        Ok(())
+    }
+
     async fn get_federation_payment_observations(
         &mut self,
         context: FederationPaymentObservationContext,
@@ -2299,6 +2359,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_dkg_transcript_signature)
+        .collect()
+    }
+
+    async fn get_federation_dkg_activations(
+        &self,
+    ) -> Result<Vec<FederationDkgActivationRequest>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT ceremony_id, member_id, payload_json
+            FROM federation_dkg_activations
+            ORDER BY ceremony_id ASC, member_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_activation)
         .collect()
     }
 }

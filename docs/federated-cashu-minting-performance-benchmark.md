@@ -2407,6 +2407,56 @@ Focused verification:
 - 13/13 release local federation-generation tests pass with the bounded policy
   emitted in every generated live-DKG member config.
 
+### All-member DKG activation barrier
+
+Decision: **Kept** as a safety checkpoint, with no speed claim. The prior
+driver called a ceremony complete as soon as one member had all transcript
+signatures. Every signature proved agreement with the same public transcript,
+but it was created before its signer knew that every other signature had
+arrived. A member with the luckiest network view could therefore restart and
+advertise the keyset while another remained setup-only.
+
+The planner now inserts a final `Activation` phase. After independently
+assembling the complete finalized config, each member signs a domain-separated
+binding over federation ID, ceremony ID, signer, transcript hash, and final
+config digest. The transcript commits roster, threshold and keyset policy,
+keyset ID, aggregate keys, and all member public shares; the config digest also
+commits the exact complete signed transcript. The existing authenticated REST
+driver broadcasts the confirmation to every member and persists one exact
+record per ceremony/member. Only all roster confirmations produce `Complete`.
+This adds no AlephBFT item, consensus phase, wallet request, or cryptographic
+key derivation.
+
+Validation reconstructs the signed setup-time finalized config from the
+transcript before checking durable confirmations. Later permitted keyset-state
+changes therefore do not invalidate the original activation evidence.
+
+At three members, the verified acknowledged-delivery minimum increases from 36
+to 45, exactly one additional all-to-all artifact. Activation payloads remain
+far below the existing 1 MiB DKG body bound and share the per-member in-flight
+slot and token bucket. Exact duplicates only advance the authenticated sender
+sequence; conflicting payloads fail before replacement.
+
+Startup and operator gates are fail-closed. Setup-record activation waits while
+one member confirmation is missing. A directly supplied finalized Pedersen-DKG
+config cannot bypass the database evidence. `dkg-status --require-ready` and
+final-config export use the same full-roster validator. Trusted-dealer and
+standalone paths do not require these dealer-free activation records.
+
+Focused verification:
+
+- 35/35 release `cdk-common` DKG tests cover the new phase, deterministic local
+  confirmation, all-member completion, and tamper rejection.
+- 43/43 release `cdk-axum` DKG tests complete over authenticated routes, resume
+  after partition/restart, and prove a tampered confirmation changes neither
+  sender sequence nor durable activation records.
+- Five focused release mint-builder tests prove full activation, missing-member
+  fail-closed behavior, incomplete transcript behavior, member mismatch, and
+  rejection of a finalized-config bypass.
+- 13/13 mintd DKG status tests and 13/13 generated-config/script tests pass.
+  Six SQLite DKG persistence tests and SQLite/Postgres migration parity pass;
+  the focused Postgres activation persistence test compiles with `--no-run`.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

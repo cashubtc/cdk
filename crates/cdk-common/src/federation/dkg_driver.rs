@@ -5,13 +5,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::{
-    FederationConfig, FederationConfigDigest, FederationDkgCeremonyId,
-    FederationDkgCommitmentRequest, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupState, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationError, MemberConfigPrivate, MemberId,
-    Result,
+    FederationConfig, FederationConfigDigest, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgFinalizedMemberConfig,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupState,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationError,
+    MemberConfigPrivate, MemberId, Result,
 };
 
 /// Owned participant state carrying a non-serializable validation proof.
@@ -97,6 +97,8 @@ pub struct FederationDkgDriverRecords {
     pub keyset_shares: Vec<FederationDkgMemberKeysetShare>,
     /// Identity signatures received for candidate final transcripts.
     pub transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
+    /// Signed all-member confirmations for candidate finalized configs.
+    pub activations: Vec<FederationDkgActivationRequest>,
 }
 
 impl fmt::Debug for FederationDkgDriverRecords {
@@ -113,6 +115,7 @@ impl fmt::Debug for FederationDkgDriverRecords {
                 "transcript_signature_count",
                 &self.transcript_signatures.len(),
             )
+            .field("activation_count", &self.activations.len())
             .finish()
     }
 }
@@ -130,7 +133,9 @@ pub enum FederationDkgDriverPhase {
     LocalKeysetShare,
     /// Broadcast the local identity signature over the complete public ceremony.
     TranscriptSignature,
-    /// Every member signature is present and final config assembly succeeds.
+    /// Confirm complete final config assembly and collect every member confirmation.
+    Activation,
+    /// Every member confirmed the same finalized config.
     Complete,
 }
 
@@ -149,6 +154,8 @@ pub struct FederationDkgDriverProgress {
     pub local_keyset_share_ready: bool,
     /// Valid signatures for the expected transcript present locally.
     pub transcript_signature_count: usize,
+    /// Valid all-member activation confirmations present locally.
+    pub activation_count: usize,
 }
 
 /// Idempotent next work selected for one local DKG participant.
@@ -172,6 +179,8 @@ pub struct FederationDkgDriverPlan {
     pub derived_keyset_share: Option<FederationDkgMemberKeysetShare>,
     /// Local transcript signature to deliver to every member.
     pub transcript_signature: Option<FederationDkgTranscriptSignatureRequest>,
+    /// Local finalized-config activation confirmation to deliver to every member.
+    pub activation: Option<FederationDkgActivationRequest>,
 }
 
 impl fmt::Debug for FederationDkgDriverPlan {
@@ -185,6 +194,10 @@ impl fmt::Debug for FederationDkgDriverPlan {
             .transcript_signature
             .as_ref()
             .map(|signature| signature.transcript_hash);
+        let activation_digest = self
+            .activation
+            .as_ref()
+            .map(|activation| activation.final_config_digest);
         f.debug_struct("FederationDkgDriverPlan")
             .field("phase", &self.phase)
             .field("progress", &self.progress)
@@ -193,6 +206,7 @@ impl fmt::Debug for FederationDkgDriverPlan {
             .field("secret_share_receivers", &secret_share_receivers)
             .field("derived_keyset_id", &derived_keyset_id)
             .field("transcript_hash", &transcript_hash)
+            .field("activation_digest", &activation_digest)
             .finish()
     }
 }
@@ -281,6 +295,7 @@ impl FederationDkgDriverRecords {
             secret_share_contribution_count,
             local_keyset_share_ready: false,
             transcript_signature_count: 0,
+            activation_count: 0,
         };
 
         if !setup_state.commitments_complete(public_config) {
@@ -290,6 +305,7 @@ impl FederationDkgDriverRecords {
                 Some(commitment),
                 None,
                 BTreeMap::new(),
+                None,
                 None,
                 None,
             ));
@@ -303,6 +319,7 @@ impl FederationDkgDriverRecords {
                 Some(commitment),
                 Some(reveal),
                 BTreeMap::new(),
+                None,
                 None,
                 None,
             ));
@@ -321,6 +338,7 @@ impl FederationDkgDriverRecords {
                 Some(commitment),
                 Some(reveal),
                 secret_shares,
+                None,
                 None,
                 None,
             ));
@@ -358,6 +376,7 @@ impl FederationDkgDriverRecords {
                 Some(reveal),
                 secret_shares,
                 Some(derived_keyset_share),
+                None,
                 None,
             ));
         };
@@ -419,26 +438,68 @@ impl FederationDkgDriverRecords {
             ),
         );
 
-        if matching_signatures.len() == member_count {
+        if matching_signatures.len() != member_count {
             return Ok(Self::plan_for_phase(
-                FederationDkgDriverPhase::Complete,
+                FederationDkgDriverPhase::TranscriptSignature,
                 progress,
                 Some(commitment),
                 Some(reveal),
                 secret_shares,
                 None,
                 Some(transcript_signature),
+                None,
             ));
         }
 
+        let signature_records = matching_signatures.values().copied().collect::<Vec<_>>();
+        let finalized = FederationDkgFinalizedMemberConfig::from_records(
+            public_config,
+            private_config,
+            std::slice::from_ref(stored_keyset_share),
+            &signature_records,
+        )?;
+        let activation = FederationDkgActivationRequest::sign(
+            participant_state.ceremony_id(),
+            &finalized.public_config,
+            private_config,
+        )?;
+        let mut matching_activations = BTreeMap::new();
+        for candidate in self
+            .activations
+            .iter()
+            .filter(|candidate| candidate.ceremony_id == participant_state.ceremony_id())
+        {
+            candidate.validate_sender(public_config, &finalized.public_config, candidate.signer)?;
+            match matching_activations.insert(candidate.signer, *candidate) {
+                Some(existing) if existing != *candidate => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting DKG activation for member {} ceremony {}",
+                            candidate.signer, candidate.ceremony_id
+                        ),
+                    });
+                }
+                Some(_) | None => {}
+            }
+        }
+        let progress = FederationDkgDriverProgress {
+            activation_count: matching_activations.len(),
+            ..progress
+        };
+        let phase = if matching_activations.len() == member_count {
+            FederationDkgDriverPhase::Complete
+        } else {
+            FederationDkgDriverPhase::Activation
+        };
         Ok(Self::plan_for_phase(
-            FederationDkgDriverPhase::TranscriptSignature,
+            phase,
             progress,
             Some(commitment),
             Some(reveal),
             secret_shares,
             None,
             Some(transcript_signature),
+            Some(activation),
         ))
     }
 
@@ -450,6 +511,7 @@ impl FederationDkgDriverRecords {
         secret_shares: BTreeMap<MemberId, FederationDkgSecretShareRequest>,
         derived_keyset_share: Option<FederationDkgMemberKeysetShare>,
         transcript_signature: Option<FederationDkgTranscriptSignatureRequest>,
+        activation: Option<FederationDkgActivationRequest>,
     ) -> FederationDkgDriverPlan {
         FederationDkgDriverPlan {
             phase,
@@ -459,6 +521,7 @@ impl FederationDkgDriverRecords {
             secret_shares,
             derived_keyset_share,
             transcript_signature,
+            activation,
         }
     }
 }
@@ -756,15 +819,57 @@ mod tests {
                 )
             })
             .collect();
+        let activation_plan = records
+            .plan(&public_config, private_config, participant_state)
+            .expect("activation plan");
+        assert_eq!(activation_plan.phase, FederationDkgDriverPhase::Activation);
+        let local_activation = activation_plan.activation.expect("local activation");
+        let finalized = FederationDkgFinalizedMemberConfig::from_records(
+            &public_config,
+            private_config,
+            std::slice::from_ref(&keyset_share),
+            &records.transcript_signatures,
+        )
+        .expect("finalized member config");
+        records.activations = private_configs
+            .values()
+            .map(|private_config| {
+                FederationDkgActivationRequest::sign(
+                    participant_state.ceremony_id(),
+                    &finalized.public_config,
+                    private_config,
+                )
+                .expect("activation confirmation")
+            })
+            .collect();
         let complete = records
             .plan(&public_config, private_config, participant_state)
             .expect("complete plan");
         assert_eq!(complete.phase, FederationDkgDriverPhase::Complete);
         assert_eq!(complete.progress.transcript_signature_count, 3);
+        assert_eq!(complete.progress.activation_count, 3);
         assert!(complete.commitment.is_some());
         assert!(complete.reveal.is_some());
         assert_eq!(complete.secret_shares.len(), 3);
         assert_eq!(complete.transcript_signature, Some(local_signature));
+        assert_eq!(complete.activation, Some(local_activation));
+
+        let mut later_runtime = finalized.clone();
+        later_runtime.public_config.keysets[0].active = false;
+        later_runtime
+            .public_config
+            .validate()
+            .expect("later keyset activation state validates");
+        later_runtime
+            .validate_activation_records(&public_config, &records.activations)
+            .expect("setup-time activation evidence survives later activation changes");
+
+        let mut tampered_records = records.clone();
+        tampered_records.activations[0].final_config_digest =
+            FederationConfigDigest::from_bytes([99; 32]);
+        assert!(tampered_records
+            .plan(&public_config, private_config, participant_state)
+            .is_err());
     }
 
     #[test]

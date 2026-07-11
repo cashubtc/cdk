@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has twelve retained performance/robustness improvements, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact readiness, rejects each bad share before persistence, acknowledges durable contributions before deferred driver derivation, bounds ceremony dimensions and setup request bodies, isolates and rate-limits work per authenticated member, and protects generated secret files with restrictive Unix permissions; database encryption at rest is explicitly out of scope for this milestone.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has thirteen retained performance/robustness improvements, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact readiness, rejects each bad share before persistence, acknowledges durable contributions before deferred driver derivation, bounds and rate-limits authenticated work, and requires every roster member to confirm the exact final transcript/config digest before any keyset activates; database encryption at rest is explicitly out of scope for this milestone.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: rate limit DKG member requests</span>
+          <span class="value">feat: gate DKG keyset activation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Each authenticated DKG member now has an independent bounded token bucket in addition to its nonblocking in-flight slot. Exhaustion returns retryable HTTP 429 before sequence or database mutation, another member remains admissible, and exact retries succeed after refill. All 42 Axum DKG, three mintd policy, and 13 generated-config release tests pass.</span>
+          <span class="value">Transcript completion now enters a durable all-member activation phase. Identity-signed confirmations bind ceremony, transcript, and final-config digest; only the full roster can make status/export/startup active, and a finalized config cannot bypass missing evidence. The 35 common, 43 Axum, five builder, 13 status, 13 generator, six SQLite DKG, and migration-parity gates pass; Postgres compiles.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue Milestone 20A with the explicit all-members activation barrier and durable abort/replacement semantics, then fill out their focused failure matrix. Database encryption at rest and backup/restore are explicitly not required for this milestone. Keep the interrupted 20-member process acceptance ceremony deferred until those focused gates justify another bounded run.</span>
+          <span class="value">Continue Milestone 20A with durable abort/replacement and roster-reconfiguration semantics, then complete the focused production failure matrix. Database encryption at rest and backup/restore are explicitly not required for this milestone. Keep the interrupted 20-member process acceptance ceremony deferred until those focused gates justify another bounded run.</span>
         </div>
       </aside>
     </header>
@@ -672,7 +672,7 @@
             <div>
               <h3>Milestone 20A: optimize DKG performance and robustness</h3>
               <p>Objective: make dealer-free DKG fast, measurable, resource-bounded, and operationally safe for large federations without weakening ceremony verification.</p>
-              <p>Current result: Candidates 1 through 6, 8, and 10 are retained; Candidate 7 retry jitter is rejected from measured evidence; Candidate 9 retains redacted diagnostics. The complete 20-of-14 one-denomination ceremony is under 24 seconds, CPU work is bounded without blocking Axum, verified acknowledgements suppress completed fanout, first shares are verified before persistence, and final-share HTTP acknowledgement no longer waits for full derivation. Dealer-free setup is capped at 64 members, 64 denominations, and 1 MiB per DKG route, with every incoming setup message bound to the exact active ceremony and one post-authentication in-flight slot plus bounded token bucket per roster member. Generated identity/share JSON, mnemonic/database-credential TOML, and signed DKG probes are private-mode files on Unix; database encryption at rest is explicitly out of scope for this milestone.</p>
+              <p>Current result: Candidates 1 through 6, 8, and 10 are retained; Candidate 7 retry jitter is rejected from measured evidence; Candidate 9 retains redacted diagnostics. The complete 20-of-14 one-denomination ceremony is under 24 seconds, CPU work is bounded without blocking Axum, verified acknowledgements suppress completed fanout, first shares are verified before persistence, and final-share HTTP acknowledgement no longer waits for full derivation. Dealer-free setup is capped at 64 members, 64 denominations, and 1 MiB per DKG route, with one in-flight slot and token bucket per roster member. A durable final phase now requires every member to identity-sign the exact ceremony, transcript, and final-config digest before status, export, startup, advertisement, or signing can activate the keyset. Generated secret-bearing files use private Unix modes; database encryption at rest is explicitly out of scope for this milestone.</p>
               <p class="test-gate"><strong>Test gate:</strong> a focused phase-level harness quickly compares 5-of-3, 11-of-8, and 20-of-14 profiles; every candidate is retained or rejected from recorded before/after evidence; a release 20-of-14 eight-denomination ceremony completes within a documented budget with responsive REST, bounded retries, identical final transcripts, and the production secret-share, activation, abort, and failure-matrix gates satisfied. Database encryption and backup/restore are explicitly out of scope for this milestone.</p>
             </div>
             <span class="status progress">In progress</span>
