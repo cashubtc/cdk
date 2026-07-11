@@ -2646,7 +2646,7 @@ INTERRUPTED_MEMBER="${{INTERRUPTED_MEMBER:-{interrupted_member}}}"
 HELD_MEMBER="${{HELD_MEMBER:-{held_member}}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-240}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
-INTERRUPT_CHECKPOINT_RETRIES=2400
+INTERRUPT_CHECKPOINT_RETRIES="${{INTERRUPT_CHECKPOINT_RETRIES:-2400}}"
 INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-600}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
@@ -2659,6 +2659,7 @@ DKG_SETUP_PHASE=1
 PIDS=()
 METRICS_PID=""
 DKG_SETUP_STARTED_SECONDS=0
+DKG_METRICS_REPORTED=0
 
 member_config() {{
   case "$1" in
@@ -2759,11 +2760,19 @@ stop_member() {{
 }}
 
 cleanup() {{
+  local report_failed_setup=0
+  if [[ "$DKG_CAPTURE_METRICS" == "1" && "$DKG_METRICS_REPORTED" == "0" && -f "$DKG_METRICS_DIR/process.csv" ]]; then
+    sample_dkg_metrics || true
+    report_failed_setup=1
+  fi
   stop_metrics_monitor
   local member
   for member in "${{MEMBERS[@]}}"; do
     stop_member "$member"
   done
+  if [[ "$report_failed_setup" == "1" ]]; then
+    report_dkg_metrics setup_failure || true
+  fi
 }}
 
 sample_member_metrics() {{
@@ -2830,6 +2839,12 @@ report_dkg_metrics() {{
   if [[ "$DKG_CAPTURE_METRICS" != "1" ]]; then
     return 0
   fi
+  if [[ "$DKG_METRICS_REPORTED" == "1" ]]; then
+    return 0
+  fi
+  DKG_METRICS_REPORTED=1
+  local result="${{1:-setup_success}}"
+  printf 'dkg_metrics_result=%s\n' "$result"
   printf 'dkg_setup_wall_seconds=%s\n' "$((SECONDS - DKG_SETUP_STARTED_SECONDS))"
   awk -F, '
     function cpu_seconds(raw, parts, count) {{
@@ -3131,6 +3146,10 @@ validate_live_dkg_smoke() {{
   fi
   if ! [[ "$STATUS_RETRIES" =~ ^[1-9][0-9]*$ && "$STATUS_SLEEP_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
     printf 'STATUS_RETRIES and STATUS_SLEEP_SECONDS must be positive integers\n' >&2
+    return 1
+  fi
+  if ! [[ "$INTERRUPT_CHECKPOINT_RETRIES" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'INTERRUPT_CHECKPOINT_RETRIES must be a positive integer\n' >&2
     return 1
   fi
   if [[ "$DKG_CAPTURE_METRICS" != "0" && "$DKG_CAPTURE_METRICS" != "1" ]]; then

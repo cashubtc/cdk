@@ -2611,6 +2611,16 @@ retry, and generated scripts are syntax-checked with `bash -n` in the focused
 generator test. Per the operator's stop request, the 20-member process ceremony
 was not rerun; the acceptance measurement remains explicitly open.
 
+Failure reporting is also deterministic. The EXIT trap takes one final sample,
+stops the monitor, samples and stops every current PID, and emits at most one
+report labeled `dkg_metrics_result=setup_failure`. A synthetic three-member run
+used `/usr/bin/false` as the mint binary with one checkpoint poll: it exited with
+status 1, stopped all three recorded children, retained both CSV files, and
+printed two pre-listener REST failures plus one zeroed delivery row per member.
+No localhost service or cryptographic ceremony was started. Successful setup
+reports use `dkg_metrics_result=setup_success`; later export or wallet failures
+do not relabel an already successful DKG setup measurement.
+
 The first release collector validation used five members, threshold three, and
 the standard eight denominations. It exposed and fixed two harness-only races:
 the old smoke waited for participant state while one member was held before the

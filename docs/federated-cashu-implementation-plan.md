@@ -3179,7 +3179,12 @@ Verified harness checkpoint (2026-07-11):
   `/v1/info` latency/status, records setup wall time, and prints exact
   attempt/success/failure, timeout, and duplicate-success totals from opt-in
   per-tick events. Raw process and REST CSV files are retained under
-  `dkg-metrics`, and the generated scripts pass `bash -n`.
+  `dkg-metrics`, and the generated scripts pass `bash -n`. The EXIT trap now
+  takes a final sample, stops the monitor and every member, and emits the same
+  summary exactly once with an explicit `setup_failure` marker when setup exits
+  early. A bounded synthetic failure using a non-starting binary exited nonzero,
+  cleaned up all three child PIDs, and reported REST plus zeroed delivery totals
+  without launching a real federation.
 
   A release 5-of-3, eight-denomination validation completed interrupted setup
   and restart in 10 seconds, then passed activation plus mint/swap/melt/restore.

@@ -371,6 +371,9 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("total_user_seconds"));
     assert!(live_dkg_smoke_script.contains("total_system_seconds"));
     assert!(live_dkg_smoke_script.contains("dkg_rest samples="));
+    assert!(live_dkg_smoke_script.contains("dkg_metrics_result="));
+    assert!(live_dkg_smoke_script.contains("report_dkg_metrics setup_failure"));
+    assert!(live_dkg_smoke_script.contains("DKG_METRICS_REPORTED"));
     assert!(live_dkg_smoke_script.contains("startup_failures="));
     assert!(live_dkg_smoke_script.contains("runtime_failures="));
     assert!(live_dkg_smoke_script.contains("Federation DKG driver tick metrics"));
@@ -380,6 +383,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("INTERRUPTED_MEMBER"));
     assert!(live_dkg_smoke_script.contains("wait_for_interrupt_checkpoint"));
     assert!(live_dkg_smoke_script.contains("wait_for_dkg_driver_metric_completion"));
+    assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_RETRIES:-2400"));
     assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05"));
     assert!(live_dkg_smoke_script.contains("keyset_shares || true)\" == \"0"));
     assert!(live_dkg_smoke_script

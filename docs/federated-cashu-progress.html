@@ -436,11 +436,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: cache finalized DKG activation config</span>
+          <span class="value">fix: report failed DKG benchmark metrics</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A release 11-of-8, eight-denomination run exposed repeated full finalized-config validation in every activation handler: requests timed out after ten seconds and retries amplified into HTTP 429 while databases converged. One fallible process-local cache now reuses the same fully validated immutable config; the identical rerun completed setup in 34 seconds with zero delivery timeouts and zero post-start REST failures, then passed activation plus mint/swap/melt/restore in 7.963 seconds.</span>
+          <span class="value">The release 11-of-8 activation bottleneck is fixed and the process collector is now failure-safe. A synthetic non-starting three-member run exited nonzero, stopped every recorded child, and emitted exactly one setup-failure summary with retained REST and delivery accounting; successful DKG reports remain scoped to setup before export and wallet smoke.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
