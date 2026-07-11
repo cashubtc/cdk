@@ -482,6 +482,8 @@ pub struct MockMintConnector {
         Mutex<Option<Result<Vec<MintQuoteResponse<String>>, Error>>>,
     /// Response for post_melt_quote calls
     pub post_melt_quote_response: Mutex<Option<Result<MeltQuoteCreateResponse<String>, Error>>>,
+    /// Optional delay used by tests to simulate a slow melt quote member.
+    pub post_melt_quote_delay: Mutex<Option<Duration>>,
     /// Federation-assigned IDs received by melt quote creation calls.
     pub assigned_melt_quote_ids: Mutex<Vec<QuoteId>>,
     /// Response for get_melt_quote_status calls
@@ -573,6 +575,7 @@ impl MockMintConnector {
             mint_quote_status_delay: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
             post_melt_quote_response: Mutex::new(None),
+            post_melt_quote_delay: Mutex::new(None),
             assigned_melt_quote_ids: Mutex::new(Vec::new()),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -733,6 +736,10 @@ impl MockMintConnector {
         response: Result<MeltQuoteCreateResponse<String>, Error>,
     ) {
         *self.post_melt_quote_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_melt_quote_delay(&self, delay: Duration) {
+        *self.post_melt_quote_delay.lock().unwrap() = Some(delay);
     }
 
     pub fn set_melt_quote_status_response(
@@ -1019,6 +1026,11 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
+        let delay = *self.post_melt_quote_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+
         self.post_melt_quote_response
             .lock()
             .unwrap()

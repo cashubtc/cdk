@@ -3803,7 +3803,7 @@ async fn federated_mint_connector_uses_threshold_live_members_for_wallet_operati
 }
 
 #[tokio::test(start_paused = true)]
-async fn federated_mint_connector_falls_back_when_primary_quote_member_stalls() {
+async fn federated_mint_quote_recovers_timed_out_submission_without_duplicate_fallback() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let stalled_quote = bolt11_quote_response(&QuoteId::new(), 3);
@@ -3862,11 +3862,71 @@ async fn federated_mint_connector_falls_back_when_primary_quote_member_stalls() 
     assert_eq!(response.request(), expected.request());
     assert_eq!(response.method(), expected.method());
     assert_eq!(stalled_member.assigned_mint_quote_ids().len(), 1);
+    assert!(healthy_member.assigned_mint_quote_ids().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_mint_quote_timeout_falls_back_when_quote_is_not_visible() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let expected = bolt11_quote_response(&QuoteId::new(), 3);
+    let fallback_timeout = Duration::from_secs(2);
+
+    let stalled_member = Arc::new(MockMintConnector::new());
+    stalled_member.set_active_keyset(advertised.clone());
+    stalled_member.set_post_mint_quote_delay(fallback_timeout + Duration::from_secs(60));
+    stalled_member.set_post_mint_quote_response(Ok(expected.clone()));
+
+    let healthy_member = Arc::new(MockMintConnector::new());
+    healthy_member.set_active_keyset(advertised.clone());
+    healthy_member.set_post_mint_quote_response(Ok(expected.clone()));
+
+    let third = Arc::new(MockMintConnector::new());
+    third.set_active_keyset(advertised);
+
+    for connector in [&stalled_member, &healthy_member, &third] {
+        connector.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
+        push_mint_quote_status_from_response(connector, &expected);
+    }
+
+    let connectors = BTreeMap::from([
+        (
+            member_id(1),
+            stalled_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(2),
+            healthy_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (member_id(3), third as Arc<dyn MintConnector + Send + Sync>),
+    ]);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_fallback_timeout: fallback_timeout,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let mint_quote =
+        tokio::spawn(async move { connector.post_mint_quote(bolt11_quote_request(3)).await });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(fallback_timeout).await;
+
+    let response = mint_quote
+        .await
+        .expect("mint quote task")
+        .expect("fallback mint quote");
+
+    QuoteId::from_str(response.quote()).expect("valid assigned mint quote id");
+    assert_eq!(stalled_member.assigned_mint_quote_ids().len(), 1);
     assert_eq!(healthy_member.assigned_mint_quote_ids().len(), 1);
     assert_eq!(
         stalled_member.assigned_mint_quote_ids(),
         healthy_member.assigned_mint_quote_ids(),
-        "ambiguous member fallback must reuse one assigned quote id"
+        "fallback must reuse the same assigned mint quote id"
     );
 }
 
@@ -4078,6 +4138,131 @@ async fn federated_melt_quote_recovers_pending_submission_without_duplicate_fall
     assert_eq!(primary.assigned_melt_quote_ids().len(), 1);
     assert!(second.assigned_melt_quote_ids().is_empty());
     assert!(third.assigned_melt_quote_ids().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_melt_quote_recovers_timed_out_submission_without_duplicate_fallback() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let expected = melt_quote_create_response();
+    let status = melt_quote_status_from_create_response(&expected);
+    let fallback_timeout = Duration::from_secs(2);
+
+    let stalled_member = Arc::new(MockMintConnector::new());
+    stalled_member.set_active_keyset(advertised.clone());
+    stalled_member.set_post_melt_quote_delay(fallback_timeout + Duration::from_secs(60));
+    stalled_member.set_post_melt_quote_response(Ok(expected.clone()));
+    stalled_member.set_melt_quote_status_response(Ok(status.clone()));
+
+    let second = Arc::new(MockMintConnector::new());
+    second.set_active_keyset(advertised.clone());
+    second.set_post_melt_quote_response(Ok(expected.clone()));
+    second.set_melt_quote_status_response(Ok(status.clone()));
+
+    let third = Arc::new(MockMintConnector::new());
+    third.set_active_keyset(advertised);
+    third.set_melt_quote_status_response(Ok(status));
+
+    let connectors = BTreeMap::from([
+        (
+            member_id(1),
+            stalled_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(2),
+            second.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (member_id(3), third as Arc<dyn MintConnector + Send + Sync>),
+    ]);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_fallback_timeout: fallback_timeout,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let melt_quote =
+        tokio::spawn(async move { connector.post_melt_quote(bolt11_melt_quote_request()).await });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(fallback_timeout).await;
+
+    let response = melt_quote
+        .await
+        .expect("melt quote task")
+        .expect("threshold-visible melt quote");
+
+    assert_melt_quote_matches_except_assigned_id(&response, &expected);
+    assert_eq!(stalled_member.assigned_melt_quote_ids().len(), 1);
+    assert!(second.assigned_melt_quote_ids().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_melt_quote_timeout_falls_back_when_quote_is_not_visible() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let expected = melt_quote_create_response();
+    let status = melt_quote_status_from_create_response(&expected);
+    let fallback_timeout = Duration::from_secs(2);
+
+    let stalled_member = Arc::new(MockMintConnector::new());
+    stalled_member.set_active_keyset(advertised.clone());
+    stalled_member.set_post_melt_quote_delay(fallback_timeout + Duration::from_secs(60));
+    stalled_member.set_post_melt_quote_response(Ok(expected.clone()));
+
+    let healthy_member = Arc::new(MockMintConnector::new());
+    healthy_member.set_active_keyset(advertised.clone());
+    healthy_member.set_post_melt_quote_response(Ok(expected.clone()));
+
+    let third = Arc::new(MockMintConnector::new());
+    third.set_active_keyset(advertised);
+
+    for connector in [&stalled_member, &healthy_member, &third] {
+        connector.push_melt_quote_status_response(Err(crate::Error::UnknownQuote));
+        connector.push_melt_quote_status_response(Ok(status.clone()));
+    }
+
+    let connectors = BTreeMap::from([
+        (
+            member_id(1),
+            stalled_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(2),
+            healthy_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (member_id(3), third as Arc<dyn MintConnector + Send + Sync>),
+    ]);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_fallback_timeout: fallback_timeout,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let melt_quote =
+        tokio::spawn(async move { connector.post_melt_quote(bolt11_melt_quote_request()).await });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(fallback_timeout).await;
+
+    let response = melt_quote
+        .await
+        .expect("melt quote task")
+        .expect("fallback melt quote");
+
+    assert_melt_quote_matches_except_assigned_id(&response, &expected);
+    assert_eq!(stalled_member.assigned_melt_quote_ids().len(), 1);
+    assert_eq!(healthy_member.assigned_melt_quote_ids().len(), 1);
+    assert_eq!(
+        stalled_member.assigned_melt_quote_ids(),
+        healthy_member.assigned_melt_quote_ids(),
+        "fallback must reuse the same assigned melt quote id"
+    );
 }
 
 #[tokio::test]

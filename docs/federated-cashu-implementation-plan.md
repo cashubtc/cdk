@@ -1086,7 +1086,7 @@ Federated public API checklist:
   same pending operation without an outgoing payment attempt before finality, and
   both waiters receive the same persisted paid response after one accepted
   outgoing payment attempt.
-- [ ] Mint quote creation and melt quote creation remain idempotent around quote
+- [x] Mint quote creation and melt quote creation remain idempotent around quote
   IDs and quote request payloads; duplicate quote operations return the
   accepted quote response, while conflicting quote payloads are rejected.
   Current route coverage proves AlephBFT-not-ready public mint/melt quote
@@ -1094,8 +1094,20 @@ Federated public API checklist:
   entries, queueing work, or registering waiters. Consensus-level
   duplicate/conflict coverage exists for quote operations; AlephBFT pending
   queue coverage now rejects competing mint/melt quote operations with the same
-  quote conflict key before finality. Public reusable quote-ID duplicate/conflict
-  behavior remains open where protocols expose client-selected quote IDs.
+  quote conflict key before finality. Federation wallets now generate one quote
+  ID per creation attempt and carry it as the federation-only
+  `federation_quote_id` query parameter without changing the Cashu JSON body.
+  Every member route requires that ID in federation mode, returns the accepted
+  response for an identical retry, and rejects a different request under the
+  same ID; standalone routes remain unchanged. Sequential member fallback
+  reuses the same assigned ID. After an ambiguous HTTP timeout the wallet first
+  performs one threshold status read: a threshold-visible accepted quote is
+  returned without calling another creation endpoint, while a genuinely
+  invisible quote may fall back using the same ID. Mint and melt regressions
+  cover timeout recovery without duplicate fallback, invisible-timeout
+  fallback, pending submission recovery, exact ID reuse, definitive errors,
+  threshold visibility, route-level conflicting payload rejection, and HTTP
+  query serialization.
 - [x] Payment observation submission is idempotent by payment ID, quote ID,
   observer, method, amount, state, and proof material. Operation IDs now
   exclude observer-local `observed_time` metadata for mint and melt payment

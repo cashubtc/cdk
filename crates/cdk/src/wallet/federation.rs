@@ -1107,27 +1107,13 @@ impl FederatedMintConnector {
             return Ok(None);
         }
 
-        let method = request.method();
-        let quote = quote_id.to_string();
         let recovery = async {
             loop {
-                if let Ok(member_responses) = self
-                    .collect_mint_quote_status_responses(
-                        |connector| {
-                            let method = method.clone();
-                            let quote = quote.clone();
-                            async move { connector.get_mint_quote_status(method, &quote).await }
-                        },
-                        false,
-                    )
-                    .await
+                if let Some(response) = self
+                    .threshold_visible_mint_quote_after_ambiguous_creation(request, quote_id)
+                    .await?
                 {
-                    if let Ok(response) =
-                        self.aggregate_mint_quote_status_response(&member_responses)
-                    {
-                        validate_assigned_mint_quote_response(request, quote_id, &response)?;
-                        return Ok(response);
-                    }
+                    return Ok(response);
                 }
                 tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
             }
@@ -1137,6 +1123,35 @@ impl FederatedMintConnector {
             Ok(result) => result.map(Some),
             Err(_) => Ok(None),
         }
+    }
+
+    async fn threshold_visible_mint_quote_after_ambiguous_creation(
+        &self,
+        request: &MintQuoteRequest,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MintQuoteResponse<String>>, Error> {
+        let method = request.method();
+        let quote = quote_id.to_string();
+        let member_responses = match self
+            .collect_mint_quote_status_responses(
+                |connector| {
+                    let method = method.clone();
+                    let quote = quote.clone();
+                    async move { connector.get_mint_quote_status(method, &quote).await }
+                },
+                false,
+            )
+            .await
+        {
+            Ok(responses) => responses,
+            Err(_) => return Ok(None),
+        };
+        let response = match self.aggregate_mint_quote_status_response(&member_responses) {
+            Ok(response) => response,
+            Err(_) => return Ok(None),
+        };
+        validate_assigned_mint_quote_response(request, quote_id, &response)?;
+        Ok(Some(response))
     }
 
     async fn recover_melt_quote_after_ambiguous_creation(
@@ -1149,28 +1164,13 @@ impl FederatedMintConnector {
             return Ok(None);
         }
 
-        let method = request.method();
-        let quote = quote_id.to_string();
         let recovery = async {
             loop {
-                if let Ok(member_responses) = self
-                    .collect_melt_quote_status_responses(
-                        |connector| {
-                            let method = method.clone();
-                            let quote = quote.clone();
-                            async move { connector.get_melt_quote_status(method, &quote).await }
-                        },
-                        false,
-                    )
-                    .await
+                if let Some(response) = self
+                    .threshold_visible_melt_quote_after_ambiguous_creation(request, quote_id)
+                    .await?
                 {
-                    if let Ok(response) =
-                        self.aggregate_melt_quote_status_response(&member_responses)
-                    {
-                        let response = melt_quote_create_response_from_status(response);
-                        validate_assigned_melt_quote_response(request, quote_id, &response)?;
-                        return Ok(response);
-                    }
+                    return Ok(response);
                 }
                 tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
             }
@@ -1180,6 +1180,35 @@ impl FederatedMintConnector {
             Ok(result) => result.map(Some),
             Err(_) => Ok(None),
         }
+    }
+
+    async fn threshold_visible_melt_quote_after_ambiguous_creation(
+        &self,
+        request: &MeltQuoteRequest,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MeltQuoteCreateResponse<String>>, Error> {
+        let method = request.method();
+        let quote = quote_id.to_string();
+        let member_responses = match self
+            .collect_melt_quote_status_responses(
+                |connector| {
+                    let method = method.clone();
+                    let quote = quote.clone();
+                    async move { connector.get_melt_quote_status(method, &quote).await }
+                },
+                false,
+            )
+            .await
+        {
+            Ok(responses) => responses,
+            Err(_) => return Ok(None),
+        };
+        let response = match self.aggregate_melt_quote_status_response(&member_responses) {
+            Ok(response) => melt_quote_create_response_from_status(response),
+            Err(_) => return Ok(None),
+        };
+        validate_assigned_melt_quote_response(request, quote_id, &response)?;
+        Ok(Some(response))
     }
 
     async fn create_mint_quote(
@@ -1223,11 +1252,19 @@ impl FederatedMintConnector {
                     }
                     failures.push(format!("member {}: {}", member_id, err));
                 }
-                Err(_) => failures.push(format!(
-                    "member {}: timed out after {}s",
-                    member_id,
-                    self.config.member_fallback_timeout.as_secs()
-                )),
+                Err(_) => {
+                    if let Some(response) = self
+                        .threshold_visible_mint_quote_after_ambiguous_creation(&request, &quote_id)
+                        .await?
+                    {
+                        return Ok(response);
+                    }
+                    failures.push(format!(
+                        "member {}: timed out after {}s",
+                        member_id,
+                        self.config.member_fallback_timeout.as_secs()
+                    ));
+                }
             }
         }
 
@@ -1278,11 +1315,19 @@ impl FederatedMintConnector {
                     }
                     failures.push(format!("member {}: {}", member_id, err));
                 }
-                Err(_) => failures.push(format!(
-                    "member {}: timed out after {}s",
-                    member_id,
-                    self.config.member_fallback_timeout.as_secs()
-                )),
+                Err(_) => {
+                    if let Some(response) = self
+                        .threshold_visible_melt_quote_after_ambiguous_creation(&request, &quote_id)
+                        .await?
+                    {
+                        return Ok(response);
+                    }
+                    failures.push(format!(
+                        "member {}: timed out after {}s",
+                        member_id,
+                        self.config.member_fallback_timeout.as_secs()
+                    ));
+                }
             }
         }
 
