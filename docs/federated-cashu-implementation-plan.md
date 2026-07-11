@@ -2993,6 +2993,16 @@ Verified harness checkpoint (2026-07-11):
   five-round completion and identical final configs. Partition/restart coverage
   proves failed peers retry and sender restart forgets prior acknowledgements.
   Thirty focused release DKG tests pass.
+- Candidate 7 is **Rejected**. The interrupted 20-of-14, eight-denomination
+  release process run recorded 422 retryable delivery failures: 382 commitment
+  failures followed the harness's two-second sequential listener startup, and
+  40 secret-share failures occurred as two all-target waves roughly 130 seconds
+  apart. The run used a 60-second peer request timeout and a one-second driver
+  retry delay, so request/handler lifetime dwarfed the configured retry delay.
+  Adding a few seconds of jitter cannot remove the startup race or the expensive
+  first-time secret-share work, while a large backoff would directly slow
+  recovery. No production retry behavior was changed; the retained
+  acknowledgement tracker already suppresses successful targets.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3106,13 +3116,24 @@ reference to the recorded measurements:
   suppress a target; timeout/error targets retry, changed payloads reset their
   phase tracker, and process/restarted-driver state intentionally rebroadcasts
   because acknowledgements are not persisted.
-- [ ] Benchmark a slower, jittered retry policy and phase-aware backoff to avoid
+- [x] Benchmark a slower, jittered retry policy and phase-aware backoff to avoid
   synchronized all-to-all retry waves. Treat this as load mitigation, not a
-  substitute for removing repeated cryptographic work. Outcome: pending.
+  substitute for removing repeated cryptographic work. Outcome: **Rejected**.
+  In the interrupted 20-of-14 release process run, 382 commitment failures
+  tracked the two-second sequential listener startup and 40 secret-share
+  failures formed two all-target waves about 130 seconds apart under a
+  60-second request timeout. The existing one-second retry delay was not the
+  dominant cadence. A bounded jitter model therefore either changes almost
+  nothing or adds material recovery latency without addressing the measured
+  causes. Candidate 6 already removes acknowledged targets, so no speculative
+  retry scheduler was added.
 - [ ] Add an explicit all-members-ready/start barrier before the first DKG phase
   so participant generation does not race process startup. Measure separately:
-  the observed 20-of-14 run had all listeners ready quickly, so this candidate
-  must not be retained on architectural intuition alone. Outcome: pending.
+  a release 20-of-14 harness run started listeners over a 38-second interval and
+  produced 382 commitment failures, with later-starting targets accumulating
+  progressively more failures. This candidate now has direct evidence but must
+  still prove a before/after improvement and preserve restart behavior before it
+  can be retained. Outcome: pending.
 - [ ] Improve redacted DKG delivery diagnostics so timeout, HTTP status,
   admission, validation, and storage failures are distinguishable. This has no
   direct speed claim; retain it only if it materially shortens diagnosis or

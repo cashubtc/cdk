@@ -2032,6 +2032,47 @@ partition, and completes with convergent durable records. No acknowledgement is
 consensus state, no new REST message exists, and ceremony ordering, validation,
 persistence, and activation behavior are unchanged.
 
+### Candidate 7: jittered phase-aware retry backoff
+
+Decision: **Rejected**. No production retry behavior changed.
+
+The preserved logs from an interrupted 20-member, threshold-14,
+eight-denomination release process run provide enough evidence to distinguish
+retry cadence from the underlying work. The harness started the 20 listeners
+sequentially over 38.258 seconds, used a 60-second private-peer request timeout,
+and configured a one-second DKG driver retry delay.
+
+| Preserved process observation | Result |
+| --- | ---: |
+| Total retryable DKG delivery failures | 422 |
+| Commitment failures | 382 |
+| Secret-share failures | 40 |
+| Listener startup span | 38.258s |
+| Configured peer request timeout | 60s |
+| Configured driver retry delay | 1s |
+| Secret-share retry waves | 2 |
+| Separation between secret-share waves | about 130s |
+
+Commitment failures correlate directly with target readiness: the earliest
+unavailable target failed once, while progressively later targets accumulated
+more failures, reaching 52 for the last listener. Once all listeners were up,
+the commitment failure series stopped. An all-members-ready barrier is the
+direct candidate for that measured startup race.
+
+The 40 secret-share failures were two complete 20-target waves emitted by two
+senders around 09:52:33-34 and 09:54:42-44. Their roughly 130-second separation
+is dominated by the 60-second request lifetime plus handler/CPU work, not by the
+one-second sleep between driver ticks. Small jitter is negligible at that
+scale; large exponential backoff would delay recovery, and neither removes the
+expensive first-time secret-share processing that made responses ambiguous.
+
+Candidate 6 already prevents acknowledged targets from participating in later
+waves. Without evidence that another retry scheduler improves completion or
+REST responsiveness, adding it would be speculative complexity. The ceremony
+was interrupted and is not an acceptance result; its logs are used only to
+reject this retry-policy hypothesis and prioritize the readiness and
+first-time-processing investigations.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

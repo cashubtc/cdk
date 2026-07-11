@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has six retained optimizations, adding verified-ack delivery suppression to reusable validation, aggregate coefficients, validated-by-construction fresh state, bounded CPU work, and exact-duplicate persistence. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has six retained optimizations and one evidence-based rejection: retry jitter does not address the measured startup race or 60-second request-bound secret-share waves. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: suppress acknowledged DKG deliveries</span>
+          <span class="value">docs: reject speculative DKG retry backoff</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Candidate 6 reduces a healthy three-member authenticated ceremony from 126 to the 36 unique delivery attempts, 71.4% fewer, without adding consensus or protocol traffic. Only verified acknowledgements suppress retries; failed peers remain pending, changed payloads reset tracking, and restart intentionally rebroadcasts. All 30 focused release DKG tests pass.</span>
+          <span class="value">Candidate 7 is rejected without a production change. Preserved 20-of-14 release logs show 382 commitment failures tracking a 38-second sequential startup span and 40 secret-share failures in two all-target waves about 130 seconds apart under a 60-second request timeout. The one-second retry delay was not the dominant cadence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Evaluate Candidate 7: benchmark slower jittered, phase-aware retry backoff now that acknowledged targets are suppressed. Then run the real-process release CPU/REST gate before the 20-of-14 eight-denomination acceptance ceremony.</span>
+          <span class="value">Evaluate Candidate 8 with the existing evidence: add and measure a restart-safe all-members-ready barrier that removes commitment traffic during staggered startup, without claiming it solves first-time secret-share CPU work. Then isolate that remaining request-lifetime bottleneck before another large acceptance run.</span>
         </div>
       </aside>
     </header>
