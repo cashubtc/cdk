@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: export finalized DKG configs</span>
+          <span class="value">feat: generate live DKG member configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">After durable DKG completion, mintd can now export the independently assembled public wallet config and local private member config without exposing either in status output. Partial records fail, existing files are protected unless replacement is explicit, and private output is mode 0600, giving the process harness a clean setup-to-runtime handoff.</span>
+          <span class="value">Local generation now gives every member a separate setup-only live-DKG config, durable work directory, and finalized-config destination. All configs commit to one shared generated ceremony ID and exact keyset policy, while remaining isolated from trusted-dealer runtime material and the existing manual route-probe fixtures.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Generate setup-only member configs for the live driver, run a real multi-process ceremony with one member interrupted and resumed from SQL, restart all members onto the finalized keyset, then prove mint, swap, melt, and restore on SQLite and Postgres.</span>
+          <span class="value">Run the generated configs through a real multi-process ceremony with one member deliberately interrupted and resumed from SQL, export and compare independently finalized configs, restart all members onto the DKG keyset, then prove mint, swap, melt, and restore on SQLite and Postgres.</span>
         </div>
       </aside>
     </header>

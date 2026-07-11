@@ -2764,13 +2764,15 @@ Verified secure operator auto-start checkpoint:
 - Router startup validates the setup-only public config before spawning. A restart that has already activated finalized key material skips auto-start cleanly, so ceremony completion remains a durable setup transition followed by explicit process restart rather than an in-place live signing-key mutation.
 - `cdk-mintd federation dkg-status --from-database` reconstructs the planner phase from durable SQL records and reports `commitment`, `reveal`, `share_delivery`, `local_keyset_share`, `transcript_signature`, or `complete` without exposing private contributions.
 - `cdk-mintd federation dkg-status --final-config-dir <dir>` writes the transcript-verified public and local-private configs only after complete assembly. It refuses partial records and existing targets by default, requires explicit `--force` to replace them, and protects the private file with mode `0600` on Unix.
+- Local federation generation now emits a separate `dkg-live-config.toml` and durable `dkg-live-work` path per member. These configs share one generated ceremony ID and exact active keyset policy, reference only setup-only public/private identity material, enable plaintext transport only for explicit loopback hosts, and remain separate from both trusted-dealer runtime configs and manually injected DKG route-probe configs.
 - `cargo test -p cdk-axum --features federation dkg -- --test-threads=1`: all 25 DKG driver, transport-policy, signed-route, partition/restart, transcript, and activation tests passed.
 - `cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg -- --test-threads=1`: all 13 DKG configuration, status, and setup-generation tests passed.
 - `cargo test -p cdk-mintd --features federation,fakewallet,sqlite --lib -- --test-threads=1`: all 189 mintd library tests passed.
 - The focused `federation_dkg_status` gate now passes 11 tests, including complete export, incomplete-record rejection, overwrite protection, private-file permissions, database reconstruction, and redacted status output.
+- The focused `federation_setup` gate passes all 14 tests with SQLite and Postgres live-DKG config parsing, one shared valid ceremony ID, exact denomination/timing policy, distinct member storage paths, and unchanged route-probe defaults.
 - `cargo check -p cdk-axum` and `cargo check -p cdk-mintd --features fakewallet,sqlite`: passed without federation features.
 - `cargo clippy -p cdk-axum --features federation --lib --no-deps -- -D warnings` and the equivalent mintd command reach this checkpoint without a new finding; they remain blocked by the existing 15 Axum and 9 mintd findings in unrelated older modules.
-- Remaining production-DKG gate: generate live setup-only member configs, execute an interrupted and resumed multi-process ceremony, restart every member onto the finalized keyset, and run mint/swap/melt/restore against it on SQLite and Postgres.
+- Remaining production-DKG gate: execute an interrupted and resumed multi-process ceremony with the generated live configs, restart every member onto the finalized keyset, and run mint/swap/melt/restore against it on SQLite and Postgres.
 
 ## Milestone 21: key rotation and federation upgrades
 

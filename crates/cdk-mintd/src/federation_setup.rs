@@ -56,6 +56,10 @@ const DKG_SETUP_MEMBER_CONFIG_FILE: &str = "dkg-setup-config.toml";
 const GENERATED_GITIGNORE_FILE: &str = ".gitignore";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const SMOKE_SCRIPT_FILE: &str = "smoke-local-federation.sh";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const LIVE_DKG_MEMBER_CONFIG_FILE: &str = "dkg-live-config.toml";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const LIVE_DKG_FINAL_CONFIG_DIR: &str = "dkg-final";
 #[cfg(feature = "federation")]
 const DKG_SETUP_ROUTE_PROBE_DIR: &str = "dkg-setup-route-probe";
 
@@ -99,10 +103,13 @@ pub(crate) struct TrustedDealerArtifacts {
 pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) config_path: PathBuf,
     pub(crate) dkg_setup_config_path: PathBuf,
+    pub(crate) live_dkg_config_path: PathBuf,
     pub(crate) private_config_path: PathBuf,
     pub(crate) dkg_setup_private_config_path: PathBuf,
     pub(crate) work_dir: PathBuf,
     pub(crate) dkg_setup_work_dir: PathBuf,
+    pub(crate) live_dkg_work_dir: PathBuf,
+    pub(crate) live_dkg_final_config_dir: PathBuf,
     pub(crate) public_mint_url: String,
     pub(crate) federation_api_url: String,
     pub(crate) dkg_setup_request_dir: PathBuf,
@@ -342,6 +349,22 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         .core_artifacts
         .dkg_setup_public_config_path
         .clone();
+    let live_dkg_keyset_spec = FederationDkgKeysetSpec::new(
+        generation.unit.clone(),
+        true,
+        args.input_fee_ppk,
+        args.final_expiry,
+        args.amounts.iter().copied().map(Amount::from).collect(),
+    )
+    .context("invalid generated live DKG keyset policy")?;
+    let live_dkg_ceremony_id = generated_dkg_ceremony_id(
+        b"cdk-federation-live-dkg-ceremony-v1",
+        &generation.bundle.public_config,
+        &live_dkg_keyset_spec,
+        args.deterministic_test_seed.as_deref(),
+    )?;
+    let live_dkg_config_suffix =
+        live_dkg_config_toml(live_dkg_ceremony_id, &live_dkg_keyset_spec, &args.host)?;
     let mut member_artifacts = BTreeMap::new();
     for member_id in generation.bundle.private_configs.keys() {
         let member = generation
@@ -359,8 +382,11 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             .join(format!("member-{}", member_id.get()));
         let work_dir = member_dir.join("work");
         let dkg_setup_work_dir = member_dir.join("dkg-setup-work");
+        let live_dkg_work_dir = member_dir.join("dkg-live-work");
+        let live_dkg_final_config_dir = member_dir.join(LIVE_DKG_FINAL_CONFIG_DIR);
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
         let dkg_setup_config_path = member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE);
+        let live_dkg_config_path = member_dir.join(LIVE_DKG_MEMBER_CONFIG_FILE);
         let member_url = member.public_mint_url.to_string();
         let federation_api_url = member.federation_api_url.to_string();
         let database_config = member_database_config(args, *member_id)?;
@@ -406,16 +432,36 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             args.deterministic_test_seed.as_deref(),
         )?;
         write_text_file(&dkg_setup_config_path, &dkg_setup_config_toml, args.force)?;
+        let mut live_dkg_config_toml = member_config_toml(
+            member_id,
+            &args.host,
+            &member_url,
+            &federation_api_url,
+            listen_port,
+            prometheus_port,
+            &dkg_setup_public_config_path,
+            &core_member.dkg_setup_private_config_path,
+            &live_dkg_config_path,
+            &live_dkg_work_dir,
+            &generation.unit,
+            &database_config,
+            args.deterministic_test_seed.as_deref(),
+        )?;
+        live_dkg_config_toml.push_str(&live_dkg_config_suffix);
+        write_text_file(&live_dkg_config_path, &live_dkg_config_toml, args.force)?;
 
         member_artifacts.insert(
             *member_id,
             TrustedDealerMemberArtifacts {
                 config_path,
                 dkg_setup_config_path,
+                live_dkg_config_path,
                 private_config_path: core_member.private_config_path.clone(),
                 dkg_setup_private_config_path: core_member.dkg_setup_private_config_path.clone(),
                 work_dir,
                 dkg_setup_work_dir,
+                live_dkg_work_dir,
+                live_dkg_final_config_dir,
                 public_mint_url: member_url,
                 federation_api_url,
                 dkg_setup_request_dir: core_member.dkg_setup_request_dir.clone(),
@@ -1068,17 +1114,76 @@ fn dkg_probe_ceremony_id(
     keyset_spec: &FederationDkgKeysetSpec,
     deterministic_test_seed: Option<&str>,
 ) -> Result<FederationDkgCeremonyId> {
+    generated_dkg_ceremony_id(
+        b"cdk-federation-dkg-route-probe-ceremony-v1",
+        public_config,
+        keyset_spec,
+        deterministic_test_seed,
+    )
+}
+
+#[cfg(feature = "federation")]
+fn generated_dkg_ceremony_id(
+    domain: &[u8],
+    public_config: &FederationConfig,
+    keyset_spec: &FederationDkgKeysetSpec,
+    deterministic_test_seed: Option<&str>,
+) -> Result<FederationDkgCeremonyId> {
     let entropy = match deterministic_test_seed {
         Some(seed) => seed.as_bytes().to_vec(),
         None => SecretKey::generate().public_key().to_bytes(),
     };
     let mut material = Vec::new();
-    material.extend_from_slice(b"cdk-federation-dkg-route-probe-ceremony-v1");
+    material.extend_from_slice(domain);
     material.extend_from_slice(&public_config.federation_id.to_bytes());
     material.extend_from_slice(&serde_json::to_vec(keyset_spec)?);
     material.extend_from_slice(&entropy);
     Ok(FederationDkgCeremonyId::from_bytes(
         sha256::Hash::hash(&material).to_byte_array(),
+    ))
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn live_dkg_config_toml(
+    ceremony_id: FederationDkgCeremonyId,
+    keyset_spec: &FederationDkgKeysetSpec,
+    host: &str,
+) -> Result<String> {
+    let amounts = keyset_spec
+        .amounts
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let expiry = keyset_spec
+        .final_expiry
+        .map(|expiry| format!("expiry = {expiry}\n"))
+        .unwrap_or_default();
+    let allow_insecure_localhost = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+
+    Ok(format!(
+        r#"
+[federation.dkg]
+enabled = true
+ceremony_id = {ceremony_id}
+unit = {unit}
+active = {active}
+input_fee_ppk = {input_fee_ppk}
+{expiry}amounts = [{amounts}]
+max_ticks = 1200
+retry_delay_ms = 250
+allow_insecure_localhost = {allow_insecure_localhost}
+"#,
+        ceremony_id = toml_string(&ceremony_id.to_string())?,
+        unit = toml_string(&keyset_spec.unit.to_string().to_lowercase())?,
+        active = keyset_spec.active,
+        input_fee_ppk = keyset_spec.input_fee_ppk,
+        expiry = expiry,
+        amounts = amounts,
+        allow_insecure_localhost = allow_insecure_localhost,
     ))
 }
 

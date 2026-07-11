@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::config;
 use cdk_common::federation::{FederationConfig, MemberConfigPrivate};
@@ -47,6 +49,7 @@ fn trusted_dealer_command_defaults_to_core_only_with_fakewallet_feature() {
         assert!(member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE).exists());
         assert!(!member_dir.join(MEMBER_CONFIG_FILE).exists());
         assert!(!member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE).exists());
+        assert!(!member_dir.join(LIVE_DKG_MEMBER_CONFIG_FILE).exists());
     }
 
     let _ = std::fs::remove_dir_all(&output_dir);
@@ -70,6 +73,7 @@ fn trusted_dealer_command_generates_local_fakewallet_files_only_when_requested()
         assert!(member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE).exists());
         assert!(member_dir.join(MEMBER_CONFIG_FILE).exists());
         assert!(member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE).exists());
+        assert!(member_dir.join(LIVE_DKG_MEMBER_CONFIG_FILE).exists());
     }
 
     let _ = std::fs::remove_dir_all(&output_dir);
@@ -482,6 +486,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         assert_ne!(mode & 0o111, 0);
     }
 
+    let mut live_dkg_ceremony_ids = BTreeSet::new();
     for (member_id, member_artifacts) in &artifacts.member_artifacts {
         let private_json = std::fs::read_to_string(&member_artifacts.private_config_path)
             .expect("private config file");
@@ -520,6 +525,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         let dkg_setup_config_text =
             std::fs::read_to_string(&member_artifacts.dkg_setup_config_path)
                 .expect("setup-only member config text");
+        let live_dkg_config_text = std::fs::read_to_string(&member_artifacts.live_dkg_config_path)
+            .expect("live DKG member config text");
         let expected_prometheus_port = 8085 + 3 + member_id.get() - 1;
         assert!(config_text.contains("[prometheus]"));
         assert!(config_text.contains("enabled = true"));
@@ -539,15 +546,34 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
                 .to_string_lossy()
                 .to_string()
         ));
+        assert!(live_dkg_config_text.contains(
+            &artifacts
+                .dkg_setup_public_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(live_dkg_config_text.contains(
+            &member_artifacts
+                .dkg_setup_private_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
 
         let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
             .expect("member config toml");
         let dkg_setup_settings =
             config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
                 .expect("setup-only member config toml");
+        let live_dkg_settings =
+            config::Settings::try_new(Some(&member_artifacts.live_dkg_config_path))
+                .expect("live DKG member config toml");
         assert_eq!(settings.database.engine, config::DatabaseEngine::Sqlite);
         assert_eq!(
             dkg_setup_settings.database.engine,
+            config::DatabaseEngine::Sqlite
+        );
+        assert_eq!(
+            live_dkg_settings.database.engine,
             config::DatabaseEngine::Sqlite
         );
         assert!(
@@ -578,8 +604,34 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
                 .expect("setup-only federation settings")
                 .allow_development_payment_observation_policy
         );
+        let dkg_setup_federation = dkg_setup_settings
+            .federation
+            .as_ref()
+            .expect("setup-only federation settings");
+        assert!(!dkg_setup_federation.dkg.enabled);
+        let live_dkg_federation = live_dkg_settings
+            .federation
+            .as_ref()
+            .expect("live DKG federation settings");
+        assert!(live_dkg_federation.enabled);
+        assert!(live_dkg_federation.dkg.enabled);
+        assert!(live_dkg_federation.dkg.allow_insecure_localhost);
+        assert_eq!(live_dkg_federation.dkg.unit, "sat");
+        assert_eq!(live_dkg_federation.dkg.amounts, vec![1, 2, 4]);
+        assert_eq!(live_dkg_federation.dkg.max_ticks, 1200);
+        assert_eq!(live_dkg_federation.dkg.retry_delay_ms, 250);
+        let ceremony_id = live_dkg_federation
+            .dkg
+            .ceremony_id
+            .as_ref()
+            .expect("live DKG ceremony ID");
+        ceremony_id
+            .parse::<FederationDkgCeremonyId>()
+            .expect("valid live DKG ceremony ID");
+        live_dkg_ceremony_ids.insert(ceremony_id.clone());
         assert_eq!(settings.info.listen_port, 8084 + member_id.get());
         assert_eq!(dkg_setup_settings.info.listen_port, 8084 + member_id.get());
+        assert_eq!(live_dkg_settings.info.listen_port, 8084 + member_id.get());
         #[cfg(feature = "prometheus")]
         {
             let prometheus = settings.prometheus.expect("prometheus settings");
@@ -616,6 +668,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         assert!(smoke_script.contains(&member_artifacts.public_mint_url));
         assert!(smoke_script.contains(&member_artifacts.prometheus_url));
     }
+    assert_eq!(live_dkg_ceremony_ids.len(), 1);
 
     let _ = std::fs::remove_dir_all(&output_dir);
 }
@@ -704,9 +757,16 @@ fn trusted_dealer_artifacts_support_postgres_database_template() {
         let dkg_setup_settings =
             config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
                 .expect("setup-only member config toml");
+        let live_dkg_settings =
+            config::Settings::try_new(Some(&member_artifacts.live_dkg_config_path))
+                .expect("live DKG member config toml");
         assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
         assert_eq!(
             dkg_setup_settings.database.engine,
+            config::DatabaseEngine::Postgres
+        );
+        assert_eq!(
+            live_dkg_settings.database.engine,
             config::DatabaseEngine::Postgres
         );
         let postgres = settings
@@ -719,6 +779,11 @@ fn trusted_dealer_artifacts_support_postgres_database_template() {
             .postgres
             .as_ref()
             .expect("setup-only postgres config");
+        let live_dkg_postgres = live_dkg_settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("live DKG postgres config");
         assert_eq!(
             postgres.url,
             format!(
@@ -727,6 +792,7 @@ fn trusted_dealer_artifacts_support_postgres_database_template() {
             )
         );
         assert_eq!(dkg_setup_postgres.url, postgres.url);
+        assert_eq!(live_dkg_postgres.url, postgres.url);
         assert!(!postgres.url.contains("{member}"));
         assert!(!dkg_setup_postgres.url.contains("{member}"));
     }
@@ -755,9 +821,16 @@ fn trusted_dealer_artifacts_support_postgres_schema_base_url() {
         let dkg_setup_settings =
             config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
                 .expect("setup-only member config toml");
+        let live_dkg_settings =
+            config::Settings::try_new(Some(&member_artifacts.live_dkg_config_path))
+                .expect("live DKG member config toml");
         assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
         assert_eq!(
             dkg_setup_settings.database.engine,
+            config::DatabaseEngine::Postgres
+        );
+        assert_eq!(
+            live_dkg_settings.database.engine,
             config::DatabaseEngine::Postgres
         );
         let postgres = settings
@@ -770,6 +843,11 @@ fn trusted_dealer_artifacts_support_postgres_schema_base_url() {
             .postgres
             .as_ref()
             .expect("setup-only postgres config");
+        let live_dkg_postgres = live_dkg_settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("live DKG postgres config");
         assert_eq!(
             postgres.url,
             format!(
@@ -778,6 +856,7 @@ fn trusted_dealer_artifacts_support_postgres_schema_base_url() {
             )
         );
         assert_eq!(dkg_setup_postgres.url, postgres.url);
+        assert_eq!(live_dkg_postgres.url, postgres.url);
     }
     let smoke_script =
         std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
