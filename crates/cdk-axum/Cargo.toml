@@ -33,6 +33,7 @@ cdk-common.workspace = true
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 futures.workspace = true
 cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }

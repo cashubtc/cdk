@@ -23,6 +23,26 @@ use super::FederationPeerSyncConfig;
 
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum FederationRestPeerClientError {
+    #[error("federation outbound REST queue is full for peer {member_id} {operation}")]
+    OutboundAdmissionFull {
+        member_id: cdk::federation::MemberId,
+        operation: String,
+    },
+    #[error("federation outbound REST admission is closed for peer {member_id} {operation}")]
+    OutboundAdmissionClosed {
+        member_id: cdk::federation::MemberId,
+        operation: String,
+    },
+    #[error("federation peer {member_id} {operation} timed out after {timeout:?}")]
+    RequestTimeout {
+        member_id: cdk::federation::MemberId,
+        operation: String,
+        timeout: Duration,
+    },
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationRestPeerClient<T = Async> {
@@ -89,18 +109,18 @@ where
         let _permit = match self.outbound_admission.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(tokio::sync::TryAcquireError::NoPermits) => {
-                anyhow::bail!(
-                    "federation outbound REST queue is full for peer {} {}",
-                    member.member_id,
-                    operation
-                );
+                return Err(FederationRestPeerClientError::OutboundAdmissionFull {
+                    member_id: member.member_id,
+                    operation: operation.to_string(),
+                }
+                .into());
             }
             Err(tokio::sync::TryAcquireError::Closed) => {
-                anyhow::bail!(
-                    "federation outbound REST admission is closed for peer {} {}",
-                    member.member_id,
-                    operation
-                );
+                return Err(FederationRestPeerClientError::OutboundAdmissionClosed {
+                    member_id: member.member_id,
+                    operation: operation.to_string(),
+                }
+                .into());
             }
         };
         let request =
@@ -108,12 +128,12 @@ where
                 .http_post(federation_endpoint(member, endpoint)?, None, payload);
         match time::timeout(timeout, request).await {
             Ok(result) => Ok(result?),
-            Err(_) => anyhow::bail!(
-                "federation peer {} {} timed out after {:?}",
-                member.member_id,
-                operation,
-                timeout
-            ),
+            Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
+                member_id: member.member_id,
+                operation: operation.to_string(),
+                timeout,
+            }
+            .into()),
         }
     }
 

@@ -1,18 +1,47 @@
 use axum::extract::{Json, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use cdk::federation::{
-    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
+    redact_federation_operator_message, FederationDkgCommitmentRequest,
+    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationRestMessageKind,
+    FederationSignedRequest,
 };
 use tracing::instrument;
 
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, cdk_error_response, federation_error_response,
-    federation_runtime_config, verify_federation_request,
+    acquire_private_rest_admission, federation_error_response, federation_runtime_config,
+    verify_federation_request,
 };
+
+fn dkg_error_response(err: cdk::Error) -> Response {
+    match err {
+        cdk::Error::Federation(err) => federation_error_response(err),
+        cdk::Error::Database(err) => {
+            tracing::error!(
+                "Federation DKG storage mutation failed: {}",
+                redact_federation_operator_message(&err.to_string())
+            );
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "federation DKG storage unavailable",
+            )
+                .into_response()
+        }
+        err => {
+            tracing::error!(
+                "Federation DKG processing failed: {}",
+                redact_federation_operator_message(&err.to_string())
+            );
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "federation DKG processing failed",
+            )
+                .into_response()
+        }
+    }
+}
 
 #[instrument(skip_all)]
 pub(super) async fn post_dkg_readiness(
@@ -28,7 +57,7 @@ pub(super) async fn post_dkg_readiness(
         .federation_dkg_auto_start_config
         .as_ref()
         .ok_or_else(|| {
-            cdk_error_response(cdk::Error::Custom(
+            dkg_error_response(cdk::Error::Custom(
                 "federation member is not configured for live DKG".to_string(),
             ))
         })?;
@@ -75,7 +104,7 @@ pub(super) async fn post_dkg_commitment(
             verified.sequence,
         )
         .await
-        .map_err(cdk_error_response)?;
+        .map_err(dkg_error_response)?;
 
     Ok(Json(FederationDkgSetupResponse::new(
         federation_id,
@@ -103,7 +132,7 @@ pub(super) async fn post_dkg_reveal(
     state
         .persist_federation_dkg_reveal(&payload.payload.reveal, verified.sender, verified.sequence)
         .await
-        .map_err(cdk_error_response)?;
+        .map_err(dkg_error_response)?;
 
     Ok(Json(FederationDkgSetupResponse::new(
         federation_id,
@@ -141,7 +170,7 @@ pub(super) async fn post_dkg_secret_share(
             verified.sequence,
         )
         .await
-        .map_err(cdk_error_response)?;
+        .map_err(dkg_error_response)?;
 
     Ok(Json(FederationDkgSetupResponse::new(
         federation_id,
@@ -178,7 +207,7 @@ pub(super) async fn post_dkg_transcript_signature(
             verified.sequence,
         )
         .await
-        .map_err(cdk_error_response)?;
+        .map_err(dkg_error_response)?;
 
     Ok(Json(FederationDkgSetupResponse::new(
         federation_id,
@@ -186,4 +215,26 @@ pub(super) async fn post_dkg_transcript_signature(
         FederationRestMessageKind::DkgTranscriptSignature,
         payload.payload.signer,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dkg_error_response_distinguishes_storage_from_internal_failure() {
+        let storage = dkg_error_response(cdk::Error::Database(cdk::cdk_database::Error::Duplicate));
+        assert_eq!(
+            storage.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        let internal = dkg_error_response(cdk::Error::Custom(
+            "private internal response detail".to_string(),
+        ));
+        assert_eq!(
+            internal.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }

@@ -11,12 +11,12 @@ use cdk::federation::{
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
     MemberId, ValidatedFederationDkgParticipantState,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::{Async, HttpError, Transport};
 use futures::future::join_all;
 
 use crate::MintState;
 
-use super::peer_client::FederationRestPeerClient;
+use super::peer_client::{FederationRestPeerClient, FederationRestPeerClientError};
 use super::sync_config::FederationPeerSyncConfig;
 
 /// Confidentiality policy for dealer-free DKG secret-share delivery.
@@ -227,6 +227,108 @@ impl DeliverySummary {
             self.failed = self.failed.saturating_add(1);
             self.failed_members.insert(member_id);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FederationDkgDeliveryFailureKind {
+    Timeout,
+    Connection,
+    OutboundAdmission,
+    RemoteAdmission,
+    RemoteValidation,
+    RemoteStorage,
+    RemoteServer,
+    HttpStatus,
+    ResponseDecode,
+    ResponseValidation,
+    TransportConfiguration,
+    Transport,
+    Unknown,
+}
+
+impl FederationDkgDeliveryFailureKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connection => "connection",
+            Self::OutboundAdmission => "outbound_admission",
+            Self::RemoteAdmission => "remote_admission",
+            Self::RemoteValidation => "remote_validation",
+            Self::RemoteStorage => "remote_storage",
+            Self::RemoteServer => "remote_server",
+            Self::HttpStatus => "http_status",
+            Self::ResponseDecode => "response_decode",
+            Self::ResponseValidation => "response_validation",
+            Self::TransportConfiguration => "transport_configuration",
+            Self::Transport => "transport",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FederationDkgDeliveryFailure {
+    kind: FederationDkgDeliveryFailureKind,
+    http_status: Option<u16>,
+}
+
+fn classify_federation_dkg_delivery_failure(err: &anyhow::Error) -> FederationDkgDeliveryFailure {
+    if let Some(peer_error) = err.downcast_ref::<FederationRestPeerClientError>() {
+        let kind = match peer_error {
+            FederationRestPeerClientError::RequestTimeout { .. } => {
+                FederationDkgDeliveryFailureKind::Timeout
+            }
+            FederationRestPeerClientError::OutboundAdmissionFull { .. }
+            | FederationRestPeerClientError::OutboundAdmissionClosed { .. } => {
+                FederationDkgDeliveryFailureKind::OutboundAdmission
+            }
+        };
+        return FederationDkgDeliveryFailure {
+            kind,
+            http_status: None,
+        };
+    }
+    if let Some(http_error) = err.downcast_ref::<HttpError>() {
+        let (kind, http_status) = match http_error {
+            HttpError::Status { status: 429, .. } => {
+                (FederationDkgDeliveryFailureKind::RemoteAdmission, Some(429))
+            }
+            HttpError::Status { status, .. } if (400..500).contains(status) => (
+                FederationDkgDeliveryFailureKind::RemoteValidation,
+                Some(*status),
+            ),
+            HttpError::Status { status: 503, .. } => {
+                (FederationDkgDeliveryFailureKind::RemoteStorage, Some(503))
+            }
+            HttpError::Status { status, .. } if (500..600).contains(status) => (
+                FederationDkgDeliveryFailureKind::RemoteServer,
+                Some(*status),
+            ),
+            HttpError::Status { status, .. } => {
+                (FederationDkgDeliveryFailureKind::HttpStatus, Some(*status))
+            }
+            HttpError::Connection(_) => (FederationDkgDeliveryFailureKind::Connection, None),
+            HttpError::Timeout => (FederationDkgDeliveryFailureKind::Timeout, None),
+            HttpError::Serialization(_) => (FederationDkgDeliveryFailureKind::ResponseDecode, None),
+            HttpError::Proxy(_) | HttpError::Build(_) => (
+                FederationDkgDeliveryFailureKind::TransportConfiguration,
+                None,
+            ),
+            HttpError::Other(_) => (FederationDkgDeliveryFailureKind::Transport, None),
+        };
+        return FederationDkgDeliveryFailure { kind, http_status };
+    }
+    if err.downcast_ref::<FederationError>().is_some() {
+        return FederationDkgDeliveryFailure {
+            kind: FederationDkgDeliveryFailureKind::ResponseValidation,
+            http_status: None,
+        };
+    }
+
+    FederationDkgDeliveryFailure {
+        kind: FederationDkgDeliveryFailureKind::Unknown,
+        http_status: None,
     }
 }
 
@@ -795,13 +897,24 @@ fn record_delivery_results<R>(
                 summary.record(member_id, true);
                 acknowledged_members.insert(member_id);
             }
-            Err(_) => {
+            Err(err) => {
                 summary.record(member_id, false);
-                tracing::warn!(
-                    %member_id,
-                    phase,
-                    "Federation DKG delivery failed and will be retried"
-                );
+                let failure = classify_federation_dkg_delivery_failure(&err);
+                match failure.http_status {
+                    Some(http_status) => tracing::warn!(
+                        %member_id,
+                        phase,
+                        failure_kind = failure.kind.as_str(),
+                        http_status,
+                        "Federation DKG delivery failed and will be retried"
+                    ),
+                    None => tracing::warn!(
+                        %member_id,
+                        phase,
+                        failure_kind = failure.kind.as_str(),
+                        "Federation DKG delivery failed and will be retried"
+                    ),
+                }
             }
         }
     }
@@ -981,6 +1094,110 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn dkg_delivery_failure_classification_is_structured_and_redacted() {
+        let member_id = MemberId::new(1).expect("member ID");
+        let timeout = anyhow::Error::new(FederationRestPeerClientError::RequestTimeout {
+            member_id,
+            operation: "test operation".to_string(),
+            timeout: Duration::from_secs(1),
+        });
+        assert_eq!(
+            classify_federation_dkg_delivery_failure(&timeout).kind,
+            FederationDkgDeliveryFailureKind::Timeout
+        );
+
+        let outbound = anyhow::Error::new(FederationRestPeerClientError::OutboundAdmissionFull {
+            member_id,
+            operation: "test operation".to_string(),
+        });
+        assert_eq!(
+            classify_federation_dkg_delivery_failure(&outbound).kind,
+            FederationDkgDeliveryFailureKind::OutboundAdmission
+        );
+
+        let cases = [
+            (
+                HttpError::Connection("private connection detail".to_string()),
+                FederationDkgDeliveryFailureKind::Connection,
+                None,
+            ),
+            (
+                HttpError::Timeout,
+                FederationDkgDeliveryFailureKind::Timeout,
+                None,
+            ),
+            (
+                HttpError::Status {
+                    status: 429,
+                    message: "private admission detail".to_string(),
+                },
+                FederationDkgDeliveryFailureKind::RemoteAdmission,
+                Some(429),
+            ),
+            (
+                HttpError::Status {
+                    status: 400,
+                    message: "private validation detail".to_string(),
+                },
+                FederationDkgDeliveryFailureKind::RemoteValidation,
+                Some(400),
+            ),
+            (
+                HttpError::Status {
+                    status: 500,
+                    message: "private internal detail".to_string(),
+                },
+                FederationDkgDeliveryFailureKind::RemoteServer,
+                Some(500),
+            ),
+            (
+                HttpError::Status {
+                    status: 503,
+                    message: "private storage path and payload".to_string(),
+                },
+                FederationDkgDeliveryFailureKind::RemoteStorage,
+                Some(503),
+            ),
+            (
+                HttpError::Serialization("private response body".to_string()),
+                FederationDkgDeliveryFailureKind::ResponseDecode,
+                None,
+            ),
+            (
+                HttpError::Proxy("private proxy address".to_string()),
+                FederationDkgDeliveryFailureKind::TransportConfiguration,
+                None,
+            ),
+            (
+                HttpError::Other("private transport detail".to_string()),
+                FederationDkgDeliveryFailureKind::Transport,
+                None,
+            ),
+        ];
+        for (error, expected_kind, expected_status) in cases {
+            let failure = classify_federation_dkg_delivery_failure(&anyhow::Error::new(error));
+            assert_eq!(failure.kind, expected_kind);
+            assert_eq!(failure.http_status, expected_status);
+            assert!(!format!("{failure:?}").contains("private"));
+        }
+
+        let validation = anyhow::Error::new(FederationError::DkgTranscriptMismatch {
+            reason: "private response detail".to_string(),
+        });
+        let failure = classify_federation_dkg_delivery_failure(&validation);
+        assert_eq!(
+            failure.kind,
+            FederationDkgDeliveryFailureKind::ResponseValidation
+        );
+        assert!(!format!("{failure:?}").contains("private"));
+
+        let unknown = anyhow::anyhow!("private unknown detail");
+        let failure = classify_federation_dkg_delivery_failure(&unknown);
+        assert_eq!(failure.kind, FederationDkgDeliveryFailureKind::Unknown);
+        assert!(!format!("{failure:?}").contains("private"));
     }
 
     #[test]

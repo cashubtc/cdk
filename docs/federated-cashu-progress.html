@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has seven retained optimizations and one evidence-based rejection. Fresh DKG now waits for exact authenticated all-member readiness before participant generation or commitment delivery; the one-denomination 20-of-14 quick gate is viable, while large process gates remain open.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has seven retained performance/robustness optimizations, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact all-member readiness, and failed deliveries now have bounded redacted classifications; large process gates remain open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: gate DKG on exact member readiness</span>
+          <span class="value">feat: classify DKG delivery failures</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Candidate 8 is retained. In a staggered three-member transport test, two peers acknowledge readiness while one route is absent, zero commitments are written, and the next round probes only the missing peer. Exact ceremony/keyset mismatch fails closed, restart resumes from durable participant state, and 42 common transport, 32 release Axum DKG, and three mintd auto-start tests pass.</span>
+          <span class="value">Candidate 9 is retained without a speed claim. DKG retries now distinguish timeout, connection, local/remote admission, remote validation, storage/server failure, decode/response validation, and transport classes using fixed labels and optional status only. Private-looking source details are absent from classified diagnostics, and all 34 focused release DKG tests pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Evaluate Candidate 9: improve redacted DKG delivery diagnostics enough to distinguish timeout, HTTP admission/status, validation, and storage failures without exposing payloads. Then use those diagnostics to isolate the first-time secret-share request-lifetime bottleneck before another large acceptance run.</span>
+          <span class="value">Use the retained diagnostics in a bounded, smaller real-process probe to isolate first-time secret-share request lifetime into CPU derivation, database work, inbound admission, or transport timeout. Do not restart the large 20-member acceptance ceremony until that focused bottleneck is corrected.</span>
         </div>
       </aside>
     </header>

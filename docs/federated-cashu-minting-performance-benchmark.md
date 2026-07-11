@@ -2123,6 +2123,56 @@ operator's stop request, the interrupted 20-member process ceremony was not
 restarted. Candidate 8 therefore does not certify 20-of-14 completion, CPU/REST
 responsiveness, or the separate first-time secret-share bottleneck.
 
+### Candidate 9: bounded redacted delivery diagnostics
+
+Decision: **Kept** for diagnosis and benchmark classification. No speed
+improvement is claimed.
+
+Before this candidate every failed DKG request produced the same sender log:
+phase and member were visible, but timeout, connection failure, local admission,
+remote admission, validation, storage, and response-validation failures were
+indistinguishable. The underlying error was discarded, which made the preserved
+secret-share waves impossible to classify beyond their timing.
+
+The retained classifier reads existing typed error chains and emits only these
+fixed labels:
+
+| Failure class | Evidence source |
+| --- | --- |
+| `timeout` | typed peer-client or HTTP timeout |
+| `connection` | typed HTTP connection failure |
+| `outbound_admission` | local bounded outbound queue full/closed |
+| `remote_admission` | HTTP 429 |
+| `remote_validation` | other HTTP 4xx |
+| `remote_storage` | generic DKG database HTTP 503 |
+| `remote_server` | other HTTP 5xx |
+| `http_status` | remaining HTTP status |
+| `response_decode` | response serialization/decoding failure |
+| `response_validation` | invalid signed/bound federation response |
+| `transport_configuration` | proxy/client construction failure |
+| `transport` | other typed transport failure |
+| `unknown` | no recognized typed source |
+
+The sender log includes member ID, DKG phase, fixed failure class, and an
+optional numeric status only. It never includes an endpoint, error string,
+response body, ceremony message, or secret-share payload. On the receiver, DKG
+database errors return a generic retryable 503 and other internal processing
+errors a generic 500; underlying receiver logs continue through the existing
+operator redactor. No response-text parsing is used.
+
+A release regression injects private-looking connection details, proxy
+addresses, response bodies, storage paths, payload text, federation-validation
+reasons, and unknown messages. Every resulting classified value is checked not
+to contain that text. A separate response test proves database and internal
+failures map to 503 and 500 respectively. All 34 focused release Axum DKG tests
+pass, including the prior partition, restart, invalid-share, transcript,
+duplicate, readiness, and completion coverage.
+
+This diagnostic can classify a future process run without temporary payload
+logging. It does not retroactively identify the exact receiver-side cause of the
+already preserved secret-share timeouts, and it does not close the process
+responsiveness gate.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

@@ -3018,6 +3018,22 @@ Verified harness checkpoint (2026-07-11):
   three mintd auto-start tests pass. The interrupted 20-member process ceremony
   was not rerun, so its completion and secret-share responsiveness gates remain
   open.
+- Candidate 9 is **Kept** for bounded operator diagnostics, with no speed claim.
+  DKG delivery retries now emit a fixed `failure_kind`, member, phase, and only
+  an optional numeric HTTP status. Typed local errors distinguish timeout and
+  outbound admission; existing HTTP and federation errors distinguish
+  connection, remote admission, remote validation, remote storage, remote
+  server, response decode/validation, transport configuration, transport, and
+  unknown failures. Raw error text, URLs, response bodies, and DKG payloads are
+  not retained in the sender diagnostic.
+- DKG database errors return a generic retryable HTTP 503 while other internal
+  processing failures remain generic HTTP 500, allowing storage/server
+  classification without parsing response text. The receiver log passes the
+  underlying error through the existing operator redactor. A focused regression
+  injects private-looking details into every error class and proves the
+  classified value contains none of them. All 34 focused release Axum DKG tests
+  pass; retry behavior, ceremony messages, persistence, phases, and activation
+  are unchanged.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3154,11 +3170,19 @@ reference to the recorded measurements:
   are volatile and suppressed within the run; an existing durable participant
   skips the barrier after restart. No consensus phase or durable readiness state
   was added. The large process acceptance run remains open.
-- [ ] Improve redacted DKG delivery diagnostics so timeout, HTTP status,
+- [x] Improve redacted DKG delivery diagnostics so timeout, HTTP status,
   admission, validation, and storage failures are distinguishable. This has no
   direct speed claim; retain it only if it materially shortens diagnosis or
   enables trustworthy benchmark classification without exposing secret data.
-  Outcome: pending.
+  Outcome: **Kept**. Sender logs now contain only member, phase, a fixed failure
+  class, and an optional numeric HTTP status. Local typed errors distinguish
+  request timeout and outbound admission; remote 429, 4xx, 503, and other 5xx
+  responses distinguish admission, validation, storage, and server failures;
+  connection, decode, response-validation, transport-configuration, transport,
+  and unknown classes are separate. DKG database responses use generic 503 and
+  other internal failures generic 500 without exposing response details. A
+  redaction regression proves private-looking source messages are absent from
+  every classified value. Outcome does not claim lower latency.
 
 Production robustness checklist:
 
