@@ -795,7 +795,7 @@ fn federation_dkg_auto_start_config(
         federation.dkg.expiry,
         amounts,
     )
-    .context("invalid federation DKG keyset policy")?;
+    .map_err(|err| anyhow!("invalid federation DKG keyset policy: {err}"))?;
     let secret_share_transport = if federation.dkg.allow_insecure_localhost {
         cdk_axum::FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
     } else {
@@ -2740,6 +2740,16 @@ mod tests {
                     ..config::FederationDkg::default()
                 },
                 "must not contain duplicates",
+            ),
+            (
+                "too many amounts",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: (1..=65).collect(),
+                    ..config::FederationDkg::default()
+                },
+                "amount limit exceeded",
             ),
         ] {
             let settings = config::Settings {

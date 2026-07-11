@@ -43,6 +43,21 @@ fn dkg_error_response(err: cdk::Error) -> Response {
     }
 }
 
+fn active_dkg_config(
+    state: &MintState,
+) -> Result<std::sync::Arc<super::FederationDkgAutoStartConfig>, Response> {
+    state
+        .federation_dkg_auto_start_config
+        .clone()
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::CONFLICT,
+                "federation DKG ceremony is not active",
+            )
+                .into_response()
+        })
+}
+
 #[instrument(skip_all)]
 pub(super) async fn post_dkg_readiness(
     State(state): State<MintState>,
@@ -52,15 +67,8 @@ pub(super) async fn post_dkg_readiness(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReadiness)
             .await?;
+    let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
-    let dkg_config = state
-        .federation_dkg_auto_start_config
-        .as_ref()
-        .ok_or_else(|| {
-            dkg_error_response(cdk::Error::Custom(
-                "federation member is not configured for live DKG".to_string(),
-            ))
-        })?;
     payload
         .payload
         .validate(
@@ -90,10 +98,15 @@ pub(super) async fn post_dkg_commitment(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgCommitment)
             .await?;
+    let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
         .payload
-        .validate_sender(runtime_config.public_config(), verified.sender)
+        .validate_sender_for_ceremony(
+            runtime_config.public_config(),
+            verified.sender,
+            dkg_config.ceremony_id,
+        )
         .map_err(federation_error_response)?;
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
@@ -122,10 +135,16 @@ pub(super) async fn post_dkg_reveal(
     let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReveal)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
+    let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
         .payload
-        .validate_sender(runtime_config.public_config(), verified.sender)
+        .validate_sender_for_ceremony(
+            runtime_config.public_config(),
+            verified.sender,
+            dkg_config.ceremony_id,
+            &dkg_config.keyset_spec,
+        )
         .map_err(federation_error_response)?;
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
@@ -152,13 +171,16 @@ pub(super) async fn post_dkg_secret_share(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgSecretShare)
             .await?;
+    let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
         .payload
-        .validate_sender_receiver(
+        .validate_sender_receiver_for_ceremony(
             runtime_config.public_config(),
             verified.sender,
             runtime_config.member_id(),
+            dkg_config.ceremony_id,
+            &dkg_config.keyset_spec,
         )
         .map_err(federation_error_response)?;
     let federation_id = runtime_config.federation_id();
@@ -193,6 +215,7 @@ pub(super) async fn post_dkg_transcript_signature(
         FederationRestMessageKind::DkgTranscriptSignature,
     )
     .await?;
+    let _dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
         .payload

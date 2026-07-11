@@ -1949,7 +1949,18 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
             }
         }))),
         federation_peer_sync_config: Some(FederationPeerSyncConfig::default()),
-        federation_dkg_auto_start_config: None,
+        federation_dkg_auto_start_config: Some(Arc::new(FederationDkgAutoStartConfig {
+            ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
+            keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                [Amount::from(1)].into_iter().collect(),
+            )
+            .expect("test DKG keyset spec"),
+            driver: FederationDkgDriverRunConfig::default(),
+        })),
         federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
             FederationRestSequenceTracker::new(),
         ))),

@@ -25,6 +25,19 @@ mod signing;
 mod transport;
 mod trusted_dealer;
 
+/// Maximum members admitted into one dealer-free federation DKG ceremony.
+///
+/// This keeps the all-to-all participant state and public reveal dimensions
+/// bounded independently of the broader federation configuration format.
+pub const FEDERATION_MAX_DKG_MEMBERS: usize = 64;
+/// Maximum denomination keys admitted into one dealer-free DKG keyset.
+///
+/// Cashu amounts are `u64`; 64 keys cover the complete conventional power-of-two
+/// denomination set while bounding DKG work and transport size.
+pub const FEDERATION_MAX_DKG_KEYSET_AMOUNTS: usize = 64;
+/// Maximum JSON body accepted by one private DKG REST route.
+pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
 pub use self::consensus::{
     FederationAlephBftAdapterStatus, FederationAlephBftConsensusAdapter,
     FederationAlephBftFinalityMode, FederationAlephBftFinalizationHandler,
@@ -1074,6 +1087,22 @@ pub enum FederationError {
         expected: usize,
         /// Actual byte length.
         found: usize,
+    },
+    /// A dealer-free DKG roster exceeds the supported resource bound.
+    #[error("Federation DKG member limit exceeded: found={found}, max={max}")]
+    DkgMemberLimitExceeded {
+        /// Configured federation member count.
+        found: usize,
+        /// Maximum supported dealer-free DKG member count.
+        max: usize,
+    },
+    /// A dealer-free DKG keyset exceeds the supported denomination bound.
+    #[error("Federation DKG keyset amount limit exceeded: found={found}, max={max}")]
+    DkgKeysetAmountLimitExceeded {
+        /// Configured denomination count.
+        found: usize,
+        /// Maximum supported denomination count.
+        max: usize,
     },
     /// A federation DKG commitment message does not match the expected setup.
     #[error("Federation DKG commitment mismatch for member {member_id}: {reason}")]
@@ -2449,11 +2478,29 @@ impl FederationDkgKeysetSpec {
         Ok(spec)
     }
 
-    /// Validate that this ceremony creates at least one denomination key.
+    /// Validate that this ceremony creates a bounded, non-empty denomination set.
     pub fn validate(&self) -> Result<()> {
         if self.amounts.is_empty() {
             return Err(FederationError::EmptyDkgKeyset {
                 unit: self.unit.clone(),
+            });
+        }
+        if self.amounts.len() > FEDERATION_MAX_DKG_KEYSET_AMOUNTS {
+            return Err(FederationError::DkgKeysetAmountLimitExceeded {
+                found: self.amounts.len(),
+                max: FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate this keyset together with the bounded dealer-free DKG roster.
+    pub fn validate_for_federation(&self, public_config: &FederationConfig) -> Result<()> {
+        self.validate()?;
+        if public_config.members.len() > FEDERATION_MAX_DKG_MEMBERS {
+            return Err(FederationError::DkgMemberLimitExceeded {
+                found: public_config.members.len(),
+                max: FEDERATION_MAX_DKG_MEMBERS,
             });
         }
         Ok(())
@@ -2663,7 +2710,7 @@ impl FederationDkgParticipantCommitmentReveal {
                 member_id: self.member_id,
             });
         }
-        self.keyset_spec.validate()?;
+        self.keyset_spec.validate_for_federation(public_config)?;
         if self.coefficient_commitments.is_empty() {
             return Err(FederationError::DkgCommitmentMismatch {
                 member_id: self.member_id,
@@ -2807,7 +2854,7 @@ impl FederationDkgParticipantState {
         if !public_config.members.contains_key(&member_id) {
             return Err(FederationError::MissingMember { member_id });
         }
-        keyset_spec.validate()?;
+        keyset_spec.validate_for_federation(public_config)?;
 
         let coefficient_count = usize::from(public_config.threshold_params.signature_threshold);
         let coefficients = keyset_spec
@@ -6114,6 +6161,44 @@ mod tests {
                 expected: 32,
                 found: 31
             })
+        ));
+    }
+
+    #[test]
+    fn dkg_keyset_spec_rejects_more_than_u64_denominations() {
+        let amounts = (1..=FEDERATION_MAX_DKG_KEYSET_AMOUNTS + 1)
+            .map(|amount| Amount::from(amount as u64))
+            .collect();
+
+        assert!(matches!(
+            FederationDkgKeysetSpec::new(CurrencyUnit::Sat, true, 0, None, amounts),
+            Err(FederationError::DkgKeysetAmountLimitExceeded { found, max })
+                if found == FEDERATION_MAX_DKG_KEYSET_AMOUNTS + 1
+                    && max == FEDERATION_MAX_DKG_KEYSET_AMOUNTS
+        ));
+    }
+
+    #[test]
+    fn dkg_keyset_spec_rejects_oversized_federation_roster() {
+        let member_count = (FEDERATION_MAX_DKG_MEMBERS + 1) as u16;
+        let params = ThresholdParams::with_bft_consensus(member_count, 44).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster_with_count(member_count), Vec::new())
+                .expect("oversized public config remains valid outside dealer-free DKG");
+        let spec = FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1)].into_iter().collect(),
+        )
+        .expect("bounded keyset spec");
+
+        assert!(matches!(
+            spec.validate_for_federation(&config),
+            Err(FederationError::DkgMemberLimitExceeded { found, max })
+                if found == FEDERATION_MAX_DKG_MEMBERS + 1
+                    && max == FEDERATION_MAX_DKG_MEMBERS
         ));
     }
 

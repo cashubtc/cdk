@@ -106,6 +106,165 @@ async fn private_dkg_setup_routes_accept_signed_peer_requests() {
 }
 
 #[tokio::test]
+async fn private_dkg_commitment_route_rejects_inactive_ceremony_before_persistence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let mut payload = dkg_commitment_request(&public_config, peer_private.member_id, 21);
+    payload.commitment.ceremony_id = FederationDkgCeremonyId::from_bytes([56; 32]);
+    let request =
+        signed_dkg_commitment_request(&public_config, &peer_private, local_member, 1, payload);
+
+    let response = post_dkg_commitment(State(state.clone()), Json(request))
+        .await
+        .expect_err("inactive ceremony commitment must fail");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    assert!(String::from_utf8_lossy(&body).contains("another ceremony"));
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_dkg_commitments()
+        .await
+        .expect("commitments")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_dkg_setup_route_rejects_when_no_ceremony_is_active() {
+    let (mut state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    state.federation_dkg_auto_start_config = None;
+    let request = signed_dkg_commitment_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        dkg_commitment_request(&public_config, peer_private.member_id, 21),
+    );
+
+    let response = post_dkg_commitment(State(state.clone()), Json(request))
+        .await
+        .expect_err("inactive DKG route must fail");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_dkg_commitments()
+        .await
+        .expect("commitments")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_dkg_reveal_route_rejects_inactive_keyset_policy_before_persistence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let mut payload = dkg_reveal_request(&public_config, peer_private.member_id, 21);
+    payload.reveal.keyset_spec.input_fee_ppk = 1;
+    let request =
+        signed_dkg_reveal_request(&public_config, &peer_private, local_member, 1, payload);
+
+    let response = post_dkg_reveal(State(state.clone()), Json(request))
+        .await
+        .expect_err("inactive keyset policy must fail");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    assert!(String::from_utf8_lossy(&body).contains("active ceremony"));
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_dkg_reveals()
+        .await
+        .expect("reveals")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_dkg_router_rejects_oversized_signed_body_before_persistence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let request = signed_dkg_commitment_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        dkg_commitment_request(&public_config, peer_private.member_id, 21),
+    );
+    let mut body = serde_json::to_vec(&request).expect("signed request JSON");
+    body.resize(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES + 1, b' ');
+
+    let response = create_federation_router()
+        .with_state(state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/dkg/commitments")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("router response");
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("member sequences")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_dkg_commitments()
+        .await
+        .expect("commitments")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn private_dkg_setup_routes_accept_exact_duplicates_and_advance_sequence() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

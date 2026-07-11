@@ -75,7 +75,7 @@ impl FederationDkgAutoStartConfig {
             }
             .into());
         }
-        self.keyset_spec.validate()?;
+        self.keyset_spec.validate_for_federation(public_config)?;
         self.driver.validate()?;
         validate_federation_dkg_secret_share_transport(
             public_config,

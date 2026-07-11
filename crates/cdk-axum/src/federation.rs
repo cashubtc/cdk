@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
-use axum::extract::{Json, State};
+use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -17,7 +17,8 @@ use cdk::federation::{
     FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
     FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, InMemoryFederationJournal, FEDERATION_REST_API_VERSION,
+    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
+    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -124,9 +125,7 @@ type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTr
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
-    Router::new()
-        .route("/status", post(post_status))
-        .route("/local-status", post(post_local_status))
+    let dkg_router = Router::new()
         .route("/dkg/readiness", post(post_dkg_readiness))
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
@@ -135,6 +134,12 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             "/dkg/transcript-signatures",
             post(post_dkg_transcript_signature),
         )
+        .layer(DefaultBodyLimit::max(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES));
+
+    Router::new()
+        .merge(dkg_router)
+        .route("/status", post(post_status))
+        .route("/local-status", post(post_local_status))
         .route("/operations", post(post_operation))
         .route(
             "/aleph-bft/finalized-units",

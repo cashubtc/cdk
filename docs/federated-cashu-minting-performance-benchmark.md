@@ -2260,6 +2260,55 @@ driver derivation from complete durable records, restart activation with the
 same keyset and transcript, authenticated multi-member completion, partition
 recovery, duplicates, malformed shares, and transcript failures.
 
+### Bounded DKG ceremony admission
+
+Decision: **Kept** as a resource/liveness bound. No complete-ceremony speed
+improvement is claimed, and the interrupted 20-member process run was not
+restarted.
+
+The post-Candidate-10 audit found three distinct gaps around otherwise bounded
+cryptographic work:
+
+- dealer-free keyset policy accepted any non-empty denomination count;
+- the shared federation config format allowed a dealer-free ceremony to scale
+  its all-to-all state without a DKG-specific roster cap;
+- mintd had a broad 1 MiB body cap, but the reusable Axum federation router did
+  not independently protect DKG routes, and setup handlers did not all bind
+  incoming requests to the active local ceremony before ingestion.
+
+The retained bounds are 64 members, 64 denominations, and 1 MiB of decoded JSON
+per private DKG route. Sixty-four conventional power-of-two keys cover the full
+`u64` Cashu amount domain. At the maximum supported reveal shape, 64 amounts by
+64 compressed G2 coefficients plus the signed REST wrapper serialize to
+800,039 bytes. That is 76.3% of the body limit, leaving 248,537 bytes of
+headroom. The measurement is a single deterministic release serialization
+probe, not a latency benchmark.
+
+All DKG routes now require an active auto-start ceremony. Signed commitments
+must match its ceremony ID; reveals must also match its complete keyset policy
+and exact amount map; secret-share requests must match its ceremony and amount
+set. These shape checks run after member authentication but before expensive
+public-polynomial/share verification or database mutation. Transcript
+signatures retain their existing locally derived transcript-hash check and are
+now unavailable outside an active ceremony as well.
+
+Verification:
+
+- 35 `cdk-common` release DKG tests pass, including 65-member and 65-amount
+  rejection plus the maximum-shape wire-size assertion;
+- 38 permissioned `cdk-axum` release DKG tests pass, including inactive-route,
+  wrong-ceremony,
+  wrong-policy, and a valid signed request padded over 1 MiB returning HTTP 413
+  without sequence or DKG-record persistence;
+- three `cdk-mintd` release startup tests pass, including the explicit
+  operator-facing amount-limit error;
+- the temporary wire-size print used to record 800,039 bytes was removed.
+
+This checkpoint prevents oversized setup work and cross-ceremony route
+ingestion. It does not yet provide fair per-member concurrency/rate limiting,
+encrypted-at-rest DKG material, mTLS/pinning, a durable activation barrier, or
+abort/reconfiguration semantics.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

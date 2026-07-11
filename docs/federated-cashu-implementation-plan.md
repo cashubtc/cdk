@@ -3059,6 +3059,19 @@ Verified harness checkpoint (2026-07-11):
   common DKG tests and all 34 release Axum DKG tests pass, including invalid
   first-share rejection, acknowledgement-before-derivation, driver completion,
   restart activation, transcript equality, and prior fault coverage.
+- The bounded-admission robustness checkpoint is **Kept** without a speed
+  claim. Dealer-free DKG now accepts at most 64 roster members and 64
+  denomination keys, while broader standalone and trusted-dealer configuration
+  formats remain unchanged. Every DKG private REST route has an independent
+  1 MiB decoded-body cap and requires an active local ceremony. Commitment,
+  reveal, and secret-share requests must match that ceremony ID and its exact
+  keyset/amount shape before expensive reveal/share validation or persistence.
+  The maximum supported signed reveal shape (64 amounts by 64 G2
+  coefficients) serializes to 800,039 bytes, leaving 248,537 bytes of route
+  headroom. An authenticated request padded past the cap returns HTTP 413 with
+  no sequence or DKG record mutation. Thirty-five common, 38 permissioned
+  release Axum, and three mintd startup DKG tests pass. Per-member admission and
+  transport confidentiality remain open gates below.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3242,7 +3255,10 @@ Production robustness checklist:
   verified HTTPS and an explicit mTLS/pinning policy where appropriate, no
   secret-bearing insecure redirects, bounded request bodies, and per-member
   admission/rate limits. Localhost plaintext remains an explicit development
-  exception only.
+  exception only. The request-body portion is complete for DKG: every setup
+  route independently caps decoded JSON at 1 MiB and the maximum supported
+  64-by-64 reveal is 800,039 bytes. HTTPS verification, mTLS/pinning policy,
+  redirect policy, and per-member admission remain open.
 - [ ] Separate DKG completion from keyset activation with an explicit barrier.
   Every member must confirm the same federation ID, ceremony ID, transcript
   hash, roster, keyset policy, keyset ID, aggregate keys, and public shares
@@ -3255,10 +3271,17 @@ Production robustness checklist:
 - [ ] Scope every durable setup message, contribution, acknowledgement,
   transcript signature, and activation record by ceremony and keyset so aborted
   attempts, audits, rotations, and later ceremonies cannot collide or require
-  unsafe record deletion.
+  unsafe record deletion. Incoming commitment, reveal, and contribution routes
+  now reject messages outside the exact active in-memory ceremony/keyset policy
+  before persistence; durable multi-ceremony record keys and lifecycle semantics
+  remain open.
 - [ ] Bound CPU, memory, blocking workers, SQLite writers, and queued work per
   authenticated peer. A compromised roster member must not exhaust a receiver
-  with validly signed duplicate or oversized DKG requests.
+  with validly signed duplicate or oversized DKG requests. Ceremony dimensions
+  are now capped at 64 members and 64 denominations, DKG route bodies at 1 MiB,
+  expensive DKG CPU work remains semaphore-bounded, and exact duplicates use
+  their cheap paths. Fair per-member concurrency/rate admission and explicit
+  queued-work/SQLite accounting remain open.
 - [ ] Add encrypted backup and clean-machine restore procedures for identity
   keys, participant state, finalized member shares, config, and database state.
   Restore tests must prove the recovered private share maps to the transcript's

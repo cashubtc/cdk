@@ -122,7 +122,7 @@ impl FederationDkgReadinessRequest {
                 found: self.federation_id,
             });
         }
-        self.keyset_spec.validate()?;
+        self.keyset_spec.validate_for_federation(public_config)?;
         if self.ceremony_id != ceremony_id {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "DKG readiness ceremony ID does not match local configuration".to_string(),
@@ -683,6 +683,23 @@ impl FederationDkgCommitmentRequest {
         self.commitment.validate_against_config(public_config)?;
         ensure_dkg_payload_sender(self.commitment.member_id, sender)
     }
+
+    /// Validate the signed owner and bind this commitment to the active ceremony.
+    pub fn validate_sender_for_ceremony(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+        ceremony_id: FederationDkgCeremonyId,
+    ) -> Result<()> {
+        ensure_dkg_payload_sender(self.commitment.member_id, sender)?;
+        if self.commitment.ceremony_id != ceremony_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.commitment.member_id,
+                reason: "commitment belongs to another ceremony".to_string(),
+            });
+        }
+        self.commitment.validate_against_config(public_config)
+    }
 }
 
 /// Signed request payload revealing one member's DKG public commitments.
@@ -707,6 +724,42 @@ impl FederationDkgRevealRequest {
     ) -> Result<()> {
         self.reveal.validate_against_config(public_config)?;
         ensure_dkg_payload_sender(self.reveal.member_id, sender)
+    }
+
+    /// Validate the signed owner and exact active ceremony policy before ingestion.
+    pub fn validate_sender_for_ceremony(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+        ceremony_id: FederationDkgCeremonyId,
+        keyset_spec: &FederationDkgKeysetSpec,
+    ) -> Result<()> {
+        ensure_dkg_payload_sender(self.reveal.member_id, sender)?;
+        if self.reveal.ceremony_id != ceremony_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.reveal.member_id,
+                reason: "reveal belongs to another ceremony".to_string(),
+            });
+        }
+        if &self.reveal.keyset_spec != keyset_spec {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.reveal.member_id,
+                reason: "reveal keyset policy does not match the active ceremony".to_string(),
+            });
+        }
+        if self.reveal.coefficient_commitments.len() != keyset_spec.amounts.len()
+            || !self
+                .reveal
+                .coefficient_commitments
+                .keys()
+                .eq(keyset_spec.amounts.iter())
+        {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.reveal.member_id,
+                reason: "reveal amount set does not match the active ceremony".to_string(),
+            });
+        }
+        self.reveal.validate_against_config(public_config)
     }
 }
 
@@ -792,6 +845,40 @@ impl FederationDkgSecretShareRequest {
         }
 
         Ok(())
+    }
+
+    /// Validate the signed endpoints and exact active ceremony contribution shape.
+    pub fn validate_sender_receiver_for_ceremony(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+        receiver: MemberId,
+        ceremony_id: FederationDkgCeremonyId,
+        keyset_spec: &FederationDkgKeysetSpec,
+    ) -> Result<()> {
+        ensure_dkg_payload_sender(self.sender, sender)?;
+        if self.receiver != receiver {
+            return Err(FederationError::RestReceiverMismatch {
+                expected: receiver,
+                found: self.receiver,
+            });
+        }
+        if self.ceremony_id != ceremony_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.sender,
+                reason: "secret contribution belongs to another ceremony".to_string(),
+            });
+        }
+        if self.secret_shares.len() != keyset_spec.amounts.len()
+            || !self.secret_shares.keys().eq(keyset_spec.amounts.iter())
+        {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.sender,
+                reason: "secret contribution amount set does not match the active ceremony"
+                    .to_string(),
+            });
+        }
+        self.validate_sender_receiver(public_config, sender, receiver)
     }
 }
 
@@ -1913,6 +2000,8 @@ mod tests {
     use super::super::{
         FederationConfig, FederationConsensusItem, FederationDkgKeysetSpec, FederationError,
         MemberConfigPrivate, MemberConfigPublic, ThresholdParams,
+        FEDERATION_MAX_DKG_KEYSET_AMOUNTS, FEDERATION_MAX_DKG_MEMBERS,
+        FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
     };
     use super::*;
     use crate::{
@@ -2996,8 +3085,16 @@ mod tests {
         request.verify(&config, receiver).expect("verified request");
         request
             .payload
-            .validate_sender(&config, request.sender)
+            .validate_sender_for_ceremony(&config, request.sender, dkg_ceremony_id())
             .expect("payload owner");
+        assert!(request
+            .payload
+            .validate_sender_for_ceremony(
+                &config,
+                request.sender,
+                FederationDkgCeremonyId::from_bytes([99; 32]),
+            )
+            .is_err());
         let json = serde_json::to_string(&request).expect("dkg commitment json");
         let decoded: FederationSignedRequest<FederationDkgCommitmentRequest> =
             serde_json::from_str(&json).expect("decoded request");
@@ -3005,7 +3102,7 @@ mod tests {
         decoded.verify(&config, receiver).expect("decoded verifies");
         decoded
             .payload
-            .validate_sender(&config, decoded.sender)
+            .validate_sender_for_ceremony(&config, decoded.sender, dkg_ceremony_id())
             .expect("decoded payload owner");
     }
 
@@ -3062,6 +3159,7 @@ mod tests {
         let receiver = roster_member_id(2);
         let payload =
             FederationDkgRevealRequest::new(dkg_reveal(&config, first_private.member_id, 11));
+        let keyset_spec = payload.reveal.keyset_spec.clone();
         let request = FederationSignedRequest::new_signed(
             config.federation_id,
             receiver,
@@ -3075,8 +3173,21 @@ mod tests {
         request.verify(&config, receiver).expect("verified request");
         request
             .payload
-            .validate_sender(&config, request.sender)
+            .validate_sender_for_ceremony(&config, request.sender, dkg_ceremony_id(), &keyset_spec)
             .expect("payload owner");
+        let mut changed_spec = keyset_spec.clone();
+        changed_spec.input_fee_ppk = 1;
+        assert!(
+            request
+                .payload
+                .validate_sender_for_ceremony(
+                    &config,
+                    request.sender,
+                    dkg_ceremony_id(),
+                    &changed_spec,
+                )
+                .is_err()
+        );
         let json = serde_json::to_string(&request).expect("dkg reveal json");
         let decoded: FederationSignedRequest<FederationDkgRevealRequest> =
             serde_json::from_str(&json).expect("decoded request");
@@ -3084,7 +3195,7 @@ mod tests {
         decoded.verify(&config, receiver).expect("decoded verifies");
         decoded
             .payload
-            .validate_sender(&config, decoded.sender)
+            .validate_sender_for_ceremony(&config, decoded.sender, dkg_ceremony_id(), &keyset_spec)
             .expect("decoded payload owner");
     }
 
@@ -3169,7 +3280,20 @@ mod tests {
         request.verify(&config, receiver).expect("verified request");
         request
             .payload
-            .validate_sender_receiver(&config, request.sender, receiver)
+            .validate_sender_receiver_for_ceremony(
+                &config,
+                request.sender,
+                receiver,
+                dkg_ceremony_id(),
+                &FederationDkgKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    [Amount::from(1)].into_iter().collect(),
+                )
+                .expect("keyset spec"),
+            )
             .expect("payload owner and receiver");
         let json = serde_json::to_string(&request).expect("dkg secret share json");
         let decoded: FederationSignedRequest<FederationDkgSecretShareRequest> =
@@ -3178,8 +3302,61 @@ mod tests {
         decoded.verify(&config, receiver).expect("decoded verifies");
         decoded
             .payload
-            .validate_sender_receiver(&config, decoded.sender, receiver)
+            .validate_sender_receiver_for_ceremony(
+                &config,
+                decoded.sender,
+                receiver,
+                dkg_ceremony_id(),
+                &FederationDkgKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    [Amount::from(1)].into_iter().collect(),
+                )
+                .expect("keyset spec"),
+            )
             .expect("decoded payload owner and receiver");
+    }
+
+    #[test]
+    fn maximum_supported_dkg_reveal_fits_private_rest_body_limit() {
+        let (config, first_private, _) = transport_config();
+        let amounts = (1..=FEDERATION_MAX_DKG_KEYSET_AMOUNTS)
+            .map(|amount| Amount::from(amount as u64))
+            .collect::<std::collections::BTreeSet<_>>();
+        let keyset_spec =
+            FederationDkgKeysetSpec::new(CurrencyUnit::Sat, true, 0, None, amounts.clone())
+                .expect("maximum keyset spec");
+        let commitment = bls_key(11).public_key_g2();
+        let coefficient_commitments = amounts
+            .into_iter()
+            .map(|amount| (amount, vec![commitment; FEDERATION_MAX_DKG_MEMBERS]))
+            .collect();
+        let payload = FederationDkgRevealRequest::new(FederationDkgParticipantCommitmentReveal {
+            federation_id: config.federation_id,
+            ceremony_id: dkg_ceremony_id(),
+            member_id: first_private.member_id,
+            keyset_spec,
+            coefficient_commitments,
+        });
+        let request = FederationSignedRequest::new_signed_no_aux_rand(
+            config.federation_id,
+            roster_member_id(2),
+            1,
+            FederationRestMessageKind::DkgReveal,
+            payload,
+            &first_private,
+        )
+        .expect("maximum signed DKG reveal");
+        let encoded = serde_json::to_vec(&request).expect("maximum DKG reveal JSON");
+
+        assert!(
+            encoded.len() <= FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
+            "maximum supported DKG reveal is {} bytes, limit is {}",
+            encoded.len(),
+            FEDERATION_MAX_DKG_REQUEST_BODY_BYTES
+        );
     }
 
     #[test]
