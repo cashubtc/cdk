@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::database::{self, Delta};
+use cdk_common::database::{self, JournaledDatabase};
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
@@ -48,6 +48,12 @@ impl DbSignatory {
         mut supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
+        // Wrap the keystore so keyset creation and activation are journaled
+        // automatically, including the boot-time re-activation done by
+        // `init_keysets` below.
+        let localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync> =
+            Arc::new(JournaledDatabase::new(localstore));
+
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
         init_keysets(xpriv, &secp_ctx, &localstore, &supported_units).await?;
@@ -236,22 +242,10 @@ impl Signatory for DbSignatory {
         let keysets = self.keysets().await?;
         check_unit_string_collision(keysets.keysets, &info)?;
 
-        // Capture the keyset being superseded so its deactivation is journaled.
-        let previous_active = self.localstore.get_active_keyset_id(&args.unit).await?;
-
         let id = info.id;
         let mut tx = self.localstore.begin_transaction().await?;
         tx.add_keyset_info(info.clone()).await?;
-        tx.add_journal(id.to_string(), info.clone().into()).await?;
         tx.set_active_keyset(args.unit, id).await?;
-        if let Some(previous) = previous_active {
-            if previous != id {
-                tx.add_journal(previous.to_string(), Delta::KeysetActive(false).into())
-                    .await?;
-            }
-        }
-        tx.add_journal(id.to_string(), Delta::KeysetActive(true).into())
-            .await?;
         tx.commit().await?;
 
         self.reload_keys_from_db().await?;

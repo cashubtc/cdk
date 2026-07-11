@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use cdk_common::database::{Delta, DynMintDatabase};
+use cdk_common::database::DynMintDatabase;
 use cdk_common::{Error, PublicKey};
 use tracing::instrument;
 use uuid::Uuid;
@@ -55,10 +55,6 @@ impl CompensatingAction for RemoveSwapSetup {
         // Remove proofs (inputs)
         if !self.input_ys.is_empty() {
             tx.remove_proofs(&self.input_ys, None).await?;
-            for y in &self.input_ys {
-                tx.add_journal(y.to_hex(), Delta::ProofRemoved.into())
-                    .await?;
-            }
         }
 
         // Delete saga state record

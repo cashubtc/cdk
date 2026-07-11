@@ -730,6 +730,17 @@ impl MintQuote {
         self.changes.take()
     }
 
+    /// Borrows the pending changes without draining them.
+    ///
+    /// [`Self::take_changes`] both reads and clears the change buffer, which the
+    /// database layer relies on when persisting. The journaling decorator needs
+    /// to see the same payments and issuances to derive its events, but must not
+    /// consume them before `update_mint_quote` runs, so it peeks through this
+    /// accessor and journals from a clone after the persist succeeds.
+    pub(crate) fn pending_changes(&self) -> Option<&MintQuoteChange> {
+        self.changes.as_ref()
+    }
+
     /// Records a new payment received for this mint quote.
     ///
     /// This method validates the payment, updates the quote's internal state, and records the

@@ -8,7 +8,7 @@
 
 use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
-use cdk_common::database::{self, Delta, DynMintDatabase};
+use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::mint::{self as mint_types};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
@@ -145,10 +145,6 @@ pub async fn rollback_melt_quote(
         match tx.remove_proofs(input_ys, Some(quote_id.clone())).await {
             Ok(_) => {
                 proofs_recovered = true;
-                for y in input_ys {
-                    tx.add_journal(y.to_hex(), Delta::ProofRemoved.into())
-                        .await?;
-                }
             }
             Err(database::Error::AttemptRemoveSpentProof) => {
                 tracing::warn!(
@@ -173,8 +169,6 @@ pub async fn rollback_melt_quote(
         match quote.state {
             MeltQuoteState::Pending => {
                 tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
-                    .await?;
-                tx.add_journal(quote.id.to_string(), MeltQuoteState::Unpaid.into())
                     .await?;
                 Some(quote)
             }
@@ -355,11 +349,6 @@ pub async fn process_melt_change(
 
     tx.add_blind_signatures(&blinded_secrets, &change_sigs, Some(quote_id.clone()))
         .await?;
-
-    for (secret, signature) in blinded_secrets.iter().zip(change_sigs.iter()) {
-        tx.add_journal(secret.to_hex(), signature.clone().into())
-            .await?;
-    }
 
     Ok((Some(change_sigs), tx))
 }
@@ -564,26 +553,6 @@ pub(crate) async fn finalize_melt_core(
 
     quote.state = MeltQuoteState::Paid;
 
-    if let Err(err) = tx
-        .add_journal(quote.id.to_string(), MeltQuoteState::Paid.into())
-        .await
-    {
-        tx.rollback().await?;
-        return Err(err.into());
-    }
-    if payment_proof.is_some() {
-        if let Err(err) = tx
-            .add_journal(
-                quote.id.to_string(),
-                Delta::MeltQuotePaymentProof(payment_proof.clone()).into(),
-            )
-            .await
-        {
-            tx.rollback().await?;
-            return Err(err.into());
-        }
-    }
-
     // Update payment lookup ID if changed
     if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
         tracing::info!(
@@ -594,14 +563,6 @@ pub(crate) async fn finalize_melt_core(
 
         if let Err(err) = tx
             .update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
-            .await
-        {
-            tx.rollback().await?;
-            return Err(err.into());
-        }
-
-        if let Err(err) = tx
-            .add_journal(quote.id.to_string(), payment_lookup_id.clone().into())
             .await
         {
             tx.rollback().await?;

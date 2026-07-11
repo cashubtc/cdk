@@ -1,7 +1,6 @@
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::DynMintTransaction;
 use cdk_common::mint::ProofsWithState;
-use cdk_common::nut00::ProofsMethods;
 use cdk_common::state::{self, check_state_transition};
 use cdk_common::{Error, State};
 
@@ -37,11 +36,6 @@ impl Mint {
                 | cdk_common::database::Error::AttemptRemoveSpentProof => Error::TokenAlreadySpent,
                 err => err.into(),
             })?;
-
-        // Journal one state delta per proof in the same transaction.
-        for y in proofs.ys()? {
-            tx.add_journal(y.to_hex(), new_state.into()).await?;
-        }
 
         Ok(())
     }

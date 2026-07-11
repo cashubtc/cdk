@@ -2,6 +2,8 @@
 
 #[cfg(feature = "mint")]
 pub mod event_log;
+#[cfg(feature = "mint")]
+mod journaled;
 mod kvstore;
 
 #[cfg(feature = "mint")]
@@ -20,6 +22,8 @@ pub type DynKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
 
 #[cfg(feature = "mint")]
 pub use event_log::{generate_id, init_event_id_generator, Delta, Event, Snapshot};
+#[cfg(feature = "mint")]
+pub use journaled::JournaledDatabase;
 #[cfg(feature = "mint")]
 pub use mint::JournalTransaction;
 #[cfg(feature = "mint")]
@@ -226,6 +230,15 @@ pub enum Error {
     /// Concurrent update detected
     #[error("Concurrent update detected")]
     ConcurrentUpdate,
+
+    /// Direct journal write attempted through the journaling decorator.
+    ///
+    /// `add_journal` is an internal primitive: entity mutations journal
+    /// themselves automatically through [`JournaledDatabase`]. Calling it
+    /// directly on a wrapped transaction is a programming error and is rejected.
+    #[cfg(feature = "mint")]
+    #[error("direct journal writes are not permitted; entity mutations journal automatically")]
+    JournalNotPermitted,
 }
 
 #[cfg(feature = "mint")]

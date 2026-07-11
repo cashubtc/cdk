@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use cdk_common::database::event_log::Delta;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
@@ -363,8 +362,6 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_mint_quote(quote.clone()).await?;
-            tx.add_journal(quote.id.to_string(), quote.clone().into())
-                .await?;
             tx.commit().await?;
 
             if payment_method.is_bolt11() {
@@ -912,10 +909,6 @@ impl Mint {
                     .await?;
                 tx.add_blind_signatures(&blinded_secrets, &all_blind_signatures, None)
                     .await?;
-                for (secret, signature) in blinded_secrets.iter().zip(all_blind_signatures.iter()) {
-                    tx.add_journal(secret.to_hex(), signature.clone().into())
-                        .await?;
-                }
                 let fee_by_keyset = std::collections::HashMap::new();
                 tx.add_completed_operation(&batch_operation, &fee_by_keyset)
                     .await?;
@@ -966,21 +959,10 @@ impl Mint {
                         Some(quote_id.clone()),
                     )
                     .await?;
-                    for (secret, signature) in
-                        blinded_secrets.iter().zip(all_blind_signatures.iter())
-                    {
-                        tx.add_journal(secret.to_hex(), signature.clone().into())
-                            .await?;
-                    }
                 }
 
                 mint_quote.add_issuance(amount_issued.clone())?;
                 tx.update_mint_quote(&mut mint_quote).await?;
-                tx.add_journal(
-                    mint_quote.id.to_string(),
-                    Delta::MintQuoteIssuance(amount_issued.into()).into(),
-                )
-                .await?;
 
                 // Mint operations have no input fees
                 // Only persist operation for non-batch mints (batch operations are persisted above)
