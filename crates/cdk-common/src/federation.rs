@@ -2507,6 +2507,110 @@ impl FederationDkgKeysetSpec {
     }
 }
 
+/// Durable lifecycle state for one dealer-free DKG ceremony.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationDkgCeremonyState {
+    /// The ceremony may accept setup messages and advance its driver.
+    Active,
+    /// The ceremony was explicitly replaced before completion.
+    Aborted,
+    /// Every configured member confirmed the finalized configuration.
+    Complete,
+}
+
+impl FederationDkgCeremonyState {
+    /// Return the stable operator-facing state label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Aborted => "aborted",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+/// Durable operator and driver record for one dealer-free DKG ceremony.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgCeremonyRecord {
+    /// Federation roster and threshold this ceremony belongs to.
+    pub federation_id: FederationId,
+    /// Unique ceremony identifier.
+    pub ceremony_id: FederationDkgCeremonyId,
+    /// Local member that owns this database record.
+    pub member_id: MemberId,
+    /// Exact keyset policy committed by the ceremony.
+    pub keyset_spec: FederationDkgKeysetSpec,
+    /// Current durable lifecycle state.
+    pub state: FederationDkgCeremonyState,
+    /// Explicit predecessor replaced by this ceremony, when any.
+    pub replaces_ceremony_id: Option<FederationDkgCeremonyId>,
+    /// Explicit successor that caused this ceremony to abort, when any.
+    pub replacement_ceremony_id: Option<FederationDkgCeremonyId>,
+}
+
+impl FederationDkgCeremonyRecord {
+    /// Create a new active ceremony record.
+    #[must_use]
+    pub fn active(
+        federation_id: FederationId,
+        ceremony_id: FederationDkgCeremonyId,
+        member_id: MemberId,
+        keyset_spec: FederationDkgKeysetSpec,
+        replaces_ceremony_id: Option<FederationDkgCeremonyId>,
+    ) -> Self {
+        Self {
+            federation_id,
+            ceremony_id,
+            member_id,
+            keyset_spec,
+            state: FederationDkgCeremonyState::Active,
+            replaces_ceremony_id,
+            replacement_ceremony_id: None,
+        }
+    }
+
+    /// Return the exact aborted successor state for an active record.
+    pub fn aborted_by(&self, replacement_ceremony_id: FederationDkgCeremonyId) -> Result<Self> {
+        if self.state != FederationDkgCeremonyState::Active
+            || self.replacement_ceremony_id.is_some()
+            || replacement_ceremony_id == self.ceremony_id
+        {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: format!(
+                    "DKG ceremony {} cannot transition from {} to aborted by {}",
+                    self.ceremony_id,
+                    self.state.as_str(),
+                    replacement_ceremony_id
+                ),
+            });
+        }
+        let mut aborted = self.clone();
+        aborted.state = FederationDkgCeremonyState::Aborted;
+        aborted.replacement_ceremony_id = Some(replacement_ceremony_id);
+        Ok(aborted)
+    }
+
+    /// Return the exact completed successor state for an active record.
+    pub fn completed(&self) -> Result<Self> {
+        if self.state != FederationDkgCeremonyState::Active
+            || self.replacement_ceremony_id.is_some()
+        {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: format!(
+                    "DKG ceremony {} cannot transition from {} to complete",
+                    self.ceremony_id,
+                    self.state.as_str()
+                ),
+            });
+        }
+        let mut completed = self.clone();
+        completed.state = FederationDkgCeremonyState::Complete;
+        Ok(completed)
+    }
+}
+
 /// Stable hash of one member's revealed DKG polynomial commitments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationDkgCommitmentHash([u8; 32]);

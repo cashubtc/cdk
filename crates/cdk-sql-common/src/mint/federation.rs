@@ -7,9 +7,9 @@ use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationConfigDigest, FederationConfigSnapshot, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationConflictKey,
@@ -488,6 +488,24 @@ fn sql_row_to_federation_dkg_commitment(
     Ok(commitment)
 }
 
+fn sql_row_to_federation_dkg_ceremony(
+    row: Vec<Column>,
+) -> Result<FederationDkgCeremonyRecord, Error> {
+    unpack_into!(let (ceremony_id, payload_json) = row);
+    let ceremony_id = FederationDkgCeremonyId::from_hex(column_as_string!(&ceremony_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation DKG ceremony ID: {e}")))?;
+    let ceremony =
+        serde_json::from_str::<FederationDkgCeremonyRecord>(&column_as_string!(&payload_json))
+            .map_err(|e| Error::Internal(format!("Invalid federation DKG ceremony JSON: {e}")))?;
+    if ceremony.ceremony_id != ceremony_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG ceremony ID mismatch: expected={ceremony_id}, found={}",
+            ceremony.ceremony_id
+        )));
+    }
+    Ok(ceremony)
+}
+
 fn sql_row_to_federation_dkg_reveal(
     row: Vec<Column>,
 ) -> Result<FederationDkgParticipantCommitmentReveal, Error> {
@@ -661,6 +679,12 @@ fn federation_dkg_conflict_error(phase: &str, member_id: MemberId) -> Error {
     ))
 }
 
+fn federation_dkg_ceremony_conflict_error(ceremony_id: FederationDkgCeremonyId) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation DKG ceremony lifecycle record for {ceremony_id}"
+    ))
+}
+
 fn federation_dkg_member_keyset_share_conflict_error(
     share: &FederationDkgMemberKeysetShare,
 ) -> Error {
@@ -752,6 +776,63 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    async fn add_federation_dkg_ceremony(
+        &mut self,
+        ceremony: &FederationDkgCeremonyRecord,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_ceremonies
+            (ceremony_id, payload_json)
+            VALUES
+            (:ceremony_id, :payload_json)
+            ON CONFLICT (ceremony_id)
+            DO UPDATE SET payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_ceremonies.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("ceremony_id", ceremony.ceremony_id.to_string())
+        .bind("payload_json", serde_json::to_string(ceremony)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_ceremony_conflict_error(ceremony.ceremony_id));
+        }
+        Ok(())
+    }
+
+    async fn transition_federation_dkg_ceremony(
+        &mut self,
+        expected: &FederationDkgCeremonyRecord,
+        updated: &FederationDkgCeremonyRecord,
+    ) -> Result<(), Self::Err> {
+        if expected.ceremony_id != updated.ceremony_id {
+            return Err(Error::Internal(
+                "Federation DKG ceremony transition cannot change ceremony ID".to_string(),
+            ));
+        }
+        let rows_affected = query(
+            r#"
+            UPDATE federation_dkg_ceremonies
+            SET payload_json = :updated_payload_json
+            WHERE ceremony_id = :ceremony_id
+              AND (
+                payload_json = :expected_payload_json
+                OR payload_json = :updated_payload_json
+              )
+            "#,
+        )?
+        .bind("ceremony_id", expected.ceremony_id.to_string())
+        .bind("expected_payload_json", serde_json::to_string(expected)?)
+        .bind("updated_payload_json", serde_json::to_string(updated)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_ceremony_conflict_error(expected.ceremony_id));
+        }
+        Ok(())
+    }
 
     async fn set_federation_config(
         &mut self,
@@ -2226,6 +2307,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_signature_share_record)
+        .collect()
+    }
+
+    async fn get_federation_dkg_ceremonies(
+        &self,
+    ) -> Result<Vec<FederationDkgCeremonyRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT ceremony_id, payload_json
+            FROM federation_dkg_ceremonies
+            ORDER BY ceremony_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_ceremony)
         .collect()
     }
 

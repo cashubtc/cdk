@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgDriverPhase,
-    FederationDkgDriverPlan, FederationDkgDriverProgress, FederationDkgDriverRecords,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgReadinessRequest,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyState, FederationDkgCommitmentRequest,
+    FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
+    FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationError, MemberId,
     ValidatedFederationDkgParticipantState,
 };
@@ -816,6 +816,10 @@ pub async fn run_federation_dkg_driver(
         ticks = ticks.saturating_add(1);
     }
 
+    if last_tick.is_complete() {
+        complete_federation_dkg_ceremony(state, ceremony_id).await?;
+    }
+
     Ok(FederationDkgDriverRunOutcome { ticks, last_tick })
 }
 
@@ -937,6 +941,35 @@ async fn persist_federation_dkg_member_keyset_share(
         .await?;
     tx.commit().await?;
     Ok(())
+}
+
+pub(crate) async fn complete_federation_dkg_ceremony(
+    state: &MintState,
+    ceremony_id: FederationDkgCeremonyId,
+) -> Result<(), cdk::Error> {
+    let db = state.mint.localstore();
+    let ceremonies = db.get_federation_dkg_ceremonies().await?;
+    let Some(ceremony) = ceremonies
+        .iter()
+        .find(|record| record.ceremony_id == ceremony_id)
+    else {
+        return Ok(());
+    };
+    match ceremony.state {
+        FederationDkgCeremonyState::Complete => Ok(()),
+        FederationDkgCeremonyState::Aborted => Err(FederationError::DkgTranscriptMismatch {
+            reason: format!("aborted DKG ceremony {ceremony_id} cannot complete"),
+        }
+        .into()),
+        FederationDkgCeremonyState::Active => {
+            let completed = ceremony.completed()?;
+            let mut tx = db.begin_transaction().await?;
+            tx.transition_federation_dkg_ceremony(ceremony, &completed)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        }
+    }
 }
 
 fn record_delivery_results<R>(

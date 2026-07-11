@@ -41,8 +41,9 @@ use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationPaymentObservationContext, FederationPaymentVerificationPolicy, MemberConfigPrivate,
+    FederationConfig, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgKeysetSpec, FederationPaymentObservationContext,
+    FederationPaymentVerificationPolicy, MemberConfigPrivate,
 };
 // internal crate modules
 #[cfg(feature = "prometheus")]
@@ -800,6 +801,14 @@ fn federation_dkg_auto_start_config(
         .ok_or_else(|| anyhow!("federation.dkg.ceremony_id must be set when DKG is enabled"))?
         .parse::<FederationDkgCeremonyId>()
         .context("invalid federation DKG ceremony ID")?;
+    if let Some(replaces_ceremony_id) = federation.dkg.replaces_ceremony_id.as_deref() {
+        let replaces_ceremony_id = replaces_ceremony_id
+            .parse::<FederationDkgCeremonyId>()
+            .context("invalid replaced federation DKG ceremony ID")?;
+        if replaces_ceremony_id == ceremony_id {
+            bail!("federation.dkg.replaces_ceremony_id must differ from ceremony_id");
+        }
+    }
     let unit = cdk::nuts::CurrencyUnit::from_str(&federation.dkg.unit)
         .with_context(|| format!("invalid federation DKG unit {}", federation.dkg.unit))?;
     if federation.dkg.max_ticks == 0 {
@@ -851,6 +860,140 @@ fn federation_dkg_auto_start_config(
             ),
         },
     }))
+}
+
+#[cfg(feature = "federation")]
+async fn reconcile_federation_dkg_ceremony(
+    settings: &config::Settings,
+    localstore: &DynMintDatabase,
+) -> Result<()> {
+    let Some(start_config) = federation_dkg_auto_start_config(settings)? else {
+        return Ok(());
+    };
+    let federation = settings
+        .federation
+        .as_ref()
+        .expect("enabled DKG config includes federation settings");
+    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
+        anyhow!("federation.public_config_path must be set when federation is enabled")
+    })?;
+    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
+        anyhow!("federation.private_config_path must be set when federation is enabled")
+    })?;
+    let public_config = read_public_federation_config(public_config_path)?;
+    let private_config: MemberConfigPrivate =
+        read_federation_json(private_config_path, "private federation config")?;
+    let runtime_config = FederationRuntimeConfig::new_with_consensus_backend(
+        public_config,
+        private_config,
+        federation.consensus_backend,
+    )
+    .context("invalid federation runtime config for DKG lifecycle")?;
+    let replaces_ceremony_id = federation
+        .dkg
+        .replaces_ceremony_id
+        .as_deref()
+        .map(str::parse::<FederationDkgCeremonyId>)
+        .transpose()
+        .context("invalid replaced federation DKG ceremony ID")?;
+    let desired = FederationDkgCeremonyRecord::active(
+        runtime_config.federation_id(),
+        start_config.ceremony_id,
+        runtime_config.member_id(),
+        start_config.keyset_spec,
+        replaces_ceremony_id,
+    );
+    let records = localstore
+        .get_federation_dkg_ceremonies()
+        .await
+        .context("failed to read federation DKG ceremony lifecycle")?;
+    let terminal = records
+        .iter()
+        .filter(|record| record.replacement_ceremony_id.is_none())
+        .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
+        .collect::<Vec<_>>();
+    if terminal.len() > 1 {
+        bail!("multiple unreplaced federation DKG ceremony lifecycle records are durable");
+    }
+
+    if let Some(existing) = records
+        .iter()
+        .find(|record| record.ceremony_id == desired.ceremony_id)
+    {
+        let expected = match existing.state {
+            FederationDkgCeremonyState::Active => desired,
+            FederationDkgCeremonyState::Complete => desired.completed()?,
+            FederationDkgCeremonyState::Aborted => {
+                bail!(
+                    "federation DKG ceremony {} was durably aborted and cannot be resumed",
+                    existing.ceremony_id
+                )
+            }
+        };
+        if existing != &expected {
+            bail!(
+                "federation DKG ceremony {} lifecycle does not match configured federation, member, keyset policy, or predecessor",
+                existing.ceremony_id
+            );
+        }
+        return Ok(());
+    }
+
+    match terminal.first().copied() {
+        Some(existing) if existing.state == FederationDkgCeremonyState::Complete => {
+            bail!(
+                "completed federation DKG ceremony {} cannot be aborted; use the key-rotation workflow",
+                existing.ceremony_id
+            )
+        }
+        Some(existing) => {
+            if desired.replaces_ceremony_id != Some(existing.ceremony_id) {
+                bail!(
+                    "unfinished federation DKG ceremony {} is active; set federation.dkg.replaces_ceremony_id to replace it explicitly",
+                    existing.ceremony_id
+                );
+            }
+            let aborted = existing.aborted_by(desired.ceremony_id)?;
+            let mut tx = localstore.begin_transaction().await?;
+            tx.transition_federation_dkg_ceremony(existing, &aborted)
+                .await?;
+            tx.add_federation_dkg_ceremony(&desired).await?;
+            tx.commit().await?;
+        }
+        None => {
+            match desired.replaces_ceremony_id {
+                Some(predecessor_id) => match records
+                    .iter()
+                    .find(|record| record.ceremony_id == predecessor_id)
+                {
+                    Some(predecessor) => {
+                    if predecessor.state != FederationDkgCeremonyState::Aborted
+                        || predecessor.replacement_ceremony_id != Some(desired.ceremony_id)
+                    {
+                        bail!(
+                            "federation DKG predecessor {} is not durably aborted by replacement {}",
+                            predecessor_id,
+                            desired.ceremony_id
+                        );
+                    }
+                    }
+                    None if !records.is_empty() => bail!(
+                        "federation DKG predecessor {predecessor_id} is absent from non-empty local lifecycle history"
+                    ),
+                    None => {}
+                },
+                None if !records.is_empty() => bail!(
+                    "a new federation DKG ceremony must name its predecessor when local lifecycle history is non-empty"
+                ),
+                None => {}
+            }
+            let mut tx = localstore.begin_transaction().await?;
+            tx.add_federation_dkg_ceremony(&desired).await?;
+            tx.commit().await?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -2152,6 +2295,9 @@ pub async fn run_mintd_with_shutdown(
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
+    #[cfg(feature = "federation")]
+    reconcile_federation_dkg_ceremony(settings, &localstore).await?;
+
     let mint_builder = MintBuilder::new(localstore);
 
     // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
@@ -2679,6 +2825,7 @@ mod tests {
                 dkg: config::FederationDkg {
                     enabled: true,
                     ceremony_id: Some(ceremony_id.clone()),
+                    replaces_ceremony_id: None,
                     unit: "sat".to_string(),
                     active: true,
                     input_fee_ppk: 7,
@@ -2721,6 +2868,160 @@ mod tests {
             config.driver.secret_share_transport,
             cdk_axum::FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
         );
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn federation_dkg_lifecycle_requires_explicit_atomic_replacement() {
+        let (mut bundle, member_id) = single_member_trusted_dealer_bundle();
+        bundle.public_config.keysets.clear();
+        bundle.public_config.setup_transcript = None;
+        let private_config = bundle
+            .private_configs
+            .get_mut(&member_id)
+            .expect("private member config");
+        private_config.keyset_secret_shares.clear();
+        private_config.setup_transcript_hash = None;
+        bundle
+            .public_config
+            .validate()
+            .expect("setup public config");
+        private_config
+            .validate_against_public(&bundle.public_config)
+            .expect("setup private config");
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "dkg_lifecycle",
+            serde_json::to_string(&bundle.public_config).expect("public config JSON"),
+            serde_json::to_string(private_config).expect("private config JSON"),
+        );
+        let first_id = "31".repeat(32);
+        let second_id = "32".repeat(32);
+        let mut settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+                dkg: config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: Some(first_id.clone()),
+                    amounts: vec![1],
+                    allow_insecure_localhost: true,
+                    ..config::FederationDkg::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..config::Settings::default()
+        };
+        let localstore: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint DB"));
+
+        reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect("register first ceremony");
+        reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect("resume first ceremony idempotently");
+        let first = localstore
+            .get_federation_dkg_ceremonies()
+            .await
+            .expect("first lifecycle");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].state, FederationDkgCeremonyState::Active);
+
+        let dkg = &mut settings
+            .federation
+            .as_mut()
+            .expect("federation settings")
+            .dkg;
+        dkg.ceremony_id = Some(second_id.clone());
+        let err = reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect_err("implicit replacement must fail");
+        assert!(err.to_string().contains("replaces_ceremony_id"));
+        assert_eq!(
+            localstore
+                .get_federation_dkg_ceremonies()
+                .await
+                .expect("unchanged lifecycle"),
+            first
+        );
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation settings")
+            .dkg
+            .replaces_ceremony_id = Some(first_id);
+        reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect("explicit replacement");
+        reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect("replacement restart is idempotent");
+        let records = localstore
+            .get_federation_dkg_ceremonies()
+            .await
+            .expect("replacement lifecycle");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].state, FederationDkgCeremonyState::Aborted);
+        assert_eq!(records[1].state, FederationDkgCeremonyState::Active);
+        assert_eq!(
+            records[0].replacement_ceremony_id,
+            Some(records[1].ceremony_id)
+        );
+        assert_eq!(
+            records[1].replaces_ceremony_id,
+            Some(records[0].ceremony_id)
+        );
+
+        let completed = records[1].completed().expect("completed replacement");
+        let mut tx = localstore
+            .begin_transaction()
+            .await
+            .expect("begin completion");
+        tx.transition_federation_dkg_ceremony(&records[1], &completed)
+            .await
+            .expect("complete replacement");
+        tx.commit().await.expect("commit completion");
+        let dkg = &mut settings
+            .federation
+            .as_mut()
+            .expect("federation settings")
+            .dkg;
+        dkg.ceremony_id = Some("33".repeat(32));
+        dkg.replaces_ceremony_id = Some(second_id);
+        let err = reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect_err("completed ceremony cannot be aborted");
+        assert!(err.to_string().contains("key-rotation workflow"));
+
+        let fresh_localstore: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("fresh mint DB"),
+        );
+        let dkg = &mut settings
+            .federation
+            .as_mut()
+            .expect("federation settings")
+            .dkg;
+        dkg.ceremony_id = Some("34".repeat(32));
+        dkg.replaces_ceremony_id = Some("30".repeat(32));
+        reconcile_federation_dkg_ceremony(&settings, &fresh_localstore)
+            .await
+            .expect("fresh roster member records declared predecessor");
+        let fresh_records = fresh_localstore
+            .get_federation_dkg_ceremonies()
+            .await
+            .expect("fresh lifecycle");
+        assert_eq!(fresh_records.len(), 1);
+        assert_eq!(
+            fresh_records[0].replaces_ceremony_id,
+            Some(FederationDkgCeremonyId::from_bytes([0x30; 32]))
+        );
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
     }
 
     #[cfg(feature = "federation")]

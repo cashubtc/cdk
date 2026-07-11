@@ -2479,6 +2479,35 @@ directly. Disposable databases created by earlier development builds must be
 recreated; no compatibility migration or backup workflow is part of Milestone
 20A.
 
+### Explicit ceremony abort and replacement
+
+Decision: **Kept** as a liveness and auditability checkpoint, with no speed
+claim. Every local database records a ceremony as `active`, `aborted`, or
+`complete`, binding its federation, local member, keyset policy, predecessor,
+and successor. An unfinished ceremony can change only when configuration names
+both a fresh ceremony ID and the exact `replaces_ceremony_id`.
+
+Startup performs replacement as one compare-and-set transaction: the prior row
+becomes `aborted` with the new successor and the new row becomes `active` with
+the prior predecessor. Implicit replacement, stale expected state, conflicting
+policy, and attempts to abort a completed ceremony fail closed. A fresh member
+introduced by an explicit roster change may name a predecessor that is absent
+from its new local database; members retaining the prior database must match
+the durable chain. The new roster must still pass the existing exact all-member
+readiness barrier, so replacement cannot silently reduce the dealer set.
+
+The driver compare-and-sets a registered active ceremony to `complete` only
+after the all-member activation phase. Startup and status select the unreplaced
+active/complete ceremony and ignore all aborted artifacts while retaining them
+for audit. This adds no AlephBFT item or DKG message. Focused persistence,
+mintd restart/replacement, stale-activation, authenticated completion, and
+operator-status tests cover the transitions.
+
+Verified gate: 45/45 release Axum DKG tests, 19/19 release mintd DKG/status
+tests, six release builder DKG tests, seven release SQLite DKG persistence
+tests, migration parity, and a successful Postgres lifecycle test compile with
+`--no-run`.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

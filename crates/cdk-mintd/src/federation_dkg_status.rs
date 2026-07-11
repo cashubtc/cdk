@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
-    FederationDkgDriverPhase, FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgDriverPhase,
+    FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberId,
 };
 
@@ -52,11 +52,12 @@ pub(crate) async fn run_dkg_status_command(
             );
             return Ok(());
         }
+        let current_records = database_records.records_for_current_ceremony()?;
         merge_dkg_records(
             &mut keyset_shares,
             &mut transcript_signatures,
             &mut activations,
-            database_records.clone(),
+            current_records,
         );
         let setup_summary =
             DkgSetupRecordSummary::from_records(&database_records, &public_config, &private_config);
@@ -287,6 +288,10 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
             .get_federation_dkg_activations()
             .await
             .context("failed to read persisted DKG activation records")?,
+        ceremonies: db
+            .get_federation_dkg_ceremonies()
+            .await
+            .context("failed to read persisted DKG ceremony lifecycle records")?,
     })
 }
 
@@ -334,6 +339,54 @@ struct DkgCompletionRecords {
     keyset_shares: Vec<FederationDkgMemberKeysetShare>,
     transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
     activations: Vec<FederationDkgActivationRequest>,
+    ceremonies: Vec<FederationDkgCeremonyRecord>,
+}
+
+impl DkgCompletionRecords {
+    fn records_for_current_ceremony(&self) -> Result<Self> {
+        if self.ceremonies.is_empty() {
+            return Ok(self.clone());
+        }
+        let current = self
+            .ceremonies
+            .iter()
+            .filter(|record| record.replacement_ceremony_id.is_none())
+            .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
+            .collect::<Vec<_>>();
+        if current.len() > 1 {
+            bail!("multiple unreplaced DKG ceremony lifecycle records are durable");
+        }
+        let mut selected = self.clone();
+        let Some(ceremony_id) = current.first().map(|record| record.ceremony_id) else {
+            selected.participant_states.clear();
+            selected.commitments.clear();
+            selected.reveals.clear();
+            selected.secret_share_contributions.clear();
+            selected.keyset_shares.clear();
+            selected.transcript_signatures.clear();
+            selected.activations.clear();
+            return Ok(selected);
+        };
+        selected
+            .participant_states
+            .retain(|state| state.ceremony_id() == ceremony_id);
+        selected
+            .commitments
+            .retain(|commitment| commitment.ceremony_id == ceremony_id);
+        selected
+            .reveals
+            .retain(|reveal| reveal.ceremony_id == ceremony_id);
+        selected
+            .secret_share_contributions
+            .retain(|contribution| contribution.ceremony_id == ceremony_id);
+        selected
+            .keyset_shares
+            .retain(|share| share.public_ceremony.ceremony_id() == ceremony_id);
+        selected
+            .activations
+            .retain(|activation| activation.ceremony_id == ceremony_id);
+        Ok(selected)
+    }
 }
 
 fn merge_dkg_records(
@@ -360,6 +413,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct DkgSetupRecordSummary {
+    ceremony_lifecycle: Vec<String>,
     participant_states: usize,
     commitments: usize,
     reveals: usize,
@@ -380,6 +434,21 @@ struct DkgSetupRecordSummary {
 impl DkgSetupRecordSummary {
     fn from_record_counts(records: &DkgCompletionRecords) -> Self {
         Self {
+            ceremony_lifecycle: records
+                .ceremonies
+                .iter()
+                .map(|record| {
+                    let successor = record
+                        .replacement_ceremony_id
+                        .map(|ceremony_id| ceremony_id.to_string())
+                        .unwrap_or_else(|| "none".to_string());
+                    format!(
+                        "{}:{}:replacement={successor}",
+                        record.ceremony_id,
+                        record.state.as_str()
+                    )
+                })
+                .collect(),
             participant_states: records.participant_states.len(),
             commitments: records.commitments.len(),
             reveals: records.reveals.len(),
@@ -427,7 +496,16 @@ impl DkgSetupRecordSummary {
         public_config: &FederationConfig,
         private_config: &MemberConfigPrivate,
     ) -> Self {
-        let local_participants = records
+        let selected = match records.records_for_current_ceremony() {
+            Ok(selected) => selected,
+            Err(err) => {
+                return Self {
+                    driver_error: Some(redact_federation_operator_message(&err.to_string())),
+                    ..Self::from_record_counts(records)
+                };
+            }
+        };
+        let local_participants = selected
             .participant_states
             .iter()
             .filter(|state| state.member_id() == private_config.member_id)
@@ -436,12 +514,12 @@ impl DkgSetupRecordSummary {
             [] => (None, None),
             [participant] => {
                 let driver_records = FederationDkgDriverRecords {
-                    commitments: records.commitments.clone(),
-                    reveals: records.reveals.clone(),
-                    secret_share_contributions: records.secret_share_contributions.clone(),
-                    keyset_shares: records.keyset_shares.clone(),
-                    transcript_signatures: records.transcript_signatures.clone(),
-                    activations: records.activations.clone(),
+                    commitments: selected.commitments.clone(),
+                    reveals: selected.reveals.clone(),
+                    secret_share_contributions: selected.secret_share_contributions.clone(),
+                    keyset_shares: selected.keyset_shares.clone(),
+                    transcript_signatures: selected.transcript_signatures.clone(),
+                    activations: selected.activations.clone(),
                 };
                 match driver_records.plan(public_config, private_config, participant) {
                     Ok(plan) => (Some(plan.phase), None),
@@ -694,6 +772,12 @@ fn append_setup_record_summary(
     setup_records: &DkgSetupRecordSummary,
     phase: &str,
 ) {
+    if !setup_records.ceremony_lifecycle.is_empty() {
+        text.push_str(&format!(
+            "ceremony_lifecycle={}\n",
+            setup_records.ceremony_lifecycle.join(",")
+        ));
+    }
     text.push_str(&format!(
         "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} keyset_shares={} transcript_signatures={} activations={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={phase}\n",
         setup_records.participant_states,

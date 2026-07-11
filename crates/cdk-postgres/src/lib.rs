@@ -602,6 +602,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_ceremony_persistence() {
+        cdk_common::database::mint::test::federation_dkg_ceremony_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_dkg_ceremony_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_dkg_member_keyset_share_persistence() {
         cdk_common::database::mint::test::federation_dkg_member_keyset_share_persistence(
             provide_mint_db(unique_federation_test_id(

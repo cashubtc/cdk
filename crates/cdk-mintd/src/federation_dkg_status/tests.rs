@@ -349,6 +349,7 @@ fn dkg_status_report_marks_missing_activation_not_ready() {
 fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     let fixture = dkg_completion_fixture(member_id(2));
     let setup_summary = DkgSetupRecordSummary {
+        ceremony_lifecycle: Vec::new(),
         participant_states: 1,
         commitments: 3,
         reveals: 2,
@@ -567,6 +568,7 @@ fn finalized_dkg_config_export_requires_complete_records() {
 fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready() {
     let fixture = dkg_completion_fixture(member_id(2));
     let setup_summary = DkgSetupRecordSummary {
+        ceremony_lifecycle: Vec::new(),
         participant_states: 1,
         commitments: 2,
         reveals: 1,
@@ -652,6 +654,50 @@ fn dkg_progress_report_uses_record_counts_without_finalization() {
     assert!(!report.contains("secret_shares"));
 }
 
+#[test]
+fn dkg_progress_report_exposes_aborted_and_replacement_lifecycle() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let old_id = dkg_ceremony_id();
+    let replacement_id = FederationDkgCeremonyId::from_bytes([43; 32]);
+    let keyset_spec = fixture
+        .keyset_share
+        .public_ceremony
+        .reveals
+        .values()
+        .next()
+        .expect("ceremony reveal")
+        .keyset_spec
+        .clone();
+    let old = FederationDkgCeremonyRecord::active(
+        fixture.setup_public_config.federation_id,
+        old_id,
+        member_id(2),
+        keyset_spec.clone(),
+        None,
+    );
+    let aborted = old.aborted_by(replacement_id).expect("aborted ceremony");
+    let replacement = FederationDkgCeremonyRecord::active(
+        fixture.setup_public_config.federation_id,
+        replacement_id,
+        member_id(2),
+        keyset_spec,
+        Some(old_id),
+    );
+    let records = DkgCompletionRecords {
+        ceremonies: vec![aborted, replacement],
+        ..DkgCompletionRecords::default()
+    };
+    let summary = DkgSetupRecordSummary::from_record_counts(&records);
+    let report = dkg_progress_report(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        &summary,
+    );
+
+    assert!(report.contains(&format!("{old_id}:aborted:replacement={replacement_id}")));
+    assert!(report.contains(&format!("{replacement_id}:active:replacement=none")));
+}
+
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn read_database_records_loads_persisted_dkg_completion_records() {
@@ -666,6 +712,13 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     );
     let participant_state =
         dkg_participant_state_for_status(&fixture.setup_public_config, member_id(2));
+    let ceremony = FederationDkgCeremonyRecord::active(
+        fixture.setup_public_config.federation_id,
+        dkg_ceremony_id(),
+        member_id(2),
+        reveal.keyset_spec.clone(),
+        None,
+    );
     let work_dir =
         std::env::temp_dir().join(format!("cdk_mintd_dkg_status_db_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -676,6 +729,9 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         .await
         .expect("open test database");
     let mut tx = db.begin_transaction().await.expect("begin transaction");
+    tx.add_federation_dkg_ceremony(&ceremony)
+        .await
+        .expect("persist ceremony lifecycle");
     tx.add_federation_dkg_participant_state(&participant_state)
         .await
         .expect("persist local participant state");
@@ -709,6 +765,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         .expect("read DKG records from database");
 
     assert_eq!(records.participant_states, vec![participant_state]);
+    assert_eq!(records.ceremonies, vec![ceremony]);
     assert_eq!(records.commitments, vec![commitment]);
     assert_eq!(records.reveals, vec![reveal]);
     assert_eq!(

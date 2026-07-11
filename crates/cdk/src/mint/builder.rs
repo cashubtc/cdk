@@ -10,7 +10,8 @@ use cdk_common::error::Error;
 use cdk_common::federation::FederationDkgActivationRequest;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationDkgFinalizedMemberConfig, FederationDkgSetupMethod, FederationError,
+    FederationDkgCeremonyState, FederationDkgFinalizedMemberConfig, FederationDkgSetupMethod,
+    FederationError,
 };
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut02::KeySetVersion;
@@ -205,15 +206,40 @@ impl MintBuilder {
         let setup_public_config = runtime_config.public_config().clone();
         let local_private_config = runtime_config.private_config().clone();
         let consensus_backend = runtime_config.consensus_backend();
-        let keyset_shares = self
+        let ceremonies = self.localstore.get_federation_dkg_ceremonies().await?;
+        let current_ceremonies = ceremonies
+            .iter()
+            .filter(|record| record.replacement_ceremony_id.is_none())
+            .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
+            .collect::<Vec<_>>();
+        if current_ceremonies.len() > 1 {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "multiple unreplaced DKG ceremony lifecycle records are durable"
+                    .to_string(),
+            }
+            .into());
+        }
+        let current_ceremony_id = current_ceremonies.first().map(|record| record.ceremony_id);
+
+        let mut keyset_shares = self
             .localstore
             .get_federation_dkg_member_keyset_shares()
             .await?;
+        if let Some(ceremony_id) = current_ceremony_id {
+            keyset_shares.retain(|share| share.public_ceremony.ceremony_id() == ceremony_id);
+        } else if !ceremonies.is_empty() {
+            keyset_shares.clear();
+        }
         let transcript_signatures = self
             .localstore
             .get_federation_dkg_transcript_signatures()
             .await?;
-        let activations = self.localstore.get_federation_dkg_activations().await?;
+        let mut activations = self.localstore.get_federation_dkg_activations().await?;
+        if let Some(ceremony_id) = current_ceremony_id {
+            activations.retain(|activation| activation.ceremony_id == ceremony_id);
+        } else if !ceremonies.is_empty() {
+            activations.clear();
+        }
 
         if keyset_shares.is_empty() && transcript_signatures.is_empty() {
             return Ok(());
@@ -1001,10 +1027,11 @@ mod tests {
     #[cfg(feature = "federation")]
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederationConfig, FederationDkgCeremonyId,
-        FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-        FederationDkgParticipantState, FederationDkgSetupMethod, FederationDkgTranscript,
-        FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, MemberId,
-        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationDkgCeremonyRecord, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
+        FederationDkgMemberKeysetShare, FederationDkgParticipantState, FederationDkgSetupMethod,
+        FederationDkgTranscript, FederationDkgTranscriptSignature,
+        FederationDkgTranscriptSignatureRequest, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk_common::mint_url::MintUrl;
@@ -1556,6 +1583,70 @@ mod tests {
             .build_with_seed(localstore, &seed())
             .await
             .expect("setup mint remains available before all-member activation");
+        let runtime_config = mint.federation_config().expect("setup federation config");
+        assert!(runtime_config.public_config().keysets.is_empty());
+        assert!(runtime_config.public_config().setup_transcript.is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn aborted_dkg_records_cannot_activate_during_replacement() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let fixture = dkg_completion_fixture(member_id(2));
+        persist_dkg_completion_records(
+            &localstore,
+            &fixture.keyset_share,
+            &fixture.transcript_signatures,
+            &fixture.activations,
+        )
+        .await;
+        let old_ceremony_id = fixture.keyset_share.public_ceremony.ceremony_id();
+        let replacement_ceremony_id = FederationDkgCeremonyId::from_bytes([89; 32]);
+        let keyset_spec = fixture
+            .keyset_share
+            .public_ceremony
+            .reveals
+            .values()
+            .next()
+            .expect("ceremony reveal")
+            .keyset_spec
+            .clone();
+        let old = FederationDkgCeremonyRecord::active(
+            fixture.setup_runtime_config.federation_id(),
+            old_ceremony_id,
+            fixture.setup_runtime_config.member_id(),
+            keyset_spec.clone(),
+            None,
+        );
+        let aborted = old
+            .aborted_by(replacement_ceremony_id)
+            .expect("aborted lifecycle");
+        let replacement = FederationDkgCeremonyRecord::active(
+            fixture.setup_runtime_config.federation_id(),
+            replacement_ceremony_id,
+            fixture.setup_runtime_config.member_id(),
+            keyset_spec,
+            Some(old_ceremony_id),
+        );
+        let mut tx = MintDatabase::begin_transaction(localstore.as_ref())
+            .await
+            .expect("begin lifecycle records");
+        tx.add_federation_dkg_ceremony(&old)
+            .await
+            .expect("persist old ceremony");
+        tx.transition_federation_dkg_ceremony(&old, &aborted)
+            .await
+            .expect("abort old ceremony");
+        tx.add_federation_dkg_ceremony(&replacement)
+            .await
+            .expect("persist replacement ceremony");
+        tx.commit().await.expect("commit lifecycle records");
+
+        let mint = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect("replacement setup mint remains inert");
         let runtime_config = mint.federation_config().expect("setup federation config");
         assert!(runtime_config.public_config().keysets.is_empty());
         assert!(runtime_config.public_config().setup_transcript.is_none());

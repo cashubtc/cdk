@@ -1086,6 +1086,8 @@ pub struct FederationDkg {
     pub enabled: bool,
     /// Shared 32-byte ceremony ID as lowercase hex.
     pub ceremony_id: Option<String>,
+    /// Prior unfinished ceremony explicitly aborted by this replacement.
+    pub replaces_ceremony_id: Option<String>,
     /// Cashu currency unit committed into the new aggregate keyset.
     #[serde(default = "default_federation_dkg_unit")]
     pub unit: String,
@@ -1123,6 +1125,7 @@ impl Default for FederationDkg {
         Self {
             enabled: false,
             ceremony_id: None,
+            replaces_ceremony_id: None,
             unit: default_federation_dkg_unit(),
             active: true,
             input_fee_ppk: 0,

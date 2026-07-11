@@ -11,15 +11,15 @@ use crate::federation::{
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationConfig, FederationConfigDigest,
     FederationConfigSnapshot, FederationConsensusItem, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -1581,6 +1581,86 @@ where
             .await
             .expect("participant states"),
         vec![first, second]
+    );
+}
+
+/// Assert DKG ceremony lifecycle transitions are durable compare-and-set updates.
+pub async fn federation_dkg_ceremony_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let first_id = dkg_ceremony_id();
+    let second_id = FederationDkgCeremonyId::from_bytes([34; 32]);
+    let spec = dkg_reveal(&dkg_public_config(), member_id(1), 11).keyset_spec;
+    let first = FederationDkgCeremonyRecord::active(
+        dkg_public_config().federation_id,
+        first_id,
+        member_id(1),
+        spec.clone(),
+        None,
+    );
+    let second = FederationDkgCeremonyRecord::active(
+        dkg_public_config().federation_id,
+        second_id,
+        member_id(1),
+        spec,
+        Some(first_id),
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_ceremony(&first)
+        .await
+        .expect("persist active ceremony");
+    tx.add_federation_dkg_ceremony(&first)
+        .await
+        .expect("idempotent active ceremony replay");
+    tx.commit().await.expect("commit active ceremony");
+
+    let aborted = first.aborted_by(second_id).expect("aborted state");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin replacement");
+    tx.transition_federation_dkg_ceremony(&first, &aborted)
+        .await
+        .expect("abort first ceremony");
+    tx.add_federation_dkg_ceremony(&second)
+        .await
+        .expect("persist replacement ceremony");
+    tx.commit().await.expect("commit replacement");
+
+    let records = db
+        .get_federation_dkg_ceremonies()
+        .await
+        .expect("ceremony records");
+    assert_eq!(records, vec![aborted.clone(), second.clone()]);
+    assert_eq!(records[0].state, FederationDkgCeremonyState::Aborted);
+    assert_eq!(records[1].state, FederationDkgCeremonyState::Active);
+
+    let completed = second.completed().expect("completed state");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin completion");
+    tx.transition_federation_dkg_ceremony(&second, &completed)
+        .await
+        .expect("complete replacement");
+    tx.transition_federation_dkg_ceremony(&second, &completed)
+        .await
+        .expect("idempotent completion replay");
+    tx.commit().await.expect("commit completion");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin stale transition");
+    assert!(tx
+        .transition_federation_dkg_ceremony(&first, &first.completed().expect("stale completion"))
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback stale transition");
+    assert_eq!(
+        db.get_federation_dkg_ceremonies()
+            .await
+            .expect("completed ceremonies"),
+        vec![aborted, completed]
     );
 }
 

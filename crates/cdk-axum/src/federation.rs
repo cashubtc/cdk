@@ -72,9 +72,9 @@ use self::catch_up_routes::post_journal;
 pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;
 #[cfg(test)]
 use self::dkg_driver::{
-    federation_dkg_readiness_required, prepare_federation_dkg_participant_state,
-    run_federation_dkg_driver_tick, run_federation_dkg_readiness_round,
-    FederationDkgDeliveryTracker,
+    complete_federation_dkg_ceremony, federation_dkg_readiness_required,
+    prepare_federation_dkg_participant_state, run_federation_dkg_driver_tick,
+    run_federation_dkg_readiness_round, FederationDkgDeliveryTracker,
 };
 pub use self::dkg_driver::{
     run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,

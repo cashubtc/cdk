@@ -327,6 +327,46 @@ async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
 }
 
 #[tokio::test]
+async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
+    let federation = DkgDriverTestFederation::new().await;
+    for member in &federation.members {
+        let ceremony = FederationDkgCeremonyRecord::active(
+            federation.public_config.federation_id,
+            federation.ceremony_id,
+            member.private_config.member_id,
+            federation.keyset_spec.clone(),
+            None,
+        );
+        let mut tx = member
+            .db
+            .begin_transaction()
+            .await
+            .expect("begin ceremony registration");
+        tx.add_federation_dkg_ceremony(&ceremony)
+            .await
+            .expect("register ceremony");
+        tx.commit().await.expect("commit ceremony registration");
+    }
+
+    let _ = federation.drive_until_complete(12).await;
+    for member in &federation.members {
+        complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
+            .await
+            .expect("complete ceremony lifecycle");
+        complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
+            .await
+            .expect("replay ceremony completion");
+        let ceremonies = member
+            .db
+            .get_federation_dkg_ceremonies()
+            .await
+            .expect("ceremony lifecycle");
+        assert_eq!(ceremonies.len(), 1);
+        assert_eq!(ceremonies[0].state, FederationDkgCeremonyState::Complete);
+    }
+}
+
+#[tokio::test]
 async fn dkg_activation_mismatch_fails_before_sequence_or_record_mutation() {
     let federation = DkgDriverTestFederation::new().await;
     let _ = federation.drive_until_complete(12).await;

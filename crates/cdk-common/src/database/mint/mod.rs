@@ -14,7 +14,7 @@ use super::{DbTransactionFinalizer, Error};
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftNetworkRetryRecord,
     FederationAlephBftPendingOperationRecord, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgMemberKeysetShare,
+    FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
@@ -750,6 +750,19 @@ pub trait FederationJournalTransaction {
         Ok(())
     }
 
+    /// Persist one active DKG ceremony lifecycle record idempotently.
+    async fn add_federation_dkg_ceremony(
+        &mut self,
+        ceremony: &FederationDkgCeremonyRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Compare and set one DKG ceremony lifecycle transition.
+    async fn transition_federation_dkg_ceremony(
+        &mut self,
+        expected: &FederationDkgCeremonyRecord,
+        updated: &FederationDkgCeremonyRecord,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one DKG pre-reveal commitment.
     async fn add_federation_dkg_commitment(
         &mut self,
@@ -962,6 +975,11 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_activations(
         &self,
     ) -> Result<Vec<FederationDkgActivationRequest>, Self::Err>;
+
+    /// Get all durable DKG ceremony lifecycle records.
+    async fn get_federation_dkg_ceremonies(
+        &self,
+    ) -> Result<Vec<FederationDkgCeremonyRecord>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

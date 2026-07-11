@@ -3334,10 +3334,31 @@ Production robustness checklist:
   export, setup-record startup activation, and direct finalized-config startup.
   A digest/signature mismatch fails before sequence or activation-record
   mutation, while exact retry remains idempotent.
-- [ ] Define explicit abort and roster-reconfiguration semantics. This
+- [x] Define explicit abort and roster-reconfiguration semantics. This
   cooperative DKG requires every configured participant, not merely the signing
   threshold; one unavailable or malicious member must lead to a clear durable
   aborted state and a new ceremony, never silent completion with fewer dealers.
+  Each local database now records an exact `active`, `aborted`, or `complete`
+  ceremony lifecycle binding federation ID, local member, keyset policy, and
+  predecessor/successor IDs. Changing an unfinished ceremony requires a new
+  ceremony ID plus explicit `federation.dkg.replaces_ceremony_id`; startup
+  compare-and-sets the old record to `aborted` and inserts the replacement in
+  one transaction. Exact restart is idempotent, an implicit or conflicting
+  replacement fails before mutation, and a completed ceremony cannot be
+  aborted through this path: operators must use key rotation. A member newly
+  added by an explicit roster reconfiguration may declare a predecessor absent
+  from its fresh local database, while existing members must match their
+  durable predecessor chain. The replacement still uses the existing exact
+  all-member readiness barrier for its new roster/federation and never lowers
+  the dealer requirement. Completion compare-and-sets `active` to `complete`;
+  `dkg-status` exposes the lifecycle chain, startup ignores all aborted ceremony
+  artifacts, and no AlephBFT item or additional DKG network phase is added.
+  Focused SQL compare-and-set, mintd replacement/restart, mint-builder stale
+  activation, authenticated completion, and status regressions pass.
+  The verified gate is 45/45 release Axum DKG tests, 19/19 release mintd
+  DKG/status tests, six release builder DKG tests, seven release SQLite DKG
+  persistence tests, migration parity, and a successful Postgres lifecycle
+  test compile with `--no-run`.
 - [x] Scope every durable setup message, contribution, acknowledgement,
   transcript signature, and activation record by ceremony and keyset so aborted
   attempts, audits, rotations, and later ceremonies cannot collide or require
@@ -3350,9 +3371,9 @@ Production robustness checklist:
   driver filters every loaded artifact to its configured ceremony, so retained
   historical records cannot collide with or contaminate a replacement. This is
   an intentional pre-deployment schema cut-through with no compatibility
-  migration for disposable earlier federation databases. Six SQLite DKG tests,
+  migration for disposable earlier federation databases. Seven SQLite DKG tests,
   migration parity, and an authenticated three-member prior-record isolation
-  regression pass. Durable lifecycle semantics remain the next checkpoint.
+  regression pass.
 - [x] Bound CPU, memory, blocking workers, SQLite writers, and queued work per
   authenticated peer. A compromised roster member must not exhaust a receiver
   with validly signed duplicate or oversized DKG requests. Ceremony dimensions
