@@ -2525,9 +2525,8 @@ attempts instead of the 45 baseline while retaining exactly one commitment per
 roster member. This directly covers timeout/response loss after durable
 persistence without adding a production probe or retry branch.
 
-Together with existing partition, duplicate, invalid-share, conflicting-reveal,
-transcript-mismatch, partial-activation, and abort/replacement tests, this leaves
-actual SQLite write-failure/disk-full rollback and recovery as the open case.
+At this checkpoint, the remaining matrix cases were a deterministic slow-member
+deadline and actual SQLite write-failure rollback; both are addressed below.
 
 ### Slow-member deadline isolation
 
@@ -2538,6 +2537,24 @@ the commitment, the delayed receiver has no partial mutation, and the tick
 reports exactly that member as failed. Once the one-shot delay is consumed, the
 normal retry catches the slow member up and all three members complete with the
 same finalized configuration.
+
+### SQLite write failure and recovery
+
+Decision: **Kept** as the final production failure-matrix checkpoint, with no
+speed claim. A disposable file-backed SQLite database installs an engine-level
+abort trigger on `federation_member_sequences`. The DKG commitment insert runs
+first inside the same transaction, the sequence write then fails, and explicit
+rollback leaves both the commitment table and sequence watermark unchanged.
+After removing the trigger, the exact same commitment and sequence retry commits
+successfully.
+
+This tests the multi-write atomicity and deterministic rollback path used by DKG
+routes under a real SQLite statement failure, which is the relevant recovery
+boundary for write exhaustion as well. It requires no production fault API and
+logs no DKG scalar material. With the phase restart, ambiguous acknowledgement,
+partition, slow-member, malformed-share, conflict, transcript, partial
+activation, and replacement cases, the focused Milestone 20A production failure
+matrix is complete.
 
 ## Recommended Work Order
 

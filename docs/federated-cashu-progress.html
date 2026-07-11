@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover slow DKG member recovery</span>
+          <span class="value">test: verify DKG write recovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The DKG failure matrix now restarts a member at all six durable phases, recovers a response lost after durable receiver persistence, and isolates one member delayed beyond its request deadline while fast members continue. Retry catches every member up without duplicate records or divergent final config.</span>
+          <span class="value">The focused DKG production failure matrix is complete. It covers all six restart boundaries, response loss after durable persistence, partition and slow-member recovery, malformed and conflicting artifacts, partial activation, explicit replacement, and a real SQLite second-write failure whose rollback leaves no partial commitment or sequence before exact retry succeeds.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Finish the Milestone 20A production failure matrix with a real SQLite write-failure/disk-full rollback-and-recovery gate. Database encryption at rest and backup/restore remain explicitly out of scope. Keep the interrupted 20-member process acceptance ceremony deferred until that focused gate justifies another bounded run.</span>
+          <span class="value">Review the remaining Milestone 20A acceptance gates and decide whether the completed focused evidence now justifies one bounded 20-of-14 eight-denomination process ceremony. Database encryption at rest and backup/restore remain explicitly out of scope.</span>
         </div>
       </aside>
     </header>

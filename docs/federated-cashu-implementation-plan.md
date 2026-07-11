@@ -3392,7 +3392,7 @@ Production robustness checklist:
   part of this milestone's production gate; future backup work must still prove
   that a recovered private share maps to the transcript's configured public
   share before a member rejoins.
-- [ ] Add a focused production failure matrix covering interruption/restart in
+- [x] Add a focused production failure matrix covering interruption/restart in
   every phase, ambiguous timeout after durable persistence, duplicate and
   reordered delivery, one slow/offline member, malformed and invalid shares,
   conflicting reveals, disk-full/write failure, transcript mismatch, partial
@@ -3411,8 +3411,14 @@ Production robustness checklist:
   slow-member case now delays one commitment delivery beyond a 20ms peer
   deadline: both fast members persist immediately, only the slow member is
   reported failed, and the next retry catches it up to the identical final
-  config. The remaining matrix work is a real SQLite write-failure/disk-full
-  rollback-and-recovery gate.
+  config. The final SQLite gate installs a disposable engine-level abort trigger
+  on the sequence-watermark write. The commitment insert succeeds first in the
+  same transaction, the second write fails, explicit rollback leaves neither
+  commitment nor sequence durable, and removing the trigger lets the exact
+  retry commit both. This exercises the same atomic rollback/recovery boundary
+  required for storage exhaustion without a production fault switch. The full
+  focused gate is 48/48 Axum DKG tests and eight SQLite DKG persistence/failure
+  tests; no test or error output contains scalar material.
 
 Fedimint DKG comparison and source references:
 

@@ -267,6 +267,92 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_write_failure_rolls_back_and_recovers() {
+        use cdk_common::database::mint::{Database, FederationJournalDatabase};
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-test-dkg-write-failure-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("migrated SQLite DKG database");
+        let commitment = cdk_common::database::mint::test::federation_dkg_test_commitment();
+        {
+            let conn = rusqlite::Connection::open(&path).expect("SQLite fault connection");
+            conn.execute_batch(
+                r#"
+                CREATE TRIGGER fail_federation_member_sequence
+                BEFORE INSERT ON federation_member_sequences
+                BEGIN
+                    SELECT RAISE(ABORT, 'simulated SQLite write failure');
+                END;
+                "#,
+            )
+            .expect("install SQLite write-failure trigger");
+        }
+
+        let mut tx = Database::begin_transaction(&db)
+            .await
+            .expect("begin failing DKG transaction");
+        tx.add_federation_dkg_commitment(&commitment)
+            .await
+            .expect("first DKG write succeeds before injected failure");
+        assert!(tx
+            .set_federation_member_sequence(commitment.member_id, 1)
+            .await
+            .is_err());
+        tx.rollback()
+            .await
+            .expect("rollback failed DKG transaction deterministically");
+        assert!(db
+            .get_federation_dkg_commitments()
+            .await
+            .expect("commitments after rollback")
+            .is_empty());
+        assert!(db
+            .get_federation_member_sequences()
+            .await
+            .expect("sequences after rollback")
+            .is_empty());
+
+        {
+            let conn = rusqlite::Connection::open(&path).expect("SQLite recovery connection");
+            conn.execute_batch("DROP TRIGGER fail_federation_member_sequence;")
+                .expect("remove SQLite write-failure trigger");
+        }
+        let mut tx = Database::begin_transaction(&db)
+            .await
+            .expect("begin recovered DKG transaction");
+        tx.add_federation_dkg_commitment(&commitment)
+            .await
+            .expect("retry DKG commitment");
+        tx.set_federation_member_sequence(commitment.member_id, 1)
+            .await
+            .expect("retry member sequence");
+        tx.commit().await.expect("commit recovered DKG transaction");
+        assert_eq!(
+            db.get_federation_dkg_commitments()
+                .await
+                .expect("recovered commitment"),
+            vec![commitment]
+        );
+        assert_eq!(
+            db.get_federation_member_sequences()
+                .await
+                .expect("recovered sequence")
+                .get(&commitment.member_id),
+            Some(&1)
+        );
+
+        drop(db);
+        let _ = remove_file(&path);
+        let _ = remove_file(path.with_extension("sqlite-shm"));
+        let _ = remove_file(path.with_extension("sqlite-wal"));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-concurrent-{}.sqlite",

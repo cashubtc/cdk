@@ -170,6 +170,13 @@ fn dkg_reveal(
     }
 }
 
+/// Build one valid DKG commitment for storage-backend failure tests.
+pub fn federation_dkg_test_commitment() -> FederationDkgParticipantCommitment {
+    let public_config = dkg_public_config();
+    FederationDkgParticipantCommitment::from_reveal(&dkg_reveal(&public_config, member_id(1), 11))
+        .expect("test DKG commitment")
+}
+
 fn dkg_participant_state(
     public_config: &FederationConfig,
     ceremony_id: FederationDkgCeremonyId,
