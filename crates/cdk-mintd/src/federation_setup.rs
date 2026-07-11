@@ -2670,6 +2670,9 @@ sample_member_metrics() {{
 }}
 
 sample_dkg_metrics() {{
+  if [[ "$DKG_CAPTURE_METRICS" != "1" ]]; then
+    return 0
+  fi
   local sampled_at
   sampled_at="$(date +%s)"
   local member

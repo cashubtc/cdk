@@ -365,6 +365,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("DKG_CAPTURE_METRICS"));
     assert!(live_dkg_smoke_script.contains("DKG_METRICS_INTERVAL_SECONDS"));
     assert!(live_dkg_smoke_script.contains("sample_dkg_metrics"));
+    assert!(live_dkg_smoke_script
+        .contains("sample_dkg_metrics() {\n  if [[ \"$DKG_CAPTURE_METRICS\" != \"1\" ]]; then"));
     assert!(live_dkg_smoke_script.contains("record_metrics_member_pid"));
     assert!(live_dkg_smoke_script.contains("member-$member.pid"));
     assert!(live_dkg_smoke_script.contains("average_cpu_percent"));

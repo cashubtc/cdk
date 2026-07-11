@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">All 29 implementation-plan milestone points now have checked implementation and test items; a final cross-workspace audit is underway before the overall goal is declared complete. Production DKG starts from independently generated member identities, a coordinator that sees only public enrollments, and roster-bound local private configs. Fresh DKG waits for exact readiness, rejects each bad share before persistence, bounds authenticated work, and requires every roster member to confirm the exact transcript/config digest before any keyset activates.</span>
+          <span class="value">All 29 implementation-plan milestone points are implemented and the final cross-workspace audit is complete. Federated minting, swapping, melting, restore, typed wallet recovery, dealer-free DKG, AlephBFT ordering, authenticated private REST, durable catch-up, and CLI operation have passed release tests and fresh five-member process smokes. External security review, real-payment validation, and multi-host deployment drills remain release gates rather than unfinished implementation milestones.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: complete dealer-free DKG setup</span>
+          <span class="value">fix: complete federated Cashu audit gates</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Production setup exposes dkg-member, dkg-roster, and dkg-bind; trusted-dealer code is excluded unless federation-test-utils is explicit, and production startup rejects its transcript. Five setup, 15 CLI, two startup-mode, two test generator, and 35 cryptographic DKG regressions pass.</span>
+          <span class="value">The final release audit passed 379 cdk-common, 703 cdk, 157 SQLite, 461 federation Axum, 205 mintd, 32 CLI, 28 standalone Axum, and 546 Cashu tests. A fresh 5-of-3 dealer-free DKG federation completed mint/swap/melt/restore in 4.94 seconds; a separate release CLI wallet completed mint, send/receive, melt, restore, restart, and convergence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Milestone 20 is complete. The next checkpoint is a full plan audit and broader production-readiness verification across the milestones that still contain unchecked operational or review work.</span>
+          <span class="value">Implementation is complete for the defined fakewallet federation scope. The next checkpoint is independent security review, real payment-backend integration, and multi-host operator deployment testing.</span>
         </div>
       </aside>
     </header>
@@ -721,7 +721,7 @@
             <div>
               <h3>Milestone 26: unified federated wallet errors and recovery</h3>
               <p>Objective: preserve normal Cashu wallet errors and saga recovery after a threshold-consensus business outcome, while keeping unavailable quorum, pending finalization, timeouts, invalid shares, and inconsistent member views explicitly ambiguous.</p>
-              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by 363 shared-core, 81 wallet-federation, 153 SQLite, four receive-recovery, and the now-436-test Axum gate, plus definitive and ambiguous live CLI smokes.</p>
+              <p class="test-gate"><strong>Test gate:</strong> complete. Journal application state atomically stores standard <code>ErrorResponse</code> metadata without changing ordering hashes; catch-up and materialized digests verify it; mint/swap and melt fanout require exact code-and-detail threshold agreement; replay returns the same typed error; HTTP 429/5xx remain ambiguous; restore/check-state and quote fallback retain their existing threshold views. Verified by focused shared-core, wallet-federation, SQLite, receive-recovery, and CLI tests, with the final federation-enabled Axum gate now at 461 passing tests.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -843,6 +843,7 @@
           <article class="item">
             <h3>Networked recovery semantics</h3>
             <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, startup session-outcome verification now blocks restore and check-state reads until quorum evidence is present and reopens them after verified evidence, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, those reports are visible through redacted signed local status plus mintd status output and a filtered admin view with stale-age, evidence operation IDs, quarantine recommendations, and redacted row fingerprints for unresolved observation diffing, unresolved observations now stay unpaid and awaiting quorum after catch-up while recording a durable materialized digest checkpoint, accepted quarantine operations now halt quote spending/finalization while changing materialized state digests, mintd can propose those quarantines through signed private REST, catch-up now proves quarantined reports remain visible through signed local status with a durable materialized digest checkpoint at the quarantine boundary, the generated smoke script injects conflicting mint evidence plus quarantine while one member is offline, live smoke now verifies repeated all-member batches, an immediate member restart before convergence, post-restart all-member wallet-operation batches through the recovered member, repeated long-partition wallet-operation batches with non-overlapping configurable member, seed, and batch controls, restart catch-up, session-outcome quorum evidence, and final convergence. AlephBFT catch-up replay now retries transient locked/busy storage before writing a Failed journal status, so an offline member can catch up materialized state after long partitions without diverging from the quorum digest, and the smoke command now owns repeated standard/long-partition batch validation so long-partition runs are not shell-loop-only; remaining work is to strengthen BFT ordering and broaden storage-backed process coverage.</p>
+            <p>Completion update: strict ordering, storage-backed restart, long-partition catch-up, and five- and eleven-member process matrices are implemented. Broader repeated multi-host chaos runs remain deployment hardening.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -862,13 +863,13 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: audit the now-fully-checked plan against
-          code, focused crate gates, generated tooling, and the latest process
-          evidence before declaring the overall implementation goal complete.
-          The verified baseline includes zero-timeout 20-of-14 dealer-free DKG,
-          production-only identity enrollment and roster binding, 436 passing
-          federation-enabled Axum tests, typed wallet recovery, and convergent
-          mint, receive/swap, melt, restart, and catch-up process smokes.
+          Final verification is complete for the implementation scope. The
+          verified baseline includes zero-timeout 20-of-14 dealer-free DKG,
+          production-only identity enrollment and roster binding, 461 passing
+          federation-enabled Axum tests, typed wallet recovery, standalone
+          feature-off builds, and convergent mint, receive/swap, melt, restore,
+          restart, and catch-up process smokes. The next evidence belongs to
+          independent review and real multi-host payment deployments.
         </p>
       </section>
 

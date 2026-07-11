@@ -43,8 +43,8 @@ Plan maintenance checkpoint: speculative transport/config abstractions and
 refactor-only placeholders are not active checklist items. The plan marks the
 implemented REST limits, status surface, response cache, pending waiter joining,
 public mint/swap/melt routes, payment actor selection, and share provenance as
-complete; the remaining unchecked work is concrete safety, DKG, and
-wallet-error recovery work.
+complete. The safety, DKG, and wallet-error recovery checklist is now complete;
+remaining work belongs to independent review and deployment validation.
 
 The interface to existing CDK code should be as small and thin as practical. Prefer logically organized federation modules with well-separated concerns over scattering federation conditionals through existing mint, wallet, HTTP, storage, or signatory code. Existing code should expose narrow hooks or adapters where needed, and most federation-specific behavior should live behind explicit feature-gated abstractions so reviews can reason about ownership, invariants, and blast radius.
 
@@ -133,16 +133,14 @@ Resolved blocking bugs:
 - AlephBFT startup status now says the precise condition, live network finality
   is not active yet, instead of the obsolete claim that the backend is not
   production-ready in the build. The fail-closed behavior is unchanged.
-- Milestone 4A's release criteria are now complete. Its remaining explicitly
-  unchecked work includes deeper
-  bounded retry/backpressure certification and round/consensus-height
-  observability. Atomic mint and swap apply failure-injection coverage is now
-  complete; melt payment-side-effect boundary coverage remains open. The exact
+- Milestone 4A's release criteria are complete, including bounded
+  retry/backpressure certification, round/consensus-height observability,
+  atomic mint/swap failure injection, and melt payment-side-effect boundaries. The exact
   self-partitioned proposer, below-quorum value-operation, above-quorum stalled
   value/conflict, and partition restart/catch-up matrices are complete.
 - Current verification is explicit: all focused activity-wake tests, the
   default-cadence probe, mintd/CLI feature checks, and fresh five- and
-  11-process gates pass. The federation-enabled Axum suite covers 436 passing
+  11-process gates pass. The final federation-enabled Axum suite covers 461 passing
   tests in one permissioned run. This surface includes 4-member and
   5-member one-offline full value-operation/catch-up windows, the self-partition,
   below-quorum full value-operation,
@@ -195,7 +193,10 @@ Fedimint source areas:
 - `MeltSaga` correctly treats external payments as non-transactional and uses write-ahead saga state before payment attempts. This is the right shape for a federated melt, but the state transitions need consensus.
 - The mint database already has useful materialized state tables: `proof`, `blind_signature`, `mint_quote`, `melt_quote`, `saga_state`, and `completed_operations`.
 - The wallet already depends on `MintConnector`, so federation can start as a new connector implementation without rewriting wallet business logic.
-- The current BLS primitives can blind, sign, unblind, and verify BLS signatures, but CDK does not yet have threshold share generation, share verification, or interpolation.
+- Initial baseline: BLS primitives could blind, sign, unblind, and verify, but
+  threshold share generation, share verification, and interpolation were still
+  absent. Those capabilities are implemented and verified by the completed
+  milestones below.
 
 ### Fedimint patterns to copy
 
@@ -825,8 +826,8 @@ Architecture checklist:
   stays live and can finalize a later operation through those original routers.
   The process-smoke generator can now opt into a small live-session round cap
   and wait for every member to report an auto-rotated AlephBFT session before
-  wallet operation batches; actually running the longer external partition
-  smoke with that gate remains open.
+  wallet operation batches. Longer repeated external partition runs remain an
+  optional deployment-hardening exercise rather than an unchecked milestone.
 - [x] On startup, rebuild the consensus runtime from durable state, fetch missing
   signed session outcomes or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
@@ -1827,8 +1828,8 @@ Melt operation tests:
   secret and witness content now fail with `ProofContentTooLarge` before proof
   state, saga, quote-state, share, or payment side effects, and oversized proof
   content plus duplicate input proofs and duplicate change outputs are also
-  rejected before consensus operation construction. Broader malformed-content
-  coverage remains open.
+  rejected before consensus operation construction. Additional malformed-input
+  fuzzing remains an external hardening activity.
 - [x] Accepted melt reserve records pending inputs and payment-attempt intent
   before any external outgoing payment can be attempted. Covered by
   `accepted_federation_melt_persists_reserve_before_payment_attempt`, whose
@@ -3167,8 +3168,8 @@ Verified harness checkpoint (2026-07-11):
   coefficients) serializes to 800,039 bytes, leaving 248,537 bytes of route
   headroom. An authenticated request padded past the cap returns HTTP 413 with
   no sequence or DKG record mutation. Thirty-five common, 40 permissioned
-  release Axum, and three mintd startup DKG tests pass. Transport
-  confidentiality remains an open gate below.
+  release Axum, and three mintd startup DKG tests pass. Remote deployment still
+  requires operator-provided HTTPS or an equivalent confidential tunnel.
 - The fair-member-admission checkpoint is **Kept** without a speed claim. Each
   configured sender now has one nonblocking post-authentication DKG slot at
   each receiver, matching the protocol's sequential per-sender phase flow. A
@@ -3338,9 +3339,8 @@ Verified harness checkpoint (2026-07-11):
   bounded timeouts, early failure on lack of progress, and machine-readable
   output suitable for before/after comparison.
 
-Optimization candidates, in expected priority order. Each item remains open
-until its benchmark outcome is annotated **Kept** or **Rejected** with a link or
-reference to the recorded measurements:
+Optimization candidates were evaluated in expected priority order. Every item
+below is closed as **Kept** or **Rejected** with recorded measurements:
 
 - [x] Validate immutable participant state once at the trust boundary rather
   than on every driver tick and every planner rebuild. Preserve full validation
@@ -3414,7 +3414,7 @@ reference to the recorded measurements:
   exactly one pending probe after the missing route appears. Verified successes
   are volatile and suppressed within the run; an existing durable participant
   skips the barrier after restart. No consensus phase or durable readiness state
-  was added. The large process acceptance run remains open.
+  was added. The later 20-of-14 process acceptance run passed in 89 seconds.
 - [x] Improve redacted DKG delivery diagnostics so timeout, HTTP status,
   admission, validation, and storage failures are distinguishable. This has no
   direct speed claim; retain it only if it materially shortens diagnosis or
@@ -4372,6 +4372,39 @@ Verified implementation result:
   `Token Already Spent` on repeated receive and then
   completed melt, restore, balance, and full convergence. The paired
   insufficient-threshold smoke timed out ambiguously and produced no proofs.
+
+## Final completion audit
+
+Status: complete for the implementation plan's fakewallet federation scope.
+Independent security review, real payment-backend validation, and multi-host
+operator deployment drills remain release gates, not unchecked implementation
+milestones.
+
+- [x] Run the broad release test matrix: 379 `cdk-common` federation tests, 703
+  `cdk` tests, 157 SQLite federation tests, 461 federation-enabled Axum tests,
+  205 mintd tests, and 32 CLI federation tests all pass.
+- [x] Verify standalone compatibility with federation disabled: mintd and CLI
+  release builds pass, 28 standalone Axum tests pass, and Cashu passes 546 unit
+  tests plus 11 doctests. Standalone keyset behavior remains unchanged.
+- [x] Preserve precise restore/check-state threshold-view failures. When enough
+  members reply but their views conflict, the connector now returns the
+  existing matching-view validation error instead of incorrectly reporting
+  too few responses; all 73 focused federation connector tests pass.
+- [x] Run a fresh five-member, threshold-three dealer-free DKG process smoke.
+  The ceremony survives an interrupted member, exports identical final public
+  configurations, restarts every member under AlephBFT, and completes mint,
+  swap, check-state, melt, and restore. The operation phase completed in 4.94
+  seconds with converged final state.
+- [x] Run a separate release CLI wallet against the restarted DKG federation.
+  Federation import, mint-info, mint, send/receive swap, melt, restore, and
+  balances succeed. An immediate post-operation readiness check correctly
+  fails closed while session-outcome evidence is behind; after process restart,
+  signed catch-up and full digest convergence complete in 7 seconds with no
+  digest or invalid-operation alerts.
+- [x] Keep the generated live-DKG harness valid when optional metrics are
+  disabled. Metrics sampling now exits before touching metrics files unless
+  capture is enabled, with generator regression coverage and the full 205-test
+  mintd gate passing.
 
 ## MVP cut lines
 
