@@ -1989,6 +1989,49 @@ duplicate class. Commitment and reveal duplicates are cheaper to begin with;
 their retained value is avoiding repeated state reconstruction and retry-wave
 amplification while preserving exact idempotency semantics.
 
+### Candidate 6: suppress acknowledged DKG deliveries
+
+Decision: **Kept** for network/retry amplification.
+
+The DKG plan intentionally carries earlier phase artifacts so lagging peers can
+recover. Before this candidate, every tick sent every carried artifact to every
+target again, even after receiving and validating that peer's acknowledgement.
+In a healthy three-member ceremony this produced 126 private delivery attempts
+over five rounds despite only 36 unique deliveries:
+
+- 3 participant commitments to 3 peers: 9
+- 3 participant reveals to 3 peers: 9
+- 3 participants' private shares to 3 recipients: 9
+- 3 participant transcript signatures to 3 peers: 9
+
+The retained tracker is deliberately small and volatile. It stores at most one
+commitment broadcast, one reveal broadcast, one transcript-signature broadcast,
+and one acknowledged secret-share request per recipient. A payload change
+clears that phase's acknowledgement set. The peer client reports success only
+after validating the signed response's federation, sender, receiver, message
+kind, and artifact owner; only that verified success suppresses a later send.
+
+| Three-member authenticated ceremony | Before | After |
+| --- | ---: | ---: |
+| Driver rounds | 5 | 5 |
+| Delivery attempts | 126 | 36 |
+| Unique-delivery overhead | 3.5x | 1.0x |
+| Reduction | - | 71.4% |
+
+Timeouts and errors do not create acknowledgements and therefore retry on the
+next tick. The tracker is not persisted: restarting the sender constructs an
+empty tracker and rebroadcasts all durable artifacts, relying on the exact
+duplicate persistence fast paths from Candidate 5 at receivers. A changed-
+payload unit test proves prior acknowledgements cannot suppress a new artifact.
+
+Thirty permissioned release DKG tests pass. The authenticated completion test
+asserts the 36-attempt minimum and identical final member configs. The existing
+partition test proves one successful self-delivery is suppressed while two
+partitioned targets remain retryable, then restarts the sender, clears the
+partition, and completes with convergent durable records. No acknowledgement is
+consensus state, no new REST message exists, and ceremony ordering, validation,
+persistence, and activation behavior are unchanged.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

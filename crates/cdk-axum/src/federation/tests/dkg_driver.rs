@@ -13,6 +13,7 @@ struct DkgDriverTestMember {
     seed: [u8; 64],
     private_config: MemberConfigPrivate,
     participant: ValidatedFederationDkgParticipantState,
+    delivery_tracker: tokio::sync::Mutex<FederationDkgDeliveryTracker>,
     client: FederationRestPeerClient<RouterFederationTransportRegistry>,
 }
 
@@ -96,6 +97,7 @@ impl DkgDriverTestFederation {
                 seed,
                 private_config,
                 participant,
+                delivery_tracker: tokio::sync::Mutex::new(FederationDkgDeliveryTracker::default()),
                 client,
             });
         }
@@ -109,22 +111,26 @@ impl DkgDriverTestFederation {
         }
     }
 
-    async fn drive_until_complete(&self, max_rounds: usize) {
+    async fn drive_until_complete(&self, max_rounds: usize) -> usize {
+        let mut attempted_deliveries = 0usize;
         for _ in 0..max_rounds {
             let mut all_complete = true;
             for member in &self.members {
+                let mut delivery_tracker = member.delivery_tracker.lock().await;
                 let outcome = run_federation_dkg_driver_tick(
                     &member.state,
                     &member.client,
                     &member.participant,
                     FederationDkgSecretShareTransportPolicy::RequireHttps,
+                    &mut delivery_tracker,
                 )
                 .await
                 .expect("DKG driver tick");
+                attempted_deliveries += outcome.attempted_deliveries;
                 all_complete &= outcome.is_complete();
             }
             if all_complete {
-                return;
+                return attempted_deliveries;
             }
         }
 
@@ -169,6 +175,8 @@ impl DkgDriverTestFederation {
         );
         self.members[index].state = state;
         self.members[index].participant = participant;
+        self.members[index].delivery_tracker =
+            tokio::sync::Mutex::new(FederationDkgDeliveryTracker::default());
         self.members[index].client = client;
     }
 
@@ -237,7 +245,8 @@ impl DkgDriverTestFederation {
 async fn dkg_driver_completes_over_authenticated_member_routes() {
     let federation = DkgDriverTestFederation::new().await;
 
-    federation.drive_until_complete(12).await;
+    let attempted_deliveries = federation.drive_until_complete(12).await;
+    assert_eq!(attempted_deliveries, 36);
     federation.assert_complete_and_consistent().await;
 }
 
@@ -251,11 +260,13 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
         true,
     );
 
+    let mut first_delivery_tracker = federation.members[0].delivery_tracker.lock().await;
     let partitioned = run_federation_dkg_driver_tick(
         &federation.members[0].state,
         &federation.members[0].client,
         &federation.members[0].participant,
         FederationDkgSecretShareTransportPolicy::RequireHttps,
+        &mut first_delivery_tracker,
     )
     .await
     .expect("partitioned DKG tick");
@@ -264,14 +275,17 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
     assert_eq!(partitioned.failed_deliveries, 2);
     assert_eq!(partitioned.failed_members.len(), 2);
     assert!(!partitioned.is_complete());
+    drop(first_delivery_tracker);
 
     for _ in 0..4 {
         for member in &federation.members {
+            let mut delivery_tracker = member.delivery_tracker.lock().await;
             let outcome = run_federation_dkg_driver_tick(
                 &member.state,
                 &member.client,
                 &member.participant,
                 FederationDkgSecretShareTransportPolicy::RequireHttps,
+                &mut delivery_tracker,
             )
             .await
             .expect("partitioned ceremony tick");
@@ -285,7 +299,7 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
         first_member,
         false,
     );
-    federation.drive_until_complete(12).await;
+    let _ = federation.drive_until_complete(12).await;
     federation.assert_complete_and_consistent().await;
 }
 

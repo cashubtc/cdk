@@ -2982,6 +2982,17 @@ Verified harness checkpoint (2026-07-11):
   signed-route duplicates for every setup phase, one durable record per
   artifact, monotonic sequence advancement, immutable derived keysets, and all
   prior conflict/invalid-share checks.
+- Candidate 6 is **Kept**. The live driver now tracks verified acknowledgements
+  in memory for one commitment, reveal, transcript signature, and per-recipient
+  secret share. A peer is suppressed only after its response passes the existing
+  peer-client validation; timeout/error targets remain pending. Changed payloads
+  reset the relevant acknowledgements, and driver restart starts with an empty
+  tracker and safely rebroadcasts all artifacts.
+- A three-member authenticated ceremony fell from 126 to exactly 36 delivery
+  attempts, the unique artifact-to-peer minimum (71.4% fewer), while preserving
+  five-round completion and identical final configs. Partition/restart coverage
+  proves failed peers retry and sender restart forgets prior acknowledgements.
+  Thirty focused release DKG tests pass.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3087,10 +3098,14 @@ reference to the recorded measurements:
   permit held. Exact replays preserve only the new authenticated sequence;
   durable artifact/keyset counts remain unchanged, reveal replays recheck their
   prior commitment, and all conflicting duplicate tests remain fail-closed.
-- [ ] Stop rebroadcasting phase artifacts to peers that returned a verified
+- [x] Stop rebroadcasting phase artifacts to peers that returned a verified
   acknowledgement, while preserving idempotent recovery after ambiguous timeout
   or restart. Prefer a simple bounded delivery tracker over a new consensus
-  phase. Outcome: pending.
+  phase. Outcome: **Kept**. A bounded in-memory tracker reduces a three-member
+  authenticated ceremony from 126 to 36 attempts. Only validated `Ok` responses
+  suppress a target; timeout/error targets retry, changed payloads reset their
+  phase tracker, and process/restarted-driver state intentionally rebroadcasts
+  because acknowledgements are not persisted.
 - [ ] Benchmark a slower, jittered retry policy and phase-aware backoff to avoid
   synchronized all-to-all retry waves. Treat this as load mitigation, not a
   substitute for removing repeated cryptographic work. Outcome: pending.

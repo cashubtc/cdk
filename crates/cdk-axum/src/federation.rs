@@ -70,7 +70,10 @@ pub(crate) use self::aleph_bft_session::{
 use self::catch_up_routes::post_journal;
 pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;
 #[cfg(test)]
-use self::dkg_driver::{prepare_federation_dkg_participant_state, run_federation_dkg_driver_tick};
+use self::dkg_driver::{
+    prepare_federation_dkg_participant_state, run_federation_dkg_driver_tick,
+    FederationDkgDeliveryTracker,
+};
 pub use self::dkg_driver::{
     run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
     FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,

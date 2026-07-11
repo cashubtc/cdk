@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has five retained optimizations, adding exact-duplicate sequence-only persistence to reusable validation, aggregate coefficients, validated-by-construction fresh state, and bounded CPU work. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has six retained optimizations, adding verified-ack delivery suppression to reusable validation, aggregate coefficients, validated-by-construction fresh state, bounded CPU work, and exact-duplicate persistence. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: fast-path exact DKG duplicates</span>
+          <span class="value">perf: suppress acknowledged DKG deliveries</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Candidate 5 reduces the dominant completed secret-share replay from a 7.579ms release median to 4us, about 1,895x, and proves it completes while the DKG CPU permit is held. Exact signed replays advance only the authenticated sequence and retain one durable artifact; all 29 focused release DKG tests pass, including unchanged conflicting-duplicate rejection.</span>
+          <span class="value">Candidate 6 reduces a healthy three-member authenticated ceremony from 126 to the 36 unique delivery attempts, 71.4% fewer, without adding consensus or protocol traffic. Only verified acknowledgements suppress retries; failed peers remain pending, changed payloads reset tracking, and restart intentionally rebroadcasts. All 30 focused release DKG tests pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Evaluate Candidate 6: track verified per-peer delivery acknowledgements so completed phase artifacts are not rebroadcast unnecessarily, while preserving ambiguous-timeout and restart recovery. Then run the real-process release CPU/REST gate before the 20-of-14 eight-denomination acceptance ceremony.</span>
+          <span class="value">Evaluate Candidate 7: benchmark slower jittered, phase-aware retry backoff now that acknowledged targets are suppressed. Then run the real-process release CPU/REST gate before the 20-of-14 eight-denomination acceptance ceremony.</span>
         </div>
       </aside>
     </header>
@@ -672,7 +672,7 @@
             <div>
               <h3>Milestone 20A: optimize DKG performance and robustness</h3>
               <p>Objective: make dealer-free DKG fast, measurable, resource-bounded, and operationally safe for large federations without weakening ceremony verification.</p>
-              <p>Current result: Candidates 1 through 5 are retained. The complete 20-of-14 one-denomination ceremony is under 24 seconds, fresh generation is 9.5x faster at that profile, bounded CPU workers keep Axum responsive, and completed exact-share replays no longer repeat keyset derivation.</p>
+              <p>Current result: Candidates 1 through 6 are retained. The complete 20-of-14 one-denomination ceremony is under 24 seconds, CPU work is bounded without blocking Axum, completed duplicate shares avoid derivation, and verified acknowledgement tracking removes 71.4% of healthy three-member delivery attempts.</p>
               <p class="test-gate"><strong>Test gate:</strong> a focused phase-level harness quickly compares 5-of-3, 11-of-8, and 20-of-14 profiles; every candidate is retained or rejected from recorded before/after evidence; a release 20-of-14 eight-denomination ceremony completes within a documented budget with responsive REST, bounded retries, identical final transcripts, and the production secret-share, activation, abort, backup, and failure-matrix gates satisfied.</p>
             </div>
             <span class="status progress">In progress</span>

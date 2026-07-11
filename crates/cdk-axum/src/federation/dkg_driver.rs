@@ -1,13 +1,15 @@
 //! Restartable orchestration for dealer-free federation DKG over private REST.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgCeremonyId,
-    FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
-    FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationError, MemberId, ValidatedFederationDkgParticipantState,
+    FederationDkgCommitmentRequest, FederationDkgDriverPhase, FederationDkgDriverPlan,
+    FederationDkgDriverProgress, FederationDkgDriverRecords, FederationDkgKeysetSpec,
+    FederationDkgMemberKeysetShare, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationError, MemberId,
+    ValidatedFederationDkgParticipantState,
 };
 use cdk_http_client::{Async, Transport};
 use futures::future::join_all;
@@ -157,6 +159,65 @@ struct FederationDkgPlanCache {
     plan: FederationDkgDriverPlan,
 }
 
+#[derive(Clone)]
+struct TrackedDkgBroadcast<T> {
+    request: T,
+    acknowledged_members: BTreeSet<MemberId>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct FederationDkgDeliveryTracker {
+    commitment: Option<TrackedDkgBroadcast<FederationDkgCommitmentRequest>>,
+    reveal: Option<TrackedDkgBroadcast<FederationDkgRevealRequest>>,
+    secret_shares: BTreeMap<MemberId, FederationDkgSecretShareRequest>,
+    transcript_signature: Option<TrackedDkgBroadcast<FederationDkgTranscriptSignatureRequest>>,
+}
+
+fn pending_broadcast_targets<T, I>(
+    tracked: &mut Option<TrackedDkgBroadcast<T>>,
+    request: &T,
+    targets: I,
+) -> Vec<MemberId>
+where
+    T: Clone + PartialEq,
+    I: IntoIterator<Item = MemberId>,
+{
+    let request_changed = match tracked.as_ref() {
+        Some(tracked) => tracked.request != *request,
+        None => true,
+    };
+    if request_changed {
+        *tracked = Some(TrackedDkgBroadcast {
+            request: request.clone(),
+            acknowledged_members: BTreeSet::new(),
+        });
+    }
+    let acknowledged_members = &tracked
+        .as_ref()
+        .expect("tracked DKG broadcast must be initialized")
+        .acknowledged_members;
+    targets
+        .into_iter()
+        .filter(|member| !acknowledged_members.contains(member))
+        .collect()
+}
+
+fn record_broadcast_acknowledgements<T>(
+    tracked: &mut Option<TrackedDkgBroadcast<T>>,
+    request: &T,
+    acknowledged_members: &BTreeSet<MemberId>,
+) where
+    T: PartialEq,
+{
+    if let Some(tracked) = tracked.as_mut() {
+        if tracked.request == *request {
+            tracked
+                .acknowledged_members
+                .extend(acknowledged_members.iter().copied());
+        }
+    }
+}
+
 impl DeliverySummary {
     fn record(&mut self, member_id: MemberId, accepted: bool) {
         self.attempted = self.attempted.saturating_add(1);
@@ -255,6 +316,7 @@ pub(crate) async fn run_federation_dkg_driver_tick<T>(
     client: &FederationRestPeerClient<T>,
     participant: &ValidatedFederationDkgParticipantState,
     secret_share_transport: FederationDkgSecretShareTransportPolicy,
+    delivery_tracker: &mut FederationDkgDeliveryTracker,
 ) -> Result<FederationDkgDriverTickOutcome, cdk::Error>
 where
     T: Transport,
@@ -266,6 +328,7 @@ where
         participant,
         secret_share_transport,
         &mut plan_cache,
+        delivery_tracker,
     )
     .await
 }
@@ -276,6 +339,7 @@ async fn run_federation_dkg_driver_tick_with_cache<T>(
     participant: &ValidatedFederationDkgParticipantState,
     secret_share_transport: FederationDkgSecretShareTransportPolicy,
     plan_cache: &mut Option<FederationDkgPlanCache>,
+    delivery_tracker: &mut FederationDkgDeliveryTracker,
 ) -> Result<FederationDkgDriverTickOutcome, cdk::Error>
 where
     T: Transport,
@@ -300,41 +364,76 @@ where
     let mut delivery = DeliverySummary::default();
 
     if let Some(request) = plan.commitment.as_ref() {
-        let results = join_all(public_config.members.values().map(|member| async move {
-            (
-                member.member_id,
-                client.submit_dkg_commitment(member, request).await,
-            )
-        }))
-        .await;
-        record_delivery_results("commitment", results, &mut delivery);
-    }
-
-    if let Some(request) = plan.reveal.as_ref() {
-        let results = join_all(public_config.members.values().map(|member| async move {
-            (
-                member.member_id,
-                client.submit_dkg_reveal(member, request).await,
-            )
-        }))
-        .await;
-        record_delivery_results("reveal", results, &mut delivery);
-    }
-
-    if !plan.secret_shares.is_empty() {
-        let deliveries = plan.secret_shares.iter().map(|(receiver, request)| {
+        let targets = pending_broadcast_targets(
+            &mut delivery_tracker.commitment,
+            request,
+            public_config.members.keys().copied(),
+        );
+        let results = join_all(targets.into_iter().map(|member_id| {
             let member = public_config
-                .member(*receiver)
-                .expect("validated DKG plan receiver must be configured");
+                .member(member_id)
+                .expect("tracked DKG commitment receiver must be configured");
             async move {
                 (
                     member.member_id,
-                    client.submit_dkg_secret_share(member, request).await,
+                    client.submit_dkg_commitment(member, request).await,
                 )
             }
-        });
+        }))
+        .await;
+        let acknowledged = record_delivery_results("commitment", results, &mut delivery);
+        record_broadcast_acknowledgements(&mut delivery_tracker.commitment, request, &acknowledged);
+    }
+
+    if let Some(request) = plan.reveal.as_ref() {
+        let targets = pending_broadcast_targets(
+            &mut delivery_tracker.reveal,
+            request,
+            public_config.members.keys().copied(),
+        );
+        let results = join_all(targets.into_iter().map(|member_id| {
+            let member = public_config
+                .member(member_id)
+                .expect("tracked DKG reveal receiver must be configured");
+            async move {
+                (
+                    member.member_id,
+                    client.submit_dkg_reveal(member, request).await,
+                )
+            }
+        }))
+        .await;
+        let acknowledged = record_delivery_results("reveal", results, &mut delivery);
+        record_broadcast_acknowledgements(&mut delivery_tracker.reveal, request, &acknowledged);
+    }
+
+    if !plan.secret_shares.is_empty() {
+        let deliveries = plan
+            .secret_shares
+            .iter()
+            .filter(|(receiver, request)| {
+                delivery_tracker.secret_shares.get(receiver) != Some(*request)
+            })
+            .map(|(receiver, request)| {
+                let member = public_config
+                    .member(*receiver)
+                    .expect("validated DKG plan receiver must be configured");
+                async move {
+                    (
+                        member.member_id,
+                        client.submit_dkg_secret_share(member, request).await,
+                    )
+                }
+            });
         let results = join_all(deliveries).await;
-        record_delivery_results("secret share", results, &mut delivery);
+        let acknowledged = record_delivery_results("secret share", results, &mut delivery);
+        for member_id in acknowledged {
+            if let Some(request) = plan.secret_shares.get(&member_id) {
+                delivery_tracker
+                    .secret_shares
+                    .insert(member_id, request.clone());
+            }
+        }
     }
 
     if let Some(keyset_share) = plan.derived_keyset_share.as_ref() {
@@ -342,16 +441,31 @@ where
     }
 
     if let Some(request) = plan.transcript_signature.as_ref() {
-        let results = join_all(public_config.members.values().map(|member| async move {
-            (
-                member.member_id,
-                client
-                    .submit_dkg_transcript_signature(member, request)
-                    .await,
-            )
+        let targets = pending_broadcast_targets(
+            &mut delivery_tracker.transcript_signature,
+            request,
+            public_config.members.keys().copied(),
+        );
+        let results = join_all(targets.into_iter().map(|member_id| {
+            let member = public_config
+                .member(member_id)
+                .expect("tracked DKG transcript receiver must be configured");
+            async move {
+                (
+                    member.member_id,
+                    client
+                        .submit_dkg_transcript_signature(member, request)
+                        .await,
+                )
+            }
         }))
         .await;
-        record_delivery_results("transcript signature", results, &mut delivery);
+        let acknowledged = record_delivery_results("transcript signature", results, &mut delivery);
+        record_broadcast_acknowledgements(
+            &mut delivery_tracker.transcript_signature,
+            request,
+            &acknowledged,
+        );
     }
 
     let records = load_federation_dkg_driver_records(state).await?;
@@ -436,12 +550,14 @@ pub async fn run_federation_dkg_driver(
     .map_err(|err| cdk::Error::Custom(err.to_string()))?;
 
     let mut plan_cache = None;
+    let mut delivery_tracker = FederationDkgDeliveryTracker::default();
     let mut last_tick = run_federation_dkg_driver_tick_with_cache(
         state,
         &client,
         &participant,
         driver_config.secret_share_transport,
         &mut plan_cache,
+        &mut delivery_tracker,
     )
     .await?;
     let mut ticks = 1;
@@ -453,6 +569,7 @@ pub async fn run_federation_dkg_driver(
             &participant,
             driver_config.secret_share_transport,
             &mut plan_cache,
+            &mut delivery_tracker,
         )
         .await?;
         ticks = ticks.saturating_add(1);
@@ -573,10 +690,14 @@ fn record_delivery_results<R>(
     phase: &'static str,
     results: Vec<(MemberId, anyhow::Result<R>)>,
     summary: &mut DeliverySummary,
-) {
+) -> BTreeSet<MemberId> {
+    let mut acknowledged_members = BTreeSet::new();
     for (member_id, result) in results {
         match result {
-            Ok(_) => summary.record(member_id, true),
+            Ok(_) => {
+                summary.record(member_id, true);
+                acknowledged_members.insert(member_id);
+            }
             Err(_) => {
                 summary.record(member_id, false);
                 tracing::warn!(
@@ -587,6 +708,7 @@ fn record_delivery_results<R>(
             }
         }
     }
+    acknowledged_members
 }
 
 #[cfg(test)]
@@ -809,6 +931,27 @@ mod tests {
         assert!(allow_loopback
             .validate_for_public_config(&remote_http)
             .is_err());
+    }
+
+    #[test]
+    fn delivery_tracker_retries_unacknowledged_and_resets_for_changed_payload() {
+        let first = MemberId::new(1).expect("first member");
+        let second = MemberId::new(2).expect("second member");
+        let mut tracked = None;
+
+        assert_eq!(
+            pending_broadcast_targets(&mut tracked, &11_u64, [first, second]),
+            vec![first, second]
+        );
+        record_broadcast_acknowledgements(&mut tracked, &11, &BTreeSet::from([first]));
+        assert_eq!(
+            pending_broadcast_targets(&mut tracked, &11, [first, second]),
+            vec![second]
+        );
+        assert_eq!(
+            pending_broadcast_targets(&mut tracked, &12, [first, second]),
+            vec![first, second]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
