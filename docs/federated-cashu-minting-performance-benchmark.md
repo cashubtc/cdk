@@ -2457,6 +2457,28 @@ Focused verification:
   Six SQLite DKG persistence tests and SQLite/Postgres migration parity pass;
   the focused Postgres activation persistence test compiles with `--no-run`.
 
+### Multi-ceremony durable record scope
+
+Decision: **Kept** as the storage prerequisite for explicit abort and
+replacement, with no speed claim. Commitment/reveal rows are now unique by
+ceremony, phase, and member; private contribution rows are unique by ceremony,
+sender, and receiver. Participant state and activation evidence already carry
+ceremony keys, while derived keyset IDs and transcript hashes retain their
+cryptographic natural scope.
+
+The live DKG driver filters loaded setup, contribution, keyset-share, and
+activation records to its configured ceremony before planning. A focused
+authenticated three-member regression seeds prior-ceremony records at the same
+member coordinates, then completes the current ceremony in the unchanged 45
+delivery attempts. Six release SQLite DKG persistence tests prove exact replay,
+same-ceremony conflict rejection, and cross-ceremony coexistence; SQLite and
+Postgres migration parity also passes.
+
+Because federated DKG remains pre-deployment, the base schema was corrected
+directly. Disposable databases created by earlier development builds must be
+recreated; no compatibility migration or backup workflow is part of Milestone
+20A.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

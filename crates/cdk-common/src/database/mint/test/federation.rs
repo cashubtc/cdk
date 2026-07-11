@@ -1489,6 +1489,48 @@ where
         .complete_round(&public_config)
         .expect("complete setup state")
         .is_some());
+
+    let replacement_ceremony_id = FederationDkgCeremonyId::from_bytes([34; 32]);
+    let mut replacement_reveal = dkg_reveal(&public_config, member_id(1), 31);
+    replacement_reveal.ceremony_id = replacement_ceremony_id;
+    let replacement_commitment =
+        FederationDkgParticipantCommitment::from_reveal(&replacement_reveal)
+            .expect("replacement commitment");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin replacement ceremony");
+    tx.add_federation_dkg_commitment(&replacement_commitment)
+        .await
+        .expect("persist replacement commitment at same member coordinate");
+    tx.add_federation_dkg_reveal(&replacement_reveal)
+        .await
+        .expect("persist replacement reveal at same member coordinate");
+    tx.commit().await.expect("commit replacement ceremony");
+
+    let commitments = db
+        .get_federation_dkg_commitments()
+        .await
+        .expect("multi-ceremony commitments");
+    let reveals = db
+        .get_federation_dkg_reveals()
+        .await
+        .expect("multi-ceremony reveals");
+    assert_eq!(commitments.len(), 3);
+    assert_eq!(reveals.len(), 3);
+    assert_eq!(
+        commitments
+            .iter()
+            .filter(|commitment| commitment.ceremony_id == replacement_ceremony_id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        reveals
+            .iter()
+            .filter(|reveal| reveal.ceremony_id == replacement_ceremony_id)
+            .count(),
+        1
+    );
 }
 
 /// Assert local restartable DKG participant state persists idempotently by ceremony.
@@ -1591,7 +1633,26 @@ where
         .get_federation_dkg_secret_share_contributions()
         .await
         .expect("secret-share contributions after conflict");
-    assert_eq!(contributions, vec![first_contribution, second_contribution]);
+    assert_eq!(
+        contributions,
+        vec![first_contribution.clone(), second_contribution]
+    );
+
+    let mut replacement_contribution = first_contribution;
+    replacement_contribution.ceremony_id = FederationDkgCeremonyId::from_bytes([34; 32]);
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin replacement contribution");
+    tx.add_federation_dkg_secret_share_contribution(&replacement_contribution)
+        .await
+        .expect("persist replacement contribution at same member coordinate");
+    tx.commit().await.expect("commit replacement contribution");
+    let contributions = db
+        .get_federation_dkg_secret_share_contributions()
+        .await
+        .expect("multi-ceremony secret-share contributions");
+    assert_eq!(contributions.len(), 3);
+    assert!(contributions.contains(&replacement_contribution));
 }
 
 /// Assert completed local DKG keyset shares persist idempotently.

@@ -200,25 +200,34 @@ impl DkgDriverTestFederation {
                     .expect("participant states"),
                 vec![member.participant.participant_state().clone()]
             );
+            let commitments = db
+                .get_federation_dkg_commitments()
+                .await
+                .expect("commitments");
             assert_eq!(
-                db.get_federation_dkg_commitments()
-                    .await
-                    .expect("commitments")
-                    .len(),
+                commitments
+                    .iter()
+                    .filter(|commitment| commitment.ceremony_id == self.ceremony_id)
+                    .count(),
                 3
             );
+            let reveals = db.get_federation_dkg_reveals().await.expect("reveals");
             assert_eq!(
-                db.get_federation_dkg_reveals()
-                    .await
-                    .expect("reveals")
-                    .len(),
+                reveals
+                    .iter()
+                    .filter(|reveal| reveal.ceremony_id == self.ceremony_id)
+                    .count(),
                 3
             );
+            let contributions = db
+                .get_federation_dkg_secret_share_contributions()
+                .await
+                .expect("secret contributions");
             assert_eq!(
-                db.get_federation_dkg_secret_share_contributions()
-                    .await
-                    .expect("secret contributions")
-                    .len(),
+                contributions
+                    .iter()
+                    .filter(|contribution| contribution.ceremony_id == self.ceremony_id)
+                    .count(),
                 3
             );
             let keyset_shares = db
@@ -263,6 +272,58 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
     let attempted_deliveries = federation.drive_until_complete(12).await;
     assert_eq!(attempted_deliveries, 45);
     federation.assert_complete_and_consistent().await;
+}
+
+#[tokio::test]
+async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
+    let federation = DkgDriverTestFederation::new().await;
+    let prior_ceremony_id = FederationDkgCeremonyId::from_bytes([76; 32]);
+
+    for member in &federation.members {
+        let participant = member.participant.participant_state();
+        let mut commitment = participant
+            .commitment_request()
+            .expect("prior commitment")
+            .commitment;
+        commitment.ceremony_id = prior_ceremony_id;
+        let mut reveal = participant.reveal_request().reveal;
+        reveal.ceremony_id = prior_ceremony_id;
+        let mut contribution = participant
+            .secret_share_request(member.private_config.member_id)
+            .expect("prior contribution");
+        contribution.ceremony_id = prior_ceremony_id;
+
+        let mut tx = member
+            .db
+            .begin_transaction()
+            .await
+            .expect("begin prior DKG");
+        tx.add_federation_dkg_commitment(&commitment)
+            .await
+            .expect("persist prior commitment");
+        tx.add_federation_dkg_reveal(&reveal)
+            .await
+            .expect("persist prior reveal");
+        tx.add_federation_dkg_secret_share_contribution(&contribution)
+            .await
+            .expect("persist prior contribution");
+        tx.commit().await.expect("commit prior DKG artifacts");
+    }
+
+    let attempted_deliveries = federation.drive_until_complete(12).await;
+    assert_eq!(attempted_deliveries, 45);
+    federation.assert_complete_and_consistent().await;
+    for member in &federation.members {
+        assert_eq!(
+            member
+                .db
+                .get_federation_dkg_commitments()
+                .await
+                .expect("all ceremony commitments")
+                .len(),
+            4
+        );
+    }
 }
 
 #[tokio::test]

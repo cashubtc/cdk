@@ -3338,13 +3338,21 @@ Production robustness checklist:
   cooperative DKG requires every configured participant, not merely the signing
   threshold; one unavailable or malicious member must lead to a clear durable
   aborted state and a new ceremony, never silent completion with fewer dealers.
-- [ ] Scope every durable setup message, contribution, acknowledgement,
+- [x] Scope every durable setup message, contribution, acknowledgement,
   transcript signature, and activation record by ceremony and keyset so aborted
   attempts, audits, rotations, and later ceremonies cannot collide or require
   unsafe record deletion. Incoming commitment, reveal, and contribution routes
   now reject messages outside the exact active in-memory ceremony/keyset policy
-  before persistence; durable multi-ceremony record keys and lifecycle semantics
-  remain open.
+  before persistence. Commitment/reveal and private-contribution SQL coordinates
+  now include the ceremony ID; participant state and activation records were
+  already ceremony-scoped, while keyset IDs and transcript hashes provide the
+  existing cryptographic scope for derived shares and signatures. The live
+  driver filters every loaded artifact to its configured ceremony, so retained
+  historical records cannot collide with or contaminate a replacement. This is
+  an intentional pre-deployment schema cut-through with no compatibility
+  migration for disposable earlier federation databases. Six SQLite DKG tests,
+  migration parity, and an authenticated three-member prior-record isolation
+  regression pass. Durable lifecycle semantics remain the next checkpoint.
 - [x] Bound CPU, memory, blocking workers, SQLite writers, and queued work per
   authenticated peer. A compromised roster member must not exhaust a receiver
   with validly signed duplicate or oversized DKG requests. Ceremony dimensions

@@ -1374,14 +1374,15 @@ where
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_setup_messages
-            (phase, member_id, payload_json)
+            (ceremony_id, phase, member_id, payload_json)
             VALUES
-            (:phase, :member_id, :payload_json)
-            ON CONFLICT (phase, member_id)
+            (:ceremony_id, :phase, :member_id, :payload_json)
+            ON CONFLICT (ceremony_id, phase, member_id)
             DO UPDATE SET payload_json = EXCLUDED.payload_json
             WHERE federation_dkg_setup_messages.payload_json = EXCLUDED.payload_json
             "#,
         )?
+        .bind("ceremony_id", commitment.ceremony_id.to_string())
         .bind("phase", FEDERATION_DKG_COMMITMENT_PHASE)
         .bind("member_id", i64::from(commitment.member_id.get()))
         .bind("payload_json", serde_json::to_string(commitment)?)
@@ -1404,14 +1405,15 @@ where
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_setup_messages
-            (phase, member_id, payload_json)
+            (ceremony_id, phase, member_id, payload_json)
             VALUES
-            (:phase, :member_id, :payload_json)
-            ON CONFLICT (phase, member_id)
+            (:ceremony_id, :phase, :member_id, :payload_json)
+            ON CONFLICT (ceremony_id, phase, member_id)
             DO UPDATE SET payload_json = EXCLUDED.payload_json
             WHERE federation_dkg_setup_messages.payload_json = EXCLUDED.payload_json
             "#,
         )?
+        .bind("ceremony_id", reveal.ceremony_id.to_string())
         .bind("phase", FEDERATION_DKG_REVEAL_PHASE)
         .bind("member_id", i64::from(reveal.member_id.get()))
         .bind("payload_json", serde_json::to_string(reveal)?)
@@ -1434,14 +1436,15 @@ where
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_secret_share_contributions
-            (sender_id, receiver_id, payload_json)
+            (ceremony_id, sender_id, receiver_id, payload_json)
             VALUES
-            (:sender_id, :receiver_id, :payload_json)
-            ON CONFLICT (sender_id, receiver_id)
+            (:ceremony_id, :sender_id, :receiver_id, :payload_json)
+            ON CONFLICT (ceremony_id, sender_id, receiver_id)
             DO UPDATE SET payload_json = EXCLUDED.payload_json
             WHERE federation_dkg_secret_share_contributions.payload_json = EXCLUDED.payload_json
             "#,
         )?
+        .bind("ceremony_id", contribution.ceremony_id.to_string())
         .bind("sender_id", i64::from(contribution.sender.get()))
         .bind("receiver_id", i64::from(contribution.receiver.get()))
         .bind("payload_json", serde_json::to_string(contribution)?)
@@ -2239,7 +2242,7 @@ where
             SELECT member_id, payload_json
             FROM federation_dkg_setup_messages
             WHERE phase = :phase
-            ORDER BY member_id ASC
+            ORDER BY ceremony_id ASC, member_id ASC
             "#,
         )?
         .bind("phase", FEDERATION_DKG_COMMITMENT_PHASE)
@@ -2263,7 +2266,7 @@ where
             SELECT member_id, payload_json
             FROM federation_dkg_setup_messages
             WHERE phase = :phase
-            ORDER BY member_id ASC
+            ORDER BY ceremony_id ASC, member_id ASC
             "#,
         )?
         .bind("phase", FEDERATION_DKG_REVEAL_PHASE)
@@ -2286,7 +2289,7 @@ where
             r#"
             SELECT sender_id, receiver_id, payload_json
             FROM federation_dkg_secret_share_contributions
-            ORDER BY sender_id ASC, receiver_id ASC
+            ORDER BY ceremony_id ASC, sender_id ASC, receiver_id ASC
             "#,
         )?
         .fetch_all(&*conn)

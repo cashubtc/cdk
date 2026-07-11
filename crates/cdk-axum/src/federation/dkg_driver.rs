@@ -552,7 +552,8 @@ where
     let private_config = runtime_config.private_config().clone();
     validate_federation_dkg_secret_share_transport(&public_config, secret_share_transport)?;
 
-    let records = load_federation_dkg_driver_records(state).await?;
+    let ceremony_id = participant.participant_state().ceremony_id();
+    let records = load_federation_dkg_driver_records(state, ceremony_id).await?;
     let plan = plan_federation_dkg_records(
         records,
         &public_config,
@@ -691,7 +692,7 @@ where
         record_broadcast_acknowledgements(&mut delivery_tracker.activation, request, &acknowledged);
     }
 
-    let records = load_federation_dkg_driver_records(state).await?;
+    let records = load_federation_dkg_driver_records(state, ceremony_id).await?;
     let next_plan = plan_federation_dkg_records(
         records,
         &public_config,
@@ -903,15 +904,26 @@ fn is_loopback_url(url: &url::Url) -> bool {
 
 async fn load_federation_dkg_driver_records(
     state: &MintState,
+    ceremony_id: FederationDkgCeremonyId,
 ) -> Result<FederationDkgDriverRecords, cdk::Error> {
     let db = state.mint.localstore();
+    let mut commitments = db.get_federation_dkg_commitments().await?;
+    commitments.retain(|commitment| commitment.ceremony_id == ceremony_id);
+    let mut reveals = db.get_federation_dkg_reveals().await?;
+    reveals.retain(|reveal| reveal.ceremony_id == ceremony_id);
+    let mut secret_share_contributions = db.get_federation_dkg_secret_share_contributions().await?;
+    secret_share_contributions.retain(|contribution| contribution.ceremony_id == ceremony_id);
+    let mut keyset_shares = db.get_federation_dkg_member_keyset_shares().await?;
+    keyset_shares.retain(|share| share.public_ceremony.ceremony_id() == ceremony_id);
+    let mut activations = db.get_federation_dkg_activations().await?;
+    activations.retain(|activation| activation.ceremony_id == ceremony_id);
     Ok(FederationDkgDriverRecords {
-        commitments: db.get_federation_dkg_commitments().await?,
-        reveals: db.get_federation_dkg_reveals().await?,
-        secret_share_contributions: db.get_federation_dkg_secret_share_contributions().await?,
-        keyset_shares: db.get_federation_dkg_member_keyset_shares().await?,
+        commitments,
+        reveals,
+        secret_share_contributions,
+        keyset_shares,
         transcript_signatures: db.get_federation_dkg_transcript_signatures().await?,
-        activations: db.get_federation_dkg_activations().await?,
+        activations,
     })
 }
 

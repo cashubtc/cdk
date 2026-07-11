@@ -24,7 +24,7 @@ use cdk::federation::{
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
     FederationConfigSnapshot, FederationConsensusBackendKind, FederationConsensusEngine,
     FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgActivationRequest,
-    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
@@ -2926,7 +2926,9 @@ impl MintState {
             commitment.validate_against_config(&public_config)?;
             return self.persist_federation_sequence(sender, sequence).await;
         }
-        let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
+        let mut setup_state = self
+            .load_federation_dkg_setup_state(&public_config, commitment.ceremony_id)
+            .await?;
         setup_state.insert_commitment(&public_config, *commitment)?;
 
         let mut tx = db.begin_transaction().await?;
@@ -2950,7 +2952,10 @@ impl MintState {
             let commitments = db.get_federation_dkg_commitments().await?;
             let commitment = commitments
                 .iter()
-                .find(|commitment| commitment.member_id == reveal.member_id)
+                .find(|commitment| {
+                    commitment.ceremony_id == reveal.ceremony_id
+                        && commitment.member_id == reveal.member_id
+                })
                 .ok_or_else(|| {
                     cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
                         member_id: reveal.member_id,
@@ -2960,7 +2965,9 @@ impl MintState {
             commitment.validate_reveal(reveal, &public_config)?;
             return self.persist_federation_sequence(sender, sequence).await;
         }
-        let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
+        let mut setup_state = self
+            .load_federation_dkg_setup_state(&public_config, reveal.ceremony_id)
+            .await?;
         setup_state.insert_reveal(&public_config, reveal.clone())?;
 
         let mut tx = db.begin_transaction().await?;
@@ -2990,7 +2997,8 @@ impl MintState {
         let db = self.mint.localstore();
         let existing_contributions = db.get_federation_dkg_secret_share_contributions().await?;
         if existing_contributions.iter().any(|existing| {
-            existing.sender == contribution.sender
+            existing.ceremony_id == contribution.ceremony_id
+                && existing.sender == contribution.sender
                 && existing.receiver == contribution.receiver
                 && existing != contribution
         }) {
@@ -3010,7 +3018,9 @@ impl MintState {
         {
             return self.persist_federation_sequence(sender, sequence).await;
         }
-        let setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
+        let setup_state = self
+            .load_federation_dkg_setup_state(&public_config, contribution.ceremony_id)
+            .await?;
         let ceremony_id = setup_state.ceremony_id.ok_or_else(|| {
             cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
                 member_id: contribution.sender,
@@ -3210,15 +3220,22 @@ impl MintState {
     async fn load_federation_dkg_setup_state(
         &self,
         public_config: &FederationConfig,
+        ceremony_id: FederationDkgCeremonyId,
     ) -> Result<FederationDkgSetupState, cdk::Error> {
         let db = self.mint.localstore();
         let commitments = db.get_federation_dkg_commitments().await?;
         let reveals = db.get_federation_dkg_reveals().await?;
         let mut setup_state = FederationDkgSetupState::new(public_config);
-        for commitment in commitments {
+        for commitment in commitments
+            .into_iter()
+            .filter(|commitment| commitment.ceremony_id == ceremony_id)
+        {
             setup_state.insert_commitment(public_config, commitment)?;
         }
-        for reveal in reveals {
+        for reveal in reveals
+            .into_iter()
+            .filter(|reveal| reveal.ceremony_id == ceremony_id)
+        {
             setup_state.insert_reveal(public_config, reveal)?;
         }
         Ok(setup_state)
