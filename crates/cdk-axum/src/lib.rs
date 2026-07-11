@@ -49,8 +49,9 @@ mod custom_router;
 mod federation;
 #[cfg(feature = "federation")]
 pub use self::federation::{
-    run_federation_dkg_driver, FederationDkgDriverRunConfig, FederationDkgDriverRunOutcome,
-    FederationDkgDriverTickOutcome, FederationPeerSyncConfig,
+    run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
+    FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
+    FederationDkgSecretShareTransportPolicy, FederationPeerSyncConfig,
 };
 mod router_handlers;
 mod ws;
@@ -4103,6 +4104,28 @@ pub async fn create_mint_router_with_custom_cache_and_federation_peer_sync_confi
     enable_info_page: bool,
     federation_peer_sync_config: FederationPeerSyncConfig,
 ) -> Result<Router> {
+    create_mint_router_with_custom_cache_and_federation_dkg(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        federation_peer_sync_config,
+        None,
+    )
+    .await
+}
+
+/// Create mint [`Router`] with federation peer sync and optional DKG auto-start policy.
+#[cfg(feature = "federation")]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_dkg(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+) -> Result<Router> {
     federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
@@ -4111,6 +4134,7 @@ pub async fn create_mint_router_with_custom_cache_and_federation_peer_sync_confi
         enable_info_page,
         true,
         federation_peer_sync_config,
+        federation_dkg_config,
     )
     .await
 }
@@ -4131,6 +4155,7 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         false,
         false,
         FederationPeerSyncConfig::default(),
+        None,
     )
     .await
 }
@@ -4143,6 +4168,7 @@ async fn create_mint_router_with_custom_cache_inner(
     enable_info_page: bool,
     spawn_federation_peer_sync: bool,
     #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
+    #[cfg(feature = "federation")] federation_dkg_config: Option<FederationDkgAutoStartConfig>,
 ) -> Result<Router> {
     #[cfg(feature = "federation")]
     let (federation_consensus, federation_sequences) =
@@ -4199,6 +4225,29 @@ async fn create_mint_router_with_custom_cache_inner(
         federation_isolated_member_test: !spawn_federation_peer_sync,
     };
     #[cfg(feature = "federation")]
+    let federation_dkg_config = match federation_dkg_config {
+        Some(config) => {
+            let runtime_config = state.mint.federation_config().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "federation DKG auto-start requires a mint federation runtime config"
+                )
+            })?;
+            let public_config = runtime_config.public_config();
+            if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
+                tracing::info!(
+                    member_id = %runtime_config.member_id(),
+                    ceremony_id = %config.ceremony_id,
+                    "Federation DKG auto-start skipped because finalized key material is already active"
+                );
+                None
+            } else {
+                config.validate_for_public_config(public_config)?;
+                Some(config)
+            }
+        }
+        None => None,
+    };
+    #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();
     #[cfg(feature = "federation")]
     if state.federation_consensus.is_some() {
@@ -4215,6 +4264,10 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     if spawn_federation_peer_sync {
         state.restore_federation_startup_readiness().await;
+    }
+    #[cfg(feature = "federation")]
+    if let Some(config) = federation_dkg_config {
+        federation::spawn_federation_dkg_driver(state.clone(), federation_peer_sync_config, config);
     }
 
     let v1_router = Router::new()

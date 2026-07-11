@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, and a bounded live executor over authenticated private REST. Three independent members can drive every phase through their real signed routes, restart from durable private state, heal a partition, and derive one identical aggregate v3 keyset; mintd operator wiring and confidential production share transport remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete. Milestone 20 now has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, a bounded live executor over authenticated private REST, operator start/resume configuration, and redacted durable phase status. Three independent members can drive every phase through their signed routes, restart from durable private state, heal a partition, and derive one identical aggregate v3 keyset; real multi-process ceremony and restart activation remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: drive DKG over authenticated REST</span>
+          <span class="value">feat: configure secure DKG auto-start</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The DKG executor persists or reloads private participant state before sending, runs ordered phase batches through the existing signed peer client, includes self-delivery, attempts every configured receiver concurrently, and reloads SQL after each bounded tick. Completed members retain cumulative idempotent artifacts until a failure-free terminal round, so asymmetric loss of a final transcript signature cannot strand a recovering peer.</span>
+          <span class="value">Mintd can now start or resume one configured ceremony and reconstruct its redacted planner phase from durable SQL records. Production defaults fail closed unless every member endpoint uses HTTPS; an explicit development switch permits plain HTTP only when every endpoint is localhost or an IP loopback, and transport validation completes before private participant state is created or any ceremony message is sent.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add mintd configuration and redacted process status for starting or resuming one ceremony, then reject non-local secret-share delivery unless it uses HTTPS, mTLS, or a recipient-encrypted envelope, with explicit localhost-only development support.</span>
+          <span class="value">Generate setup-only member configs for the live driver, run a real multi-process ceremony with one member interrupted and resumed from SQL, restart all members onto the finalized keyset, then prove mint, swap, melt, and restore on SQLite and Postgres.</span>
         </div>
       </aside>
     </header>
@@ -835,7 +835,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, a pure resumable phase planner, and a bounded authenticated REST executor to the existing durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. Three-member route tests prove ordered cumulative fanout, self-delivery, all-peer attempts, SQL restart, partition healing, identical aggregate public config, and distinct valid local shares. Completed members continue idempotent rebroadcast until a failure-free terminal round, preventing asymmetric final-message loss without another acknowledgement protocol. Remaining work is mintd start/monitor configuration, confidential non-local private-share delivery, and process-level ceremony execution.</p>
+            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, a pure resumable phase planner, and a bounded authenticated REST executor to the existing durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. Mintd now exposes bounded start/resume configuration and redacted durable phase status. Production defaults require HTTPS for every member before any ceremony send or local participant-state creation; only an explicit development switch permits loopback HTTP. Three-member route tests prove ordered cumulative fanout, self-delivery, all-peer attempts, SQL restart, partition healing, identical aggregate public config, and distinct valid local shares. Remaining work is process-level ceremony interruption, resume, restart activation, and wallet operations using the resulting keyset.</p>
           </article>
         </div>
       </section>
@@ -851,10 +851,10 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: wire the bounded DKG executor into mintd
-          start/resume configuration and redacted process status, then enforce
-          confidential non-local private-share delivery with explicit localhost
-          development support. The wider
+          Current verification target: generate setup-only process configs for
+          the bounded DKG executor, interrupt and resume one live member from
+          durable SQL state, restart all members onto the finalized keyset, and
+          prove wallet mint, swap, melt, and restore on SQLite and Postgres. The wider
           process baseline continues to broaden generated process-level
           AlephBFT coverage into larger member matrices, longer partition
           windows, and repeated runs now that five-member AlephBFT DKG process
@@ -981,7 +981,7 @@
           </article>
           <article class="item">
             <h3>Distributed key generation</h3>
-            <p>Expose the bounded authenticated REST executor through mintd start/resume configuration and redacted process status, then require HTTPS, mTLS, or recipient-encrypted envelopes for non-local private shares while retaining explicit localhost-only development support.</p>
+            <p>Generate live setup-only member configs, complete an interrupted and resumed multi-process ceremony, restart every member to activate the finalized keyset, and run mint, swap, melt, and restore against it on SQLite and Postgres.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

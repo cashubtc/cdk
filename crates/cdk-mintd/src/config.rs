@@ -1072,6 +1072,81 @@ pub struct Federation {
     /// Private REST peer synchronization and retry policy.
     #[serde(default)]
     pub peer_sync: FederationPeerSync,
+    /// Optional dealer-free DKG ceremony to start or resume in setup mode.
+    #[serde(default)]
+    pub dkg: FederationDkg,
+}
+
+/// Dealer-free DKG auto-start settings for one federation member.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "federation")]
+pub struct FederationDkg {
+    /// Start or resume this ceremony when the setup-mode mint router starts.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Shared 32-byte ceremony ID as lowercase hex.
+    pub ceremony_id: Option<String>,
+    /// Cashu currency unit committed into the new aggregate keyset.
+    #[serde(default = "default_federation_dkg_unit")]
+    pub unit: String,
+    /// Whether the completed keyset should sign new outputs.
+    #[serde(default = "default_true")]
+    pub active: bool,
+    /// Input fee in parts per thousand.
+    #[serde(default)]
+    pub input_fee_ppk: u64,
+    /// Optional keyset expiry timestamp.
+    pub expiry: Option<u64>,
+    /// Supported Cashu denominations.
+    #[serde(default)]
+    pub amounts: Vec<u64>,
+    /// Maximum durable plan-and-deliver ticks per process invocation.
+    #[serde(default = "default_federation_dkg_max_ticks")]
+    pub max_ticks: usize,
+    /// Delay between incomplete ticks in milliseconds.
+    #[serde(default = "default_federation_dkg_retry_delay_ms")]
+    pub retry_delay_ms: u64,
+    /// Permit plain HTTP only when every member endpoint is explicit loopback.
+    #[serde(default)]
+    pub allow_insecure_localhost: bool,
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationDkg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ceremony_id: None,
+            unit: default_federation_dkg_unit(),
+            active: true,
+            input_fee_ppk: 0,
+            expiry: None,
+            amounts: Vec::new(),
+            max_ticks: default_federation_dkg_max_ticks(),
+            retry_delay_ms: default_federation_dkg_retry_delay_ms(),
+            allow_insecure_localhost: false,
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn default_true() -> bool {
+    true
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_dkg_unit() -> String {
+    "sat".to_string()
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_dkg_max_ticks() -> usize {
+    300
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_dkg_retry_delay_ms() -> u64 {
+    1_000
 }
 
 /// Federation consensus backend selected by mintd runtime configuration.

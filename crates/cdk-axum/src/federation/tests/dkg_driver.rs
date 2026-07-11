@@ -116,6 +116,7 @@ impl DkgDriverTestFederation {
                     &member.state,
                     &member.client,
                     &member.participant,
+                    FederationDkgSecretShareTransportPolicy::RequireHttps,
                 )
                 .await
                 .expect("DKG driver tick");
@@ -250,6 +251,7 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
         &federation.members[0].state,
         &federation.members[0].client,
         &federation.members[0].participant,
+        FederationDkgSecretShareTransportPolicy::RequireHttps,
     )
     .await
     .expect("partitioned DKG tick");
@@ -261,10 +263,14 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
 
     for _ in 0..4 {
         for member in &federation.members {
-            let outcome =
-                run_federation_dkg_driver_tick(&member.state, &member.client, &member.participant)
-                    .await
-                    .expect("partitioned ceremony tick");
+            let outcome = run_federation_dkg_driver_tick(
+                &member.state,
+                &member.client,
+                &member.participant,
+                FederationDkgSecretShareTransportPolicy::RequireHttps,
+            )
+            .await
+            .expect("partitioned ceremony tick");
             assert!(!outcome.is_complete());
         }
     }

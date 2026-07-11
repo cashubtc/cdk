@@ -68,11 +68,13 @@ pub(crate) use self::aleph_bft_session::{
     start_federation_aleph_bft_live_session, FederationAlephBftLiveSessionHandle,
 };
 use self::catch_up_routes::post_journal;
+pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;
 #[cfg(test)]
 use self::dkg_driver::{prepare_federation_dkg_participant_state, run_federation_dkg_driver_tick};
 pub use self::dkg_driver::{
-    run_federation_dkg_driver, FederationDkgDriverRunConfig, FederationDkgDriverRunOutcome,
-    FederationDkgDriverTickOutcome,
+    run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
+    FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
+    FederationDkgSecretShareTransportPolicy,
 };
 use self::dkg_routes::{
     post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,

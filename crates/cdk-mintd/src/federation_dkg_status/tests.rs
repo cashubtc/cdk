@@ -316,6 +316,8 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
         reveal_members: BTreeSet::from([member_id(1), member_id(2)]),
         secret_share_senders: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
         secret_share_receivers: BTreeSet::from([member_id(2)]),
+        driver_phase: Some(FederationDkgDriverPhase::SecretShares),
+        driver_error: None,
     };
 
     let report = dkg_status_report_with_setup_records(
@@ -341,6 +343,7 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     assert!(report.text.contains("reveal_members=1,2"));
     assert!(report.text.contains("secret_share_senders=1,2,3"));
     assert!(report.text.contains("secret_share_receivers=2"));
+    assert!(report.text.contains("driver_phase=share_delivery"));
     for private_fragment in [
         "secret_shares",
         "BlsSecretKeyShare",
@@ -455,6 +458,8 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
         reveal_members: BTreeSet::from([member_id(1)]),
         secret_share_senders: BTreeSet::from([member_id(1)]),
         secret_share_receivers: BTreeSet::from([member_id(2)]),
+        driver_phase: Some(FederationDkgDriverPhase::Reveal),
+        driver_error: None,
     };
 
     let report = dkg_status_report_with_setup_records(
@@ -551,7 +556,11 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     );
     assert_eq!(records.keyset_shares, vec![fixture.keyset_share]);
     assert_eq!(records.transcript_signatures, fixture.transcript_signatures);
-    let setup_summary = DkgSetupRecordSummary::from_records(&records);
+    let setup_summary = DkgSetupRecordSummary::from_records(
+        &records,
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+    );
     let report = dkg_status_report_with_setup_records(
         &fixture.setup_public_config,
         &fixture.setup_private_config,

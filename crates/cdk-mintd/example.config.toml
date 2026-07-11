@@ -385,6 +385,21 @@ max_delay_time = 3
 # exercise automatic session rollover.
 # aleph_bft_live_session_max_round = 6
 
+# Optional dealer-free DKG auto-start. Every member must use the same ceremony
+# ID and keyset policy. Production member federation URLs must use HTTPS.
+# [federation.dkg]
+# enabled = false
+# ceremony_id = "64 lowercase hex characters"
+# unit = "sat"
+# active = true
+# input_fee_ppk = 0
+# amounts = [1, 2, 4, 8, 16, 32, 64]
+# max_ticks = 300
+# retry_delay_ms = 1000
+# Keep false in production. This permits plain HTTP only for localhost,
+# 127.0.0.0/8, or ::1 development endpoints.
+# allow_insecure_localhost = false
+
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]
 # Maximum number of inputs allowed per transaction (swap/melt)

@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationConfig, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    redact_federation_operator_message, FederationConfig, FederationDkgDriverPhase,
+    FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberId,
 };
 
@@ -42,7 +42,8 @@ pub(crate) async fn run_dkg_status_command(
             &mut transcript_signatures,
             database_records.clone(),
         );
-        let setup_summary = DkgSetupRecordSummary::from_records(&database_records);
+        let setup_summary =
+            DkgSetupRecordSummary::from_records(&database_records, &public_config, &private_config);
         let report = dkg_status_report_with_setup_records(
             &public_config,
             &private_config,
@@ -190,10 +191,45 @@ struct DkgSetupRecordSummary {
     reveal_members: BTreeSet<MemberId>,
     secret_share_senders: BTreeSet<MemberId>,
     secret_share_receivers: BTreeSet<MemberId>,
+    driver_phase: Option<FederationDkgDriverPhase>,
+    driver_error: Option<String>,
 }
 
 impl DkgSetupRecordSummary {
-    fn from_records(records: &DkgCompletionRecords) -> Self {
+    fn from_records(
+        records: &DkgCompletionRecords,
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+    ) -> Self {
+        let local_participants = records
+            .participant_states
+            .iter()
+            .filter(|state| state.member_id() == private_config.member_id)
+            .collect::<Vec<_>>();
+        let (driver_phase, driver_error) = match local_participants.as_slice() {
+            [] => (None, None),
+            [participant] => {
+                let driver_records = FederationDkgDriverRecords {
+                    commitments: records.commitments.clone(),
+                    reveals: records.reveals.clone(),
+                    secret_share_contributions: records.secret_share_contributions.clone(),
+                    keyset_shares: records.keyset_shares.clone(),
+                    transcript_signatures: records.transcript_signatures.clone(),
+                };
+                match driver_records.plan(public_config, private_config, participant) {
+                    Ok(plan) => (Some(plan.phase), None),
+                    Err(err) => (
+                        None,
+                        Some(redact_federation_operator_message(&err.to_string())),
+                    ),
+                }
+            }
+            _ => (
+                None,
+                Some("multiple local participant states require ceremony selection".to_string()),
+            ),
+        };
+
         Self {
             participant_states: records.participant_states.len(),
             commitments: records.commitments.len(),
@@ -229,6 +265,8 @@ impl DkgSetupRecordSummary {
                 .iter()
                 .map(|contribution| contribution.receiver)
                 .collect(),
+            driver_phase,
+            driver_error,
         }
     }
 }
@@ -309,7 +347,7 @@ fn dkg_status_report_with_setup_records(
     ));
     if setup_records != &DkgSetupRecordSummary::default() {
         text.push_str(&format!(
-            "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={}\n",
+            "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={}\n",
             setup_records.participant_states,
             setup_records.commitments,
             setup_records.reveals,
@@ -319,8 +357,19 @@ fn dkg_status_report_with_setup_records(
             display_member_set(&setup_records.commitment_members),
             display_member_set(&setup_records.reveal_members),
             display_member_set(&setup_records.secret_share_senders),
-            display_member_set(&setup_records.secret_share_receivers)
+            display_member_set(&setup_records.secret_share_receivers),
+            setup_records
+                .driver_phase
+                .map(dkg_driver_phase_label)
+                .unwrap_or(if setup_records.driver_error.is_some() {
+                    "invalid"
+                } else {
+                    "not_started"
+                })
         ));
+        if let Some(reason) = setup_records.driver_error.as_deref() {
+            text.push_str(&format!("driver_error={reason}\n"));
+        }
     }
 
     if !setup_public_config.keysets.is_empty()
@@ -413,6 +462,17 @@ fn setup_method_label(setup_method: FederationDkgSetupMethod) -> &'static str {
     match setup_method {
         FederationDkgSetupMethod::TrustedDealer => "trusted_dealer",
         FederationDkgSetupMethod::PedersenDkg => "pedersen_dkg",
+    }
+}
+
+fn dkg_driver_phase_label(phase: FederationDkgDriverPhase) -> &'static str {
+    match phase {
+        FederationDkgDriverPhase::Commitment => "commitment",
+        FederationDkgDriverPhase::Reveal => "reveal",
+        FederationDkgDriverPhase::SecretShares => "share_delivery",
+        FederationDkgDriverPhase::LocalKeysetShare => "local_keyset_share",
+        FederationDkgDriverPhase::TranscriptSignature => "transcript_signature",
+        FederationDkgDriverPhase::Complete => "complete",
     }
 }
 

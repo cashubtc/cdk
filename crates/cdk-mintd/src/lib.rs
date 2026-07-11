@@ -41,8 +41,8 @@ use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationConfig, FederationPaymentObservationContext, FederationPaymentVerificationPolicy,
-    MemberConfigPrivate,
+    FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationPaymentObservationContext, FederationPaymentVerificationPolicy, MemberConfigPrivate,
 };
 // internal crate modules
 #[cfg(feature = "prometheus")]
@@ -747,6 +747,70 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
         aleph_bft_live_session_max_round: peer_sync.aleph_bft_live_session_max_round,
         aleph_bft_live_session_rotation_limit: peer_sync.aleph_bft_live_session_rotation_limit,
     }
+}
+
+#[cfg(feature = "federation")]
+fn federation_dkg_auto_start_config(
+    settings: &config::Settings,
+) -> Result<Option<cdk_axum::FederationDkgAutoStartConfig>> {
+    let Some(federation) = settings.federation.as_ref() else {
+        return Ok(None);
+    };
+    if !federation.dkg.enabled {
+        return Ok(None);
+    }
+    if !federation.enabled {
+        bail!("federation.dkg.enabled requires federation.enabled=true");
+    }
+
+    let ceremony_id = federation
+        .dkg
+        .ceremony_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("federation.dkg.ceremony_id must be set when DKG is enabled"))?
+        .parse::<FederationDkgCeremonyId>()
+        .context("invalid federation DKG ceremony ID")?;
+    let unit = cdk::nuts::CurrencyUnit::from_str(&federation.dkg.unit)
+        .with_context(|| format!("invalid federation DKG unit {}", federation.dkg.unit))?;
+    if federation.dkg.max_ticks == 0 {
+        bail!("federation.dkg.max_ticks must be greater than zero");
+    }
+    if federation.dkg.retry_delay_ms == 0 {
+        bail!("federation.dkg.retry_delay_ms must be greater than zero");
+    }
+    let amounts = federation
+        .dkg
+        .amounts
+        .iter()
+        .copied()
+        .map(cdk::Amount::from)
+        .collect::<std::collections::BTreeSet<_>>();
+    if amounts.len() != federation.dkg.amounts.len() {
+        bail!("federation.dkg.amounts must not contain duplicates");
+    }
+    let keyset_spec = FederationDkgKeysetSpec::new(
+        unit,
+        federation.dkg.active,
+        federation.dkg.input_fee_ppk,
+        federation.dkg.expiry,
+        amounts,
+    )
+    .context("invalid federation DKG keyset policy")?;
+    let secret_share_transport = if federation.dkg.allow_insecure_localhost {
+        cdk_axum::FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
+    } else {
+        cdk_axum::FederationDkgSecretShareTransportPolicy::RequireHttps
+    };
+
+    Ok(Some(cdk_axum::FederationDkgAutoStartConfig {
+        ceremony_id,
+        keyset_spec,
+        driver: cdk_axum::FederationDkgDriverRunConfig {
+            max_ticks: federation.dkg.max_ticks,
+            retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
+            secret_share_transport,
+        },
+    }))
 }
 
 #[cfg(feature = "federation")]
@@ -1846,15 +1910,15 @@ async fn start_services_with_shutdown(
     }
 
     #[cfg(feature = "federation")]
-    let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache_and_federation_peer_sync_config(
-            Arc::clone(&mint),
-            cache,
-            custom_methods,
-            settings.info.enable_info_page.unwrap_or(true),
-            federation_peer_sync_config(settings),
-        )
-        .await?;
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg(
+        Arc::clone(&mint),
+        cache,
+        custom_methods,
+        settings.info.enable_info_page.unwrap_or(true),
+        federation_peer_sync_config(settings),
+        federation_dkg_auto_start_config(settings)?,
+    )
+    .await?;
     #[cfg(not(feature = "federation"))]
     let v1_service = cdk_axum::create_mint_router_with_custom_cache(
         Arc::clone(&mint),
@@ -2421,6 +2485,7 @@ mod tests {
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
                     peer_sync: config::FederationPeerSync::default(),
+                    dkg: config::FederationDkg::default(),
                 }),
                 ..Default::default()
             };
@@ -2478,6 +2543,7 @@ mod tests {
                     aleph_bft_live_session_max_round: Some(67),
                     aleph_bft_live_session_rotation_limit: Some(71),
                 },
+                dkg: config::FederationDkg::default(),
             }),
             ..Default::default()
         };
@@ -2537,6 +2603,7 @@ mod tests {
                     reconnect_max_backoff_secs: 5,
                     ..config::FederationPeerSync::default()
                 },
+                dkg: config::FederationDkg::default(),
             }),
             ..Default::default()
         };
@@ -2550,6 +2617,145 @@ mod tests {
                 .contains("max backoff must be greater than or equal"),
             "error should explain invalid reconnect backoff: {err}"
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_dkg_auto_start_config_maps_mintd_settings() {
+        let ceremony_id = "11".repeat(32);
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                dkg: config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: Some(ceremony_id.clone()),
+                    unit: "sat".to_string(),
+                    active: true,
+                    input_fee_ppk: 7,
+                    expiry: Some(1_900_000_000),
+                    amounts: vec![1, 2, 4],
+                    max_ticks: 17,
+                    retry_delay_ms: 23,
+                    allow_insecure_localhost: true,
+                },
+                ..config::Federation::default()
+            }),
+            ..Default::default()
+        };
+
+        let config = federation_dkg_auto_start_config(&settings)
+            .expect("valid DKG settings")
+            .expect("enabled DKG config");
+
+        assert_eq!(config.ceremony_id.to_string(), ceremony_id);
+        assert_eq!(config.keyset_spec.unit, cdk::nuts::CurrencyUnit::Sat);
+        assert_eq!(config.keyset_spec.input_fee_ppk, 7);
+        assert_eq!(config.keyset_spec.final_expiry, Some(1_900_000_000));
+        assert_eq!(
+            config.keyset_spec.amounts,
+            [1_u64, 2, 4].into_iter().map(cdk::Amount::from).collect()
+        );
+        assert_eq!(config.driver.max_ticks, 17);
+        assert_eq!(
+            config.driver.retry_delay,
+            std::time::Duration::from_millis(23)
+        );
+        assert_eq!(
+            config.driver.secret_share_transport,
+            cdk_axum::FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_dkg_auto_start_requires_enabled_federation_and_ceremony_id() {
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: false,
+                dkg: config::FederationDkg {
+                    enabled: true,
+                    amounts: vec![1],
+                    ..config::FederationDkg::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..Default::default()
+        };
+        assert!(federation_dkg_auto_start_config(&settings)
+            .expect_err("DKG requires federation mode")
+            .to_string()
+            .contains("federation.enabled=true"));
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                dkg: config::FederationDkg {
+                    enabled: true,
+                    amounts: vec![1],
+                    ..config::FederationDkg::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..Default::default()
+        };
+        assert!(federation_dkg_auto_start_config(&settings)
+            .expect_err("DKG requires ceremony ID")
+            .to_string()
+            .contains("ceremony_id"));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_dkg_auto_start_rejects_unbounded_or_ambiguous_policy() {
+        let ceremony_id = Some("22".repeat(32));
+        for (label, dkg, expected) in [
+            (
+                "zero ticks",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1],
+                    max_ticks: 0,
+                    ..config::FederationDkg::default()
+                },
+                "max_ticks",
+            ),
+            (
+                "zero retry delay",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1],
+                    retry_delay_ms: 0,
+                    ..config::FederationDkg::default()
+                },
+                "retry_delay_ms",
+            ),
+            (
+                "duplicate amounts",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1, 1],
+                    ..config::FederationDkg::default()
+                },
+                "must not contain duplicates",
+            ),
+        ] {
+            let settings = config::Settings {
+                federation: Some(config::Federation {
+                    enabled: true,
+                    dkg,
+                    ..config::Federation::default()
+                }),
+                ..Default::default()
+            };
+            let err = federation_dkg_auto_start_config(&settings).expect_err(label);
+            assert!(
+                err.to_string().contains(expected),
+                "{label} should mention {expected}: {err}"
+            );
+        }
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
@@ -2586,6 +2792,7 @@ mod tests {
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
             }),
             ..Default::default()
         };
@@ -2632,6 +2839,7 @@ mod tests {
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
             }),
             ..Default::default()
         };
@@ -2654,6 +2862,7 @@ mod tests {
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
             }),
             ..Default::default()
         };
@@ -2682,6 +2891,7 @@ mod tests {
                 public_config_path: None,
                 private_config_path: None,
                 peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
             }),
             ..Default::default()
         };
@@ -2807,6 +3017,7 @@ mod tests {
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
                     peer_sync: config::FederationPeerSync::default(),
+                    dkg: config::FederationDkg::default(),
                 }),
                 ..Default::default()
             };
