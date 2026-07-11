@@ -2651,6 +2651,7 @@ INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-600}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
+DKG_EXPORT_JOBS="${{DKG_EXPORT_JOBS:-4}}"
 FEDERATION_CONSENSUS_BACKEND="${{FEDERATION_CONSENSUS_BACKEND:-aleph_bft}}"
 DKG_CAPTURE_METRICS="${{DKG_CAPTURE_METRICS:-0}}"
 DKG_METRICS_INTERVAL_SECONDS="${{DKG_METRICS_INTERVAL_SECONDS:-1}}"
@@ -3067,6 +3068,36 @@ export_final_config() {{
     --final-config-dir "$(member_final_config_dir "$member")"
 }}
 
+export_final_configs() {{
+  local member index
+  local -a export_members=()
+  local -a export_pids=()
+  for member in "${{MEMBERS[@]}}"; do
+    mkdir -p "$(member_final_config_dir "$member")"
+    export_final_config "$member" >"$(member_final_config_dir "$member")/export.log" 2>&1 &
+    export_members+=("$member")
+    export_pids+=("$!")
+    if (( ${{#export_pids[@]}} >= DKG_EXPORT_JOBS )); then
+      for index in "${{!export_pids[@]}}"; do
+        if ! wait "${{export_pids[$index]}}"; then
+          printf 'member %s failed to export its final DKG config\n' "${{export_members[$index]}}" >&2
+          cat "$(member_final_config_dir "${{export_members[$index]}}")/export.log" >&2
+          return 1
+        fi
+      done
+      export_members=()
+      export_pids=()
+    fi
+  done
+  for index in "${{!export_pids[@]}}"; do
+    if ! wait "${{export_pids[$index]}}"; then
+      printf 'member %s failed to export its final DKG config\n' "${{export_members[$index]}}" >&2
+      cat "$(member_final_config_dir "${{export_members[$index]}}")/export.log" >&2
+      return 1
+    fi
+  done
+}}
+
 compare_final_public_configs() {{
   local member
   for member in "${{MEMBERS[@]}}"; do
@@ -3160,6 +3191,10 @@ validate_live_dkg_smoke() {{
     printf 'DKG_METRICS_INTERVAL_SECONDS must be a positive integer\n' >&2
     return 1
   fi
+  if ! [[ "$DKG_EXPORT_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'DKG_EXPORT_JOBS must be a positive integer\n' >&2
+    return 1
+  fi
 }}
 
 trap cleanup EXIT INT TERM
@@ -3206,9 +3241,7 @@ if [[ "$interrupted_ceremony_before" != "$interrupted_ceremony_after" || "$(stat
   exit 1
 fi
 
-for member in "${{MEMBERS[@]}}"; do
-  export_final_config "$member"
-done
+export_final_configs
 compare_final_public_configs
 
 DKG_SETUP_PHASE=0

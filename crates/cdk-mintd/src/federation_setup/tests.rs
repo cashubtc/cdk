@@ -385,6 +385,9 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("wait_for_dkg_driver_metric_completion"));
     assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_RETRIES:-2400"));
     assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05"));
+    assert!(live_dkg_smoke_script.contains("DKG_EXPORT_JOBS:-4"));
+    assert!(live_dkg_smoke_script.contains("export_final_configs"));
+    assert!(live_dkg_smoke_script.contains("member %s failed to export its final DKG config"));
     assert!(live_dkg_smoke_script.contains("keyset_shares || true)\" == \"0"));
     assert!(live_dkg_smoke_script
         .contains("live DKG completed while a required participant was offline"));

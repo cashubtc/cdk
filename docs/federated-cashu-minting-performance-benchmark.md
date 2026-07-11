@@ -2590,8 +2590,8 @@ Cashu server architecture.
 
 ### Large-process accounting collector
 
-Decision: **Kept** as opt-in benchmark tooling, with one bounded validation
-result and no large-acceptance result yet.
+Decision: **Kept** as opt-in benchmark tooling, including the completed large
+acceptance result below.
 `DKG_CAPTURE_METRICS=1` on the generated live-DKG runner now records setup wall
 time and one CSV sample stream per process containing member, PID, CPU percent,
 RSS, user CPU time, and system CPU time. A second stream probes the primary
@@ -2608,8 +2608,9 @@ overwritten. Metrics stop at the setup completion boundary before activation
 restart and wallet smoke, so process accounting is scoped to DKG. The collector
 is disabled by default, contains no ceremony scalars, changes no DKG message or
 retry, and generated scripts are syntax-checked with `bash -n` in the focused
-generator test. Per the operator's stop request, the 20-member process ceremony
-was not rerun; the acceptance measurement remains explicitly open.
+generator test. Failed runs now preserve the same bounded evidence, and the
+later explicitly resumed 20-member process ceremony is recorded under Candidate
+12.
 
 Failure reporting is also deterministic. The EXIT trap takes one final sample,
 stops the monitor, samples and stops every current PID, and emits at most one
@@ -2702,6 +2703,70 @@ latency, 90.584ms peak latency, and zero runtime failures. All members exported
 the same transcript hash, keyset ID, aggregate keys, and eight local public
 amount shares. The full focused release suite is 50/50 Axum DKG tests, including
 early-cache-failure recovery and pointer-identical reuse.
+
+### Candidate 12: reuse validated configs for activation checks
+
+Decision: **Kept**. The first controlled release 20-of-14,
+eight-denomination process run reached activation but failed the bounded
+completion check after 467 seconds. Every database ultimately contained all 20
+transcript signatures and activation confirmations, and `/v1/info` had zero
+runtime failures, but most drivers could not drain their CPU queues and report
+`Complete`. The collector measured 6,989.29 user CPU seconds, 39.48 system CPU
+seconds, 3,266 deliveries, 1,334 failures, and 1,216 timeouts. The public REST
+probe averaged 284.800ms and peaked at 7.667s. Peak per-member RSS was 99,248
+KiB. No transcript, keyset, activation, or state mismatch was admitted.
+
+The trace exposed one remaining trust-boundary violation after Candidate 11:
+the activation route retrieved the cached fully validated finalized config and
+then called the ordinary `validate_sender`, which repeated complete setup and
+finalized-config validation for every sender. At 20 senders by 20 receivers,
+that repeated threshold BLS interpolation and setup-transcript validation
+hundreds of times. Harness v6 compares the unchanged checked API with the new
+path used only after the caller already holds validated immutable configs:
+
+| Eight-denomination release activation validation | 5-of-3 | 11-of-8 | 20-of-14 |
+|---|---:|---:|---:|
+| Fully checked median | 116.204ms | 463.958ms | 1.300s |
+| Validated-config median | 161us | 555us | 1.527ms |
+| Improvement | 722x | 836x | 851x |
+
+The retained API split leaves the ordinary fully checked signing and validation
+entry points unchanged. The DKG planner and activation route use the explicit
+validated-config variants only after `from_records`, startup validation, or the
+fallible finalized-config cache has completed. Federation ID, ceremony,
+transcript hash, final-config digest, sender identity signature, config-extension
+shape, conflict, authenticated sequence, and atomic persistence checks remain
+mandatory. Tests prove checked and validated-config signing produce the exact
+same request and that digest tampering still fails.
+
+The fresh post-change 20-of-14 run completed interrupted/restarted setup in 116
+seconds, within the new conservative 180-second release budget:
+
+| Release 20-of-14 process result | Before | After |
+|---|---:|---:|
+| Setup outcome | failed after 467s | complete in 116s |
+| Aggregate user/system CPU | 6,989.29s / 39.48s | 1,724.13s / 9.28s |
+| Delivery attempts/failures/timeouts | 3,266 / 1,334 / 1,216 | 2,311 / 291 / 243 |
+| Runtime `/v1/info` failures | 0 | 0 |
+| Mean/peak info latency | 284.800ms / 7.667s | 47.680ms / 1.248s |
+| Peak per-member RSS | 99,248 KiB | 96,544 KiB |
+
+All 20 members completed with one transcript, keyset ID, aggregate-key map, and
+public-share mapping. The interrupted member contributed the expected 20 exact
+duplicate successes after its volatile acknowledgement tracker reset. Every
+member independently exported a byte-identical public config, restarted with
+its own private share, and converged. Mint, swap, check-state, melt, and restore
+then passed in 7.834 seconds. The remaining 243 timeouts occurred during
+CPU-heavy earlier phases, recovered idempotently within the budget, caused no
+runtime REST failure, and did not amplify activation into another stalled wave.
+
+Post-ceremony export is not included in the 116-second setup metric. The first
+runner serialized 20 independent full-validation exports and took about 50
+seconds per member. The generated harness now uses configurable bounded batches
+(`DKG_EXPORT_JOBS`, default four), retains one log per member, fails on any
+export error, and still compares every final public config byte-for-byte before
+restart. This is benchmark-runner throughput only; production DKG behavior is
+unchanged.
 
 ## Recommended Work Order
 

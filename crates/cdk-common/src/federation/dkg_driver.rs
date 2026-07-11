@@ -458,7 +458,7 @@ impl FederationDkgDriverRecords {
             std::slice::from_ref(stored_keyset_share),
             &signature_records,
         )?;
-        let activation = FederationDkgActivationRequest::sign(
+        let activation = FederationDkgActivationRequest::sign_for_validated_config(
             participant_state.ceremony_id(),
             &finalized.public_config,
             private_config,
@@ -469,7 +469,11 @@ impl FederationDkgDriverRecords {
             .iter()
             .filter(|candidate| candidate.ceremony_id == participant_state.ceremony_id())
         {
-            candidate.validate_sender(public_config, &finalized.public_config, candidate.signer)?;
+            candidate.validate_sender_against_validated_configs(
+                public_config,
+                &finalized.public_config,
+                candidate.signer,
+            )?;
             match matching_activations.insert(candidate.signer, *candidate) {
                 Some(existing) if existing != *candidate => {
                     return Err(FederationError::DkgTranscriptMismatch {
@@ -831,6 +835,33 @@ mod tests {
             &records.transcript_signatures,
         )
         .expect("finalized member config");
+        let checked_activation = FederationDkgActivationRequest::sign(
+            participant_state.ceremony_id(),
+            &finalized.public_config,
+            private_config,
+        )
+        .expect("checked activation confirmation");
+        let validated_activation = FederationDkgActivationRequest::sign_for_validated_config(
+            participant_state.ceremony_id(),
+            &finalized.public_config,
+            private_config,
+        )
+        .expect("activation confirmation from validated config");
+        assert_eq!(checked_activation, validated_activation);
+        checked_activation
+            .validate_sender(
+                &public_config,
+                &finalized.public_config,
+                private_config.member_id,
+            )
+            .expect("checked activation validation");
+        checked_activation
+            .validate_sender_against_validated_configs(
+                &public_config,
+                &finalized.public_config,
+                private_config.member_id,
+            )
+            .expect("activation validation from validated configs");
         records.activations = private_configs
             .values()
             .map(|private_config| {

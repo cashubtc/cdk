@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    FederatedKeyset, FederationConfig, FederationDkgCeremonyId, FederationDkgCommitmentRound,
-    FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederatedKeyset, FederationConfig, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCommitmentRound, FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptSignature,
     FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberConfigPublic, MemberId,
@@ -25,8 +25,8 @@ use cdk_common::nuts::nut01::{
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 5;
-const ALL_PHASES: [&str; 16] = [
+const HARNESS_VERSION: u16 = 6;
+const ALL_PHASES: [&str; 18] = [
     "participant_generation",
     "participant_generation_validated_by_construction",
     "participant_reload_validation",
@@ -43,6 +43,8 @@ const ALL_PHASES: [&str; 16] = [
     "single_local_keyset_derivation",
     "local_keyset_derivation",
     "transcript_derivation",
+    "activation_validation_checked",
+    "activation_validation_validated_configs",
 ];
 
 #[derive(Debug, Clone)]
@@ -330,6 +332,10 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
         || args.phases.contains("planner_validated_participant")
         || args.phases.contains("planner_changed_record")
         || args.phases.contains("transcript_derivation")
+        || args.phases.contains("activation_validation_checked")
+        || args
+            .phases
+            .contains("activation_validation_validated_configs")
         || args.include_full_ceremony;
     let complete_start = Instant::now();
     let complete_fixture = match (needs_complete, participant_fixture.as_ref()) {
@@ -571,6 +577,54 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                     .map_err(Into::into)
                 },
             )?);
+        }
+        if args.phases.contains("activation_validation_checked")
+            || args
+                .phases
+                .contains("activation_validation_validated_configs")
+        {
+            let finalized = FederationDkgFinalizedMemberConfig::from_records(
+                &base.public_config,
+                private_config,
+                std::slice::from_ref(keyset_share),
+                &complete.transcript_signatures,
+            )?;
+            let activation = FederationDkgActivationRequest::sign(
+                base.ceremony_id,
+                &finalized.public_config,
+                private_config,
+            )?;
+            if args.phases.contains("activation_validation_checked") {
+                reports.push(measure_phase(
+                    "activation_validation_checked",
+                    args.iterations,
+                    || {
+                        activation.validate_sender(
+                            &base.public_config,
+                            &finalized.public_config,
+                            local_member,
+                        )?;
+                        Ok(())
+                    },
+                )?);
+            }
+            if args
+                .phases
+                .contains("activation_validation_validated_configs")
+            {
+                reports.push(measure_phase(
+                    "activation_validation_validated_configs",
+                    args.iterations,
+                    || {
+                        activation.validate_sender_against_validated_configs(
+                            &base.public_config,
+                            &finalized.public_config,
+                            local_member,
+                        )?;
+                        Ok(())
+                    },
+                )?);
+            }
         }
     }
     if args.include_full_ceremony {

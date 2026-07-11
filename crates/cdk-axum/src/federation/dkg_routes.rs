@@ -294,7 +294,7 @@ pub(super) async fn post_dkg_activation(
         .map_err(dkg_error_response)?;
     payload
         .payload
-        .validate_sender(
+        .validate_sender_against_validated_configs(
             runtime_config.public_config(),
             &finalized.public_config,
             verified.sender,

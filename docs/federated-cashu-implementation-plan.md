@@ -3080,6 +3080,22 @@ Verified harness checkpoint (2026-07-11):
   with zero delivery timeouts, zero post-start info failures, and exact final
   config equality, then passed activation restart and mint/swap/melt/restore.
   All 50 focused release Axum DKG tests pass.
+- Candidate 12 is **Kept** for eliminating repeated trust-boundary validation.
+  The first controlled release 20-of-14/eight-denomination process run reached
+  activation but failed after 467 seconds with 6,989.29 user CPU seconds and
+  1,216 request timeouts. The cached finalized config was being fully validated
+  again inside every sender's activation check. Harness v6 measures the ordinary
+  checked path versus the explicit already-validated path at 116.204ms versus
+  161us for 5-of-3, 463.958ms versus 555us for 11-of-8, and 1.300s versus
+  1.527ms for 20-of-14.
+- The checked public signing/validation APIs remain unchanged. Only callers that
+  just assembled or retrieved a fully validated immutable finalized config use
+  the new variants; federation ID, ceremony, transcript hash, config digest,
+  sender signature, extension shape, sequence, conflict, and persistence checks
+  remain mandatory. The fresh 20-of-14 run completed setup in 116 seconds with
+  1,724.13 user CPU seconds, 243 recovered timeouts, zero runtime info failures,
+  byte-identical final configs, and a 7.834-second mint/swap/check-state/melt/
+  restore smoke after restart. The documented release budget is 180 seconds.
 - The bounded-admission robustness checkpoint is **Kept** without a speed
   claim. Dealer-free DKG now accepts at most 64 roster members and 64
   denomination keys, while broader standalone and trusted-dealer configuration
@@ -3166,7 +3182,7 @@ Verified harness checkpoint (2026-07-11):
   local keyset derivation, transcript derivation, and complete multi-process
   ceremony time separately so one fast aggregate number cannot hide a hot
   phase.
-- [ ] Record wall, user, and system time; average and peak CPU; peak RSS;
+- [x] Record wall, user, and system time; average and peak CPU; peak RSS;
   per-phase elapsed time; REST attempt/success/timeout counts; duplicate request
   counts; durable record counts; bytes sent; and whether every member completed
   with the same transcript hash, keyset ID, aggregate keys, and local public
@@ -3195,10 +3211,7 @@ Verified harness checkpoint (2026-07-11):
   while the interrupted member was offline, zero timeouts, and five exact
   duplicate successes after its in-memory acknowledgement tracker restarted.
   Nine post-listener `/v1/info` probes succeeded with zero runtime failures;
-  peak latency under setup load was 0.500 seconds. This item remains open until
-  an explicitly resumed large process run records the full acceptance profile;
-  the previously stopped 20-member run was not restarted merely to validate
-  the collector.
+  peak latency under setup load was 0.500 seconds.
 
   The next release scaling checkpoint used 11 members, threshold eight, and
   eight denominations. Its first run exposed the repeated activation-validation
@@ -3211,6 +3224,14 @@ Verified harness checkpoint (2026-07-11):
   members exported the same transcript, keyset, aggregate keys, and local
   eight-amount public-share mapping; the standard wallet smoke passed in 7.963
   seconds.
+
+  The final release acceptance profile used 20 members, threshold 14, and eight
+  denominations. Its pre-fix attempt failed after 467 seconds; after Candidate
+  12, setup completed in 116 seconds with 1,724.13 user and 9.28 system CPU
+  seconds, 96,544 KiB peak per-member RSS, 2,311 deliveries, 291 failures, 243
+  recovered timeouts, and zero runtime `/v1/info` failures. Every member
+  exported the same final public config and restarted with its own private
+  share; mint, swap, check-state, melt, and restore passed in 7.834 seconds.
 - [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.
@@ -3361,6 +3382,16 @@ reference to the recorded measurements:
   remain retryable. The identical rerun completed setup in 34 seconds with zero
   delivery timeouts and zero runtime info failures, and all 50 focused release
   Axum DKG tests preserve activation signature/conflict/sequence/write checks.
+- [x] Reuse already-validated setup and finalized configs inside activation
+  signing and sender checks instead of invoking full config validation again
+  for every activation request. Outcome: **Kept**. Harness v6 eight-denomination
+  medians improve from 116.204ms to 161us at 5-of-3, 463.958ms to 555us at
+  11-of-8, and 1.300s to 1.527ms at 20-of-14. The pre-fix 20-member process run
+  failed after 467 seconds with 1,216 timeouts; the fresh after-run completed in
+  116 seconds with 243 recovered timeouts, zero runtime info failures, identical
+  final configs, and passing wallet operations. The ordinary checked APIs remain
+  available and unchanged, while the validated-config variants retain every
+  activation binding and signature check.
 
 Production robustness checklist:
 

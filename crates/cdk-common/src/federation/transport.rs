@@ -964,6 +964,19 @@ impl FederationDkgActivationRequest {
         private_config: &MemberConfigPrivate,
     ) -> Result<Self> {
         final_public_config.validate()?;
+        Self::sign_for_validated_config(ceremony_id, final_public_config, private_config)
+    }
+
+    /// Sign after the caller has fully validated the finalized config.
+    ///
+    /// This avoids repeating threshold-key and transcript validation in DKG
+    /// planner paths that have just assembled and validated the same immutable
+    /// finalized config.
+    pub fn sign_for_validated_config(
+        ceremony_id: FederationDkgCeremonyId,
+        final_public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
         let mut setup_public_config = final_public_config.clone();
         setup_public_config.keysets.clear();
         setup_public_config.setup_transcript = None;
@@ -1020,7 +1033,24 @@ impl FederationDkgActivationRequest {
     ) -> Result<()> {
         setup_public_config.validate()?;
         final_public_config.validate()?;
-        self.validate_signature_sender(setup_public_config, sender)?;
+        self.validate_sender_against_validated_configs(
+            setup_public_config,
+            final_public_config,
+            sender,
+        )
+    }
+
+    /// Validate after the caller has fully validated both federation configs.
+    ///
+    /// All activation binding and identity-signature checks remain mandatory;
+    /// only repeated validation of the immutable configs is skipped.
+    pub fn validate_sender_against_validated_configs(
+        &self,
+        setup_public_config: &FederationConfig,
+        final_public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
+        self.validate_signature_sender_against_validated_config(setup_public_config, sender)?;
         if self.federation_id != setup_public_config.federation_id
             || final_public_config.federation_id != setup_public_config.federation_id
         {
@@ -1080,6 +1110,14 @@ impl FederationDkgActivationRequest {
         sender: MemberId,
     ) -> Result<()> {
         setup_public_config.validate()?;
+        self.validate_signature_sender_against_validated_config(setup_public_config, sender)
+    }
+
+    fn validate_signature_sender_against_validated_config(
+        &self,
+        setup_public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
         ensure_dkg_payload_sender(self.signer, sender)?;
         if self.federation_id != setup_public_config.federation_id {
             return Err(FederationError::FederationIdMismatch {
