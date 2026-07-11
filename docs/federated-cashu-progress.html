@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has seven retained performance/robustness optimizations, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact all-member readiness, and failed deliveries now have bounded redacted classifications; large process gates remain open.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has eight retained performance/robustness improvements, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact readiness, rejects each bad share before persistence, and acknowledges durable contributions before deferred driver derivation; large process gates remain open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">bench: isolate DKG secret-share finalization</span>
+          <span class="value">perf: decouple DKG share acknowledgement</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Harness v5 isolates Candidate 10's pre-change cost. At eight denominations, one contribution verifies in 15.094ms, 33.756ms, and 56.148ms for 5-of-3, 11-of-8, and 20-of-14; one member's final derivation takes 159.791ms, 752.266ms, and 2.276s. The 20-member derivation is 40.5x slower before process contention.</span>
+          <span class="value">Candidate 10 is retained. At eight denominations, the 20-of-14 route-critical verifier is 56.793ms instead of the former 2.276s final derivation, a 40.1x shorter cryptographic acknowledgement path. Invalid first shares fail before persistence; the driver still fully derives/revalidates durable records for restart safety. All 32 common and 34 release Axum DKG tests pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Implement Candidate 10: verify each incoming share before persistence, acknowledge the durable contribution without waiting for final derivation, and let the existing restartable driver derive the member keyset. Prove invalid-share rejection, restart equality, and after latency before another process ceremony.</span>
+          <span class="value">Complete the remaining Milestone 20A harness/process metrics and production robustness gates, beginning with secret-at-rest protection and explicit activation/abort semantics. Keep the 20-member process acceptance ceremony deferred until the focused gates justify it.</span>
         </div>
       </aside>
     </header>

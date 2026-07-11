@@ -3042,6 +3042,23 @@ Verified harness checkpoint (2026-07-11):
   multi-process CPU contention. This establishes the pre-change baseline for
   decoupling durable contribution acknowledgement from final local derivation;
   no production behavior changed in this harness checkpoint.
+- Candidate 10 is **Kept** for request liveness and earlier cryptographic
+  rejection, not for lower total CPU. Every first-time contribution is now
+  verified against its sender's committed reveal on the bounded CPU worker
+  before the contribution and authenticated sequence are committed atomically.
+  Invalid shares fail before persistence even when they are not the final
+  contribution. The HTTP response then acknowledges that durable contribution;
+  only the existing restartable driver derives and persists the final member
+  keyset from the complete durable record set.
+- Repeated harness v5 eight-denomination medians put the new route-critical
+  verification at 15.286ms, 34.399ms, and 56.793ms for 5-of-3, 11-of-8, and
+  20-of-14. The corresponding pre-change final derivations were 159.791ms,
+  752.266ms, and 2.276s, so the cryptographic acknowledgement path is 10.5x,
+  21.9x, and 40.1x shorter. Driver derivation remains 161.116ms, 771.336ms,
+  and 2.322s and fully revalidates durable records for restart safety. Thirty-two
+  common DKG tests and all 34 release Axum DKG tests pass, including invalid
+  first-share rejection, acknowledgement-before-derivation, driver completion,
+  restart activation, transcript equality, and prior fault coverage.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3191,21 +3208,32 @@ reference to the recorded measurements:
   other internal failures generic 500 without exposing response details. A
   redaction regression proves private-looking source messages are absent from
   every classified value. Outcome does not claim lower latency.
-- [ ] Validate each first-time secret-share contribution against its sender's
+- [x] Validate each first-time secret-share contribution against its sender's
   revealed polynomial before durable acceptance, then acknowledge the durable
   contribution without coupling that HTTP request to final local keyset
   derivation. Let the existing driver derive and persist the final member share
   from complete durable records. Harness v5 baseline: at eight denominations,
   one contribution verification versus one member derivation is 15.094ms versus
   159.791ms (5-of-3), 33.756ms versus 752.266ms (11-of-8), and 56.148ms versus
-  2.276s (20-of-14). Outcome: pending implementation and after measurement.
+  2.276s (20-of-14). Outcome: **Kept**. Repeated after medians for the shared
+  verifier are 15.286ms, 34.399ms, and 56.793ms, making the route-critical
+  cryptographic path 10.5x, 21.9x, and 40.1x shorter than the former final
+  request derivation. The driver still spends 161.116ms, 771.336ms, and 2.322s
+  deriving and fully revalidating the durable record set, so no total-CPU
+  reduction is claimed. Invalid first shares fail before persistence, final
+  contributions are acknowledged before keyset creation, and restart derives
+  and activates the identical keyset.
 
 Production robustness checklist:
 
-- [ ] Verify each received secret-share contribution against the sender's
+- [x] Verify each received secret-share contribution against the sender's
   revealed public polynomial before durable acceptance. Invalid contributions
   must identify the offending member, fail before sequence advancement, and
-  never wait until final all-member derivation to surface.
+  never wait until final all-member derivation to surface. The shared reveal
+  verifier checks exact ceremony, receiver, denomination set, signer ID, and
+  every scalar-derived public share against the sender polynomial on the bounded
+  CPU worker before opening the write transaction. A bad first contribution
+  leaves both contribution storage and sender sequence unchanged.
 - [ ] Protect participant state, received scalar contributions, final private
   shares, identity keys, mnemonics, and backups at rest with production-grade
   encryption, restrictive permissions, redaction, and an explicit secret-data

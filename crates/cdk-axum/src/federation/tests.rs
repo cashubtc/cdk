@@ -23,17 +23,18 @@ use cdk::federation::{
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
     FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgCeremonyId, FederationDkgSetupMethod,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
-    FederationError, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
-    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationPaymentObservationPolicy,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
-    FederationPaymentTrustModel, FederationRestMessageKind, FederationRestoreOperation,
-    FederationSignedRequest, InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationConsensusRuntime, FederationDkgCeremonyId, FederationDkgCommitmentRound,
+    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMemberStatusKind,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationReportAction, FederationPaymentTrustModel,
+    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
+    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -2243,7 +2244,57 @@ fn dkg_transcript_signature_request(
     )
 }
 
-async fn route_derived_dkg_transcript_fixture() -> (
+async fn derive_and_persist_dkg_member_keyset_share(
+    state: &MintState,
+    public_config: &FederationConfig,
+) -> FederationDkgMemberKeysetShare {
+    let db = state.mint.localstore();
+    let commitments = db
+        .get_federation_dkg_commitments()
+        .await
+        .expect("DKG commitments")
+        .into_iter()
+        .map(|commitment| (commitment.member_id, commitment))
+        .collect();
+    let round = FederationDkgCommitmentRound::new(public_config, commitments)
+        .expect("complete DKG commitment round");
+    let reveals = db
+        .get_federation_dkg_reveals()
+        .await
+        .expect("DKG reveals")
+        .into_iter()
+        .map(|reveal| (reveal.member_id, reveal))
+        .collect::<BTreeMap<_, _>>();
+    round
+        .validate_reveals(public_config, &reveals)
+        .expect("complete DKG reveals");
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let contributions = db
+        .get_federation_dkg_secret_share_contributions()
+        .await
+        .expect("DKG secret-share contributions")
+        .into_iter()
+        .filter(|contribution| contribution.receiver == local_member)
+        .map(|contribution| (contribution.sender, contribution))
+        .collect::<BTreeMap<_, _>>();
+    let keyset_share = round
+        .derive_member_keyset_share(public_config, &reveals, local_member, &contributions)
+        .expect("driver-derived member keyset share");
+    let mut tx = db.begin_transaction().await.expect("begin keyset share");
+    tx.add_federation_dkg_member_keyset_share(&keyset_share)
+        .await
+        .expect("persist driver-derived keyset share");
+    tx.commit()
+        .await
+        .expect("commit driver-derived keyset share");
+    keyset_share
+}
+
+async fn durable_dkg_transcript_fixture() -> (
     MintState,
     FederationConfig,
     MemberConfigPrivate,
@@ -2302,15 +2353,8 @@ async fn route_derived_dkg_transcript_fixture() -> (
         )
         .await
         .expect("persist peer secret-share contribution");
-    let keyset_share = state
-        .mint
-        .localstore()
-        .get_federation_dkg_member_keyset_shares()
-        .await
-        .expect("route-derived keyset shares")
-        .into_iter()
-        .next()
-        .expect("route-derived keyset share");
+    let keyset_share =
+        derive_and_persist_dkg_member_keyset_share(&state, &setup_public_config).await;
     let final_public_config = FederationConfig::new(
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),
@@ -2323,7 +2367,7 @@ async fn route_derived_dkg_transcript_fixture() -> (
         &final_public_config,
         &public_ceremonies,
     )
-    .expect("route-derived transcript hash");
+    .expect("durable transcript hash");
 
     (
         state,

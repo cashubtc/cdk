@@ -188,7 +188,7 @@ async fn private_dkg_setup_routes_accept_exact_duplicates_and_advance_sequence()
 
 #[tokio::test]
 async fn completed_secret_share_duplicate_skips_cpu_derivation() {
-    let (state, _, _, peer_private, _) = route_derived_dkg_transcript_fixture().await;
+    let (state, _, _, peer_private, _) = durable_dkg_transcript_fixture().await;
     let db = state.mint.localstore();
     let contribution = db
         .get_federation_dkg_secret_share_contributions()
@@ -329,6 +329,12 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
     let _ = post_dkg_commitment(State(state.clone()), Json(commitment_request))
         .await
         .expect("commitment accepted");
+    let reveal = dkg_reveal_request(&public_config, peer_private.member_id, 21);
+    let reveal_request =
+        signed_dkg_reveal_request(&public_config, &peer_private, local_member, 2, reveal);
+    let _ = post_dkg_reveal(State(state.clone()), Json(reveal_request))
+        .await
+        .expect("reveal accepted");
     let first_payload =
         dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
     let conflicting_payload =
@@ -337,14 +343,14 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
         &public_config,
         &peer_private,
         local_member,
-        2,
+        3,
         first_payload.clone(),
     );
     let conflicting_request = signed_dkg_secret_share_request(
         &public_config,
         &peer_private,
         local_member,
-        3,
+        4,
         conflicting_payload,
     );
 
@@ -362,7 +368,7 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
         .get_federation_member_sequences()
         .await
         .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
     let secret_shares = state
         .mint
         .localstore()
@@ -373,7 +379,7 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
 }
 
 #[tokio::test]
-async fn private_dkg_secret_share_route_derives_member_keyset_share_when_ready() {
+async fn private_dkg_secret_share_route_acks_before_driver_keyset_derivation() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let local_member = local_private.member_id;
@@ -425,10 +431,14 @@ async fn private_dkg_secret_share_route_derives_member_keyset_share_when_ready()
         .get_federation_dkg_member_keyset_shares()
         .await
         .expect("member keyset shares");
-    assert_eq!(shares.len(), 1);
-    assert_eq!(shares[0].member_id, local_member);
-    assert_eq!(shares[0].secret_shares.len(), 1);
-    shares[0]
+    assert!(
+        shares.is_empty(),
+        "HTTP persistence must not derive the keyset"
+    );
+    let keyset_share = derive_and_persist_dkg_member_keyset_share(&state, &public_config).await;
+    assert_eq!(keyset_share.member_id, local_member);
+    assert_eq!(keyset_share.secret_shares.len(), 1);
+    keyset_share
         .keyset
         .validate(public_config.threshold_params, &public_config.members)
         .expect("derived keyset validates");
@@ -450,17 +460,11 @@ async fn private_dkg_secret_share_route_derives_member_keyset_share_when_ready()
 }
 
 #[tokio::test]
-async fn private_dkg_secret_share_route_rejects_bad_share_during_completion() {
+async fn private_dkg_secret_share_route_rejects_bad_share_before_persistence() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let local_member = local_private.member_id;
     persist_complete_dkg_round(&state, &public_config, &local_private, &peer_private).await;
-    let local_contribution =
-        dkg_secret_share_request(&public_config, local_member, local_member, 11);
-    state
-        .persist_federation_dkg_secret_share_contribution(&local_contribution, local_member, 3)
-        .await
-        .expect("persist local secret-share contribution");
 
     let bad_peer_contribution =
         dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 31);
@@ -490,19 +494,19 @@ async fn private_dkg_secret_share_route_rejects_bad_share_during_completion() {
         .get_federation_dkg_secret_share_contributions()
         .await
         .expect("stored secret-share contributions");
-    assert_eq!(contributions, vec![local_contribution]);
+    assert!(contributions.is_empty());
     let sequences = state
         .mint
         .localstore()
         .get_federation_member_sequences()
         .await
         .expect("persisted sequences");
-    assert_eq!(sequences.get(&local_member), Some(&3));
+    assert_eq!(sequences.get(&local_member), Some(&2));
     assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
 }
 
 #[tokio::test]
-async fn federation_restart_activates_route_derived_dkg_records() {
+async fn federation_restart_activates_driver_derived_dkg_records() {
     let (trusted_public_config, local_private, peer_private) = transport_config();
     let mut setup_public_config = trusted_public_config.clone();
     setup_public_config.keysets.clear();
@@ -560,15 +564,8 @@ async fn federation_restart_activates_route_derived_dkg_records() {
         .await
         .expect("peer secret-share accepted");
 
-    let keyset_share = state
-        .mint
-        .localstore()
-        .get_federation_dkg_member_keyset_shares()
-        .await
-        .expect("route-derived keyset shares")
-        .into_iter()
-        .next()
-        .expect("route-derived keyset share");
+    let keyset_share =
+        derive_and_persist_dkg_member_keyset_share(&state, &setup_public_config).await;
     let mut final_public_config = FederationConfig::new(
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),

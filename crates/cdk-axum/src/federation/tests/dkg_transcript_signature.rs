@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
     let (state, public_config, local_private, peer_private, transcript_hash) =
-        route_derived_dkg_transcript_fixture().await;
+        durable_dkg_transcript_fixture().await;
     let local_member = local_private.member_id;
     let payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
@@ -62,7 +62,7 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
 #[tokio::test]
 async fn private_dkg_transcript_signature_route_rejects_conflict_before_sequence_persistence() {
     let (state, public_config, local_private, peer_private, transcript_hash) =
-        route_derived_dkg_transcript_fixture().await;
+        durable_dkg_transcript_fixture().await;
     let local_member = local_private.member_id;
     let first_payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
@@ -162,7 +162,7 @@ async fn private_dkg_transcript_signature_route_rejects_before_local_keyset_shar
 #[tokio::test]
 async fn private_dkg_transcript_signature_route_rejects_wrong_hash_before_sequence() {
     let (state, public_config, local_private, peer_private, expected_hash) =
-        route_derived_dkg_transcript_fixture().await;
+        durable_dkg_transcript_fixture().await;
     let local_member = local_private.member_id;
     let wrong_hash = FederationDkgTranscriptHash::from_bytes([42; 32]);
     assert_ne!(wrong_hash, expected_hash);

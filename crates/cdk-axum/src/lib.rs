@@ -2863,15 +2863,8 @@ impl MintState {
         let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
         setup_state.insert_reveal(&public_config, reveal.clone())?;
 
-        let completed_keyset_share = self
-            .derive_federation_dkg_member_keyset_share_if_ready(&public_config, &setup_state, None)
-            .await?;
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_reveal(reveal).await?;
-        if let Some(keyset_share) = &completed_keyset_share {
-            tx.add_federation_dkg_member_keyset_share(keyset_share)
-                .await?;
-        }
         tx.set_federation_member_sequence(sender, sequence).await?;
         tx.commit().await?;
         self.record_federation_sequence(sender, sequence).await;
@@ -2932,21 +2925,31 @@ impl MintState {
                 },
             ));
         }
-        let completed_keyset_share = self
-            .derive_federation_dkg_member_keyset_share_if_ready(
-                &public_config,
-                &setup_state,
-                Some(contribution),
-            )
-            .await?;
+        let sender_reveal = setup_state
+            .reveals
+            .get(&contribution.sender)
+            .cloned()
+            .ok_or_else(|| {
+                cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
+                    member_id: contribution.sender,
+                    reason: "missing sender reveal before secret contribution".to_string(),
+                })
+            })?;
+        let validation_config = public_config.clone();
+        let validation_contribution = contribution.clone();
+        run_federation_dkg_cpu_task(
+            "federation DKG secret-share verification task failed",
+            move || {
+                sender_reveal
+                    .validate_secret_share_request(&validation_config, &validation_contribution)
+            },
+        )
+        .await?;
 
+        // Final keyset derivation belongs to the restartable driver after this durable write.
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_secret_share_contribution(contribution)
             .await?;
-        if let Some(keyset_share) = &completed_keyset_share {
-            tx.add_federation_dkg_member_keyset_share(keyset_share)
-                .await?;
-        }
         tx.set_federation_member_sequence(sender, sequence).await?;
         tx.commit().await?;
         self.record_federation_sequence(sender, sequence).await;
@@ -3034,96 +3037,6 @@ impl MintState {
                 &keyset_shares,
             )?,
         )
-    }
-
-    async fn derive_federation_dkg_member_keyset_share_if_ready(
-        &self,
-        public_config: &FederationConfig,
-        setup_state: &FederationDkgSetupState,
-        pending_contribution: Option<&FederationDkgSecretShareRequest>,
-    ) -> Result<Option<FederationDkgMemberKeysetShare>, cdk::Error> {
-        let Some(round) = setup_state.complete_round(public_config)? else {
-            return Ok(None);
-        };
-        let local_member = self
-            .mint
-            .federation_config()
-            .ok_or_else(|| {
-                cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-            })?
-            .member_id();
-        let mut participant_secret_shares = BTreeMap::new();
-        let contributions = self
-            .mint
-            .localstore()
-            .get_federation_dkg_secret_share_contributions()
-            .await?;
-        for contribution in &contributions {
-            if contribution.receiver != local_member {
-                continue;
-            }
-            contribution.validate_sender_receiver(
-                public_config,
-                contribution.sender,
-                local_member,
-            )?;
-            match participant_secret_shares.insert(contribution.sender, contribution.clone()) {
-                Some(existing) if existing != contribution.clone() => {
-                    return Err(cdk::Error::Federation(
-                        FederationError::DkgCommitmentMismatch {
-                            member_id: contribution.sender,
-                            reason: format!(
-                                "conflicting secret-share contribution for receiver {}",
-                                contribution.receiver
-                            ),
-                        },
-                    ));
-                }
-                Some(_) | None => {}
-            }
-        }
-        if let Some(contribution) = pending_contribution {
-            contribution.validate_sender_receiver(
-                public_config,
-                contribution.sender,
-                local_member,
-            )?;
-            match participant_secret_shares.insert(contribution.sender, contribution.clone()) {
-                Some(existing) if existing != contribution.clone() => {
-                    return Err(cdk::Error::Federation(
-                        FederationError::DkgCommitmentMismatch {
-                            member_id: contribution.sender,
-                            reason: format!(
-                                "conflicting secret-share contribution for receiver {}",
-                                contribution.receiver
-                            ),
-                        },
-                    ));
-                }
-                Some(_) | None => {}
-            }
-        }
-        if !public_config
-            .members
-            .keys()
-            .all(|member_id| participant_secret_shares.contains_key(member_id))
-        {
-            return Ok(None);
-        }
-
-        let public_config = public_config.clone();
-        let reveals = setup_state.reveals.clone();
-        let keyset_share =
-            run_federation_dkg_cpu_task("federation DKG derivation task failed", move || {
-                round.derive_member_keyset_share(
-                    &public_config,
-                    &reveals,
-                    local_member,
-                    &participant_secret_shares,
-                )
-            })
-            .await?;
-        Ok(Some(keyset_share))
     }
 
     fn federation_public_config(&self) -> Result<FederationConfig, cdk::Error> {

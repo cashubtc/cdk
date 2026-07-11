@@ -889,29 +889,14 @@ fn verify_one_received_secret_share(
         .first_key_value()
         .context("missing receiver contributions")?;
     let request = requests.first().context("missing secret-share request")?;
-    request.validate_sender_receiver(config, request.sender, *receiver)?;
     let reveal = fixture
         .reveals
         .iter()
         .find(|reveal| reveal.member_id == request.sender)
         .context("missing sender reveal")?;
-    let request_amounts = request
-        .secret_shares
-        .keys()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    if request_amounts != reveal.keyset_spec.amounts {
-        bail!("secret contribution amount set did not match sender reveal");
-    }
-    for (amount, secret_share) in &request.secret_shares {
-        let commitments = reveal
-            .coefficient_commitments
-            .get(amount)
-            .context("missing amount commitments")?;
-        let expected = evaluate_public_key_commitments(receiver.to_bls_signer_id(), commitments)?;
-        if secret_share.public_key_share() != expected {
-            bail!("secret contribution did not match public polynomial");
-        }
+    reveal.validate_secret_share_request(config, request)?;
+    if request.receiver != *receiver {
+        bail!("secret contribution receiver map key mismatch");
     }
     Ok(request.secret_shares.len())
 }

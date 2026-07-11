@@ -2175,7 +2175,8 @@ responsiveness gate.
 
 ### Candidate 10 baseline: decouple contribution acknowledgement from derivation
 
-Decision: **Pending**. Harness-only baseline; no production behavior changed.
+Decision: **Kept** for HTTP liveness and earlier invalid-share rejection. No
+total-CPU reduction is claimed.
 
 Code tracing showed that the secret-share route calls final local keyset
 derivation before committing and acknowledging the last incoming contribution.
@@ -2217,6 +2218,47 @@ and let the existing driver derive/persist the final member share from complete
 durable records. It can be retained only if invalid shares still fail before
 persistence, restart derives the same keyset, transcript/config equality remains
 unchanged, and the measured final HTTP path loses the derivation cost.
+
+The retained implementation uses the reveal's shared verifier in participant
+state validation, benchmark measurement, and route admission. A first-time
+request is verified on the bounded DKG CPU worker before the transaction opens;
+only then are the contribution and authenticated sequence committed atomically.
+No reveal or secret-share HTTP route derives a member keyset. The existing
+driver observes the complete durable record set on its next tick, performs the
+same full final derivation and validation, and persists the member keyset before
+the transcript-signature phase can advance.
+
+The same profiles were repeated after the change:
+
+| Eight-denomination release phase | 5-of-3 | 11-of-8 | 20-of-14 |
+| --- | ---: | ---: | ---: |
+| Route-critical verifier median | 15.286ms | 34.399ms | 56.793ms |
+| Verifier range | 15.192-15.440ms | 34.115-34.495ms | 56.545-56.848ms |
+| Deferred driver derivation median | 161.116ms | 771.336ms | 2.322s |
+| Driver derivation range | 160.187-172.720ms | 760.746-783.412ms | 2.297-2.340s |
+| Old route derivation / new verifier | 10.5x | 21.9x | 40.1x |
+| Route-critical crypto removed | 90.4% | 95.4% | 97.5% |
+
+The comparison is deliberately phase-level: database and HTTP framing overhead
+are not included, so these figures are not full request-latency claims. They do
+show that the 20-of-14 final contribution no longer holds its HTTP response open
+for a 2.276-second uncontended derivation; its required cryptographic admission
+work is about 56.8ms before persistence. Under process contention, final driver
+derivation can take longer without turning an already-durable contribution into
+an ambiguous sender timeout.
+
+Total CPU can increase because every share is now rejected early if invalid and
+the driver later revalidates the complete deserialized record set. That duplicate
+trust-boundary validation is intentional for restart and database-tamper safety.
+The retained claim is request liveness plus fail-before-persistence security,
+not faster complete ceremony time.
+
+Verification: 32 common release DKG tests and 34 permissioned release Axum DKG
+tests pass. Coverage includes a bad first contribution leaving no durable share
+or sequence, final contribution acknowledgement before keyset persistence,
+driver derivation from complete durable records, restart activation with the
+same keyset and transcript, authenticated multi-member completion, partition
+recovery, duplicates, malformed shares, and transcript failures.
 
 ## Recommended Work Order
 

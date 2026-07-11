@@ -2698,6 +2698,60 @@ impl FederationDkgParticipantCommitmentReveal {
 
         Ok(())
     }
+
+    /// Verify one private contribution against this participant's revealed polynomial.
+    pub fn validate_secret_share_request(
+        &self,
+        public_config: &FederationConfig,
+        request: &FederationDkgSecretShareRequest,
+    ) -> Result<()> {
+        self.validate_against_config(public_config)?;
+        request.validate_sender_receiver(public_config, self.member_id, request.receiver)?;
+        if request.ceremony_id != self.ceremony_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: format!(
+                    "secret contribution ceremony id mismatch for receiver {}",
+                    request.receiver
+                ),
+            });
+        }
+        let request_amounts = request
+            .secret_shares
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if request_amounts != self.keyset_spec.amounts {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: format!(
+                    "secret contribution amount set mismatch for receiver {}",
+                    request.receiver
+                ),
+            });
+        }
+        for (amount, secret_share) in &request.secret_shares {
+            let commitments = self.coefficient_commitments.get(amount).ok_or(
+                FederationError::DkgCommitmentMismatch {
+                    member_id: self.member_id,
+                    reason: format!("missing public commitments for amount {amount}"),
+                },
+            )?;
+            let expected_share =
+                evaluate_public_key_commitments(request.receiver.to_bls_signer_id(), commitments)?;
+            if secret_share.public_key_share() != expected_share {
+                return Err(FederationError::DkgCommitmentMismatch {
+                    member_id: self.member_id,
+                    reason: format!(
+                        "secret contribution does not match public commitments for receiver {} amount {amount}",
+                        request.receiver
+                    ),
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Private, restartable state owned by one dealer-free DKG participant.
@@ -2871,46 +2925,17 @@ impl FederationDkgParticipantState {
         }
 
         for (receiver, request) in &self.secret_share_requests {
-            request.validate_sender_receiver(public_config, self.member_id, *receiver)?;
-            if request.ceremony_id != self.ceremony_id {
+            if request.receiver != *receiver {
                 return Err(FederationError::DkgCommitmentMismatch {
                     member_id: self.member_id,
                     reason: format!(
-                        "secret contribution ceremony id mismatch for receiver {receiver}"
+                        "secret contribution receiver mismatch: expected={receiver}, found={}",
+                        request.receiver
                     ),
                 });
             }
-            let request_amounts = request
-                .secret_shares
-                .keys()
-                .copied()
-                .collect::<BTreeSet<_>>();
-            if request_amounts != self.reveal.keyset_spec.amounts {
-                return Err(FederationError::DkgCommitmentMismatch {
-                    member_id: self.member_id,
-                    reason: format!(
-                        "secret contribution amount set mismatch for receiver {receiver}"
-                    ),
-                });
-            }
-            for (amount, secret_share) in &request.secret_shares {
-                let commitments = self.reveal.coefficient_commitments.get(amount).ok_or(
-                    FederationError::DkgCommitmentMismatch {
-                        member_id: self.member_id,
-                        reason: format!("missing public commitments for amount {amount}"),
-                    },
-                )?;
-                let expected_share =
-                    evaluate_public_key_commitments(receiver.to_bls_signer_id(), commitments)?;
-                if secret_share.public_key_share() != expected_share {
-                    return Err(FederationError::DkgCommitmentMismatch {
-                        member_id: self.member_id,
-                        reason: format!(
-                            "secret contribution does not match public commitments for receiver {receiver} amount {amount}"
-                        ),
-                    });
-                }
-            }
+            self.reveal
+                .validate_secret_share_request(public_config, request)?;
         }
 
         Ok(())
