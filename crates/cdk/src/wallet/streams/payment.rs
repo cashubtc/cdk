@@ -18,6 +18,7 @@ use super::RecvFuture;
 use crate::event::MintEvent;
 use crate::wallet::issue::{apply_accounting_mint_quote_update, apply_mint_quote_response};
 use crate::wallet::subscription::ActiveSubscription;
+use crate::wallet::MintQuote;
 use crate::{Wallet, WalletSubscription};
 
 type PaymentValue = (String, Option<Amount>);
@@ -45,11 +46,9 @@ async fn apply_mint_quote_notification(
                     &cdk_common::MintQuoteResponse::Bolt11(info.clone()),
                 );
                 if applied {
-                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                        tracing::warn!("Failed to update quote state: {}", e);
-                    }
+                    return persist_mint_quote_update(localstore, quote).await;
                 }
-                return applied;
+                return false;
             }
         }
         NotificationPayload::MintQuoteBolt12Response(info) => {
@@ -62,11 +61,9 @@ async fn apply_mint_quote_notification(
                     info.updated_at,
                 );
                 if applied {
-                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                        tracing::warn!("Failed to update quote state: {}", e);
-                    }
+                    return persist_mint_quote_update(localstore, quote).await;
                 }
-                return applied;
+                return false;
             }
         }
         NotificationPayload::MintQuoteOnchainResponse(info) => {
@@ -79,11 +76,9 @@ async fn apply_mint_quote_notification(
                     info.updated_at,
                 );
                 if applied {
-                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                        tracing::warn!("Failed to update quote state: {}", e);
-                    }
+                    return persist_mint_quote_update(localstore, quote).await;
                 }
-                return applied;
+                return false;
             }
         }
         NotificationPayload::CustomMintQuoteResponse(_, info) => {
@@ -96,14 +91,24 @@ async fn apply_mint_quote_notification(
                     info.updated_at,
                 );
                 if applied {
-                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                        tracing::warn!("Failed to update quote state: {}", e);
-                    }
+                    return persist_mint_quote_update(localstore, quote).await;
                 }
-                return applied;
+                return false;
             }
         }
         _ => (),
+    }
+
+    true
+}
+
+async fn persist_mint_quote_update(
+    localstore: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    quote: MintQuote,
+) -> bool {
+    if let Err(e) = localstore.add_mint_quote(quote).await {
+        tracing::warn!("Failed to update quote state: {}", e);
+        return false;
     }
 
     true
