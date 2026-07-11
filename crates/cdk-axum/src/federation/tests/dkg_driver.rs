@@ -58,13 +58,18 @@ impl DkgDriverTestFederation {
             let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
             let mut seed = [0_u8; 64];
             seed.fill(u8::try_from(index + 1).expect("member seed"));
-            let state = federation_route_state_for_private_with_db(
+            let mut state = federation_route_state_for_private_with_db(
                 public_config.clone(),
                 private_config.clone(),
                 db.clone(),
                 &seed,
             )
             .await;
+            state.federation_dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
+                ceremony_id,
+                keyset_spec: keyset_spec.clone(),
+                driver: FederationDkgDriverRunConfig::default(),
+            }));
             let member = public_config
                 .member(private_config.member_id)
                 .expect("configured member");
@@ -139,13 +144,18 @@ impl DkgDriverTestFederation {
 
     async fn restart_member(&mut self, index: usize) {
         let member = &self.members[index];
-        let state = federation_route_state_for_private_with_db(
+        let mut state = federation_route_state_for_private_with_db(
             self.public_config.clone(),
             member.private_config.clone(),
             member.db.clone(),
             &member.seed,
         )
         .await;
+        state.federation_dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
+            ceremony_id: self.ceremony_id,
+            keyset_spec: self.keyset_spec.clone(),
+            driver: FederationDkgDriverRunConfig::default(),
+        }));
         let participant = prepare_federation_dkg_participant_state(
             &state,
             self.ceremony_id,
@@ -248,6 +258,108 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
     let attempted_deliveries = federation.drive_until_complete(12).await;
     assert_eq!(attempted_deliveries, 36);
     federation.assert_complete_and_consistent().await;
+}
+
+#[tokio::test]
+async fn dkg_readiness_waits_for_exact_all_member_configuration_without_persistence() {
+    let federation = DkgDriverTestFederation::new().await;
+    let first = &federation.members[0];
+    let missing_member = federation
+        .public_config
+        .members
+        .values()
+        .next_back()
+        .expect("last member")
+        .clone();
+    federation
+        .transport
+        .remove(&missing_member.federation_api_url);
+    let request = FederationDkgReadinessRequest::new(
+        federation.public_config.federation_id,
+        federation.ceremony_id,
+        federation.keyset_spec.clone(),
+    );
+    let mut acknowledged = BTreeSet::new();
+
+    let first_round = run_federation_dkg_readiness_round(
+        &first.client,
+        &federation.public_config,
+        &request,
+        &mut acknowledged,
+    )
+    .await;
+    assert_eq!(first_round.attempted, 3);
+    assert_eq!(first_round.successful, 2);
+    assert_eq!(first_round.failed, 1);
+    assert_eq!(acknowledged.len(), 2);
+    assert!(first
+        .db
+        .get_federation_dkg_commitments()
+        .await
+        .expect("commitments")
+        .is_empty());
+
+    let missing_state = federation
+        .members
+        .last()
+        .expect("last member state")
+        .state
+        .clone();
+    federation.transport.insert(
+        missing_member.federation_api_url,
+        Router::new()
+            .nest("/api/federation/v1", create_federation_router())
+            .with_state(missing_state),
+    );
+    let second_round = run_federation_dkg_readiness_round(
+        &first.client,
+        &federation.public_config,
+        &request,
+        &mut acknowledged,
+    )
+    .await;
+    assert_eq!(second_round.attempted, 1);
+    assert_eq!(second_round.successful, 1);
+    assert_eq!(second_round.failed, 0);
+    assert_eq!(acknowledged.len(), 3);
+    assert_eq!(federation.transport.dkg_readiness_requests().len(), 3);
+    assert!(first
+        .db
+        .get_federation_dkg_commitments()
+        .await
+        .expect("commitments")
+        .is_empty());
+
+    let mut changed_spec = federation.keyset_spec.clone();
+    changed_spec.input_fee_ppk = 1;
+    let mismatched = FederationDkgReadinessRequest::new(
+        federation.public_config.federation_id,
+        federation.ceremony_id,
+        changed_spec,
+    );
+    let receiver = federation
+        .public_config
+        .members
+        .values()
+        .nth(1)
+        .expect("second member");
+    assert!(first
+        .client
+        .submit_dkg_readiness(receiver, &mismatched)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn durable_dkg_participant_skips_volatile_readiness_after_restart() {
+    let federation = DkgDriverTestFederation::new().await;
+
+    assert!(!federation_dkg_readiness_required(
+        &federation.members[0].state,
+        federation.ceremony_id,
+    )
+    .await
+    .expect("readiness requirement"));
 }
 
 #[tokio::test]

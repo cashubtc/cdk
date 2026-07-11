@@ -3003,6 +3003,21 @@ Verified harness checkpoint (2026-07-11):
   first-time secret-share work, while a large backoff would directly slow
   recovery. No production retry behavior was changed; the retained
   acknowledgement tracker already suppresses successful targets.
+- Candidate 8 is **Kept** for startup-race elimination. A fresh ceremony now
+  sends an authenticated readiness probe carrying the exact federation,
+  ceremony ID, and keyset policy to every member before generating participant
+  state or sending commitments. Successful probes are remembered only for that
+  driver run; mismatched configuration fails closed, and no readiness probe is
+  persisted as a ceremony artifact or consensus item.
+- In the focused staggered three-member transport test, the first round reached
+  two members, failed one unavailable route, and wrote zero commitments. After
+  the route appeared, the second round attempted only that member and completed
+  the barrier. A durable participant state skips the volatile barrier after
+  restart, preserving recovery if already-ready peers later activate or go
+  offline. Forty-two common transport tests, 32 release Axum DKG tests, and
+  three mintd auto-start tests pass. The interrupted 20-member process ceremony
+  was not rerun, so its completion and secret-share responsiveness gates remain
+  open.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3127,13 +3142,18 @@ reference to the recorded measurements:
   nothing or adds material recovery latency without addressing the measured
   causes. Candidate 6 already removes acknowledged targets, so no speculative
   retry scheduler was added.
-- [ ] Add an explicit all-members-ready/start barrier before the first DKG phase
+- [x] Add an explicit all-members-ready/start barrier before the first DKG phase
   so participant generation does not race process startup. Measure separately:
   a release 20-of-14 harness run started listeners over a 38-second interval and
   produced 382 commitment failures, with later-starting targets accumulating
-  progressively more failures. This candidate now has direct evidence but must
-  still prove a before/after improvement and preserve restart behavior before it
-  can be retained. Outcome: pending.
+  progressively more failures. Outcome: **Kept**. Fresh members now authenticate
+  an exact ceremony/keyset readiness probe with every peer before participant
+  generation or commitment delivery. A focused staggered three-member test
+  records two successes and one unavailable route, zero commitment writes, then
+  exactly one pending probe after the missing route appears. Verified successes
+  are volatile and suppressed within the run; an existing durable participant
+  skips the barrier after restart. No consensus phase or durable readiness state
+  was added. The large process acceptance run remains open.
 - [ ] Improve redacted DKG delivery diagnostics so timeout, HTTP status,
   admission, validation, and storage failures are distinguishable. This has no
   direct speed claim; retain it only if it materially shortens diagnosis or

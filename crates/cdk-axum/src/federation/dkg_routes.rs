@@ -1,9 +1,9 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationRestMessageKind,
-    FederationSignedRequest,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -13,6 +13,44 @@ use super::{
     acquire_private_rest_admission, cdk_error_response, federation_error_response,
     federation_runtime_config, verify_federation_request,
 };
+
+#[instrument(skip_all)]
+pub(super) async fn post_dkg_readiness(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationDkgReadinessRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReadiness)?;
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReadiness)
+            .await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let dkg_config = state
+        .federation_dkg_auto_start_config
+        .as_ref()
+        .ok_or_else(|| {
+            cdk_error_response(cdk::Error::Custom(
+                "federation member is not configured for live DKG".to_string(),
+            ))
+        })?;
+    payload
+        .payload
+        .validate(
+            runtime_config.public_config(),
+            dkg_config.ceremony_id,
+            &dkg_config.keyset_spec,
+        )
+        .map_err(federation_error_response)?;
+    state
+        .record_federation_sequence(verified.sender, verified.sequence)
+        .await;
+
+    Ok(Json(FederationDkgSetupResponse::new(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        FederationRestMessageKind::DkgReadiness,
+        verified.sender,
+    )))
+}
 
 #[instrument(skip_all)]
 pub(super) async fn post_dkg_commitment(

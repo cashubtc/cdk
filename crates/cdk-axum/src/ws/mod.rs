@@ -249,6 +249,8 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_peer_sync_config: None,
             #[cfg(feature = "federation")]
+            federation_dkg_auto_start_config: None,
+            #[cfg(feature = "federation")]
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,

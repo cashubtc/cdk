@@ -1551,6 +1551,8 @@ pub struct MintState {
     #[cfg(feature = "federation")]
     federation_peer_sync_config: Option<FederationPeerSyncConfig>,
     #[cfg(feature = "federation")]
+    federation_dkg_auto_start_config: Option<Arc<FederationDkgAutoStartConfig>>,
+    #[cfg(feature = "federation")]
     federation_sequences: Option<FederationSequenceHandle>,
     #[cfg(feature = "federation")]
     federation_sync: Option<FederationSyncHandle>,
@@ -4211,6 +4213,8 @@ async fn create_mint_router_with_custom_cache_inner(
             .as_ref()
             .map(|_| federation_peer_sync_config),
         #[cfg(feature = "federation")]
+        federation_dkg_auto_start_config: None,
+        #[cfg(feature = "federation")]
         federation_sequences,
         #[cfg(feature = "federation")]
         federation_sync,
@@ -4266,6 +4270,10 @@ async fn create_mint_router_with_custom_cache_inner(
         }
         None => None,
     };
+    #[cfg(feature = "federation")]
+    {
+        state.federation_dkg_auto_start_config = federation_dkg_config.clone().map(Arc::new);
+    }
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();
     #[cfg(feature = "federation")]

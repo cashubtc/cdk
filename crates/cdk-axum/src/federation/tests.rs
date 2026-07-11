@@ -412,6 +412,7 @@ struct RouterFederationTransportRegistry {
     held_aleph_bft_network_message: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     aleph_bft_activity_requests:
         Arc<Mutex<Vec<FederationSignedRequest<FederationAlephBftActivityRequest>>>>,
+    dkg_readiness_requests: Arc<Mutex<Vec<FederationSignedRequest<FederationDkgReadinessRequest>>>>,
     aleph_bft_network_message_requests:
         Arc<Mutex<Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>>>,
 }
@@ -485,6 +486,14 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                 "aleph_bft_activity_requests",
                 &self
                     .aleph_bft_activity_requests
+                    .lock()
+                    .map(|requests| requests.len())
+                    .unwrap_or_default(),
+            )
+            .field(
+                "dkg_readiness_requests",
+                &self
+                    .dkg_readiness_requests
                     .lock()
                     .map(|requests| requests.len())
                     .unwrap_or_default(),
@@ -568,6 +577,15 @@ impl RouterFederationTransportRegistry {
             .len()
     }
 
+    fn dkg_readiness_requests(
+        &self,
+    ) -> Vec<FederationSignedRequest<FederationDkgReadinessRequest>> {
+        self.dkg_readiness_requests
+            .lock()
+            .expect("router transport DKG readiness requests lock")
+            .clone()
+    }
+
     fn insert(&self, url: MintUrl, router: Router) {
         let endpoint = url::Url::parse(&url.to_string())
             .expect("federation api url")
@@ -577,6 +595,17 @@ impl RouterFederationTransportRegistry {
             .lock()
             .expect("router registry lock")
             .insert(endpoint, router);
+    }
+
+    fn remove(&self, url: &MintUrl) {
+        let endpoint = url::Url::parse(&url.to_string())
+            .expect("federation api url")
+            .origin()
+            .ascii_serialization();
+        self.routers
+            .lock()
+            .expect("router registry lock")
+            .remove(&endpoint);
     }
 
     fn insert_shadow(&self, url: MintUrl, router: Router) {
@@ -1240,6 +1269,7 @@ impl Transport for RouterFederationTransportRegistry {
         let path = url.path().to_string();
         let is_aleph_bft_activity = path.ends_with("/federation/v1/aleph-bft/activity");
         let is_aleph_bft_network_message = path.ends_with("/federation/v1/aleph-bft/messages");
+        let is_dkg_readiness = path.ends_with("/federation/v1/dkg/readiness");
         let deadline = tokio::time::Instant::now() + self.missing_router_wait;
         let router = loop {
             if let Some(router) = self
@@ -1269,6 +1299,15 @@ impl Transport for RouterFederationTransportRegistry {
             self.aleph_bft_activity_requests
                 .lock()
                 .expect("router transport activity requests lock")
+                .push(signed_request);
+        }
+        if is_dkg_readiness {
+            let signed_request = serde_json::from_slice::<
+                FederationSignedRequest<FederationDkgReadinessRequest>,
+            >(&payload_bytes)?;
+            self.dkg_readiness_requests
+                .lock()
+                .expect("router transport DKG readiness requests lock")
                 .push(signed_request);
         }
         let mut aleph_bft_message_contains_data = false;
@@ -1909,6 +1948,7 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
             }
         }))),
         federation_peer_sync_config: Some(FederationPeerSyncConfig::default()),
+        federation_dkg_auto_start_config: None,
         federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
             FederationRestSequenceTracker::new(),
         ))),

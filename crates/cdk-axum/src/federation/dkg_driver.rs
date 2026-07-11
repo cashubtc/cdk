@@ -7,9 +7,9 @@ use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgCeremonyId,
     FederationDkgCommitmentRequest, FederationDkgDriverPhase, FederationDkgDriverPlan,
     FederationDkgDriverProgress, FederationDkgDriverRecords, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationError, MemberId,
-    ValidatedFederationDkgParticipantState,
+    FederationDkgMemberKeysetShare, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
+    MemberId, ValidatedFederationDkgParticipantState,
 };
 use cdk_http_client::{Async, Transport};
 use futures::future::join_all;
@@ -146,11 +146,11 @@ impl FederationDkgDriverRunOutcome {
 }
 
 #[derive(Debug, Default)]
-struct DeliverySummary {
-    attempted: usize,
-    successful: usize,
-    failed: usize,
-    failed_members: BTreeSet<MemberId>,
+pub(crate) struct DeliverySummary {
+    pub(crate) attempted: usize,
+    pub(crate) successful: usize,
+    pub(crate) failed: usize,
+    pub(crate) failed_members: BTreeSet<MemberId>,
 }
 
 #[derive(Clone)]
@@ -228,6 +228,86 @@ impl DeliverySummary {
             self.failed_members.insert(member_id);
         }
     }
+}
+
+pub(crate) async fn federation_dkg_readiness_required(
+    state: &MintState,
+    ceremony_id: FederationDkgCeremonyId,
+) -> Result<bool, cdk::Error> {
+    let participant_states = state
+        .mint
+        .localstore()
+        .get_federation_dkg_participant_states()
+        .await?;
+    Ok(participant_states
+        .iter()
+        .all(|participant| participant.ceremony_id() != ceremony_id))
+}
+
+pub(crate) async fn run_federation_dkg_readiness_round<T>(
+    client: &FederationRestPeerClient<T>,
+    public_config: &FederationConfig,
+    request: &FederationDkgReadinessRequest,
+    acknowledged_members: &mut BTreeSet<MemberId>,
+) -> DeliverySummary
+where
+    T: Transport,
+{
+    let targets = public_config
+        .members
+        .keys()
+        .copied()
+        .filter(|member_id| !acknowledged_members.contains(member_id));
+    let results = join_all(targets.map(|member_id| {
+        let member = public_config
+            .member(member_id)
+            .expect("configured DKG readiness target must exist");
+        async move {
+            (
+                member.member_id,
+                client.submit_dkg_readiness(member, request).await,
+            )
+        }
+    }))
+    .await;
+    let mut delivery = DeliverySummary::default();
+    let acknowledged = record_delivery_results("readiness", results, &mut delivery);
+    acknowledged_members.extend(acknowledged);
+    delivery
+}
+
+async fn wait_for_federation_dkg_readiness<T>(
+    client: &FederationRestPeerClient<T>,
+    public_config: &FederationConfig,
+    request: &FederationDkgReadinessRequest,
+    driver_config: FederationDkgDriverRunConfig,
+) -> Result<usize, cdk::Error>
+where
+    T: Transport,
+{
+    let mut acknowledged_members = BTreeSet::new();
+    for attempt in 1..=driver_config.max_ticks {
+        let _ = run_federation_dkg_readiness_round(
+            client,
+            public_config,
+            request,
+            &mut acknowledged_members,
+        )
+        .await;
+        if acknowledged_members.len() == public_config.members.len() {
+            return Ok(attempt);
+        }
+        if attempt < driver_config.max_ticks {
+            tokio::time::sleep(driver_config.retry_delay).await;
+        }
+    }
+
+    Err(cdk::Error::Custom(format!(
+        "federation DKG readiness exhausted after {} attempts with {}/{} members ready",
+        driver_config.max_ticks,
+        acknowledged_members.len(),
+        public_config.members.len()
+    )))
 }
 
 /// Persist a new local participant state or reload the exact existing ceremony state.
@@ -535,12 +615,11 @@ pub async fn run_federation_dkg_driver(
     })?;
     let public_config = runtime_config.public_config().clone();
     let private_config = runtime_config.private_config().clone();
+    let local_member = private_config.member_id;
     validate_federation_dkg_secret_share_transport(
         &public_config,
         driver_config.secret_share_transport,
     )?;
-    let participant =
-        prepare_federation_dkg_participant_state(state, ceremony_id, keyset_spec).await?;
     let client = FederationRestPeerClient::new_with_config(
         Async::default(),
         &public_config,
@@ -548,6 +627,24 @@ pub async fn run_federation_dkg_driver(
         sync_config,
     )
     .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    if federation_dkg_readiness_required(state, ceremony_id).await? {
+        let readiness = FederationDkgReadinessRequest::new(
+            public_config.federation_id,
+            ceremony_id,
+            keyset_spec.clone(),
+        );
+        let readiness_attempts =
+            wait_for_federation_dkg_readiness(&client, &public_config, &readiness, driver_config)
+                .await?;
+        tracing::info!(
+            member_id = %local_member,
+            %ceremony_id,
+            readiness_attempts,
+            "Federation DKG all-member readiness barrier completed"
+        );
+    }
+    let participant =
+        prepare_federation_dkg_participant_state(state, ceremony_id, keyset_spec).await?;
 
     let mut plan_cache = None;
     let mut delivery_tracker = FederationDkgDeliveryTracker::default();

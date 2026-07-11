@@ -16,8 +16,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::{
     FederationAlephBftFinalizedItem, FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload,
     FederationConfig, FederationConsensusBackendKind, FederationDkgCeremonyId,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
@@ -42,6 +43,8 @@ const FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION: &[u8] =
 pub enum FederationRestMessageKind {
     /// Peer status request.
     Status,
+    /// Confirm that a peer is ready for the exact configured DKG ceremony.
+    DkgReadiness,
     /// Publish a pre-reveal DKG commitment hash to a peer.
     DkgCommitment,
     /// Reveal DKG public polynomial commitments to a peer.
@@ -66,6 +69,7 @@ impl FederationRestMessageKind {
     fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Status => b"status",
+            Self::DkgReadiness => b"dkg_readiness",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
             Self::DkgSecretShare => b"dkg_secret_share",
@@ -76,6 +80,62 @@ impl FederationRestMessageKind {
             Self::AlephBftFinalizedUnit => b"aleph_bft_finalized_unit",
             Self::CatchUp => b"catch_up",
         }
+    }
+}
+
+/// Signed probe confirming a member is ready for one exact DKG ceremony.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgReadinessRequest {
+    /// Federation whose members are preparing the ceremony.
+    pub federation_id: FederationId,
+    /// Exact ceremony identifier configured by every participant.
+    pub ceremony_id: FederationDkgCeremonyId,
+    /// Exact aggregate keyset policy configured by every participant.
+    pub keyset_spec: FederationDkgKeysetSpec,
+}
+
+impl FederationDkgReadinessRequest {
+    /// Create a readiness probe for an exact ceremony and keyset policy.
+    #[must_use]
+    pub fn new(
+        federation_id: FederationId,
+        ceremony_id: FederationDkgCeremonyId,
+        keyset_spec: FederationDkgKeysetSpec,
+    ) -> Self {
+        Self {
+            federation_id,
+            ceremony_id,
+            keyset_spec,
+        }
+    }
+
+    /// Validate this probe against the receiver's configured ceremony.
+    pub fn validate(
+        &self,
+        public_config: &FederationConfig,
+        ceremony_id: FederationDkgCeremonyId,
+        keyset_spec: &FederationDkgKeysetSpec,
+    ) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: public_config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        self.keyset_spec.validate()?;
+        if self.ceremony_id != ceremony_id {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG readiness ceremony ID does not match local configuration".to_string(),
+            });
+        }
+        if &self.keyset_spec != keyset_spec {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG readiness keyset policy does not match local configuration"
+                    .to_string(),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -2947,6 +3007,53 @@ mod tests {
             .payload
             .validate_sender(&config, decoded.sender)
             .expect("decoded payload owner");
+    }
+
+    #[test]
+    fn signed_dkg_readiness_request_binds_exact_ceremony_policy() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let keyset_spec = dkg_reveal(&config, first_private.member_id, 11).keyset_spec;
+        let payload = FederationDkgReadinessRequest::new(
+            config.federation_id,
+            dkg_ceremony_id(),
+            keyset_spec.clone(),
+        );
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            7,
+            FederationRestMessageKind::DkgReadiness,
+            payload,
+            &first_private,
+        )
+        .expect("signed DKG readiness request");
+
+        request.verify(&config, receiver).expect("verified request");
+        request
+            .payload
+            .validate(&config, dkg_ceremony_id(), &keyset_spec)
+            .expect("matching readiness request");
+        assert!(request
+            .payload
+            .validate(
+                &config,
+                FederationDkgCeremonyId::from_bytes([99; 32]),
+                &keyset_spec,
+            )
+            .is_err());
+        let mut changed_spec = keyset_spec.clone();
+        changed_spec.input_fee_ppk = 1;
+        assert!(request
+            .payload
+            .validate(&config, dkg_ceremony_id(), &changed_spec)
+            .is_err());
+
+        let json = serde_json::to_string(&request).expect("DKG readiness JSON");
+        let decoded: FederationSignedRequest<FederationDkgReadinessRequest> =
+            serde_json::from_str(&json).expect("decoded DKG readiness request");
+        assert_eq!(decoded.kind, FederationRestMessageKind::DkgReadiness);
+        decoded.verify(&config, receiver).expect("decoded verifies");
     }
 
     #[test]

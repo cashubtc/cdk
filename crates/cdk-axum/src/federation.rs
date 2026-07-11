@@ -71,7 +71,8 @@ use self::catch_up_routes::post_journal;
 pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;
 #[cfg(test)]
 use self::dkg_driver::{
-    prepare_federation_dkg_participant_state, run_federation_dkg_driver_tick,
+    federation_dkg_readiness_required, prepare_federation_dkg_participant_state,
+    run_federation_dkg_driver_tick, run_federation_dkg_readiness_round,
     FederationDkgDeliveryTracker,
 };
 pub use self::dkg_driver::{
@@ -80,7 +81,8 @@ pub use self::dkg_driver::{
     FederationDkgSecretShareTransportPolicy,
 };
 use self::dkg_routes::{
-    post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,
+    post_dkg_commitment, post_dkg_readiness, post_dkg_reveal, post_dkg_secret_share,
+    post_dkg_transcript_signature,
 };
 use self::payment_observation::payment_observation_report_summaries;
 #[cfg(test)]
@@ -107,8 +109,8 @@ pub(crate) use self::sync_loop::{
 };
 #[cfg(test)]
 use cdk::federation::{
-    FederationConfig, FederationDkgCommitmentRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationConfig, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
     FederationPeerStatusRequest,
 };
@@ -125,6 +127,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))
+        .route("/dkg/readiness", post(post_dkg_readiness))
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
         .route("/dkg/secret-shares", post(post_dkg_secret_share))

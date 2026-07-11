@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has six retained optimizations and one evidence-based rejection: retry jitter does not address the measured startup race or 60-second request-bound secret-share waves. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has seven retained optimizations and one evidence-based rejection. Fresh DKG now waits for exact authenticated all-member readiness before participant generation or commitment delivery; the one-denomination 20-of-14 quick gate is viable, while large process gates remain open.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: reject speculative DKG retry backoff</span>
+          <span class="value">perf: gate DKG on exact member readiness</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Candidate 7 is rejected without a production change. Preserved 20-of-14 release logs show 382 commitment failures tracking a 38-second sequential startup span and 40 secret-share failures in two all-target waves about 130 seconds apart under a 60-second request timeout. The one-second retry delay was not the dominant cadence.</span>
+          <span class="value">Candidate 8 is retained. In a staggered three-member transport test, two peers acknowledge readiness while one route is absent, zero commitments are written, and the next round probes only the missing peer. Exact ceremony/keyset mismatch fails closed, restart resumes from durable participant state, and 42 common transport, 32 release Axum DKG, and three mintd auto-start tests pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Evaluate Candidate 8 with the existing evidence: add and measure a restart-safe all-members-ready barrier that removes commitment traffic during staggered startup, without claiming it solves first-time secret-share CPU work. Then isolate that remaining request-lifetime bottleneck before another large acceptance run.</span>
+          <span class="value">Evaluate Candidate 9: improve redacted DKG delivery diagnostics enough to distinguish timeout, HTTP admission/status, validation, and storage failures without exposing payloads. Then use those diagnostics to isolate the first-time secret-share request-lifetime bottleneck before another large acceptance run.</span>
         </div>
       </aside>
     </header>

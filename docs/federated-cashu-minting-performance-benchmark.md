@@ -2073,6 +2073,56 @@ was interrupted and is not an acceptance result; its logs are used only to
 reject this retry-policy hypothesis and prioritize the readiness and
 first-time-processing investigations.
 
+### Candidate 8: exact all-member readiness barrier
+
+Decision: **Kept** for startup-race elimination. The large process acceptance
+gate remains open.
+
+The preserved 20-of-14 release logs showed that commitment failures rose with
+the harness's sequential listener order: 382 commitment requests failed while
+the 20 listeners came online over 38.258 seconds, and the last target alone
+accumulated 52 failures. The driver was spawned while each router was still
+being assembled, before the HTTP listener could accept private REST requests.
+
+The retained barrier runs only for a fresh local ceremony. Each member sends a
+signed `dkg_readiness` probe to every configured peer. The payload binds the
+federation ID, ceremony ID, and complete keyset policy; the receiver accepts it
+only when its own validated auto-start configuration is identical. The probe
+does not generate participant secrets, persist a DKG record, alter a phase, or
+enter consensus.
+
+| Staggered three-member transport probe | First round | After missing route appears |
+| --- | ---: | ---: |
+| Readiness attempts | 3 | 1 |
+| Verified successes | 2 | 1 |
+| Unavailable routes | 1 | 0 |
+| Durable commitments written | 0 | 0 |
+| Previously acknowledged peers reprobed | - | 0 |
+
+Successful readiness responses are cached only in memory for the current
+driver invocation. A timeout or error remains pending, and a process restart
+forgets volatile acknowledgements. Participant state is generated and persisted
+only after the barrier; once it exists, restart skips the barrier and resumes
+the durable ceremony even if a peer has since gone offline or activated its
+finalized configuration. A crash before participant persistence simply repeats
+the safe readiness probes.
+
+Verification passes in release mode:
+
+- 42 `cdk-common` federation transport tests, including signed exact-policy
+  readiness round trip and mismatch rejection;
+- 32 `cdk-axum` DKG tests, including staggered availability, acknowledgement
+  suppression, zero readiness persistence, policy mismatch, restart bypass,
+  authenticated completion, partition recovery, and prior invalid-share and
+  transcript checks;
+- three `cdk-mintd` federation DKG auto-start configuration tests.
+
+This focused result directly proves that unavailable startup targets cannot
+receive commitments and that ready targets do not amplify probes. Per the
+operator's stop request, the interrupted 20-member process ceremony was not
+restarted. Candidate 8 therefore does not certify 20-of-14 completion, CPU/REST
+responsiveness, or the separate first-time secret-share bottleneck.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

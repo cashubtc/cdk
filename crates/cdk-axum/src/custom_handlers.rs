@@ -2265,6 +2265,8 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_peer_sync_config: None,
             #[cfg(feature = "federation")]
+            federation_dkg_auto_start_config: None,
+            #[cfg(feature = "federation")]
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
@@ -2799,6 +2801,7 @@ mod tests {
                 },
             ))),
             federation_peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
+            federation_dkg_auto_start_config: None,
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 cdk::federation::FederationRestSequenceTracker::new(),
             ))),
@@ -2987,6 +2990,8 @@ mod tests {
             federation_consensus: None,
             #[cfg(feature = "federation")]
             federation_peer_sync_config: None,
+            #[cfg(feature = "federation")]
+            federation_dkg_auto_start_config: None,
             #[cfg(feature = "federation")]
             federation_sequences: None,
             #[cfg(feature = "federation")]
@@ -3584,6 +3589,7 @@ mod tests {
             federation_consensus,
             federation_peer_sync_config: is_federated
                 .then(crate::FederationPeerSyncConfig::default),
+            federation_dkg_auto_start_config: None,
             federation_sequences,
             federation_sync: is_federated.then(|| {
                 Arc::new(tokio::sync::Mutex::new(
