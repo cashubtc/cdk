@@ -3132,41 +3132,51 @@ impl FederationDkgCommitmentRound {
             .map(|member_id| (*member_id, BTreeMap::new()))
             .collect::<BTreeMap<_, _>>();
         for amount in &keyset_spec.amounts {
-            let mut constant_commitments = Vec::with_capacity(self.participant_order.len());
-            for participant_id in &self.participant_order {
-                let commitments = dkg_reveal_amount_commitments(reveals, *participant_id, *amount)?;
-                let constant_commitment =
-                    commitments
-                        .first()
-                        .ok_or(FederationError::DkgCommitmentMismatch {
-                            member_id: *participant_id,
-                            reason: format!("missing constant commitment for amount {amount}"),
-                        })?;
-                constant_commitments.push(*constant_commitment);
-            }
+            let coefficient_count = usize::from(public_config.threshold_params.signature_threshold);
+            let aggregate_coefficients = (0..coefficient_count)
+                .map(|coefficient_index| {
+                    let participant_coefficients = self
+                        .participant_order
+                        .iter()
+                        .map(|participant_id| {
+                            let commitments = dkg_reveal_amount_commitments(
+                                reveals,
+                                *participant_id,
+                                *amount,
+                            )?;
+                            commitments.get(coefficient_index).copied().ok_or(
+                                FederationError::DkgCommitmentMismatch {
+                                    member_id: *participant_id,
+                                    reason: format!(
+                                        "missing coefficient commitment {coefficient_index} for amount {amount}"
+                                    ),
+                                },
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    aggregate_public_key_commitments(&participant_coefficients)
+                        .map_err(Into::into)
+                })
+                .collect::<Result<Vec<_>>>()?;
             aggregate_keys.insert(
                 *amount,
-                aggregate_public_key_commitments(&constant_commitments)?,
+                *aggregate_coefficients.first().ok_or(
+                    FederationError::DkgCommitmentRoundMismatch {
+                        reason: format!("empty aggregate polynomial for amount {amount}"),
+                    },
+                )?,
             );
 
             for member_id in public_config.members.keys() {
                 let signer_id = member_id.to_bls_signer_id();
-                let mut participant_public_shares =
-                    Vec::with_capacity(self.participant_order.len());
-                for participant_id in &self.participant_order {
-                    let commitments =
-                        dkg_reveal_amount_commitments(reveals, *participant_id, *amount)?;
-                    participant_public_shares.push(
-                        evaluate_public_key_commitments(signer_id, commitments)?.public_key(),
-                    );
-                }
-                let public_key = aggregate_public_key_commitments(&participant_public_shares)?;
+                let public_share =
+                    evaluate_public_key_commitments(signer_id, &aggregate_coefficients)?;
                 public_shares
                     .get_mut(member_id)
                     .ok_or(FederationError::MissingMember {
                         member_id: *member_id,
                     })?
-                    .insert(*amount, BlsPublicKeyShare::new(signer_id, public_key));
+                    .insert(*amount, public_share);
             }
         }
 
@@ -6112,7 +6122,7 @@ mod tests {
             .pop();
 
         assert!(matches!(
-            round.validate_reveals(&config, &reveals),
+            round.derive_federated_keyset(&config, &reveals),
             Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
                 if id == member_id(1)
                     && reason.contains("coefficient commitment count mismatch")

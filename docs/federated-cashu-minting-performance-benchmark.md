@@ -1783,6 +1783,67 @@ full-ceremony improvement. It identifies the next bounded work: Candidate 2's
 aggregate-polynomial derivation, followed by a release process responsiveness
 gate. The 20-of-14 eight-denomination run remains deferred.
 
+### Candidate 2: aggregate public polynomial coefficients
+
+Decision: **Kept** for public-keyset derivation and complete pure-ceremony time.
+
+The original CDK path evaluated every participant's public polynomial at every
+member ID and then summed those evaluated points. Harness v3 preserves that
+algorithm as a benchmark-only reference. The candidate instead sums each public
+coefficient position across participants once, then evaluates the resulting
+aggregate polynomial once per member. This is the same algebraic shape used by
+Fedimint's G2 DKG result construction, while CDK retains its existing reveal,
+roster, threshold, commitment-hash, keyset-policy, and final-keyset validation.
+
+Command shape:
+
+```bash
+target/release/examples/dkg_performance \
+  --profile PROFILE --denominations one --iterations N \
+  --timeout-secs 120 \
+  --phases public_keyset_derivation_reference,public_keyset_derivation_aggregated \
+  --pretty
+```
+
+Ten samples were used at 5-of-3 and 11-of-8; five were used at 20-of-14.
+
+| Release public derivation | 5-of-3 | 11-of-8 | 20-of-14 |
+| --- | ---: | ---: | ---: |
+| Independent reference median | 38.493ms | 466.559ms | 2.676s |
+| Reference range | 38.384-38.865ms | 465.465-473.369ms | 2.676-2.721s |
+| Aggregate-coefficient median | 9.919ms | 47.510ms | 143.897ms |
+| Aggregate range | 9.684-16.003ms | 47.300-47.732ms | 143.856-144.269ms |
+| Median speedup | 3.9x | 9.8x | 18.6x |
+| Byte-identical federated keyset | yes | yes | yes |
+
+The independent reference remains in the harness after the production switch,
+so future candidate runs cannot accidentally compare the optimized method with
+itself. The production path still calls complete reveal validation before
+coefficient aggregation. A malformed coefficient-count test now exercises the
+full derivation entry point and confirms rejection occurs before aggregation.
+
+Complete one-denomination ceremony measurements use three samples at 5-of-3
+and 11-of-8 and one bounded sample at 20-of-14:
+
+| Complete release ceremony | Baseline | Candidate 2 | Improvement |
+| --- | ---: | ---: | ---: |
+| 5-of-3 median | 1.308s | 0.457s | 2.9x |
+| 11-of-8 median | 32.084s | 4.498s | 7.1x |
+| 20-of-14 | incomplete after 1,116.72s | 23.725s | now completes |
+
+All complete candidate ceremonies produced one transcript hash, keyset ID,
+aggregate-key map, and public-share map, and every local secret share matched
+its configured public share. Thirty release-mode `cdk-common` DKG tests and
+seven permissioned release-mode Axum DKG driver/route tests passed. The latter
+cover authenticated delivery, bounded execution, partition/restart recovery,
+transport policy, and changed persisted keyset policy.
+
+This checkpoint makes the one-denomination 20-of-14 quick gate viable. It does
+not yet certify the 20-of-14 eight-denomination acceptance gate or prove Axum
+responsiveness during a real multi-process ceremony. Those remain explicit
+later gates; the interrupted debug process run was not resumed for this
+checkpoint.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

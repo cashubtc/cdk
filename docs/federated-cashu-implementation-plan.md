@@ -2903,7 +2903,7 @@ Verified harness checkpoint (2026-07-11):
   no AlephBFT, wallet, mint daemon, REST, or database dependency. It supports
   explicit profile, denomination, build, iteration, phase, full-ceremony, and
   timeout controls and emits one machine-readable JSON report.
-- Harness v2 measures every requested pure phase, modeled canonical bytes and
+- Harness v3 measures every requested pure phase, modeled canonical bytes and
   durable record counts, and final transcript/key/share equality. An external
   permissioned `/usr/bin/time -lp` wrapper currently supplies wall, user,
   system, average CPU, and peak RSS. Peak-CPU sampling and real REST counters
@@ -2932,6 +2932,18 @@ Verified harness checkpoint (2026-07-11):
   extended. This does not contradict Candidate 1, but it confirms that final
   public-polynomial derivation and request-lifetime coupling remain the next
   robustness bottleneck; no timeout or protocol behavior was changed.
+- Candidate 2 is **Kept**. The final public polynomial now sums each coefficient
+  across participants once and evaluates that aggregate polynomial once per
+  member, matching Fedimint's algebraic shape. An independent benchmark-only
+  copy of the original algorithm proves byte-identical keysets. Release medians
+  improved from 38.493ms to 9.919ms at 5-of-3 (3.9x), 466.559ms to 47.510ms at
+  11-of-8 (9.8x), and 2.676s to 143.897ms at 20-of-14 (18.6x).
+- The improvement carries through complete one-denomination ceremonies:
+  5-of-3 fell from 1.308s to 0.457s, 11-of-8 from 32.084s to 4.498s, and a
+  20-of-14 ceremony now completes in 23.725s with every final equality check
+  true instead of remaining incomplete when the baseline was interrupted after
+  1,116.72s. The eight-denomination and real-process responsiveness gates
+  remain deferred rather than inferred from these pure-state-machine results.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3002,11 +3014,15 @@ reference to the recorded measurements:
   medians at 5-of-3 and 11-of-8 respectively. The reusable proof is
   non-serializable, is recreated after generation/reload, binds the complete
   config digest, and preserves full validation in the legacy planner API.
-- [ ] Aggregate public polynomial coefficients across participants before
+- [x] Aggregate public polynomial coefficients across participants before
   evaluating the aggregate polynomial for each federation member. Prove the
   optimized result is byte-for-byte equivalent to summing independently
   evaluated participant polynomials, including malformed-commitment rejection.
-  Outcome: pending.
+  Outcome: **Kept**. Harness v3 retains the original derivation as an independent
+  reference and reports exact keyset equality at 5-of-3, 11-of-8, and 20-of-14;
+  isolated release speedups are 3.9x, 9.8x, and 18.6x respectively. Existing
+  reveal validation still runs first, and focused malformed-coefficient,
+  transcript, member-share, restart, and authenticated-route tests pass.
 - [ ] Avoid an expensive public-polynomial round-trip immediately after freshly
   generating state from known coefficients, while retaining construction
   invariants and full validation when state crosses a persistence or transport

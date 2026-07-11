@@ -10,20 +10,23 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    FederationConfig, FederationDkgCeremonyId, FederationDkgDriverRecords,
-    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupState,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams, ValidatedFederationDkgParticipantState,
+    FederatedKeyset, FederationConfig, FederationDkgCeremonyId, FederationDkgCommitmentRound,
+    FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, ValidatedFederationDkgParticipantState,
 };
 use cdk_common::mint_url::MintUrl;
-use cdk_common::nuts::nut01::evaluate_public_key_commitments;
+use cdk_common::nuts::nut01::{
+    aggregate_public_key_commitments, evaluate_public_key_commitments, BlsPublicKeyShare,
+};
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 2;
-const ALL_PHASES: [&str; 11] = [
+const HARNESS_VERSION: u16 = 3;
+const ALL_PHASES: [&str; 13] = [
     "participant_generation",
     "participant_reload_validation",
     "planner_unchanged",
@@ -33,6 +36,8 @@ const ALL_PHASES: [&str; 11] = [
     "reveal_ingestion",
     "duplicate_ingestion",
     "secret_share_verification",
+    "public_keyset_derivation_reference",
+    "public_keyset_derivation_aggregated",
     "local_keyset_derivation",
     "transcript_derivation",
 ];
@@ -134,6 +139,7 @@ struct CorrectnessReport {
     aggregate_keys_equal: bool,
     public_share_mapping_equal: bool,
     local_secret_public_correspondence: bool,
+    aggregate_polynomial_derivation_equal: bool,
 }
 
 impl CorrectnessReport {
@@ -146,6 +152,7 @@ impl CorrectnessReport {
             aggregate_keys_equal: false,
             public_share_mapping_equal: false,
             local_secret_public_correspondence: false,
+            aggregate_polynomial_derivation_equal: false,
         }
     }
 }
@@ -330,6 +337,7 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
     };
     let complete_fixture_setup_us = duration_us(complete_start.elapsed());
     let mut reports = Vec::new();
+    let mut aggregate_polynomial_derivation_equal = false;
 
     if args.phases.contains("participant_generation") {
         reports.push(measure_phase(
@@ -383,6 +391,55 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                 args.iterations,
                 || verify_received_secret_shares(&base.public_config, fixture),
             )?);
+        }
+        if args.phases.contains("public_keyset_derivation_reference")
+            || args.phases.contains("public_keyset_derivation_aggregated")
+        {
+            let setup_state = ingest_reveals(&base.public_config, fixture)?;
+            let round = setup_state
+                .complete_round(&base.public_config)?
+                .context("complete fixture did not produce a DKG round")?;
+            let reference = derive_federated_keyset_reference(
+                &base.public_config,
+                &round,
+                &setup_state.reveals,
+            )?;
+            let aggregated = derive_federated_keyset_with_aggregated_coefficients(
+                &base.public_config,
+                &round,
+                &setup_state.reveals,
+            )?;
+            if aggregated != reference {
+                bail!("aggregate-polynomial derivation differs from the reference keyset");
+            }
+            aggregate_polynomial_derivation_equal = true;
+
+            if args.phases.contains("public_keyset_derivation_reference") {
+                reports.push(measure_phase(
+                    "public_keyset_derivation_reference",
+                    args.iterations,
+                    || {
+                        derive_federated_keyset_reference(
+                            &base.public_config,
+                            &round,
+                            &setup_state.reveals,
+                        )
+                    },
+                )?);
+            }
+            if args.phases.contains("public_keyset_derivation_aggregated") {
+                reports.push(measure_phase(
+                    "public_keyset_derivation_aggregated",
+                    args.iterations,
+                    || {
+                        derive_federated_keyset_with_aggregated_coefficients(
+                            &base.public_config,
+                            &round,
+                            &setup_state.reveals,
+                        )
+                    },
+                )?);
+            }
         }
         if args.phases.contains("local_keyset_derivation") {
             reports.push(measure_phase(
@@ -523,8 +580,13 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
         phases: reports,
         transport,
         records,
-        correctness: complete_fixture
-            .map_or_else(CorrectnessReport::skipped, |complete| complete.correctness),
+        correctness: {
+            let mut correctness = complete_fixture
+                .map_or_else(CorrectnessReport::skipped, |complete| complete.correctness);
+            correctness.aggregate_polynomial_derivation_equal =
+                aggregate_polynomial_derivation_equal;
+            correctness
+        },
     })
 }
 
@@ -793,6 +855,157 @@ fn derive_all_member_keyset_shares(
         .collect()
 }
 
+fn derive_federated_keyset_with_aggregated_coefficients(
+    config: &FederationConfig,
+    round: &FederationDkgCommitmentRound,
+    reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+) -> Result<FederatedKeyset> {
+    round.validate_reveals(config, reveals)?;
+    let first_member = round
+        .participant_order
+        .first()
+        .context("empty DKG participant order")?;
+    let keyset_spec = &reveals
+        .get(first_member)
+        .context("missing first participant reveal")?
+        .keyset_spec;
+
+    let mut aggregate_keys = BTreeMap::new();
+    let mut public_shares = config
+        .members
+        .keys()
+        .map(|member| (*member, BTreeMap::new()))
+        .collect::<BTreeMap<_, _>>();
+    for amount in &keyset_spec.amounts {
+        let coefficient_count = usize::from(config.threshold_params.signature_threshold);
+        let mut aggregate_coefficients = Vec::with_capacity(coefficient_count);
+        for coefficient_index in 0..coefficient_count {
+            let participant_coefficients = round
+                .participant_order
+                .iter()
+                .map(|participant| {
+                    reveals
+                        .get(participant)
+                        .context("missing participant reveal")?
+                        .coefficient_commitments
+                        .get(amount)
+                        .context("missing amount commitments")?
+                        .get(coefficient_index)
+                        .copied()
+                        .context("missing coefficient commitment")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            aggregate_coefficients
+                .push(aggregate_public_key_commitments(&participant_coefficients)?);
+        }
+        aggregate_keys.insert(
+            *amount,
+            *aggregate_coefficients
+                .first()
+                .context("empty aggregate polynomial")?,
+        );
+        for member in config.members.keys() {
+            let public_share = evaluate_public_key_commitments(
+                member.to_bls_signer_id(),
+                &aggregate_coefficients,
+            )?;
+            public_shares
+                .get_mut(member)
+                .context("missing public-share receiver")?
+                .insert(*amount, public_share);
+        }
+    }
+
+    let keyset = FederatedKeyset::new(
+        keyset_spec.unit.clone(),
+        keyset_spec.active,
+        keyset_spec.input_fee_ppk,
+        keyset_spec.final_expiry,
+        aggregate_keys,
+        public_shares,
+    );
+    keyset.validate(config.threshold_params, &config.members)?;
+    Ok(keyset)
+}
+
+fn derive_federated_keyset_reference(
+    config: &FederationConfig,
+    round: &FederationDkgCommitmentRound,
+    reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+) -> Result<FederatedKeyset> {
+    round.validate_reveals(config, reveals)?;
+    let first_member = round
+        .participant_order
+        .first()
+        .context("empty DKG participant order")?;
+    let keyset_spec = &reveals
+        .get(first_member)
+        .context("missing first participant reveal")?
+        .keyset_spec;
+
+    let mut aggregate_keys = BTreeMap::new();
+    let mut public_shares = config
+        .members
+        .keys()
+        .map(|member| (*member, BTreeMap::new()))
+        .collect::<BTreeMap<_, _>>();
+    for amount in &keyset_spec.amounts {
+        let participant_commitments = round
+            .participant_order
+            .iter()
+            .map(|participant| {
+                reveals
+                    .get(participant)
+                    .context("missing participant reveal")?
+                    .coefficient_commitments
+                    .get(amount)
+                    .context("missing amount commitments")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let constant_commitments = participant_commitments
+            .iter()
+            .map(|commitments| {
+                commitments
+                    .first()
+                    .copied()
+                    .context("missing constant commitment")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        aggregate_keys.insert(
+            *amount,
+            aggregate_public_key_commitments(&constant_commitments)?,
+        );
+
+        for member in config.members.keys() {
+            let signer_id = member.to_bls_signer_id();
+            let participant_public_shares = participant_commitments
+                .iter()
+                .map(|commitments| {
+                    evaluate_public_key_commitments(signer_id, commitments)
+                        .map(|share| share.public_key())
+                        .map_err(Into::into)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let public_key = aggregate_public_key_commitments(&participant_public_shares)?;
+            public_shares
+                .get_mut(member)
+                .context("missing public-share receiver")?
+                .insert(*amount, BlsPublicKeyShare::new(signer_id, public_key));
+        }
+    }
+
+    let keyset = FederatedKeyset::new(
+        keyset_spec.unit.clone(),
+        keyset_spec.active,
+        keyset_spec.input_fee_ppk,
+        keyset_spec.final_expiry,
+        aggregate_keys,
+        public_shares,
+    );
+    keyset.validate(config.threshold_params, &config.members)?;
+    Ok(keyset)
+}
+
 fn complete_records_for(
     fixture: &ParticipantFixture,
     member: MemberId,
@@ -865,6 +1078,7 @@ fn verify_complete_fixture(
         aggregate_keys_equal,
         public_share_mapping_equal,
         local_secret_public_correspondence,
+        aggregate_polynomial_derivation_equal: false,
     })
 }
 
