@@ -103,6 +103,12 @@ pub struct FederationDkgStatusArgs {
     /// Fail if final DKG config material cannot be assembled from the supplied records.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_ready: bool,
+    /// Write finalized public and local-private configs into this directory when ready.
+    #[arg(long)]
+    pub final_config_dir: Option<PathBuf>,
+    /// Overwrite existing files in --final-config-dir.
+    #[arg(long, action = clap::ArgAction::SetTrue, requires = "final_config_dir")]
+    pub force: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -416,6 +422,9 @@ mod tests {
             "--transcript-signature",
             "member-1/dkg-transcript-signature.json",
             "--require-ready",
+            "--final-config-dir",
+            "member-1/finalized",
+            "--force",
         ])
         .expect("dkg status command parses");
 
@@ -443,6 +452,11 @@ mod tests {
             vec![PathBuf::from("member-1/dkg-transcript-signature.json")]
         );
         assert!(status.require_ready);
+        assert_eq!(
+            status.final_config_dir,
+            Some(PathBuf::from("member-1/finalized"))
+        );
+        assert!(status.force);
     }
 
     #[cfg(feature = "fakewallet")]

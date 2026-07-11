@@ -445,6 +445,66 @@ fn merge_dkg_records_deduplicates_database_records_already_supplied_from_files()
 }
 
 #[test]
+fn finalized_dkg_configs_are_exported_with_overwrite_protection() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+    )
+    .expect("finalized member config");
+    let output_dir =
+        std::env::temp_dir().join(format!("cdk_mintd_dkg_final_config_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&output_dir);
+
+    let (public_path, private_path) =
+        write_finalized_member_config(&output_dir, &finalized, false).expect("write final configs");
+    let public_config: FederationConfig =
+        crate::read_federation_json(&public_path, "exported public config")
+            .expect("read public config");
+    let private_config: MemberConfigPrivate =
+        crate::read_federation_json(&private_path, "exported private config")
+            .expect("read private config");
+    assert_eq!(public_config, finalized.public_config);
+    assert_eq!(private_config, finalized.private_config);
+    private_config
+        .validate_against_public(&public_config)
+        .expect("exported configs match");
+    assert!(write_finalized_member_config(&output_dir, &finalized, false).is_err());
+    write_finalized_member_config(&output_dir, &finalized, true)
+        .expect("explicit overwrite succeeds");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(&private_path)
+            .expect("private config metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn finalized_dkg_config_export_requires_complete_records() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let err = finalized_member_config(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        &[],
+        &[],
+    )
+    .expect_err("incomplete DKG records fail");
+
+    assert!(err.to_string().contains("missing DKG keyset shares"));
+}
+
+#[test]
 fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready() {
     let fixture = dkg_completion_fixture(member_id(2));
     let setup_summary = DkgSetupRecordSummary {

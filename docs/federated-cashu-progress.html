@@ -436,11 +436,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: configure secure DKG auto-start</span>
+          <span class="value">feat: export finalized DKG configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mintd can now start or resume one configured ceremony and reconstruct its redacted planner phase from durable SQL records. Production defaults fail closed unless every member endpoint uses HTTPS; an explicit development switch permits plain HTTP only when every endpoint is localhost or an IP loopback, and transport validation completes before private participant state is created or any ceremony message is sent.</span>
+          <span class="value">After durable DKG completion, mintd can now export the independently assembled public wallet config and local private member config without exposing either in status output. Partial records fail, existing files are protected unless replacement is explicit, and private output is mode 0600, giving the process harness a clean setup-to-runtime handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>

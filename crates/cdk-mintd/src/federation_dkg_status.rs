@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -12,6 +14,9 @@ use cdk_common::federation::{
 };
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
+
+const FINAL_PUBLIC_CONFIG_FILE: &str = "federation-public.json";
+const FINAL_PRIVATE_CONFIG_FILE: &str = "federation-private.json";
 
 pub(crate) async fn run_dkg_status_command(
     cli_args: &CLIArgs,
@@ -51,7 +56,15 @@ pub(crate) async fn run_dkg_status_command(
             &transcript_signatures,
             &setup_summary,
         );
+        let written_configs = maybe_write_finalized_configs(
+            args,
+            &public_config,
+            &private_config,
+            &keyset_shares,
+            &transcript_signatures,
+        )?;
         print!("{}", report.text);
+        print_written_config_status(written_configs.as_ref());
 
         if args.require_ready && !report.ready {
             bail!("federation DKG finalization is not ready");
@@ -66,13 +79,134 @@ pub(crate) async fn run_dkg_status_command(
         &keyset_shares,
         &transcript_signatures,
     );
+    let written_configs = maybe_write_finalized_configs(
+        args,
+        &public_config,
+        &private_config,
+        &keyset_shares,
+        &transcript_signatures,
+    )?;
     print!("{}", report.text);
+    print_written_config_status(written_configs.as_ref());
 
     if args.require_ready && !report.ready {
         bail!("federation DKG finalization is not ready");
     }
 
     Ok(())
+}
+
+fn maybe_write_finalized_configs(
+    args: &FederationDkgStatusArgs,
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    keyset_shares: &[FederationDkgMemberKeysetShare],
+    transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let Some(output_dir) = args.final_config_dir.as_deref() else {
+        return Ok(None);
+    };
+    let finalized = finalized_member_config(
+        public_config,
+        private_config,
+        keyset_shares,
+        transcript_signatures,
+    )?;
+    write_finalized_member_config(output_dir, &finalized, args.force).map(Some)
+}
+
+fn finalized_member_config(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    keyset_shares: &[FederationDkgMemberKeysetShare],
+    transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+) -> Result<FederationDkgFinalizedMemberConfig> {
+    if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
+        public_config.validate()?;
+        private_config.validate_against_public(public_config)?;
+        return Ok(FederationDkgFinalizedMemberConfig {
+            public_config: public_config.clone(),
+            private_config: private_config.clone(),
+        });
+    }
+
+    FederationDkgFinalizedMemberConfig::from_records(
+        public_config,
+        private_config,
+        keyset_shares,
+        transcript_signatures,
+    )
+    .map_err(Into::into)
+}
+
+fn write_finalized_member_config(
+    output_dir: &Path,
+    finalized: &FederationDkgFinalizedMemberConfig,
+    force: bool,
+) -> Result<(PathBuf, PathBuf)> {
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let public_path = output_dir.join(FINAL_PUBLIC_CONFIG_FILE);
+    let private_path = output_dir.join(FINAL_PRIVATE_CONFIG_FILE);
+    if !force {
+        for path in [&public_path, &private_path] {
+            if path.exists() {
+                bail!(
+                    "{} already exists; pass --force to replace finalized DKG config material",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    write_final_config_file(&private_path, &finalized.private_config, force, true)?;
+    write_final_config_file(&public_path, &finalized.public_config, force, false)?;
+    Ok((public_path, private_path))
+}
+
+fn write_final_config_file<T>(path: &Path, value: &T, force: bool, private: bool) -> Result<()>
+where
+    T: serde::Serialize + ?Sized,
+{
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(if private { 0o600 } else { 0o644 });
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    serde_json::to_writer_pretty(&mut file, value)
+        .with_context(|| format!("failed to serialize {}", path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync {}", path.display()))?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to protect {}", path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn print_written_config_status(paths: Option<&(PathBuf, PathBuf)>) {
+    if paths.is_some() {
+        println!(
+            "final_configs_written=true public_file={FINAL_PUBLIC_CONFIG_FILE} private_file={FINAL_PRIVATE_CONFIG_FILE}"
+        );
+    }
 }
 
 async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecords> {
