@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has thirteen retained performance/robustness improvements, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact readiness, rejects each bad share before persistence, acknowledges durable contributions before deferred driver derivation, bounds and rate-limits authenticated work, and requires every roster member to confirm the exact final transcript/config digest before any keyset activates; database encryption at rest is explicitly out of scope for this milestone.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A has fourteen retained performance/robustness improvements, one retained diagnostic improvement, and one evidence-based rejection. Fresh DKG waits for exact readiness, rejects each bad share before persistence, acknowledges durable contributions before deferred driver derivation, bounds and rate-limits authenticated work, reuses one fully validated finalized config during activation, and requires every roster member to confirm the exact transcript/config digest before any keyset activates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: align DKG smoke with readiness barrier</span>
+          <span class="value">perf: cache finalized DKG activation config</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A release 5-of-3, eight-denomination process ceremony now crosses the all-member readiness barrier, interrupts one member before keyset derivation, resumes the same durable state, and completes setup in 10 seconds before passing activation plus mint/swap/melt/restore. The collector measured 36.14 user CPU seconds, 0.30 system CPU seconds, 42,352 KiB peak per-member RSS, zero delivery timeouts, zero post-start REST failures, and exactly five duplicate successes caused by the intentional acknowledgement-tracker reset.</span>
+          <span class="value">A release 11-of-8, eight-denomination run exposed repeated full finalized-config validation in every activation handler: requests timed out after ten seconds and retries amplified into HTTP 429 while databases converged. One fallible process-local cache now reuses the same fully validated immutable config; the identical rerun completed setup in 34 seconds with zero delivery timeouts and zero post-start REST failures, then passed activation plus mint/swap/melt/restore in 7.963 seconds.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">The remaining Milestone 20A item is one explicitly resumed 20-of-14 acceptance run. The generated runner is verified on the bounded five-member profile and now captures setup wall time, per-member average/peak CPU and RSS, total user/system CPU across restarts, live info-endpoint latency, and exact private REST attempt, failure, timeout, and duplicate totals. The focused harness, optimization decisions, transport policy, activation, replacement, and failure matrix are complete.</span>
+          <span class="value">The remaining Milestone 20A item is one explicitly resumed 20-of-14 acceptance run. The generated runner is now verified at both 5-of-3 and 11-of-8, captures process/REST/delivery accounting across interruption, and the 50-test Axum DKG release gate passes. The focused optimizations, transport policy, activation, replacement, and production failure matrix are complete.</span>
         </div>
       </aside>
     </header>

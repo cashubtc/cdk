@@ -289,7 +289,7 @@ pub(super) async fn post_dkg_activation(
     }
     let runtime_config = federation_runtime_config(&state)?;
     let finalized = state
-        .federation_dkg_finalized_member_config()
+        .cached_federation_dkg_finalized_member_config()
         .await
         .map_err(dkg_error_response)?;
     payload

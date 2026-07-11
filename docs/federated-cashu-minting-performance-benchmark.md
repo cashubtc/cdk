@@ -2503,7 +2503,7 @@ for audit. This adds no AlephBFT item or DKG message. Focused persistence,
 mintd restart/replacement, stale-activation, authenticated completion, and
 operator-status tests cover the transitions.
 
-Current verified gate: 49/49 release Axum DKG tests, 19/19 release mintd DKG/status
+Current verified gate: 50/50 release Axum DKG tests, 19/19 release mintd DKG/status
 tests, six release builder DKG tests, seven release SQLite DKG persistence
 tests, migration parity, and a successful Postgres lifecycle test compile with
 `--no-run`.
@@ -2643,9 +2643,55 @@ amount shares. Activation and the standard mint/swap/melt/restore smoke then
 passed in 5.045 seconds. CPU percentages above 100% represent bounded
 multi-threaded cryptographic work, not sampling error.
 
-Focused release verification after the harness correction: all 49 Axum DKG
+Current focused release verification: all 50 Axum DKG
 tests and all 15 mintd federation-setup/generator tests passed. The generated
 scripts also pass `bash -n` through the generator regression.
+
+### Candidate 11: cache finalized config during activation
+
+Decision: **Kept**. The first release 11-of-8, eight-denomination process run
+crossed readiness and reached activation, but did not complete. Each receiver
+called `FederationDkgFinalizedMemberConfig::from_records` independently for all
+11 concurrent activation senders. Those handlers held their per-sender slots
+past the ten-second peer deadline; ambiguous retries then received HTTP 429 or
+timed out again. A representative member entered activation at 16:37:18,
+recorded its first full timeout wave at 16:37:29, and still had no completed
+driver metric when the bounded harness stopped after 16:38:50. Its log contained
+one 25ms SQLite slow commit, while live info probes remained responsive. This
+isolates repeated finalized-config validation as the dominant activation
+bottleneck rather than SQLite serialization or general Tokio starvation.
+
+The retained change adds one fallible process-local `OnceCell` to the existing
+DKG admission state. The first request after complete keyset-share and transcript
+signature records performs the unchanged full public/private validation.
+Concurrent requests await and clone that validated immutable result. A lookup
+before transcript completion returns its normal error and leaves the cell empty.
+Activation request signatures, finalized-config digest binding, conflicting
+activation rejection, authenticated sequence advancement, and atomic activation
+record persistence remain per request and unchanged.
+
+The identical fresh rerun completed the interrupted/restarted setup in 34
+seconds:
+
+| Release 11-of-8 process result | Before cache | After cache |
+|---|---:|---:|
+| Setup outcome | failed in activation | complete |
+| Observed activation interval | over 90s and unfinished | included in 34s total setup |
+| Delivery timeouts | repeated full/partial waves | 0 |
+| Post-start `/v1/info` failures | 0 | 0 |
+| Final transcript/config equality | databases converging; drivers unfinished | all 11 equal |
+| Wallet mint/swap/melt/restore | not reached | passed in 7.963s |
+
+After-run resource totals were 345.53 user CPU seconds, 1.92 system CPU
+seconds, and 52,864 KiB maximum per-member RSS. The collector recorded 636
+artifact attempts, 616 successes, 20 expected connection failures during the
+deliberate member-2 interruption, zero timeouts, and 11 exact duplicate
+successes after that member's volatile acknowledgement tracker reset. The info
+probe recorded one pre-listener miss followed by 31 successes, 12.551ms mean
+latency, 90.584ms peak latency, and zero runtime failures. All members exported
+the same transcript hash, keyset ID, aggregate keys, and eight local public
+amount shares. The full focused release suite is 50/50 Axum DKG tests, including
+early-cache-failure recovery and pointer-identical reuse.
 
 ## Recommended Work Order
 

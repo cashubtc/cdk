@@ -69,8 +69,7 @@ type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinaliza
 #[cfg(feature = "federation")]
 type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
 #[cfg(feature = "federation")]
-type FederationDkgMemberAdmissionHandle =
-    Arc<BTreeMap<MemberId, Arc<FederationDkgMemberAdmission>>>;
+type FederationDkgMemberAdmissionHandle = Arc<FederationDkgAdmissionState>;
 #[cfg(feature = "federation")]
 type FederationInvalidOperationAlertHandle =
     Arc<tokio::sync::Mutex<FederationInvalidOperationAlertTracker>>;
@@ -104,6 +103,20 @@ const FEDERATION_INVALID_OPERATION_ALERT_WINDOW: std::time::Duration =
 // The blocking closure owns the permit so cancellation cannot admit
 // overlapping uncancellable DKG work.
 static FEDERATION_DKG_CPU_ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+#[cfg(feature = "federation")]
+#[derive(Debug)]
+struct FederationDkgAdmissionState {
+    members: BTreeMap<MemberId, Arc<FederationDkgMemberAdmission>>,
+    finalized_config: tokio::sync::OnceCell<Arc<FederationDkgFinalizedMemberConfig>>,
+}
+
+#[cfg(feature = "federation")]
+impl FederationDkgAdmissionState {
+    fn get(&self, member: &MemberId) -> Option<&Arc<FederationDkgMemberAdmission>> {
+        self.members.get(member)
+    }
+}
 
 #[cfg(feature = "federation")]
 #[derive(Debug)]
@@ -162,8 +175,8 @@ fn federation_dkg_member_admission(
     member_request_burst: usize,
     member_request_refill_interval: Duration,
 ) -> FederationDkgMemberAdmissionHandle {
-    Arc::new(
-        public_config
+    Arc::new(FederationDkgAdmissionState {
+        members: public_config
             .members
             .keys()
             .copied()
@@ -180,7 +193,8 @@ fn federation_dkg_member_admission(
                 )
             })
             .collect(),
-    )
+        finalized_config: tokio::sync::OnceCell::new(),
+    })
 }
 
 #[cfg(feature = "federation")]
@@ -3177,6 +3191,26 @@ impl MintState {
             &transcript_signatures,
         )
         .map_err(Into::into)
+    }
+
+    pub(crate) async fn cached_federation_dkg_finalized_member_config(
+        &self,
+    ) -> Result<Arc<FederationDkgFinalizedMemberConfig>, cdk::Error> {
+        let Some(admission) = self.federation_dkg_member_admission.as_ref() else {
+            return self
+                .federation_dkg_finalized_member_config()
+                .await
+                .map(Arc::new);
+        };
+        let finalized = admission
+            .finalized_config
+            .get_or_try_init(|| async {
+                self.federation_dkg_finalized_member_config()
+                    .await
+                    .map(Arc::new)
+            })
+            .await?;
+        Ok(finalized.clone())
     }
 
     async fn expected_federation_dkg_transcript_hash(

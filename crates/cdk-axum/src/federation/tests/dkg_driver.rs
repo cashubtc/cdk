@@ -288,6 +288,27 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
 }
 
 #[tokio::test]
+async fn dkg_finalized_config_cache_recovers_after_early_lookup_and_reuses_result() {
+    let federation = DkgDriverTestFederation::new().await;
+    let state = &federation.members[0].state;
+    assert!(state
+        .cached_federation_dkg_finalized_member_config()
+        .await
+        .is_err());
+
+    federation.drive_until_complete(12).await;
+    let first = state
+        .cached_federation_dkg_finalized_member_config()
+        .await
+        .expect("complete finalized DKG config");
+    let second = state
+        .cached_federation_dkg_finalized_member_config()
+        .await
+        .expect("cached finalized DKG config");
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
 async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
     let federation = DkgDriverTestFederation::new().await;
     let prior_ceremony_id = FederationDkgCeremonyId::from_bytes([76; 32]);

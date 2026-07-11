@@ -3059,6 +3059,27 @@ Verified harness checkpoint (2026-07-11):
   common DKG tests and all 34 release Axum DKG tests pass, including invalid
   first-share rejection, acknowledgement-before-derivation, driver completion,
   restart activation, transcript equality, and prior fault coverage.
+- Candidate 11 is **Kept** for activation-request liveness and removal of
+  repeated immutable validation. An unmodified release 11-of-8 process run
+  reached activation, then every receiver independently rebuilt and fully
+  validated the same finalized member config for each of 11 concurrent
+  senders. Initial requests exceeded the ten-second peer deadline, retries hit
+  the still-held per-sender admission slots with HTTP 429, and at least one
+  driver remained unfinished after more than 90 seconds in activation even
+  though durable activation rows were converging. The representative member
+  log showed one 25ms slow commit and `/v1/info` stayed responsive, isolating
+  repeated synchronous finalized-config reconstruction rather than database or
+  event-loop failure.
+- Each setup process now uses one fallible `OnceCell` beside its existing DKG
+  admission state. The first activation request after complete transcript
+  records builds and validates the immutable finalized public/private config;
+  concurrent requests await and reuse that result. An early incomplete lookup
+  is not cached, and every request still validates its member signature and
+  executes the unchanged conflict, sequence, and atomic persistence checks.
+  The identical 11-of-8/eight-denomination rerun completed setup in 34 seconds
+  with zero delivery timeouts, zero post-start info failures, and exact final
+  config equality, then passed activation restart and mint/swap/melt/restore.
+  All 50 focused release Axum DKG tests pass.
 - The bounded-admission robustness checkpoint is **Kept** without a speed
   claim. Dealer-free DKG now accepts at most 64 roster members and 64
   denomination keys, while broader standalone and trusted-dealer configuration
@@ -3173,6 +3194,18 @@ Verified harness checkpoint (2026-07-11):
   an explicitly resumed large process run records the full acceptance profile;
   the previously stopped 20-member run was not restarted merely to validate
   the collector.
+
+  The next release scaling checkpoint used 11 members, threshold eight, and
+  eight denominations. Its first run exposed the repeated activation-validation
+  bottleneck above and failed the driver-completion boundary. After Candidate
+  11, setup completed in 34 seconds using 345.53 user CPU seconds and 1.92
+  system CPU seconds, with 52,864 KiB peak per-member RSS. The collector counted
+  636 attempts, 616 successes, 20 expected offline connection failures, zero
+  timeouts, and 11 exact restart duplicates. Thirty-one post-listener info
+  probes succeeded with zero runtime failures and 91ms peak latency. All 11
+  members exported the same transcript, keyset, aggregate keys, and local
+  eight-amount public-share mapping; the standard wallet smoke passed in 7.963
+  seconds.
 - [x] Run the primary performance gate with release binaries. Keep one debug
   profile as a developer-experience regression detector, but never use a debug
   result alone to accept or reject a cryptographic optimization.
@@ -3314,6 +3347,15 @@ reference to the recorded measurements:
   reduction is claimed. Invalid first shares fail before persistence, final
   contributions are acknowledged before keyset creation, and restart derives
   and activates the identical keyset.
+- [x] Reuse the immutable finalized member config across concurrent activation
+  requests instead of rebuilding and fully validating it once per sender.
+  Outcome: **Kept**. The first release 11-of-8/eight-denomination process run
+  produced repeated ten-second activation timeouts and HTTP 429 retry
+  amplification while databases converged. A fallible process-local `OnceCell`
+  now caches only a successfully finalized config; incomplete early lookups
+  remain retryable. The identical rerun completed setup in 34 seconds with zero
+  delivery timeouts and zero runtime info failures, and all 50 focused release
+  Axum DKG tests preserve activation signature/conflict/sequence/write checks.
 
 Production robustness checklist:
 
@@ -3386,7 +3428,7 @@ Production robustness checklist:
   artifacts, and no AlephBFT item or additional DKG network phase is added.
   Focused SQL compare-and-set, mintd replacement/restart, mint-builder stale
   activation, authenticated completion, and status regressions pass.
-  The current verified gate is 49/49 release Axum DKG tests, 19/19 release mintd
+  The current verified gate is 50/50 release Axum DKG tests, 19/19 release mintd
   DKG/status tests, six release builder DKG tests, seven release SQLite DKG
   persistence tests, migration parity, and a successful Postgres lifecycle
   test compile with `--no-run`.
@@ -3448,7 +3490,7 @@ Production robustness checklist:
   commitment nor sequence durable, and removing the trigger lets the exact
   retry commit both. This exercises the same atomic rollback/recovery boundary
   required for storage exhaustion without a production fault switch. The full
-  focused gate is 49/49 Axum DKG tests and eight SQLite DKG persistence/failure
+  focused gate is 50/50 Axum DKG tests and eight SQLite DKG persistence/failure
   tests; no test or error output contains scalar material.
 
 Fedimint DKG comparison and source references:
