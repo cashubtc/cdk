@@ -1895,6 +1895,53 @@ contribution rejection, changed keyset policy rejection, authenticated member
 delivery, and bounded driver execution. No ceremony payload, phase order,
 persistence format, transport admission, retry, or activation behavior changed.
 
+### Candidate 4: bound DKG CPU work off the async runtime
+
+Decision: **Kept** for async responsiveness and bounded CPU concurrency. This
+candidate makes no cryptographic speed claim.
+
+The live driver had two CPU-heavy operations running directly on async tasks:
+fresh participant generation and complete validation after durable reload.
+Planner rebuilds and final member-share derivation already used
+`spawn_blocking`, but all paths relied only on Tokio's broad blocking-pool limit.
+The retained implementation routes all four operations through one
+process-local DKG CPU permit and a blocking worker. One mint daemon therefore
+runs at most one DKG cryptographic job at a time.
+
+The permit is moved into the blocking closure. Tokio blocking work cannot be
+cancelled after it starts; keeping the permit in the awaiting HTTP future would
+allow a timeout to release the bound while the abandoned closure continued.
+A focused regression aborts the first waiter, proves a second job remains
+queued, then releases the first closure and observes the second complete.
+
+A current-thread Axum test compares direct and worker-scheduled generation over
+five release samples. It runs the same five-member, threshold-three,
+one-denomination generation closure in both modes while issuing an in-process
+route probe:
+
+| Five-sample release median | Direct async task | Bounded CPU worker |
+| --- | ---: | ---: |
+| Generation wall time | 3.944ms | 3.945ms |
+| Axum probe latency | 3.971ms | 21us |
+
+Probe latency improves by about 189x while generation time is unchanged within
+measurement resolution. This is the intended result: the event loop remains
+available, while the cryptographic operation count and total CPU work do not
+change. The retained test uses ratio and upper-bound assertions rather than the
+recorded absolute values so normal machine variance does not make it brittle.
+
+Twenty-seven permissioned release-mode DKG tests pass. Coverage includes the
+two worker/cancellation regressions, complete authenticated setup routes,
+participant persistence and restart, conflicting and invalid contributions,
+transcript signatures, partition recovery, and peer-client HTTP delivery. No
+ceremony data, validation rule, phase ordering, persistence transaction, route
+admission, retry policy, or activation behavior changed.
+
+This is a scheduler-level in-process gate. A real multi-process ceremony must
+still record process user/system CPU, peak CPU, private REST attempt/timeout
+counts, and status/info request latency before Candidate 4 can support the
+large-federation acceptance claim.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

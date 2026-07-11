@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has three retained optimizations: config-bound participant validation is reused across ticks, public polynomial coefficients are aggregated once, and freshly generated live-driver state carries a non-serializable construction proof. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has four retained optimizations: reusable config-bound validation, aggregate public coefficients, validated-by-construction fresh state, and one cancellation-safe process-local CPU permit for all expensive DKG work. The one-denomination 20-of-14 quick gate is viable; large process gates remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">perf: trust fresh DKG participant construction</span>
+          <span class="value">perf: bound DKG CPU work</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Harness v4 shows fresh live-driver participant generation improving 3.4x, 6.1x, and 9.5x at 5-of-3, 11-of-8, and 20-of-14. Candidate-generated state independently passes the full persisted-state validator. The public raw generator and restart path remain fully validating; 31 common DKG tests and 7 permissioned Axum driver/route tests pass.</span>
+          <span class="value">Candidate 4 keeps generation wall time unchanged at 3.944ms direct versus 3.945ms on the worker while reducing a five-sample Axum probe median from 3.971ms to 21us. A cancellation regression proves abandoned waiters cannot release the CPU bound while blocking work continues. All 27 focused release DKG driver, route, persistence, transcript, and restart tests pass.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Evaluate Candidate 4: move remaining expensive derivation onto bounded CPU workers and measure REST responsiveness separately from total CPU time. Then run the real-process release gate before spending CPU on the 20-of-14 eight-denomination acceptance ceremony.</span>
+          <span class="value">Evaluate Candidate 5: add exact-duplicate fast paths before rebuilding accumulated DKG state, preserving conflicting-duplicate rejection. Then run the real-process release CPU/REST gate before the 20-of-14 eight-denomination acceptance ceremony.</span>
         </div>
       </aside>
     </header>
@@ -672,7 +672,7 @@
             <div>
               <h3>Milestone 20A: optimize DKG performance and robustness</h3>
               <p>Objective: make dealer-free DKG fast, measurable, resource-bounded, and operationally safe for large federations without weakening ceremony verification.</p>
-              <p>Current result: Candidates 1, 2, and 3 are retained. Config-bound validation and aggregate public-polynomial derivation bring the complete 20-of-14 one-denomination ceremony under 24 seconds; validated-by-construction fresh state reduces its participant generation from 3.299 seconds to 347.621 milliseconds while preserving full restart validation.</p>
+              <p>Current result: Candidates 1 through 4 are retained. Config-bound validation and aggregate public-polynomial derivation bring the complete 20-of-14 one-denomination ceremony under 24 seconds; fresh generation is 9.5x faster at that profile, and cancellation-safe bounded CPU workers keep Axum responsive without claiming lower cryptographic CPU cost.</p>
               <p class="test-gate"><strong>Test gate:</strong> a focused phase-level harness quickly compares 5-of-3, 11-of-8, and 20-of-14 profiles; every candidate is retained or rejected from recorded before/after evidence; a release 20-of-14 eight-denomination ceremony completes within a documented budget with responsive REST, bounded retries, identical final transcripts, and the production secret-share, activation, abort, backup, and failure-matrix gates satisfied.</p>
             </div>
             <span class="status progress">In progress</span>

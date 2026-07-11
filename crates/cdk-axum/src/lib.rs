@@ -96,6 +96,48 @@ const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(60);
+#[cfg(feature = "federation")]
+// The blocking closure owns the permit so cancellation cannot admit
+// overlapping uncancellable DKG work.
+static FEDERATION_DKG_CPU_ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+#[cfg(feature = "federation")]
+async fn run_federation_dkg_cpu_task<T, E, F>(
+    join_error: &'static str,
+    task: F,
+) -> Result<T, cdk::Error>
+where
+    T: Send + 'static,
+    E: Into<cdk::Error> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+{
+    run_federation_dkg_cpu_task_with_admission(&FEDERATION_DKG_CPU_ADMISSION, join_error, task)
+        .await
+}
+
+#[cfg(feature = "federation")]
+async fn run_federation_dkg_cpu_task_with_admission<T, E, F>(
+    admission: &'static tokio::sync::Semaphore,
+    join_error: &'static str,
+    task: F,
+) -> Result<T, cdk::Error>
+where
+    T: Send + 'static,
+    E: Into<cdk::Error> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+{
+    let permit = admission
+        .acquire()
+        .await
+        .map_err(|_| cdk::Error::Custom("federation DKG CPU admission closed".to_string()))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        task()
+    })
+    .await
+    .map_err(|_| cdk::Error::Custom(join_error.to_string()))?
+    .map_err(Into::into)
+}
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -3035,16 +3077,16 @@ impl MintState {
 
         let public_config = public_config.clone();
         let reveals = setup_state.reveals.clone();
-        let keyset_share = tokio::task::spawn_blocking(move || {
-            round.derive_member_keyset_share(
-                &public_config,
-                &reveals,
-                local_member,
-                &participant_secret_shares,
-            )
-        })
-        .await
-        .map_err(|_| cdk::Error::Custom("federation DKG derivation task failed".to_string()))??;
+        let keyset_share =
+            run_federation_dkg_cpu_task("federation DKG derivation task failed", move || {
+                round.derive_member_keyset_share(
+                    &public_config,
+                    &reveals,
+                    local_member,
+                    &participant_secret_shares,
+                )
+            })
+            .await?;
         Ok(Some(keyset_share))
     }
 

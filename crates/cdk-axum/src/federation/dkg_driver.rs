@@ -199,7 +199,12 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
         .into_iter()
         .find(|participant| participant.ceremony_id() == ceremony_id)
     {
-        let participant = ValidatedFederationDkgParticipantState::new(&public_config, existing)?;
+        let validation_config = public_config.clone();
+        let participant = crate::run_federation_dkg_cpu_task(
+            "federation DKG participant validation task failed",
+            move || ValidatedFederationDkgParticipantState::new(&validation_config, existing),
+        )
+        .await?;
         if participant.participant_state().member_id() != local_member {
             return Err(FederationError::MemberIdMismatch {
                 expected: local_member,
@@ -218,12 +223,19 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
         return Ok(participant);
     }
 
-    let participant = ValidatedFederationDkgParticipantState::generate(
-        &public_config,
-        ceremony_id,
-        local_member,
-        keyset_spec,
-    )?;
+    let generation_config = public_config.clone();
+    let participant = crate::run_federation_dkg_cpu_task(
+        "federation DKG participant generation task failed",
+        move || {
+            ValidatedFederationDkgParticipantState::generate(
+                &generation_config,
+                ceremony_id,
+                local_member,
+                keyset_spec,
+            )
+        },
+    )
+    .await?;
     let mut tx = db.begin_transaction().await?;
     tx.add_federation_dkg_participant_state(participant.participant_state())
         .await?;
@@ -379,15 +391,15 @@ async fn plan_federation_dkg_records(
     let public_config = public_config.clone();
     let private_config = private_config.clone();
     let participant = participant.clone();
-    let plan = tokio::task::spawn_blocking(move || {
-        records_for_plan.plan_with_validated_participant(
-            &public_config,
-            &private_config,
-            &participant,
-        )
-    })
-    .await
-    .map_err(|_| cdk::Error::Custom("federation DKG planner task failed".to_string()))??;
+    let plan =
+        crate::run_federation_dkg_cpu_task("federation DKG planner task failed", move || {
+            records_for_plan.plan_with_validated_participant(
+                &public_config,
+                &private_config,
+                &participant,
+            )
+        })
+        .await?;
     *plan_cache = Some(FederationDkgPlanCache {
         records,
         plan: plan.clone(),
@@ -581,11 +593,18 @@ fn record_delivery_results<R>(
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
 
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
     use cdk::federation::{MemberConfigPublic, ThresholdParams};
     use cdk::mint_url::MintUrl;
     use cdk::nuts::{CurrencyUnit, SecretKey};
     use cdk::Amount;
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -623,6 +642,108 @@ mod tests {
             },
         };
         (public_config, config)
+    }
+
+    fn cpu_responsiveness_fixture() -> (
+        FederationConfig,
+        FederationDkgCeremonyId,
+        FederationDkgKeysetSpec,
+        MemberId,
+    ) {
+        let members = (1..=5_u16)
+            .map(|value| {
+                let member_id = MemberId::new(value).expect("member ID");
+                let byte = u8::try_from(value).expect("test member byte");
+                let identity = SecretKey::from_slice(&[byte; 32]).expect("identity key");
+                let member = MemberConfigPublic {
+                    member_id,
+                    public_mint_url: MintUrl::from_str(&format!(
+                        "https://mint-{value}.example.invalid"
+                    ))
+                    .expect("mint URL"),
+                    federation_api_url: MintUrl::from_str(&format!(
+                        "https://fed-{value}.example.invalid"
+                    ))
+                    .expect("federation URL"),
+                    identity_public_key: identity.public_key(),
+                };
+                (member_id, member)
+            })
+            .collect();
+        let public_config = FederationConfig::new(
+            ThresholdParams::with_bft_consensus(5, 3).expect("thresholds"),
+            members,
+            Vec::new(),
+        )
+        .expect("setup config");
+        let ceremony_id = FederationDkgCeremonyId::from_bytes([19; 32]);
+        let keyset_spec = FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeSet::from([Amount::from(1)]),
+        )
+        .expect("keyset spec");
+        (
+            public_config,
+            ceremony_id,
+            keyset_spec,
+            MemberId::new(1).expect("member ID"),
+        )
+    }
+
+    async fn measure_generation_probe(
+        use_cpu_worker: bool,
+    ) -> (Duration, Duration, ValidatedFederationDkgParticipantState) {
+        let (public_config, ceremony_id, keyset_spec, member_id) = cpu_responsiveness_fixture();
+        let generation_config = public_config.clone();
+        let generation = async move {
+            let started = Instant::now();
+            let participant = if use_cpu_worker {
+                crate::run_federation_dkg_cpu_task("test DKG generation failed", move || {
+                    ValidatedFederationDkgParticipantState::generate(
+                        &generation_config,
+                        ceremony_id,
+                        member_id,
+                        keyset_spec,
+                    )
+                })
+                .await
+                .expect("worker generation")
+            } else {
+                ValidatedFederationDkgParticipantState::generate(
+                    &generation_config,
+                    ceremony_id,
+                    member_id,
+                    keyset_spec,
+                )
+                .expect("direct generation")
+            };
+            (started.elapsed(), participant)
+        };
+        let probe_started = Instant::now();
+        let probe = async move {
+            tokio::task::yield_now().await;
+            let response = Router::new()
+                .route("/probe", get(|| async { StatusCode::NO_CONTENT }))
+                .oneshot(
+                    Request::builder()
+                        .uri("/probe")
+                        .body(axum::body::Body::empty())
+                        .expect("probe request"),
+                )
+                .await
+                .expect("probe response");
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            probe_started.elapsed()
+        };
+        let ((generation_elapsed, participant), probe_elapsed) = tokio::join!(generation, probe);
+        participant
+            .participant_state()
+            .validate(&public_config)
+            .expect("generated participant validates");
+        (generation_elapsed, probe_elapsed, participant)
     }
 
     #[test]
@@ -688,5 +809,73 @@ mod tests {
         assert!(allow_loopback
             .validate_for_public_config(&remote_http)
             .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_dkg_cpu_worker_keeps_axum_probe_responsive() {
+        let mut direct_generations = Vec::new();
+        let mut direct_probes = Vec::new();
+        let mut worker_generations = Vec::new();
+        let mut worker_probes = Vec::new();
+        for _ in 0..5 {
+            let (direct_generation, direct_probe, _) = measure_generation_probe(false).await;
+            let (worker_generation, worker_probe, _) = measure_generation_probe(true).await;
+            direct_generations.push(direct_generation);
+            direct_probes.push(direct_probe);
+            worker_generations.push(worker_generation);
+            worker_probes.push(worker_probe);
+        }
+        direct_generations.sort_unstable();
+        direct_probes.sort_unstable();
+        worker_generations.sort_unstable();
+        worker_probes.sort_unstable();
+        let direct_generation = direct_generations[2];
+        let direct_probe = direct_probes[2];
+        let _worker_generation = worker_generations[2];
+        let worker_probe = worker_probes[2];
+
+        assert!(direct_probe >= direct_generation / 2);
+        assert!(worker_probe < Duration::from_millis(100));
+        assert!(worker_probe.saturating_mul(5) < direct_probe);
+    }
+
+    #[tokio::test]
+    async fn cancelled_dkg_waiter_does_not_release_running_cpu_permit() {
+        let admission = Box::leak(Box::new(tokio::sync::Semaphore::new(1)));
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let first_started_wait = first_started.notified();
+        let first_started_task = Arc::clone(&first_started);
+        let (release_first, wait_for_release) = std::sync::mpsc::channel();
+        let first = tokio::spawn(crate::run_federation_dkg_cpu_task_with_admission(
+            admission,
+            "first test DKG task failed",
+            move || {
+                first_started_task.notify_one();
+                wait_for_release.recv().expect("release first CPU task");
+                Ok::<_, cdk::Error>(())
+            },
+        ));
+        first_started_wait.await;
+        first.abort();
+
+        let second_started = Arc::new(AtomicBool::new(false));
+        let second_started_task = Arc::clone(&second_started);
+        let second = tokio::spawn(crate::run_federation_dkg_cpu_task_with_admission(
+            admission,
+            "second test DKG task failed",
+            move || {
+                second_started_task.store(true, Ordering::SeqCst);
+                Ok::<_, cdk::Error>(())
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!second_started.load(Ordering::SeqCst));
+
+        release_first.send(()).expect("release first CPU task");
+        tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("second task receives CPU permit")
+            .expect("second task joins")
+            .expect("second task succeeds");
     }
 }

@@ -2956,6 +2956,19 @@ Verified harness checkpoint (2026-07-11):
   before reporting success. Thirty-one common DKG tests and seven permissioned
   release Axum driver/route tests pass, including fresh persistence, restart,
   tamper rejection, changed policy, and authenticated delivery.
+- Candidate 4 is **Kept** as a responsiveness/load-bound change, not a speed
+  optimization. Fresh generation, persisted-state validation, planner rebuilds,
+  and final member-share derivation now use one process-local DKG CPU admission
+  permit and `spawn_blocking`. The permit is owned by the blocking closure, so
+  cancelling or timing out the awaiting request cannot admit overlapping work
+  while the uncancellable CPU task continues.
+- A five-sample current-thread release probe kept generation wall time unchanged
+  at 3.944ms direct versus 3.945ms on the worker, while an Axum route probe fell
+  from 3.971ms to 21us. A cancellation regression proves a second job cannot
+  start until an abandoned first closure actually exits. Twenty-seven focused
+  DKG driver, route, persistence, transcript, invalid-share, and restart tests
+  pass. This scheduler-level result does not replace the real multi-process
+  REST responsiveness and process-CPU gate.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3043,10 +3056,16 @@ reference to the recorded measurements:
   live-driver path can receive the non-serializable construction proof; the
   public raw generator and every deserialized/restarted state still perform
   full polynomial/share validation.
-- [ ] Move participant generation and every remaining expensive derivation to a
+- [x] Move participant generation and every remaining expensive derivation to a
   bounded blocking/CPU worker path so Axum and private REST stay responsive.
   Measure both total CPU time and request latency; do not call a pure scheduling
-  move a speed improvement if it only improves responsiveness. Outcome: pending.
+  move a speed improvement if it only improves responsiveness. Outcome:
+  **Kept** for responsiveness and bounded load. The same generation closure took
+  3.944ms direct and 3.945ms on the worker, while a five-sample Axum probe median
+  improved from 3.971ms to 21us. One process-local permit covers generation,
+  reload validation, planning, and member-share derivation and remains held
+  across waiter cancellation. No CPU-time reduction is claimed; real-process
+  CPU and private REST latency remain an acceptance gate below.
 - [ ] Add exact-duplicate fast paths for commitment, reveal, secret-share, and
   transcript-signature ingestion before rebuilding accumulated setup state.
   Conflicting duplicates must still fail before sequence advancement or record
