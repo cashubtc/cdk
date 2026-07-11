@@ -2573,6 +2573,21 @@ is confined to the existing all-loopback development exception. The 1 MiB body
 cap, per-member in-flight slot, and per-member token bucket remain independent
 of TLS termination.
 
+### Fedimint comparison boundary
+
+CDK adopts the safety properties that matter: commit before reveal, all-dealer
+participation, immediate share verification, deterministic aggregate keys,
+all-peer final-config equality, and fail-closed activation. It simplifies the
+mechanics into a restartable planner, durable mint-database records, and signed
+private REST using the federation's existing identity keys.
+
+CDK deliberately does not copy Fedimint's setup UI/P2P state machine or require
+iroh for setup. It also rejects threshold-only dealer completion, silent roster
+shrinkage, non-loopback plaintext shares, persistent volatile delivery
+acknowledgements, and an extra consensus phase for setup failures. The retained
+design reaches the same relevant safety boundary with fewer moving parts in the
+Cashu server architecture.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.

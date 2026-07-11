@@ -3447,10 +3447,26 @@ Fedimint DKG comparison and source references:
 - [Fedimint large setup test](https://github.com/fedimint/fedimint/blob/master/scripts/tests/large-setup-test.sh)
   (`scripts/tests/large-setup-test.sh` locally): use as a reference for a
   bounded large-federation setup harness, not as code to copy blindly.
-- [ ] Document which Fedimint properties CDK adopts, simplifies, or deliberately
+- [x] Document which Fedimint properties CDK adopts, simplifies, or deliberately
   rejects. CDK should prefer the smallest design that preserves commit-before-
   reveal, authenticated/confidential shares, immediate verification,
   deterministic final keys, restart safety, and bounded resource use.
+- CDK **adopts** Fedimint's commit-before-reveal ordering, all-participant
+  dealer requirement, immediate polynomial verification of received shares,
+  deterministic aggregate public derivation, all-peer final-config equality
+  barrier, and fail-closed setup transition.
+- CDK **simplifies** orchestration into a pure restartable planner plus signed
+  private REST artifacts persisted in the existing mint database. It uses the
+  configured identity keys for request authentication and final-config
+  confirmations instead of introducing a separate setup P2P identity or live
+  checksum exchange, and uses the existing generated federation roster rather
+  than Fedimint's setup UI state machine.
+- CDK **deliberately rejects** threshold-only dealer completion, unsigned or
+  plaintext non-loopback secret delivery, automatic roster shrinkage, durable
+  volatile delivery acknowledgements, mandatory iroh/P2P transport, a second
+  consensus round for setup errors, and speculative retry/backoff complexity.
+  Explicit ceremony replacement retains failed history and must pass the full
+  new roster's readiness and activation barriers.
 - Fedimint exchanges and compares every peer's consensus-config checksum before
   config generation returns. CDK adopts that all-peer checksum barrier in a
   restart-safe REST form: identity-signed final-config-digest confirmations are
@@ -3458,7 +3474,7 @@ Fedimint DKG comparison and source references:
 
 Tests and success criteria:
 
-- [ ] The quick harness reports a complete phase breakdown in minutes and can
+- [x] The quick harness reports a complete phase breakdown in minutes and can
   compare two implementations without running wallet, AlephBFT, or full
   workspace tests.
 - [ ] The release 20-of-14 eight-denomination ceremony completes within a
@@ -3466,23 +3482,23 @@ Tests and success criteria:
   self-request timeouts, unbounded retries, or divergent final transcripts.
   Set the numeric budget only after recording the first controlled release
   baseline and machine-independent relative improvements.
-- [ ] Axum remains responsive throughout CPU-heavy generation and derivation;
+- [x] Axum remains responsive throughout CPU-heavy generation and derivation;
   bounded health/private-status probes complete within their documented timeout
   while the ceremony advances.
-- [ ] Every retained optimization has before/after evidence and every rejected
+- [x] Every retained optimization has before/after evidence and every rejected
   candidate is checked off with its disproving measurement. No candidate is
   retained solely because a microbenchmark improves while the process ceremony
   regresses.
-- [ ] Optimized and reference derivations produce identical aggregate keys,
+- [x] Optimized and reference derivations produce identical aggregate keys,
   public shares, member secret/public correspondence, keyset IDs, public
   ceremony, and transcript hash over randomized 5-of-3, 11-of-8, and 20-of-14
   fixtures.
-- [ ] Invalid-share, conflicting-record, cross-ceremony, wrong-roster,
+- [x] Invalid-share, conflicting-record, cross-ceremony, wrong-roster,
   policy-mismatch, duplicate-idempotency, restart/resume, and transcript-
   signature tests remain unchanged or stronger.
-- [ ] Standalone and trusted-dealer behavior remains unaffected, and federation
+- [x] Standalone and trusted-dealer behavior remains unaffected, and federation
   mode remains v3/BLS-only.
-- [ ] The benchmark harness, benchmark observations, accepted/rejected decisions,
+- [x] The benchmark harness, benchmark observations, accepted/rejected decisions,
   focused test commands, and remaining production risks are documented before
   Milestone 20A is marked complete.
 
