@@ -5,18 +5,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::{
-    FederationConfig, FederationConfigDigest, FederationDkgCommitmentRequest,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupState,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationError,
-    MemberConfigPrivate, MemberId, Result,
+    FederationConfig, FederationConfigDigest, FederationDkgCeremonyId,
+    FederationDkgCommitmentRequest, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupState, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationError, MemberConfigPrivate, MemberId,
+    Result,
 };
 
-/// Owned participant state that passed full validation at a trust boundary.
+/// Owned participant state carrying a non-serializable validation proof.
 ///
-/// This proof is deliberately non-serializable. Reloaded state must construct a
-/// new proof, while an in-process driver may reuse one across immutable ticks.
+/// Reloaded state earns the proof through full validation. Fresh state may earn
+/// it directly from construction with one coefficient source for commitments
+/// and shares. An in-process driver may reuse either proof across immutable
+/// ticks, but no proof survives serialization.
 #[derive(Debug, Clone)]
 pub struct ValidatedFederationDkgParticipantState {
     participant_state: Arc<FederationDkgParticipantState>,
@@ -30,6 +33,29 @@ impl ValidatedFederationDkgParticipantState {
         participant_state: FederationDkgParticipantState,
     ) -> Result<Self> {
         participant_state.validate(public_config)?;
+        Self::from_validated_state(public_config, participant_state)
+    }
+
+    /// Generate fresh participant state whose invariants hold by construction.
+    pub fn generate(
+        public_config: &FederationConfig,
+        ceremony_id: FederationDkgCeremonyId,
+        member_id: MemberId,
+        keyset_spec: FederationDkgKeysetSpec,
+    ) -> Result<Self> {
+        let participant_state = FederationDkgParticipantState::generate_by_construction(
+            public_config,
+            ceremony_id,
+            member_id,
+            keyset_spec,
+        )?;
+        Self::from_validated_state(public_config, participant_state)
+    }
+
+    fn from_validated_state(
+        public_config: &FederationConfig,
+        participant_state: FederationDkgParticipantState,
+    ) -> Result<Self> {
         Ok(Self {
             participant_state: Arc::new(participant_state),
             config_digest: public_config.config_digest_for_validated_config()?,
@@ -596,6 +622,33 @@ mod tests {
                 found: _,
             }) if member_id == local_member
         ));
+    }
+
+    #[test]
+    fn generated_validated_participant_passes_full_reload_validation() {
+        let (public_config, _, participants) = setup();
+        let local_member = member_id(2);
+        let reference = participants.get(&local_member).expect("participant state");
+        let generated = ValidatedFederationDkgParticipantState::generate(
+            &public_config,
+            reference.ceremony_id(),
+            local_member,
+            reference.keyset_spec().clone(),
+        )
+        .expect("validated-by-construction participant");
+        generated
+            .participant_state()
+            .validate(&public_config)
+            .expect("generated state passes independent validation");
+
+        let encoded = serde_json::to_vec(generated.participant_state()).expect("participant json");
+        let reloaded = serde_json::from_slice(&encoded).expect("reloaded participant state");
+        let revalidated = ValidatedFederationDkgParticipantState::new(&public_config, reloaded)
+            .expect("reloaded state receives a fresh validation proof");
+        assert_eq!(
+            revalidated.participant_state(),
+            generated.participant_state()
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use cdk::federation::{
-    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec, FederationDkgParticipantState,
+    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
+    ValidatedFederationDkgParticipantState,
 };
 
 use super::*;
@@ -11,7 +12,7 @@ struct DkgDriverTestMember {
     db: Arc<cdk_sqlite::MintSqliteDatabase>,
     seed: [u8; 64],
     private_config: MemberConfigPrivate,
-    participant: FederationDkgParticipantState,
+    participant: ValidatedFederationDkgParticipantState,
     client: FederationRestPeerClient<RouterFederationTransportRegistry>,
 }
 
@@ -146,7 +147,10 @@ impl DkgDriverTestFederation {
         )
         .await
         .expect("reload participant state");
-        assert_eq!(participant, member.participant);
+        assert_eq!(
+            participant.participant_state(),
+            member.participant.participant_state()
+        );
         let client = FederationRestPeerClient::new(
             self.transport.clone(),
             &self.public_config,
@@ -176,7 +180,7 @@ impl DkgDriverTestFederation {
                 db.get_federation_dkg_participant_states()
                     .await
                     .expect("participant states"),
-                vec![member.participant.clone()]
+                vec![member.participant.participant_state().clone()]
             );
             assert_eq!(
                 db.get_federation_dkg_commitments()

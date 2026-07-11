@@ -2736,6 +2736,18 @@ impl FederationDkgParticipantState {
         member_id: MemberId,
         keyset_spec: FederationDkgKeysetSpec,
     ) -> Result<Self> {
+        let state =
+            Self::generate_by_construction(public_config, ceremony_id, member_id, keyset_spec)?;
+        state.validate(public_config)?;
+        Ok(state)
+    }
+
+    fn generate_by_construction(
+        public_config: &FederationConfig,
+        ceremony_id: FederationDkgCeremonyId,
+        member_id: MemberId,
+        keyset_spec: FederationDkgKeysetSpec,
+    ) -> Result<Self> {
         public_config.validate()?;
         if !public_config.members.contains_key(&member_id) {
             return Err(FederationError::MissingMember { member_id });
@@ -2799,16 +2811,14 @@ impl FederationDkgParticipantState {
             );
         }
 
-        let state = Self {
+        Ok(Self {
             version: FEDERATION_DKG_PARTICIPANT_STATE_VERSION,
             federation_id: public_config.federation_id,
             ceremony_id,
             member_id,
             reveal,
             secret_share_requests,
-        };
-        state.validate(public_config)?;
-        Ok(state)
+        })
     }
 
     /// Validate private participant state before resuming a ceremony.

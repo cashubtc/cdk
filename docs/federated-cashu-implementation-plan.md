@@ -2903,7 +2903,7 @@ Verified harness checkpoint (2026-07-11):
   no AlephBFT, wallet, mint daemon, REST, or database dependency. It supports
   explicit profile, denomination, build, iteration, phase, full-ceremony, and
   timeout controls and emits one machine-readable JSON report.
-- Harness v3 measures every requested pure phase, modeled canonical bytes and
+- Harness v4 measures every requested pure phase, modeled canonical bytes and
   durable record counts, and final transcript/key/share equality. An external
   permissioned `/usr/bin/time -lp` wrapper currently supplies wall, user,
   system, average CPU, and peak RSS. Peak-CPU sampling and real REST counters
@@ -2944,6 +2944,18 @@ Verified harness checkpoint (2026-07-11):
   true instead of remaining incomplete when the baseline was interrupted after
   1,116.72s. The eight-denomination and real-process responsiveness gates
   remain deferred rather than inferred from these pure-state-machine results.
+- Candidate 3 is **Kept**. Fresh live-driver participant state now receives a
+  non-serializable validated-by-construction proof instead of immediately
+  converting every generated secret share back to a public point and
+  reevaluating every public polynomial. Side-by-side release generation medians
+  improved from 70.569ms to 20.461ms at 5-of-3 (3.4x), 645.072ms to 106.529ms
+  at 11-of-8 (6.1x), and 3.299s to 347.621ms at 20-of-14 (9.5x).
+- The ordinary public generator still performs complete self-validation.
+  Persisted/reloaded state can only regain the in-process proof through the full
+  validator, and the harness independently validates one generated candidate
+  before reporting success. Thirty-one common DKG tests and seven permissioned
+  release Axum driver/route tests pass, including fresh persistence, restart,
+  tamper rejection, changed policy, and authenticated delivery.
 
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
@@ -3023,10 +3035,14 @@ reference to the recorded measurements:
   isolated release speedups are 3.9x, 9.8x, and 18.6x respectively. Existing
   reveal validation still runs first, and focused malformed-coefficient,
   transcript, member-share, restart, and authenticated-route tests pass.
-- [ ] Avoid an expensive public-polynomial round-trip immediately after freshly
+- [x] Avoid an expensive public-polynomial round-trip immediately after freshly
   generating state from known coefficients, while retaining construction
   invariants and full validation when state crosses a persistence or transport
-  boundary. Outcome: pending.
+  boundary. Outcome: **Kept**. Harness v4 reports 3.4x, 6.1x, and 9.5x lower
+  fresh-generation medians at 5-of-3, 11-of-8, and 20-of-14. Only the fresh
+  live-driver path can receive the non-serializable construction proof; the
+  public raw generator and every deserialized/restarted state still perform
+  full polynomial/share validation.
 - [ ] Move participant generation and every remaining expensive derivation to a
   bounded blocking/CPU worker path so Axum and private REST stay responsive.
   Measure both total CPU time and request latency; do not call a pure scheduling

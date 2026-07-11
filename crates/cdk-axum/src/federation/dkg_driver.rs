@@ -7,8 +7,7 @@ use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgCeremonyId,
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantState, FederationError, MemberId,
-    ValidatedFederationDkgParticipantState,
+    FederationError, MemberId, ValidatedFederationDkgParticipantState,
 };
 use cdk_http_client::{Async, Transport};
 use futures::future::join_all;
@@ -179,7 +178,7 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
     state: &MintState,
     ceremony_id: FederationDkgCeremonyId,
     keyset_spec: FederationDkgKeysetSpec,
-) -> Result<FederationDkgParticipantState, cdk::Error> {
+) -> Result<ValidatedFederationDkgParticipantState, cdk::Error> {
     let runtime_config = state.mint.federation_config().ok_or_else(|| {
         cdk::Error::Custom("federation mint is missing its runtime config".to_string())
     })?;
@@ -200,15 +199,15 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
         .into_iter()
         .find(|participant| participant.ceremony_id() == ceremony_id)
     {
-        existing.validate(&public_config)?;
-        if existing.member_id() != local_member {
+        let participant = ValidatedFederationDkgParticipantState::new(&public_config, existing)?;
+        if participant.participant_state().member_id() != local_member {
             return Err(FederationError::MemberIdMismatch {
                 expected: local_member,
-                found: existing.member_id(),
+                found: participant.participant_state().member_id(),
             }
             .into());
         }
-        if existing.keyset_spec() != &keyset_spec {
+        if participant.participant_state().keyset_spec() != &keyset_spec {
             return Err(FederationError::DkgCommitmentMismatch {
                 member_id: local_member,
                 reason: "persisted participant keyset policy does not match requested ceremony"
@@ -216,17 +215,17 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
             }
             .into());
         }
-        return Ok(existing);
+        return Ok(participant);
     }
 
-    let participant = FederationDkgParticipantState::generate(
+    let participant = ValidatedFederationDkgParticipantState::generate(
         &public_config,
         ceremony_id,
         local_member,
         keyset_spec,
     )?;
     let mut tx = db.begin_transaction().await?;
-    tx.add_federation_dkg_participant_state(&participant)
+    tx.add_federation_dkg_participant_state(participant.participant_state())
         .await?;
     tx.commit().await?;
     Ok(participant)
@@ -242,26 +241,17 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
 pub(crate) async fn run_federation_dkg_driver_tick<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
-    participant: &FederationDkgParticipantState,
+    participant: &ValidatedFederationDkgParticipantState,
     secret_share_transport: FederationDkgSecretShareTransportPolicy,
 ) -> Result<FederationDkgDriverTickOutcome, cdk::Error>
 where
     T: Transport,
 {
-    let public_config = state
-        .mint
-        .federation_config()
-        .ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?
-        .public_config();
-    let participant =
-        ValidatedFederationDkgParticipantState::new(public_config, participant.clone())?;
     let mut plan_cache = None;
     run_federation_dkg_driver_tick_with_cache(
         state,
         client,
-        &participant,
+        participant,
         secret_share_transport,
         &mut plan_cache,
     )
@@ -425,7 +415,6 @@ pub async fn run_federation_dkg_driver(
     )?;
     let participant =
         prepare_federation_dkg_participant_state(state, ceremony_id, keyset_spec).await?;
-    let participant = ValidatedFederationDkgParticipantState::new(&public_config, participant)?;
     let client = FederationRestPeerClient::new_with_config(
         Async::default(),
         &public_config,

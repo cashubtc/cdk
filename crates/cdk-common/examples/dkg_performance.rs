@@ -25,9 +25,10 @@ use cdk_common::nuts::nut01::{
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 3;
-const ALL_PHASES: [&str; 13] = [
+const HARNESS_VERSION: u16 = 4;
+const ALL_PHASES: [&str; 14] = [
     "participant_generation",
+    "participant_generation_validated_by_construction",
     "participant_reload_validation",
     "planner_unchanged",
     "planner_validated_participant",
@@ -140,6 +141,7 @@ struct CorrectnessReport {
     public_share_mapping_equal: bool,
     local_secret_public_correspondence: bool,
     aggregate_polynomial_derivation_equal: bool,
+    generated_participant_state_valid: bool,
 }
 
 impl CorrectnessReport {
@@ -153,6 +155,7 @@ impl CorrectnessReport {
             public_share_mapping_equal: false,
             local_secret_public_correspondence: false,
             aggregate_polynomial_derivation_equal: false,
+            generated_participant_state_valid: false,
         }
     }
 }
@@ -312,10 +315,10 @@ fn print_usage() {
 
 fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
     let base = BaseFixture::new(args.profile, args.denomination_count)?;
-    let needs_participants = args
-        .phases
-        .iter()
-        .any(|phase| phase != "participant_generation");
+    let needs_participants = args.phases.iter().any(|phase| {
+        phase != "participant_generation"
+            && phase != "participant_generation_validated_by_construction"
+    });
     let fixture_start = Instant::now();
     let participant_fixture = needs_participants
         .then(|| ParticipantFixture::new(&base))
@@ -338,12 +341,30 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
     let complete_fixture_setup_us = duration_us(complete_start.elapsed());
     let mut reports = Vec::new();
     let mut aggregate_polynomial_derivation_equal = false;
+    let mut generated_participant_state_valid = false;
 
     if args.phases.contains("participant_generation") {
         reports.push(measure_phase(
             "participant_generation",
             args.iterations,
             || generate_participants(&base).map(|states| states.len()),
+        )?);
+    }
+    if args
+        .phases
+        .contains("participant_generation_validated_by_construction")
+    {
+        let generated = generate_validated_participants(&base)?;
+        for participant in generated.values() {
+            participant
+                .participant_state()
+                .validate(&base.public_config)?;
+        }
+        generated_participant_state_valid = true;
+        reports.push(measure_phase(
+            "participant_generation_validated_by_construction",
+            args.iterations,
+            || generate_validated_participants(&base).map(|states| states.len()),
         )?);
     }
     if let Some(fixture) = participant_fixture.as_ref() {
@@ -585,6 +606,7 @@ fn run_benchmark(args: &Args) -> Result<BenchmarkReport> {
                 .map_or_else(CorrectnessReport::skipped, |complete| complete.correctness);
             correctness.aggregate_polynomial_derivation_equal =
                 aggregate_polynomial_derivation_equal;
+            correctness.generated_participant_state_valid = generated_participant_state_valid;
             correctness
         },
     })
@@ -740,6 +762,27 @@ fn generate_participants(
             Ok((
                 member,
                 FederationDkgParticipantState::generate(
+                    &base.public_config,
+                    base.ceremony_id,
+                    member,
+                    base.keyset_spec.clone(),
+                )?,
+            ))
+        })
+        .collect()
+}
+
+fn generate_validated_participants(
+    base: &BaseFixture,
+) -> Result<BTreeMap<MemberId, ValidatedFederationDkgParticipantState>> {
+    base.public_config
+        .members
+        .keys()
+        .copied()
+        .map(|member| {
+            Ok((
+                member,
+                ValidatedFederationDkgParticipantState::generate(
                     &base.public_config,
                     base.ceremony_id,
                     member,
@@ -1079,6 +1122,7 @@ fn verify_complete_fixture(
         public_share_mapping_equal,
         local_secret_public_correspondence,
         aggregate_polynomial_derivation_equal: false,
+        generated_participant_state_valid: false,
     })
 }
 

@@ -1844,6 +1844,57 @@ responsiveness during a real multi-process ceremony. Those remain explicit
 later gates; the interrupted debug process run was not resumed for this
 checkpoint.
 
+### Candidate 3: validate fresh participant state by construction
+
+Decision: **Kept** for fresh live-driver participant generation.
+
+The raw participant generator creates secret coefficients, their public G2
+commitments, and every recipient share from the same in-memory coefficients.
+It then historically repeated the recipient-side verification locally by
+turning every secret share back into a public point and reevaluating every
+public polynomial. Candidate 3 does not weaken the ordinary public constructor:
+`FederationDkgParticipantState::generate` still performs that complete check.
+Instead, the live driver can create a non-serializable validated-by-construction
+wrapper while the coefficients are still the authoritative source.
+
+Harness v4 measures the complete public constructor and the fresh-driver path
+side by side. Before timing the candidate, it independently runs the full raw
+validator over a candidate-generated state; failure aborts the report.
+
+```bash
+target/release/examples/dkg_performance \
+  --profile PROFILE --denominations one --iterations N \
+  --timeout-secs 120 \
+  --phases participant_generation,participant_generation_validated_by_construction \
+  --pretty
+```
+
+Ten samples were used at 5-of-3 and 11-of-8; five were used at 20-of-14.
+
+| Release participant generation | 5-of-3 | 11-of-8 | 20-of-14 |
+| --- | ---: | ---: | ---: |
+| Full self-validation median | 70.569ms | 645.072ms | 3.299s |
+| Full-validation range | 69.602-86.056ms | 638.594-691.477ms | 3.267-3.331s |
+| Validated-by-construction median | 20.461ms | 106.529ms | 347.621ms |
+| Construction range | 20.078-20.884ms | 104.999-116.622ms | 344.617-348.105ms |
+| Median speedup | 3.4x | 6.1x | 9.5x |
+| Independent full validation | pass | pass | pass |
+
+The optimized proof cannot be serialized. Fresh state is persisted as the same
+raw participant record as before; after restart or deserialization, the driver
+must construct a new proof with complete config, commitment, receiver, amount,
+signer, and secret/public polynomial validation. Incoming transport artifacts
+retain their existing receiver-side validation. The public raw constructor also
+remains fully validating for all non-driver callers.
+
+Verification passed 31 release-mode common DKG tests and 7 permissioned
+release-mode Axum DKG driver/route tests. The focused coverage includes an
+independent full validation and serialize/reload/revalidate round trip for the
+fresh proof, durable participant equality, restart/resume, tampered private
+contribution rejection, changed keyset policy rejection, authenticated member
+delivery, and bounded driver execution. No ceremony payload, phase order,
+persistence format, transport admission, retry, or activation behavior changed.
+
 ## Recommended Work Order
 
 1. Implement immediate post-quote payment observation and benchmark the saving.
