@@ -432,19 +432,19 @@
         <!-- Current project tracks the bigger milestone in progress and how far along it is; keep this to 2-3 sentences. -->
         <div class="summary-row">
           <span class="label">Current project</span>
-          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are now certified. Milestone 20 has a restartable dealer-free DKG participant, strict ceremony domain separation, a complete identity-signed public transcript, a bounded live executor over authenticated private REST, operator start/resume configuration, and a generated interruption/restart process harness; the clean multi-process ceremony and restart-activation rerun remains in progress.</span>
+          <span class="value">Milestones 4, 25, and 26 are complete, and all Milestone 4A release criteria are certified. Milestone 20A now has a bounded, machine-readable pure-DKG performance harness with 5-of-3, 11-of-8, and 20-of-14 profiles, one/eight-denomination variants, phase selection, release/debug modes, hard timeouts, and transcript/key/share equality checks; larger release baselines and the optional REST process runner remain in progress.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: certify federated release criteria</span>
+          <span class="value">test: add bounded DKG performance harness</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The complete value-operation window now passes against both 4-member/threshold-3 and 5-member/threshold-3 live upstream AlephBFT federations with one member offline. Mint, swap, restore, check-state, melt, payment observation, certified catch-up, duplicate-payment prevention, journal order, and materialized-state convergence are verified at minimum and spare quorum.</span>
+          <span class="value">Harness v1 isolates participant generation, restart validation, planner ticks, record ingestion, duplicate handling, secret-share verification, local derivation, transcript derivation, and complete in-memory ceremony timing. The first 5-of-3 one-denomination baseline shows a 1.308-second release median versus 30.792 seconds in debug, with every correctness flag true and no production behavior change.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run the generated configs through a real multi-process ceremony with one member deliberately interrupted and resumed from SQL, export and compare independently finalized configs, restart all members onto the DKG keyset, then prove mint, swap, melt, and restore on SQLite and Postgres.</span>
+          <span class="value">Run release one-denomination baselines at 11-of-8 and 20-of-14, then eight-denomination 5-of-3, 11-of-8, and 20-of-14. Add the optional real-process resource/REST runner before evaluating optimization candidates one at a time.</span>
         </div>
       </aside>
     </header>

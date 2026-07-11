@@ -1291,6 +1291,33 @@ fed-regtest-live-dkg dir="target/cdk-fed-regtest-live-dkg" members="5" threshold
     CDK_MINTD_BIN=target/debug/cdk-mintd \
     bash "{{dir}}/smoke-live-dkg-federation.sh"
 
+# Run the bounded, in-memory dealer-free DKG phase benchmark
+dkg-perf profile="5-of-3" denominations="one" iterations="3" build="release" phases="all" timeout_secs="300" full_ceremony="0":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo_args=(run -p cdk-common --features federation,bench --example dkg_performance)
+  case "{{build}}" in
+    release) cargo_args+=(--release) ;;
+    debug) ;;
+    *) printf 'build must be release or debug\n' >&2; exit 2 ;;
+  esac
+  benchmark_args=(
+    --profile "{{profile}}"
+    --denominations "{{denominations}}"
+    --iterations "{{iterations}}"
+    --phases "{{phases}}"
+    --timeout-secs "{{timeout_secs}}"
+  )
+  case "{{full_ceremony}}" in
+    1|true) benchmark_args+=(--full-ceremony) ;;
+    0|false) ;;
+    *) printf 'full_ceremony must be 0 or 1\n' >&2; exit 2 ;;
+  esac
+  cargo "${cargo_args[@]}" -- "${benchmark_args[@]}"
+
 # Generate local fake-wallet federation configs backed by PostgreSQL member schemas
 fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint" dkg_setup_route_probes="0":
   #!/usr/bin/env bash

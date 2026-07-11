@@ -67,6 +67,10 @@ bip39.workspace = true
 wasm-bindgen-test = "0.3"
 criterion.workspace = true
 
+[[example]]
+name = "dkg_performance"
+required-features = ["bench", "federation"]
+
 [[bench]]
 name = "transaction_id_benchmark"
 harness = false

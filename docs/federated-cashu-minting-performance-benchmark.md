@@ -1,6 +1,6 @@
 # Federated Cashu Minting and Receive Performance Benchmark
 
-Date: 2026-07-09; updated 2026-07-10
+Date: 2026-07-09; updated 2026-07-11
 
 This note records benchmark results from fresh 5-member, threshold-3 fakewallet
 AlephBFT federations and fresh CLI wallets. The first run identified why
@@ -1604,6 +1604,91 @@ database, and the test uses the production activity-aware 100 ms cadence rather
 than an artificial fixed 10 ms cadence that allowed surviving peers to race
 thousands of rounds ahead during a long partition. It passed repeatedly in
 isolation and in the full parallel Axum suite.
+
+## Dealer-Free DKG Performance
+
+Milestone 20A starts with a benchmark-only harness over the pure `cdk-common`
+DKG state machine. Harness version 1 has no database, REST, AlephBFT, wallet, or
+mint daemon dependency. It supports the `5-of-3`, `11-of-8`, and `20-of-14`
+profiles; one or eight denominations; phase selection; debug or release builds;
+raw samples; and a hard process timeout. The `just dkg-perf` recipe is the
+stable entry point, while direct invocation of the already-built example keeps
+Cargo compilation outside resource measurements.
+
+The production-code baseline is commit `efa3bca01`. The harness and recipe are
+measurement-only additions: no DKG validation, derivation, persistence,
+networking, or protocol behavior changed before these measurements.
+
+### Harness-v1 quick baseline
+
+Environment: arm64 development machine, low-power mode disabled. The power
+status command reported AC power while the battery was discharging, so absolute
+numbers should not be treated as machine-independent budgets. Each phase uses
+three raw samples. Process resource totals include fixture construction, all
+phase repetitions, and three complete in-memory ceremonies, but exclude Cargo
+compilation. macOS `/usr/bin/time -lp` required network/process permission in
+the managed sandbox to read process accounting without a sandbox-only `sysctl`
+failure.
+
+Commands:
+
+```bash
+cargo build -p cdk-common --features federation,bench \
+  --example dkg_performance --release
+
+/usr/bin/time -lp target/release/examples/dkg_performance \
+  --profile 5-of-3 --denominations one --iterations 3 \
+  --timeout-secs 180 --full-ceremony
+
+/usr/bin/time -lp target/debug/examples/dkg_performance \
+  --profile 5-of-3 --denominations one --iterations 3 \
+  --timeout-secs 300 --full-ceremony
+```
+
+| Phase median | Debug | Release | Release speedup |
+| --- | ---: | ---: | ---: |
+| Fresh participant generation | 1.598s | 67.972ms | 23.5x |
+| Persisted reload and validation | 1.162s | 50.105ms | 23.2x |
+| Commitment ingestion | 4us | below 1us median | not meaningful |
+| Reveal ingestion | 887us | 45us | 19.7x |
+| Exact-duplicate commitment/reveal ingestion | 3.798ms | 200us | 19.0x |
+| Received secret-share verification | 1.130s | 47.657ms | 23.7x |
+| All-member local keyset derivation | 5.704s | 243.407ms | 23.4x |
+| Unchanged complete planner tick | 227.590ms | 9.797ms | 23.2x |
+| Changed-record complete planner tick | 227.024ms | 9.853ms | 23.0x |
+| Final transcript/config derivation | 4.685s | 198.676ms | 23.6x |
+| Complete in-memory ceremony | 30.792s | 1.308s | 23.5x |
+
+| Whole-process resource measurement | Debug | Release |
+| --- | ---: | ---: |
+| Wall | 167.55s | 7.13s |
+| User | 165.90s | 7.08s |
+| System | 1.17s | 0.04s |
+| Average CPU from `(user + sys) / wall` | 99.7% | 99.9% |
+| Maximum RSS | 6.85 MB | 5.59 MB |
+
+All five members completed with one transcript hash, keyset ID, aggregate-key
+map, and public-share map. Every local secret share mapped to the transcript's
+configured public share. The modeled all-to-all ceremony carried about 44.1 KB
+of canonical JSON and produced, per member, five commitments, five reveals,
+five incoming secret-share records, one keyset-share record, and five transcript
+signatures. The phase harness intentionally reports zero REST attempts,
+successes, and timeouts; those belong to the optional real-process runner.
+
+### Initial classification
+
+- **Confirmed:** debug cryptography is about 23x slower across every expensive
+  phase. Debug-only multi-process observations cannot accept or reject a
+  cryptographic optimization.
+- **Confirmed:** public/secret polynomial verification and repeated final public
+  derivation dominate; commitment/reveal map bookkeeping does not.
+- **Not yet decided:** no production optimization candidate is accepted or
+  rejected from the 5-of-3 quick profile alone.
+- **Next measurements:** repeat the release one-denomination profile at 11-of-8
+  and 20-of-14, then run eight-denomination 5-of-3, 11-of-8, and 20-of-14 in
+  that order. Extend the optional process runner with REST responsiveness,
+  attempt/success/timeout, peak CPU, and retry metrics before the large-process
+  acceptance gate.
 
 ## Recommended Work Order
 

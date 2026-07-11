@@ -2897,13 +2897,29 @@ release binaries and unoptimized debug binaries before attributing costs.
 
 Benchmark and decision rules:
 
+Verified harness checkpoint (2026-07-11):
+
+- `just dkg-perf` now runs a versioned benchmark-only `cdk-common` example with
+  no AlephBFT, wallet, mint daemon, REST, or database dependency. It supports
+  explicit profile, denomination, build, iteration, phase, full-ceremony, and
+  timeout controls and emits one machine-readable JSON report.
+- Harness v1 measures every requested pure phase, modeled canonical bytes and
+  durable record counts, and final transcript/key/share equality. An external
+  permissioned `/usr/bin/time -lp` wrapper currently supplies wall, user,
+  system, average CPU, and peak RSS. Peak-CPU sampling and real REST counters
+  remain part of the optional process-runner work.
+- The first unmodified 5-of-3 one-denomination baseline is recorded in
+  `docs/federated-cashu-minting-performance-benchmark.md`: three complete
+  release ceremonies have a 1.308s median versus 30.792s in debug, with every
+  correctness flag true. No production optimization has been made or selected.
+
 - [ ] Add a focused DKG performance harness that can run independently of
   AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
   support fast phase-level probes and an optional real multi-process ceremony,
   use disposable isolated work directories and ports, stop every child process
   on success/failure/interruption, and never require an unrelated long-running
   test before reporting a result.
-- [ ] Give the harness explicit profiles for at least 5-of-3, 11-of-8, and
+- [x] Give the harness explicit profiles for at least 5-of-3, 11-of-8, and
   20-of-14 federations, with one-denomination and standard eight-denomination
   variants. The one-denomination profile is the quick iteration gate; the
   20-of-14 eight-denomination profile is the large-federation acceptance gate.
@@ -2937,7 +2953,7 @@ Benchmark and decision rules:
   obsolete, or the candidate decision is recorded, and always before closing
   the checkpoint. Retain instrumentation only when it has focused tests and is
   intentionally useful as normal low-noise production diagnostics.
-- [ ] Use
+- [x] Use
   `docs/federated-cashu-minting-performance-benchmark.md` to log DKG observations
   in a clearly separated DKG section: command/harness version, commit, profile,
   build mode, raw measurements, bottleneck classification, retained/rejected
@@ -2949,7 +2965,7 @@ Benchmark and decision rules:
   If it does not improve the intended metric, regressions outweigh the gain, or
   the hypothesis is disproved, check it off as **Rejected** and record the
   evidence instead of retaining speculative complexity.
-- [ ] Keep benchmark tooling deterministic and cheap enough that a coding agent
+- [x] Keep benchmark tooling deterministic and cheap enough that a coding agent
   can test a candidate in minutes with the quick profile before spending CPU on
   the 20-of-14 acceptance profile. The harness must support phase selection,
   bounded timeouts, early failure on lack of progress, and machine-readable
