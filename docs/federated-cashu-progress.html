@@ -436,15 +436,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist restartable DKG participant state</span>
+          <span class="value">feat: add resumable DKG phase planner</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The live-driver foundation now persists each member's versioned private participant state by ceremony ID in SQLite and Postgres. Exact replay is idempotent, conflicting regeneration under the same ceremony fails, and later ceremonies coexist for restart/recovery. Operator status reports only record counts, member IDs, and public ceremony IDs; private per-recipient scalar contributions remain redacted.</span>
+          <span class="value">A pure, stateless planner now validates the local durable DKG view and emits only the next legal work: commitment, reveal, per-recipient shares, local keyset persistence, deterministic transcript signature, or complete. Every gate requires all members from the preceding phase. Later phases carry earlier outbound artifacts so retries can heal a lagging peer without separate acknowledgement state, while custom debug output reports counts and public IDs only.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add a pure resumable phase planner over durable DKG records, then execute its next legal work over the existing authenticated REST client with bounded retries and self-delivery. Confidential non-local private-share transport remains a later gate.</span>
+          <span class="value">Execute the planner over the existing authenticated REST client with bounded retries, ordered cumulative fanout, self-delivery, atomic local keyset persistence, and restart/resume tests. Confidential non-local private-share transport remains a later gate.</span>
         </div>
       </aside>
     </header>
@@ -835,7 +835,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, and a complete identity-signed public ceremony transcript to the existing authenticated setup routes, durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. The private participant state is now durable by ceremony ID in both SQL backends: exact replay is idempotent, conflicting regeneration fails, and operator output remains redacted. Each participant independently creates only its own random BLS polynomials, converts them to ceremony-scoped per-recipient shares, drops the original coefficients, and validates state on reload. Finalization and startup rederive every advertised aggregate keyset and public member share from the persisted commitments/reveals before accepting signatures. Remaining work is the pure phase planner, bounded live REST execution, and confidential production secret-share transport.</p>
+            <p>The DKG core now adds an explicit keyset specification, a versioned private participant state, a unique 32-byte ceremony ID, a complete identity-signed public ceremony transcript, and a pure resumable phase planner to the existing authenticated setup routes, durable records, local keyset-share derivation, final config assembly, startup activation, status tooling, and key-rotation path. The planner advances only through all-member durable gates and emits cumulative idempotent artifacts so later retries can repair earlier delivery loss. Private participant state is durable by ceremony ID in both SQL backends, conflicting regeneration fails, deterministic transcript signing avoids restart conflicts, and operator/debug output remains redacted. Remaining work is bounded live REST execution and confidential production secret-share transport.</p>
           </article>
         </div>
       </section>
@@ -851,9 +851,9 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: add a pure resumable DKG phase planner
-          over the newly durable participant/setup records, then drive its
-          legal transitions over bounded authenticated REST. Confidential
+          Current verification target: execute the pure DKG phase plan over
+          bounded authenticated REST with ordered cumulative fanout,
+          self-delivery, atomic local persistence, and restart/resume. Confidential
           non-local private share delivery follows that checkpoint. The wider
           process baseline continues to broaden generated process-level
           AlephBFT coverage into larger member matrices, longer partition
@@ -981,7 +981,7 @@
           </article>
           <article class="item">
             <h3>Distributed key generation</h3>
-            <p>Plan the next legal phase from durable participant/setup records, connect it to bounded authenticated REST fanout with explicit restart/resume and operator status gates, then require confidential non-local share delivery.</p>
+            <p>Connect the pure phase plan to bounded authenticated REST fanout with ordered cumulative delivery, self-delivery, atomic local persistence, explicit restart/resume, and operator status gates, then require confidential non-local share delivery.</p>
           </article>
           <article class="item">
             <h3>Route admission audit</h3>

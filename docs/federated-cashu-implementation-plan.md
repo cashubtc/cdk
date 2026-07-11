@@ -2668,7 +2668,7 @@ Implementation checklist:
   - [x] Bind the ceremony ID and complete participant commitment/reveal record into the final identity-signed transcript. Each durable local member-keyset-share record carries the public ceremony that produced it; final-config assembly and startup signature admission rederive the aggregate keyset from that record before accepting the transcript. The transcript hash moved to v2 without an undeployed-federation compatibility path.
   - [ ] Add the live per-member ceremony driver with durable local state, phase gates, authenticated REST fanout, bounded retries, restart/resume, and operator-visible progress.
     - [x] Persist the versioned local participant state by ceremony ID in both SQL backends. Exact replay is idempotent, regeneration under the same ceremony is rejected, multiple ceremony IDs can coexist, and status exposes only record counts, member IDs, and public ceremony IDs.
-    - [ ] Add a pure phase planner over the local participant state plus durable commitments, reveals, incoming contributions, keyset shares, and transcript signatures.
+    - [x] Add a pure phase planner over the local participant state plus durable commitments, reveals, incoming contributions, keyset shares, and transcript signatures. It emits commitment, reveal, per-recipient shares, local keyset persistence, deterministic transcript signature, or complete only when the preceding all-member gate is durable. Later phases retain earlier outbound artifacts so lagging peers can recover without a separate acknowledgement protocol.
     - [ ] Execute planned phases over authenticated private REST with bounded retries, self-delivery, restart/resume, and explicit terminal/conflict handling.
     - [ ] Add operator configuration and process-level status for starting and monitoring one live ceremony.
   - [ ] Require confidential transport for private secret-share contributions in production (HTTPS/mTLS or recipient-encrypted envelopes), while retaining explicit localhost development support.
@@ -2699,6 +2699,7 @@ Tests and success criteria:
 - [x] A same-roster ceremony relabeled with a fresh ID but deriving identical aggregate keys produces a different transcript hash, and signatures from the original ceremony do not authenticate it; direct reveal tampering also invalidates the signed payload.
 - [x] Restart activation and database-backed status reconstruction rederive each keyset from its persisted public ceremony before accepting transcript signatures, with no new table or consensus phase.
 - [x] Local participant state survives SQL restart without exposing scalar material through status; exact replay succeeds, conflicting same-ceremony regeneration fails, and a later ceremony persists independently.
+- [x] The pure driver planner advances through commitment, reveal, secret-share, local-keyset, transcript-signature, and complete phases only from a valid durable view; out-of-order and cross-ceremony records fail closed, repeated signature planning is deterministic, and planner `Debug` output excludes private shares.
 - [x] Restart during setup can resume or safely restart.
 - [x] Key rotation creates a new aggregate keyset accepted by all members.
 - [x] Old keysets remain verifiable until final expiry.
@@ -2737,6 +2738,13 @@ Verified durable driver-state checkpoint:
 - The focused SQLite empty-database migration and federation-index inventory tests passed with `federation_dkg_participant_states` and its member index present.
 - `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres`: passed for both migration definitions.
 - `cargo test -p cdk-mintd --features federation,fakewallet federation_dkg_status -- --test-threads=1`: all 9 status/reconstruction tests passed; output reports only participant-state counts, member IDs, and ceremony IDs.
+
+Verified resumable phase-planner checkpoint:
+
+- `cargo test -p cdk-common --features federation dkg_driver -- --test-threads=1`: all 3 planner progression, fail-closed ordering/ceremony, and redacted-debug tests passed.
+- `cargo test -p cdk-common --features federation dkg -- --test-threads=1`: all 29 focused DKG tests passed with the planner included.
+- `cargo check -p cashu -p cdk-common`: passed without federation features.
+- `cargo clippy -p cdk-common --features federation --lib --no-deps -- -D warnings` remains blocked by the same 19 pre-existing federation findings and reports no planner finding.
 
 ## Milestone 21: key rotation and federation upgrades
 

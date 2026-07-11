@@ -18,6 +18,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 mod consensus;
+mod dkg_driver;
 mod journal;
 mod operation;
 mod signing;
@@ -40,6 +41,10 @@ pub use self::consensus::{
     FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
     FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+};
+pub use self::dkg_driver::{
+    FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
+    FederationDkgDriverRecords,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
