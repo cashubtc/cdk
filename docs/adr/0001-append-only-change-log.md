@@ -174,12 +174,15 @@ The PostgreSQL migration is the same shape with `BIGINT` for `id`/`created_at`,
 * `created_at` is unix seconds at insert time, stored as its own column so
   replay and auditing do not have to decode the `id` to get a timestamp.
 
-This is a refinement over the reference implementation, which stores a single
-`record TEXT` holding a concatenated `"table_name:pk"` string (for example
-`melt_quote:0f3a...`). Splitting it into a typed `entity` discriminant plus the
-bare primary key avoids repeating the table name as text on every row, makes
-"all events for entity X" a clean indexed predicate, and removes the ambiguity
-of parsing a string whose primary key may itself contain the delimiter.
+The compound key is a typed `entity` discriminant plus the bare primary key,
+rather than a single `record TEXT` holding a concatenated `"table_name:pk"`
+string (for example `melt_quote:0f3a...`). The split avoids repeating the table
+name as text on every row, makes "all events for entity X" a clean indexed
+predicate, and removes the ambiguity of parsing a string whose primary key may
+itself contain the delimiter. The reference implementation uses this compound
+key: the migration has the `entity` column and callers pass the bare primary
+key. (One stale doc comment on `add_journal` still describes `record` as a
+`"table_name:pk"` string; the actual value passed is the bare primary key.)
 
 The first draft also had a `reason` free-text column; the reference
 implementation dropped it to keep the append primitive minimal. It can be added
@@ -196,7 +199,7 @@ variants must keep their discriminants for old rows to stay readable.
 /// in `journal.entity`; the row's primary key goes in `journal.record`.
 #[non_exhaustive]
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Entity {
     MintQuote = 1,
     MeltQuote = 2,
@@ -295,15 +298,10 @@ pub trait JournalTransaction {
     type Err: Into<Error> + From<Error>;
 
     /// Appends one Event for the row identified by `(entity, record)` within
-    /// the current transaction. `record` is that row's primary key; `entity`
-    /// can be derived from the event, so an implementation may take just
-    /// `(record, event)` and call `event.entity()`.
-    async fn add_journal(
-        &mut self,
-        entity: Entity,
-        record: String,
-        event: Event,
-    ) -> Result<(), Self::Err>;
+    /// the current transaction. `record` is that row's bare primary key;
+    /// `entity` is derived from the event (`event.entity()`), so it is not
+    /// passed separately and is always consistent with the payload.
+    async fn add_journal(&mut self, record: String, event: Event) -> Result<(), Self::Err>;
 }
 ```
 
@@ -312,13 +310,21 @@ and the keyset transaction. The SQL layer implements only the append: one
 `INSERT INTO journal` on the transaction's own connection, so it commits or
 rolls back with the mutation it records.
 
-The mint layer (and the signatory, for keyset rotation) decides which events to
-emit and wires them into each flow: quote creation, payments, issuance, melt
-state transitions, proof state changes, proof removal on compensation and
-rollback, blind-signature issuance across issue/melt/swap, and keyset rotation.
-This is a deliberate move away from the first draft, which piggy-backed the
-inserts inside the database-layer mutation methods. Keeping "what to log" in the
-mint and "how to append" in the SQL layer means the log reflects
+Emission is driven by a `JournaledDatabase` decorator that wraps the mint
+database (`cdk-common/src/database/journaled.rs`). Each entity-mutation method
+on the wrapped transaction (`add_mint_quote`, `update_melt_quote_state`,
+`add_proofs`, `update_proofs_state`, `remove_proofs`, `add_blind_signatures`,
+`set_active_keyset`, and the rest) emits the relevant snapshot or delta on the
+inner transaction as part of the same mutation. Direct `add_journal` calls on
+the decorator are rejected with `Error::JournalNotPermitted`, so journaling is
+only ever driven from inside a known mutation rather than by ad hoc callers. The
+decorator is installed once around the database: `cdk/src/mint/mod.rs` for the
+mint and `cdk-signatory/src/db_signatory.rs` for keyset rotation.
+
+This centralizes "what to log" in one place, a deliberate move away from the
+first draft, which piggy-backed the inserts inside the database-layer mutation
+methods and would have scattered emission across each flow. Keeping emission in
+the decorator and "how to append" in the SQL layer means the log reflects
 business-meaningful events rather than raw column writes, and the append
 primitive stays backend-agnostic.
 
@@ -364,15 +370,12 @@ The custom epoch maximizes the usable timestamp range.
 |------|---------|
 | `crates/cdk-common/src/database/event_log.rs` | `Entity`, `Event`/`Snapshot`/`Delta`, `From` conversions, Snowflake `generate_id()`/`init_event_id_generator()` |
 | `crates/cdk-common/src/database/mint/mod.rs` | `JournalTransaction` supertrait |
+| `crates/cdk-common/src/database/journaled.rs` | `JournaledDatabase` decorator that drives emission and rejects direct `add_journal` |
 | `crates/cdk-sql-common/src/mint/event_log.rs` | `add_journal()` append primitive |
 | `crates/cdk-sql-common/src/mint/migrations/{sqlite,postgres}/20260702000000_create_journal.sql` | `journal` table |
 | `crates/cdk-common/src/mint.rs`, `.../amount_currency_serde_opt.rs` | serde derives for snapshotted types |
-| `crates/cdk/src/mint/{issue,melt,swap,ln,proofs}...` | mint-layer emission sites |
-| `crates/cdk-signatory/src/db_signatory.rs` | keyset-rotation emission |
-
-The reference implementation currently uses the single `record TEXT` string;
-the `(entity, record)` compound key and the `Entity` enum described above are a
-proposed refinement to that schema and the `add_journal` signature.
+| `crates/cdk/src/mint/mod.rs` | installs `JournaledDatabase` around the mint store |
+| `crates/cdk-signatory/src/db_signatory.rs` | installs `JournaledDatabase` for keyset rotation |
 
 ### Invariants
 
@@ -386,11 +389,12 @@ proposed refinement to that schema and the `add_journal` signature.
 
 ### Using the journal as an event stream (poor man's Kafka)
 
-Because the table is append-only and every row carries a monotonic,
-time-sortable `id`, `journal` doubles as a durable, ordered event stream. Any
-process that wants to react to state changes (replication to a read replica,
-cache invalidation, analytics, cross-instance synchronization) can consume it
-like a single-partition Kafka topic, without a message broker.
+This is a design sketch: the reference implementation is write-only today and
+ships no consumer. Because the table is append-only and every row carries a
+monotonic, time-sortable `id`, `journal` doubles as a durable, ordered event
+stream. Any process that wants to react to state changes (replication to a read
+replica, cache invalidation, analytics, cross-instance synchronization) could
+consume it like a single-partition Kafka topic, without a message broker.
 
 The consumption pattern is a cursor over `id`:
 
@@ -422,10 +426,17 @@ Two caveats for a real deployment:
 ### Testing
 
 The reference implementation is covered end to end by tests that drive a real
-swap and a real melt and assert that the emitted journal rows replay to the
-expected state (`crates/cdk/src/mint/{melt,swap}/tests/journal_tests.rs`, plus
-an issuance test in `issue/mod.rs`). A `read_journal` test helper loads the
-`journal` rows from a SQLite file and decodes them back into `Event`s.
+swap, a real melt, and a keyset rotation and assert that the emitted journal
+rows replay to the expected state
+(`crates/cdk/src/mint/{melt,swap}/tests/journal_tests.rs`,
+`crates/cdk/src/mint/keyset_journal_tests.rs`, plus an issuance test in
+`issue/mod.rs`). Unit tests in `event_log.rs` cover delta round-tripping,
+entity discriminant stability, event-to-entity mapping, and id
+monotonicity/uniqueness (`delta_round_trip`, `entity_discriminant_round_trips`,
+`events_map_to_expected_entity`, `ids_are_monotonic_and_unique`,
+`ids_are_unique_across_threads`). Replay itself is exercised only by test
+helpers that load the `journal` rows and decode them back into `Event`s; there
+is no production read/replay path in the reference yet.
 
 ### Positive Consequences
 
