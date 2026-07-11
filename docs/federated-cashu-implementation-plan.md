@@ -2926,6 +2926,17 @@ Benchmark and decision rules:
   noisy process measurements, run enough repetitions to report a median and
   range; preserve the exact member/threshold/denomination profile, build mode,
   machine power mode, and concurrency settings for before/after comparisons.
+- [ ] Treat "baseline before production-code changes" as a sequencing rule,
+  not a blanket ban on instrumentation. After the untouched baseline, the agent
+  may add the smallest behavior-neutral timing spans, counters, tracing, or
+  profiling hooks needed to answer a specific DKG performance question,
+  including narrowly scoped probes around production code paths. Instrumentation
+  must not change cryptographic verification, ceremony messages, phase gates,
+  persistence, REST admission, retry policy, or activation behavior. Remove
+  temporary instrumentation as soon as the issue is resolved, the probe becomes
+  obsolete, or the candidate decision is recorded, and always before closing
+  the checkpoint. Retain instrumentation only when it has focused tests and is
+  intentionally useful as normal low-noise production diagnostics.
 - [ ] Use
   `docs/federated-cashu-minting-performance-benchmark.md` to log DKG observations
   in a clearly separated DKG section: command/harness version, commit, profile,
