@@ -453,8 +453,9 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          The implementation plan has 28 milestone points, including the
-          explicit Milestone 16A convergence certification gate. The ordered
+          The implementation plan has 29 milestone points, including the
+          explicit Milestone 16A convergence certification and Milestone 20A
+          DKG performance and robustness gates. The ordered
           list below names the milestone points one by one with status derived
           from the latest implementation plan; milestones with any remaining
           checklist item stay in progress.
@@ -482,6 +483,7 @@
           <li>Milestone 18: storage backend coverage. <span class="status progress">In progress</span></li>
           <li>Milestone 19: real payment backend policy. <span class="status done">Done</span></li>
           <li>Milestone 20: distributed key generation. <span class="status progress">In progress</span></li>
+          <li>Milestone 20A: optimize DKG performance and robustness. <span class="status progress">In progress</span></li>
           <li>Milestone 21: key rotation and federation upgrades. <span class="status progress">In progress</span></li>
           <li>Milestone 22: observability and operator safety. <span class="status progress">In progress</span></li>
           <li>Milestone 23: production cleanup and payment-backend isolation. <span class="status progress">In progress</span></li>
@@ -663,6 +665,14 @@
               <h3>Milestone 20: distributed key generation</h3>
               <p>Objective: replace trusted-dealer setup with dealer-free DKG.</p>
               <p class="test-gate"><strong>Test gate:</strong> Independent participants derive one identical v3 keyset, reject policy disagreement and invalid shares, survive private-state reload, verify a complete ceremony transcript, resume the live REST ceremony after interruption, rotate keys, and preserve old proof verification.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </li>
+          <li class="milestone">
+            <div>
+              <h3>Milestone 20A: optimize DKG performance and robustness</h3>
+              <p>Objective: make dealer-free DKG fast, measurable, resource-bounded, and operationally safe for large federations without weakening ceremony verification.</p>
+              <p class="test-gate"><strong>Test gate:</strong> a focused phase-level harness quickly compares 5-of-3, 11-of-8, and 20-of-14 profiles; every candidate is retained or rejected from recorded before/after evidence; a release 20-of-14 eight-denomination ceremony completes within a documented budget with responsive REST, bounded retries, identical final transcripts, and the production secret-share, activation, abort, backup, and failure-matrix gates satisfied.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>

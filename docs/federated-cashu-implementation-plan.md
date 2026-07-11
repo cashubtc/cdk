@@ -2878,6 +2878,209 @@ Verified live-DKG process-harness checkpoint:
   checkpoint.
 - Remaining production-DKG gate: execute an interrupted and resumed multi-process ceremony with the generated live configs, restart every member onto the finalized keyset, and run mint/swap/melt/restore against it on SQLite and Postgres.
 
+## Milestone 20A: optimize DKG performance and robustness
+
+Objective: make dealer-free DKG fast, measurable, resource-bounded, and
+operationally safe for federations of considerable size without weakening any
+cryptographic verification or ceremony-domain invariant.
+
+This milestone is benchmark-driven. The current five-member DKG checkpoint is
+not sufficient evidence for a production-sized federation. A manual 20-member,
+threshold-14, eight-denomination debug-process attempt saturated a powerful
+development machine, took about five minutes to reach its first delivery
+results, and remained incomplete after more than eighteen minutes. All members
+had persisted commitments, members had only partial reveal sets, no member had
+reached secret-share completion, and even self-directed REST requests timed out.
+Treat this as a reproducible warning and harness input, not as a certified
+benchmark: the first controlled baseline must separately measure optimized
+release binaries and unoptimized debug binaries before attributing costs.
+
+Benchmark and decision rules:
+
+- [ ] Add a focused DKG performance harness that can run independently of
+  AlephBFT, wallet, mint/swap/melt, and the long full-federation suites. It must
+  support fast phase-level probes and an optional real multi-process ceremony,
+  use disposable isolated work directories and ports, stop every child process
+  on success/failure/interruption, and never require an unrelated long-running
+  test before reporting a result.
+- [ ] Give the harness explicit profiles for at least 5-of-3, 11-of-8, and
+  20-of-14 federations, with one-denomination and standard eight-denomination
+  variants. The one-denomination profile is the quick iteration gate; the
+  20-of-14 eight-denomination profile is the large-federation acceptance gate.
+- [ ] Measure fresh participant generation, persisted participant reload and
+  validation, one unchanged planner tick, one changed-record planner tick,
+  commitment/reveal ingestion, duplicate ingestion, secret-share verification,
+  local keyset derivation, transcript derivation, and complete multi-process
+  ceremony time separately so one fast aggregate number cannot hide a hot
+  phase.
+- [ ] Record wall, user, and system time; average and peak CPU; peak RSS;
+  per-phase elapsed time; REST attempt/success/timeout counts; duplicate request
+  counts; durable record counts; bytes sent; and whether every member completed
+  with the same transcript hash, keyset ID, aggregate keys, and local public
+  share mapping. Sampling must be low overhead and removable or explicitly
+  benchmark-only.
+- [ ] Run the primary performance gate with release binaries. Keep one debug
+  profile as a developer-experience regression detector, but never use a debug
+  result alone to accept or reject a cryptographic optimization.
+- [ ] Establish an unmodified baseline before each optimization series. For
+  noisy process measurements, run enough repetitions to report a median and
+  range; preserve the exact member/threshold/denomination profile, build mode,
+  machine power mode, and concurrency settings for before/after comparisons.
+- [ ] Use
+  `docs/federated-cashu-minting-performance-benchmark.md` to log DKG observations
+  in a clearly separated DKG section: command/harness version, commit, profile,
+  build mode, raw measurements, bottleneck classification, retained/rejected
+  decision, and remaining risk. A dedicated DKG benchmark document may be split
+  out later only if the combined benchmark note becomes difficult to navigate.
+- [ ] Evaluate one optimization at a time whenever practical. A candidate may
+  be retained only after the focused harness shows a repeatable improvement in
+  its intended metric and all cryptographic/correctness gates remain unchanged.
+  If it does not improve the intended metric, regressions outweigh the gain, or
+  the hypothesis is disproved, check it off as **Rejected** and record the
+  evidence instead of retaining speculative complexity.
+- [ ] Keep benchmark tooling deterministic and cheap enough that a coding agent
+  can test a candidate in minutes with the quick profile before spending CPU on
+  the 20-of-14 acceptance profile. The harness must support phase selection,
+  bounded timeouts, early failure on lack of progress, and machine-readable
+  output suitable for before/after comparison.
+
+Optimization candidates, in expected priority order. Each item remains open
+until its benchmark outcome is annotated **Kept** or **Rejected** with a link or
+reference to the recorded measurements:
+
+- [ ] Validate immutable participant state once at the trust boundary rather
+  than on every driver tick and every planner rebuild. Preserve full validation
+  after deserialization/restart and reject any persisted-state mismatch.
+  Outcome: pending.
+- [ ] Aggregate public polynomial coefficients across participants before
+  evaluating the aggregate polynomial for each federation member. Prove the
+  optimized result is byte-for-byte equivalent to summing independently
+  evaluated participant polynomials, including malformed-commitment rejection.
+  Outcome: pending.
+- [ ] Avoid an expensive public-polynomial round-trip immediately after freshly
+  generating state from known coefficients, while retaining construction
+  invariants and full validation when state crosses a persistence or transport
+  boundary. Outcome: pending.
+- [ ] Move participant generation and every remaining expensive derivation to a
+  bounded blocking/CPU worker path so Axum and private REST stay responsive.
+  Measure both total CPU time and request latency; do not call a pure scheduling
+  move a speed improvement if it only improves responsiveness. Outcome: pending.
+- [ ] Add exact-duplicate fast paths for commitment, reveal, secret-share, and
+  transcript-signature ingestion before rebuilding accumulated setup state.
+  Conflicting duplicates must still fail before sequence advancement or record
+  replacement. Outcome: pending.
+- [ ] Stop rebroadcasting phase artifacts to peers that returned a verified
+  acknowledgement, while preserving idempotent recovery after ambiguous timeout
+  or restart. Prefer a simple bounded delivery tracker over a new consensus
+  phase. Outcome: pending.
+- [ ] Benchmark a slower, jittered retry policy and phase-aware backoff to avoid
+  synchronized all-to-all retry waves. Treat this as load mitigation, not a
+  substitute for removing repeated cryptographic work. Outcome: pending.
+- [ ] Add an explicit all-members-ready/start barrier before the first DKG phase
+  so participant generation does not race process startup. Measure separately:
+  the observed 20-of-14 run had all listeners ready quickly, so this candidate
+  must not be retained on architectural intuition alone. Outcome: pending.
+- [ ] Improve redacted DKG delivery diagnostics so timeout, HTTP status,
+  admission, validation, and storage failures are distinguishable. This has no
+  direct speed claim; retain it only if it materially shortens diagnosis or
+  enables trustworthy benchmark classification without exposing secret data.
+  Outcome: pending.
+
+Production robustness checklist:
+
+- [ ] Verify each received secret-share contribution against the sender's
+  revealed public polynomial before durable acceptance. Invalid contributions
+  must identify the offending member, fail before sequence advancement, and
+  never wait until final all-member derivation to surface.
+- [ ] Protect participant state, received scalar contributions, final private
+  shares, identity keys, mnemonics, and backups at rest with production-grade
+  encryption, restrictive permissions, redaction, and an explicit secret-data
+  inventory.
+- [ ] Harden confidential peer transport beyond signed payload authentication:
+  verified HTTPS and an explicit mTLS/pinning policy where appropriate, no
+  secret-bearing insecure redirects, bounded request bodies, and per-member
+  admission/rate limits. Localhost plaintext remains an explicit development
+  exception only.
+- [ ] Separate DKG completion from keyset activation with an explicit barrier.
+  Every member must confirm the same federation ID, ceremony ID, transcript
+  hash, roster, keyset policy, keyset ID, aggregate keys, and public shares
+  before any member advertises or signs with the keyset. Partial activation
+  fails closed and is operator-visible.
+- [ ] Define explicit abort and roster-reconfiguration semantics. This
+  cooperative DKG requires every configured participant, not merely the signing
+  threshold; one unavailable or malicious member must lead to a clear durable
+  aborted state and a new ceremony, never silent completion with fewer dealers.
+- [ ] Scope every durable setup message, contribution, acknowledgement,
+  transcript signature, and activation record by ceremony and keyset so aborted
+  attempts, audits, rotations, and later ceremonies cannot collide or require
+  unsafe record deletion.
+- [ ] Bound CPU, memory, blocking workers, SQLite writers, and queued work per
+  authenticated peer. A compromised roster member must not exhaust a receiver
+  with validly signed duplicate or oversized DKG requests.
+- [ ] Add encrypted backup and clean-machine restore procedures for identity
+  keys, participant state, finalized member shares, config, and database state.
+  Restore tests must prove the recovered private share maps to the transcript's
+  configured public share before the member rejoins.
+- [ ] Add a focused production failure matrix covering interruption/restart in
+  every phase, ambiguous timeout after durable persistence, duplicate and
+  reordered delivery, one slow/offline member, malformed and invalid shares,
+  conflicting reveals, disk-full/write failure, transcript mismatch, partial
+  activation, abort/replacement, and backup restore. No test may log scalar
+  material.
+
+Fedimint DKG comparison and source references:
+
+- [Fedimint G2 DKG state machine](https://github.com/fedimint/fedimint/blob/master/fedimint-server/src/config/dkg_g2.rs)
+  (`fedimint-server/src/config/dkg_g2.rs` in the local Fedimint checkout): use as
+  the main reference for commit-before-reveal, event-driven phase progression,
+  immediate incoming-share verification, scalar-polynomial Horner evaluation,
+  and aggregating public polynomial coefficients once all shares arrive.
+- [Fedimint DKG peer-handle integration](https://github.com/fedimint/fedimint/blob/master/fedimint-server/src/config/dkg.rs)
+  (`fedimint-server/src/config/dkg.rs` locally): compare the small state-machine
+  boundary and transport-independent DKG API with CDK's planner/REST split.
+- [Fedimint distributed setup orchestration](https://github.com/fedimint/fedimint/blob/master/fedimint-server/src/config/mod.rs)
+  (`fedimint-server/src/config/mod.rs` locally): use the wait-for-all-P2P-
+  connections barrier and explicit setup transition as references, while
+  retaining CDK's simpler signed-REST transport when it satisfies the same
+  safety and liveness requirements.
+- [Fedimint large setup test](https://github.com/fedimint/fedimint/blob/master/scripts/tests/large-setup-test.sh)
+  (`scripts/tests/large-setup-test.sh` locally): use as a reference for a
+  bounded large-federation setup harness, not as code to copy blindly.
+- [ ] Document which Fedimint properties CDK adopts, simplifies, or deliberately
+  rejects. CDK should prefer the smallest design that preserves commit-before-
+  reveal, authenticated/confidential shares, immediate verification,
+  deterministic final keys, restart safety, and bounded resource use.
+
+Tests and success criteria:
+
+- [ ] The quick harness reports a complete phase breakdown in minutes and can
+  compare two implementations without running wallet, AlephBFT, or full
+  workspace tests.
+- [ ] The release 20-of-14 eight-denomination ceremony completes within a
+  documented, repeatable budget without sustained event-loop starvation,
+  self-request timeouts, unbounded retries, or divergent final transcripts.
+  Set the numeric budget only after recording the first controlled release
+  baseline and machine-independent relative improvements.
+- [ ] Axum remains responsive throughout CPU-heavy generation and derivation;
+  bounded health/private-status probes complete within their documented timeout
+  while the ceremony advances.
+- [ ] Every retained optimization has before/after evidence and every rejected
+  candidate is checked off with its disproving measurement. No candidate is
+  retained solely because a microbenchmark improves while the process ceremony
+  regresses.
+- [ ] Optimized and reference derivations produce identical aggregate keys,
+  public shares, member secret/public correspondence, keyset IDs, public
+  ceremony, and transcript hash over randomized 5-of-3, 11-of-8, and 20-of-14
+  fixtures.
+- [ ] Invalid-share, conflicting-record, cross-ceremony, wrong-roster,
+  policy-mismatch, duplicate-idempotency, restart/resume, and transcript-
+  signature tests remain unchanged or stronger.
+- [ ] Standalone and trusted-dealer behavior remains unaffected, and federation
+  mode remains v3/BLS-only.
+- [ ] The benchmark harness, benchmark observations, accepted/rejected decisions,
+  focused test commands, and remaining production risks are documented before
+  Milestone 20A is marked complete.
+
 ## Milestone 21: key rotation and federation upgrades
 
 Objective: keep long-running federations maintainable.
