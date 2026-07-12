@@ -2752,12 +2752,11 @@ mod tests {
         consensus_backend: FederationConsensusBackendKind,
     ) -> MintState {
         let runtime_config = test_federation_runtime_config();
-        let runtime_config = cdk::mint::FederationRuntimeConfig::new_with_consensus_backend(
+        let runtime_config = cdk::mint::FederationRuntimeConfig::new(
             runtime_config.public_config().clone(),
             runtime_config.private_config().clone(),
-            consensus_backend,
         )
-        .expect("runtime config with consensus backend");
+        .expect("runtime config");
         let mut builder = MintBuilder::new(db.clone())
             .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
             .with_federation_config(runtime_config.clone());

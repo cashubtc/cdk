@@ -476,6 +476,13 @@ boundary responsible for idempotent duplicates, conflict-key reservation, and
 sliding-window rejection. All 99 focused federation mint tests pass after this
 test-only dependency removal.
 
+`FederationRuntimeConfig` no longer stores a consensus-backend field or exposes
+an alternate backend constructor. Mintd startup and durable DKG activation now
+build the same validated runtime config, while the temporary backend accessor
+returns the sole production choice until the Axum/status enum is removed. The
+focused mint runtime tests, Axum federation test build, and mintd AlephBFT
+startup test pass.
+
 ### Problem
 
 Federation mode still exposes two selectable consensus backends even though

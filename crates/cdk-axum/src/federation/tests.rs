@@ -1968,12 +1968,9 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
     consensus_backend: FederationConsensusBackendKind,
     payment_processor: DynMintPayment,
 ) -> MintState {
-    let runtime_config = cdk::mint::FederationRuntimeConfig::new_with_consensus_backend(
-        public_config.clone(),
-        local_private.clone(),
-        consensus_backend,
-    )
-    .expect("runtime config");
+    let runtime_config =
+        cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private.clone())
+            .expect("runtime config");
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config.clone());
@@ -1992,7 +1989,7 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
         cache: Arc::new(crate::cache::HttpCache::default()),
         federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(match consensus_backend {
             FederationConsensusBackendKind::InMemory => FederationConsensusRuntime::with_backend(
-                runtime_config.consensus_backend(),
+                consensus_backend,
                 runtime_config.federation_id(),
                 runtime_config.member_id(),
             )
@@ -2490,7 +2487,7 @@ fn reset_federation_runtime_journal(state: &mut MintState) {
     let runtime_config = state.mint.federation_config().expect("federation config");
     state.federation_consensus = Some(Arc::new(tokio::sync::Mutex::new(
         FederationConsensusRuntime::with_backend(
-            runtime_config.consensus_backend(),
+            FederationConsensusBackendKind::AlephBft,
             runtime_config.federation_id(),
             runtime_config.member_id(),
         )
@@ -14417,12 +14414,9 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
         states[index].federation_peer_sync_config = Some(sync_config);
     }
 
-    let runtime_config = cdk::mint::FederationRuntimeConfig::new_with_consensus_backend(
-        public_config.clone(),
-        private_configs[0].clone(),
-        FederationConsensusBackendKind::AlephBft,
-    )
-    .expect("runtime config");
+    let runtime_config =
+        cdk::mint::FederationRuntimeConfig::new(public_config.clone(), private_configs[0].clone())
+            .expect("runtime config");
     let envelope = runtime_config.operation_envelope(FederationOperation::KeysetRotation(
         FederationKeysetRotationOperation {
             keyset: next_keyset.clone(),

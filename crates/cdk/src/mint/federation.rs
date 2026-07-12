@@ -65,7 +65,6 @@ pub struct FederationRuntimeConfig {
     public_config: FederationConfig,
     config_digest: FederationConfigDigest,
     private_config: MemberConfigPrivate,
-    consensus_backend: FederationConsensusBackendKind,
 }
 
 impl FederationRuntimeConfig {
@@ -73,19 +72,6 @@ impl FederationRuntimeConfig {
     pub fn new(
         public_config: FederationConfig,
         private_config: MemberConfigPrivate,
-    ) -> Result<Self, Error> {
-        Self::new_with_consensus_backend(
-            public_config,
-            private_config,
-            FederationConsensusBackendKind::AlephBft,
-        )
-    }
-
-    /// Create a runtime federation config with an explicit consensus backend.
-    pub fn new_with_consensus_backend(
-        public_config: FederationConfig,
-        private_config: MemberConfigPrivate,
-        consensus_backend: FederationConsensusBackendKind,
     ) -> Result<Self, Error> {
         public_config.validate()?;
         private_config.validate_against_public(&public_config)?;
@@ -95,7 +81,6 @@ impl FederationRuntimeConfig {
             public_config,
             config_digest,
             private_config,
-            consensus_backend,
         })
     }
 
@@ -160,11 +145,7 @@ impl FederationRuntimeConfig {
 
     /// Return a new runtime config with a replaced public config.
     pub fn with_public_config(&self, public_config: FederationConfig) -> Result<Self, Error> {
-        Self::new_with_consensus_backend(
-            public_config,
-            self.private_config.clone(),
-            self.consensus_backend,
-        )
+        Self::new(public_config, self.private_config.clone())
     }
 
     /// Return a validated runtime config view after applying one keyset rotation.
@@ -195,10 +176,10 @@ impl FederationRuntimeConfig {
         &self.private_config
     }
 
-    /// Selected consensus backend for this mint member.
+    /// Consensus backend used by federation members.
     #[must_use]
     pub fn consensus_backend(&self) -> FederationConsensusBackendKind {
-        self.consensus_backend
+        FederationConsensusBackendKind::AlephBft
     }
 
     /// Local member ID.

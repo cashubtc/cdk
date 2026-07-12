@@ -2727,10 +2727,6 @@ mod tests {
         assert_eq!(builder.federation_mode(), FederationMode::Member);
         let runtime_config = builder.federation_config().expect("runtime config");
         assert_eq!(runtime_config.member_id(), member_id);
-        assert_eq!(
-            runtime_config.consensus_backend(),
-            cdk_common::federation::FederationConsensusBackendKind::AlephBft
-        );
 
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
