@@ -1200,6 +1200,15 @@ handler behavior and test call sites stay unchanged while larger submission and
 finalization groups move. Focused waiter saturation/timeout, bounded cache,
 cache eviction, and operation-notification tests pass.
 
+### Checkpoint 3: finalization coordination
+
+Pending source-sequence tracking, duplicate finalized-unit validation, and
+post-application response reconstruction now execute on
+`FederationNodeRuntime`. Durable journal/finalized-item persistence and mint
+state application remain explicit `MintState` boundary calls until that whole
+transactional group can move together. Five finalized-unit regressions and the
+source-sequence persistence-after-finalization regression pass.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

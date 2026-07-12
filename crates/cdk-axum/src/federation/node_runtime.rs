@@ -10,7 +10,10 @@ use crate::{
     FederationNotificationHandle, FederationOperationNotificationStats,
     FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncHandle,
 };
-use cdk::federation::{FederationOperationId, FederationSubmitOperationResponse};
+use cdk::federation::{
+    FederationAlephBftUnitPayload, FederationConsensusRuntime, FederationJournalAppendOutcome,
+    FederationJournalEntry, FederationOperationId, FederationSubmitOperationResponse, MemberId,
+};
 
 /// Runtime-owned handles for one active federation member.
 #[derive(Clone)]
@@ -105,5 +108,158 @@ impl FederationNodeRuntime {
             .unwrap_or_default()
             .response_cache_limit;
         notifications.notify(response, response_cache_limit);
+    }
+
+    pub(crate) async fn responses_with_current_status(
+        &self,
+        responses: &[FederationSubmitOperationResponse],
+    ) -> Vec<FederationSubmitOperationResponse> {
+        let Some(consensus) = &self.consensus else {
+            return responses.to_vec();
+        };
+        let consensus = consensus.lock().await;
+        responses
+            .iter()
+            .map(|response| {
+                let entry = consensus
+                    .journal()
+                    .entry_by_operation_id(response.operation_id)
+                    .cloned()
+                    .unwrap_or_else(|| response.outcome.entry().clone());
+                crate::federation_submit_response_with_entry(response, entry)
+            })
+            .collect()
+    }
+
+    pub(crate) fn duplicate_finalized_unit_responses(
+        consensus: &FederationConsensusRuntime,
+        payload: &FederationAlephBftUnitPayload,
+    ) -> Result<Option<Vec<FederationSubmitOperationResponse>>, cdk::Error> {
+        let mut finalized_items = consensus
+            .aleph_bft_finalized_items()?
+            .iter()
+            .filter(|item| {
+                item.session == payload.session
+                    && item.unit_submitting_member == payload.submitting_member
+                    && item.unit_index == payload.unit_index
+            })
+            .collect::<Vec<_>>();
+        if finalized_items.is_empty() {
+            return Ok(None);
+        }
+        finalized_items.sort_by_key(|item| item.item_index_in_unit);
+
+        if finalized_items.len() != payload.items.len() {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT finalized unit replay changed item count for member {} session {} unit {}",
+                payload.submitting_member, payload.session, payload.unit_index
+            )));
+        }
+
+        let mut responses = Vec::new();
+        for (expected_index, finalized_item) in finalized_items.iter().enumerate() {
+            let expected_index_u64 =
+                u64::try_from(expected_index).expect("unit item index fits in u64");
+            if finalized_item.item_index_in_unit != expected_index_u64 {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed item order for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+            if finalized_item.unit_body_hash != payload.body_hash {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed body hash for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+
+            let Some(payload_item) = payload.items.get(expected_index) else {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay is missing item {} for member {} session {} unit {}",
+                    expected_index, payload.submitting_member, payload.session, payload.unit_index
+                )));
+            };
+            if finalized_item.item.canonical_bytes()? != payload_item.canonical_bytes()? {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed item body for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+            let payload_operation_id = payload_item.operation_id()?;
+            if finalized_item.operation_id != payload_operation_id {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT finalized unit replay changed operation ID for member {} session {} unit {}",
+                    payload.submitting_member, payload.session, payload.unit_index
+                )));
+            }
+
+            if let Some(operation_id) = finalized_item.operation_id {
+                let entry = consensus
+                    .journal()
+                    .entry_by_operation_id(operation_id)
+                    .ok_or_else(|| {
+                        cdk::Error::Custom(format!(
+                            "AlephBFT finalized unit replay operation {} is missing from the local journal",
+                            operation_id
+                        ))
+                    })?;
+                responses.push(FederationSubmitOperationResponse::from_outcome(
+                    FederationJournalAppendOutcome::Duplicate(entry.clone()),
+                ));
+            }
+        }
+
+        Ok(Some(responses))
+    }
+
+    pub(crate) async fn remember_pending_sequence(
+        &self,
+        operation_id: FederationOperationId,
+        sender: MemberId,
+        sequence: u64,
+    ) {
+        let Some(pending) = &self.aleph_bft_pending_sequences else {
+            return;
+        };
+        pending
+            .lock()
+            .await
+            .entry(operation_id)
+            .or_default()
+            .insert(sender, sequence);
+    }
+
+    pub(crate) async fn pending_sequences_for_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) -> Vec<(MemberId, u64)> {
+        let Some(pending) = &self.aleph_bft_pending_sequences else {
+            return Vec::new();
+        };
+        let pending = pending.lock().await;
+        let mut sequences = Vec::new();
+        for entry in entries {
+            if let Some(entry_sequences) = pending.get(&entry.operation_id) {
+                sequences.extend(
+                    entry_sequences
+                        .iter()
+                        .map(|(member, sequence)| (*member, *sequence)),
+                );
+            }
+        }
+        sequences
+    }
+
+    pub(crate) async fn clear_pending_sequences_for_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) {
+        let Some(pending) = &self.aleph_bft_pending_sequences else {
+            return;
+        };
+        let mut pending = pending.lock().await;
+        for entry in entries {
+            pending.remove(&entry.operation_id);
+        }
     }
 }

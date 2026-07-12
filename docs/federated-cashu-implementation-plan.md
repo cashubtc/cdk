@@ -175,7 +175,10 @@ Resolved blocking bugs:
   and task lifecycle methods remain to move in coherent checkpoints. Operation
   waiter registration, response-cache policy/statistics, and notification
   delivery are the first methods moved onto the runtime; focused saturation,
-  timeout, eviction, cache-bound, and notification tests pass.
+  timeout, eviction, cache-bound, and notification tests pass. Pending source
+  sequences, duplicate finalized-unit verification, and response reconstruction
+  now also execute there; five finalized-unit and sequence-persistence
+  regressions pass.
 
 ## Recent performance checkpoint
 
