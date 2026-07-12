@@ -2788,31 +2788,16 @@ impl MintState {
         session_outcomes: &[&FederationSessionOutcome],
         sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
-        let db = self.mint.localstore();
-        let mut tx = db.begin_transaction().await?;
-        for entry in entries {
-            tx.add_federation_journal_entry(entry).await?;
-        }
-        for session_outcome in session_outcomes {
-            tx.add_federation_session_outcome(session_outcome).await?;
-        }
-        if let Some((sender, sequence)) = sequence {
-            tx.set_federation_member_sequence(sender, sequence).await?;
-        }
-        tx.commit().await?;
-        Ok(())
+        self.federation
+            .persist_journal_entries(entries, session_outcomes, sequence)
+            .await
     }
 
     async fn persist_federation_aleph_bft_pending_operation(
         &self,
         operation: FederationAlephBftPendingOperationRecord,
     ) -> Result<(), cdk::Error> {
-        let db = self.mint.localstore();
-        let mut tx = db.begin_transaction().await?;
-        tx.add_federation_aleph_bft_pending_operation(&operation)
-            .await?;
-        tx.commit().await?;
-        Ok(())
+        self.federation.persist_pending_operation(operation).await
     }
 
     async fn persist_federation_aleph_bft_finalization_with_sequences(
@@ -2821,23 +2806,9 @@ impl MintState {
         entries: &[FederationJournalEntry],
         sequences: &[(MemberId, u64)],
     ) -> Result<(), cdk::Error> {
-        let db = self.mint.localstore();
-        let mut tx = db.begin_transaction().await?;
-        tx.add_federation_aleph_bft_finalized_items(finalized_items)
-            .await?;
-        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
-            tx.remove_federation_aleph_bft_pending_operation(operation_id)
-                .await?;
-        }
-        for entry in entries {
-            tx.add_federation_journal_entry(entry).await?;
-        }
-        for (sender, sequence) in sequences {
-            tx.set_federation_member_sequence(*sender, *sequence)
-                .await?;
-        }
-        tx.commit().await?;
-        Ok(())
+        self.federation
+            .persist_finalization(finalized_items, entries, sequences)
+            .await
     }
 
     async fn persist_federation_aleph_bft_catch_up(
@@ -2847,30 +2818,13 @@ impl MintState {
         entries: &[FederationJournalEntry],
         session_outcomes: &[&FederationSessionOutcome],
     ) -> Result<(), cdk::Error> {
-        let db = self.mint.localstore();
-        let mut tx = db.begin_transaction().await?;
-        tx.set_federation_aleph_bft_active_session(active_session)
-            .await?;
-        tx.add_federation_aleph_bft_finalized_items(finalized_items)
-            .await?;
-        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
-            tx.remove_federation_aleph_bft_pending_operation(operation_id)
-                .await?;
-        }
-        for entry in entries {
-            tx.add_federation_journal_entry(entry).await?;
-        }
-        for session_outcome in session_outcomes {
-            tx.add_federation_session_outcome(session_outcome).await?;
-        }
-        tx.commit().await?;
-        Ok(())
+        self.federation
+            .persist_catch_up(active_session, finalized_items, entries, session_outcomes)
+            .await
     }
 
     async fn record_federation_sequence(&self, sender: MemberId, sequence: u64) {
-        if let Some(sequences) = &self.federation.sequences {
-            sequences.lock().await.record_sequence(sender, sequence);
-        }
+        self.federation.record_sequence(sender, sequence).await;
     }
 
     pub(crate) async fn restore_federation_sync_status(&self) {

@@ -1237,6 +1237,15 @@ method. Effective-keyset admission validation is the first mint-dependent
 method moved onto the runtime. Rotated-keyset admission and all 28 standalone
 Axum regressions pass in both feature modes.
 
+### Checkpoint 7: durable operation transactions
+
+The runtime now owns the atomic database transactions for journal/session
+outcome writes, source-sequence persistence, pending Aleph operations, finalized
+items plus pending removal, and catch-up session/finalized/journal/evidence
+writes. `MintState` retains thin delegators and mint-state application ordering.
+All five finalized-unit and all 29 focused catch-up regressions pass after the
+transaction move.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

@@ -12,8 +12,10 @@ use crate::{
     FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
 };
 use cdk::federation::{
-    FederationAlephBftAdapterStatus, FederationAlephBftUnitPayload, FederationConsensusRuntime,
-    FederationError, FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationId,
+    FederationAlephBftAdapterStatus, FederationAlephBftFinalizedItem,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationConsensusRuntime, FederationError, FederationJournalAppendOutcome,
+    FederationJournalEntry, FederationOperationId, FederationSessionOutcome,
     FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
@@ -76,6 +78,12 @@ impl FederationNodeRuntime {
             return Ok(());
         };
         config.validate_federated_operation_submission(&envelope.operation)
+    }
+
+    fn active_mint(&self) -> Result<&Arc<Mint>, cdk::Error> {
+        self.mint.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation runtime is not active for this mint".to_string())
+        })
     }
 
     #[cfg(test)]
@@ -450,5 +458,96 @@ impl FederationNodeRuntime {
             })?;
         handle.mark_peer_activity(operation_id);
         Ok(())
+    }
+
+    pub(crate) async fn persist_journal_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+        session_outcomes: &[&FederationSessionOutcome],
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        for entry in entries {
+            tx.add_federation_journal_entry(entry).await?;
+        }
+        for session_outcome in session_outcomes {
+            tx.add_federation_session_outcome(session_outcome).await?;
+        }
+        if let Some((sender, sequence)) = sequence {
+            tx.set_federation_member_sequence(sender, sequence).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_pending_operation(
+        &self,
+        operation: FederationAlephBftPendingOperationRecord,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_aleph_bft_pending_operation(&operation)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_finalization(
+        &self,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+        entries: &[FederationJournalEntry],
+        sequences: &[(MemberId, u64)],
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_aleph_bft_finalized_items(finalized_items)
+            .await?;
+        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
+            tx.remove_federation_aleph_bft_pending_operation(operation_id)
+                .await?;
+        }
+        for entry in entries {
+            tx.add_federation_journal_entry(entry).await?;
+        }
+        for (sender, sequence) in sequences {
+            tx.set_federation_member_sequence(*sender, *sequence)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_catch_up(
+        &self,
+        active_session: u64,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+        entries: &[FederationJournalEntry],
+        session_outcomes: &[&FederationSessionOutcome],
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.set_federation_aleph_bft_active_session(active_session)
+            .await?;
+        tx.add_federation_aleph_bft_finalized_items(finalized_items)
+            .await?;
+        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
+            tx.remove_federation_aleph_bft_pending_operation(operation_id)
+                .await?;
+        }
+        for entry in entries {
+            tx.add_federation_journal_entry(entry).await?;
+        }
+        for session_outcome in session_outcomes {
+            tx.add_federation_session_outcome(session_outcome).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_sequence(&self, sender: MemberId, sequence: u64) {
+        if let Some(sequences) = &self.sequences {
+            sequences.lock().await.record_sequence(sender, sequence);
+        }
     }
 }

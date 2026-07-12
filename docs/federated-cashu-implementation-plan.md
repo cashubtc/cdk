@@ -187,7 +187,9 @@ Resolved blocking bugs:
   Axum, while inert standalone runtimes hold none; this avoids a one-use trait
   and enables intact submission/replay moves. Effective-keyset admission is the
   first mint-dependent method moved and passes rotated-keyset plus all 28
-  standalone Axum regressions.
+  standalone Axum regressions. Atomic journal/session-outcome, pending-operation,
+  finalization, source-sequence, and catch-up transactions now belong to the
+  runtime; five finalized-unit and all 29 focused catch-up tests pass.
 
 ## Recent performance checkpoint
 
