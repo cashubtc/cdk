@@ -305,39 +305,6 @@ fn assert_aleph_adapters_converged(adapters: &[FederationAlephBftConsensusAdapte
 }
 
 #[test]
-fn consensus_runtime_aleph_bft_previews_and_drains_matching_units() {
-    let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
-    let envelope = mint_envelope(
-        federation_id,
-        "quote-1",
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
-    let operation_id = envelope.operation_id().expect("operation id");
-
-    runtime
-        .submit_aleph_bft_envelope(envelope)
-        .expect("submit AlephBFT envelope");
-    let preview = runtime
-        .preview_next_aleph_bft_unit_payload()
-        .expect("preview")
-        .expect("unit present");
-
-    assert_eq!(preview.operation_ids, vec![operation_id]);
-    assert_eq!(runtime.queued_len(), 1);
-
-    let drained = runtime
-        .drain_next_aleph_bft_unit_payload_matching(&preview)
-        .expect("drain matching unit");
-
-    assert_eq!(
-        drained.canonical_bytes().expect("drained bytes"),
-        preview.canonical_bytes().expect("preview bytes")
-    );
-    assert_eq!(runtime.queued_len(), 0);
-}
-
-#[test]
 fn consensus_runtime_begin_aleph_bft_session_rotates_empty_session() {
     let federation_id = federation_id(13);
     let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
@@ -913,10 +880,6 @@ fn aleph_bft_data_provider_empty_queue_repeated_polls_do_not_advance() {
 
     for _ in 0..8 {
         assert!(provider
-            .preview_next_unit_payload()
-            .expect("empty preview")
-            .is_none());
-        assert!(provider
             .next_unit_payload()
             .expect("empty next unit")
             .is_none());
@@ -940,97 +903,6 @@ fn aleph_bft_data_provider_empty_queue_repeated_polls_do_not_advance() {
     assert_eq!(payload.unit_index, 0);
     assert_eq!(payload.items.len(), 1);
     assert_eq!(provider.next_unit_index(), 1);
-}
-
-#[test]
-fn aleph_bft_data_provider_previews_without_draining_and_drains_matching_unit() {
-    let federation_id = federation_id(13);
-    let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 0);
-    let first = mint_envelope(
-        federation_id,
-        "quote-1",
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
-    let second = mint_envelope(
-        federation_id,
-        "quote-2",
-        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
-    );
-    let first_id = first.operation_id().expect("first operation id");
-    let second_id = second.operation_id().expect("second operation id");
-
-    provider.submit_operation(first).expect("submit first");
-    provider.submit_operation(second).expect("submit second");
-
-    let preview = provider
-        .preview_next_unit_payload()
-        .expect("preview")
-        .expect("unit present");
-    let second_preview = provider
-        .preview_next_unit_payload()
-        .expect("second preview")
-        .expect("unit present");
-
-    assert_eq!(preview.operation_ids, vec![first_id, second_id]);
-    assert_eq!(
-        preview.canonical_bytes().expect("preview bytes"),
-        second_preview
-            .canonical_bytes()
-            .expect("second preview bytes")
-    );
-    assert_eq!(provider.queued_len(), 2);
-    assert_eq!(provider.next_unit_index(), 0);
-
-    let drained = provider
-        .drain_next_unit_payload_matching(&preview)
-        .expect("drain matching unit");
-
-    assert_eq!(
-        drained.canonical_bytes().expect("drained bytes"),
-        preview.canonical_bytes().expect("preview bytes")
-    );
-    assert_eq!(provider.queued_len(), 0);
-    assert_eq!(provider.next_unit_index(), 1);
-    assert!(provider
-        .preview_next_unit_payload()
-        .expect("empty preview")
-        .is_none());
-}
-
-#[test]
-fn aleph_bft_data_provider_rejects_mismatched_preview_without_draining() {
-    let federation_id = federation_id(13);
-    let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 0);
-    provider
-        .submit_operation(mint_envelope(
-            federation_id,
-            "quote-1",
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
-        .expect("submit");
-    let preview = provider
-        .preview_next_unit_payload()
-        .expect("preview")
-        .expect("unit present");
-    let mut mismatched = preview.clone();
-    mismatched.unit_index = 42;
-
-    assert!(matches!(
-        provider.drain_next_unit_payload_matching(&mismatched),
-        Err(FederationError::AlephBftUnitProposalMismatch {
-            expected_unit_index: 42,
-            found_unit_index: 0,
-            ..
-        })
-    ));
-    assert_eq!(provider.queued_len(), 1);
-    assert_eq!(provider.next_unit_index(), 0);
-
-    let drained = provider
-        .drain_next_unit_payload_matching(&preview)
-        .expect("drain original preview");
-    assert_eq!(drained.unit_index, 0);
-    assert_eq!(provider.queued_len(), 0);
 }
 
 #[test]

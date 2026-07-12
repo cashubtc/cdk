@@ -22,19 +22,18 @@ use cdk::federation::FederationAlephBftConsensusAdapter;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationAlephBftAdapterStatus,
-    FederationAlephBftFinalityMode, FederationAlephBftFinalizedItem,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusItemAdmission, FederationConsensusRuntime,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupState, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
-    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
-    FEDERATION_REST_API_VERSION,
+    FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationStatus, FederationRestSequenceTracker,
+    FederationSessionOutcome, FederationStateDigestCheckpoint, FederationSubmitOperationResponse,
+    MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -986,7 +985,7 @@ impl Default for FederationSyncStatus {
 }
 
 #[cfg(feature = "federation")]
-const ALEPH_BFT_STARTUP_HALT_REASON: &str = "aleph_bft live network finality is not active; public federation submissions are disabled until the live session is ready";
+const ALEPH_BFT_STARTUP_HALT_REASON: &str = "aleph_bft live session or network inbound queue is not active; public federation submissions are disabled until the live session is ready";
 
 #[cfg(feature = "federation")]
 impl FederationSyncStatus {
@@ -1607,7 +1606,6 @@ pub struct MintState {
     #[cfg(feature = "federation")]
     federation_notifications: Option<FederationNotificationHandle>,
     #[cfg(feature = "federation")]
-    #[cfg(feature = "federation")]
     federation_private_rest_admission: Option<FederationRestAdmissionHandle>,
     #[cfg(feature = "federation")]
     federation_dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
@@ -1621,6 +1619,8 @@ pub struct MintState {
     federation_aleph_bft_live_session: FederationAlephBftLiveSessionState,
     #[cfg(all(test, feature = "federation"))]
     federation_local_finality_test: bool,
+    #[cfg(all(test, feature = "federation"))]
+    federation_manual_finality_test: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -2318,70 +2318,6 @@ impl MintState {
         Ok(responses)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn drain_and_apply_local_federation_aleph_bft_finalized_unit(
-        &self,
-        expected: &FederationAlephBftUnitPayload,
-    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
-        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
-        let mut consensus = consensus.lock().await;
-        let mut next_consensus = consensus.clone();
-        let drained = next_consensus.drain_next_aleph_bft_unit_payload_matching(expected)?;
-        let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
-        let responses = next_consensus.finalize_aleph_bft_unit(drained)?;
-        let finalized_items =
-            next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
-        let outcome_entries = responses
-            .iter()
-            .map(|response| response.outcome.entry().clone())
-            .collect::<Vec<_>>();
-        let entries = responses
-            .iter()
-            .filter_map(|response| match &response.outcome {
-                FederationJournalAppendOutcome::Appended(entry) => Some(entry.clone()),
-                FederationJournalAppendOutcome::Duplicate(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let entries_to_apply = accepted_federation_journal_entries(&entries);
-        let sequences = self
-            .pending_federation_aleph_bft_sequences_for_entries(&outcome_entries)
-            .await;
-
-        self.persist_federation_aleph_bft_finalization_with_sequences(
-            &finalized_items,
-            &entries,
-            &sequences,
-        )
-        .await?;
-        *consensus = next_consensus;
-        drop(consensus);
-        self.clear_federation_aleph_bft_pending_sequences_for_entries(&outcome_entries)
-            .await;
-
-        self.apply_federation_journal_entries(&entries_to_apply)
-            .await?;
-        self.record_federation_state_digest_checkpoint_for_latest_entry(
-            &entries,
-            &entries_to_apply,
-        )
-        .await?;
-        let responses = self
-            .federation_submit_responses_with_current_status(&responses)
-            .await;
-        self.record_federation_sequences(&sequences).await;
-        crate::federation::aleph_bft_latency::record(
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
-            responses.iter().map(|response| response.operation_id),
-        );
-        for response in &responses {
-            self.notify_federation_operation(response.clone()).await;
-        }
-
-        Ok(responses)
-    }
-
     #[cfg(test)]
     pub(crate) async fn apply_federation_catch_up_response(
         &self,
@@ -2596,7 +2532,6 @@ impl MintState {
         }
 
         let status = consensus.aleph_bft_status()?;
-        let finality = status.finality;
         let mut retained_items = local_finalized_items;
         retained_items.extend(new_finalized_items.iter().cloned());
         let target_session =
@@ -2610,7 +2545,6 @@ impl MintState {
             public_config.threshold_params.consensus_threshold,
             retained_items,
         )?;
-        next_consensus.set_aleph_bft_finality_mode(finality)?;
         let recovered_entries_before_status_overlay = next_consensus.journal().entries().to_vec();
         let entries_to_retry_from_local_overlap = stale_local_aleph_bft_entries_to_retry(
             &local_entries,
@@ -3152,7 +3086,7 @@ impl MintState {
         };
         let current_status = sync.lock().await.status();
         let startup_halt = current_status.is_aleph_bft_startup_halt();
-        if startup_halt && !self.aleph_bft_network_finality_available().await {
+        if startup_halt && !self.aleph_bft_live_session_available().await {
             self.persist_federation_sync_status(&current_status).await;
             return;
         }
@@ -3611,32 +3545,6 @@ impl MintState {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn mark_aleph_bft_network_finality_available(&self) -> Result<(), cdk::Error> {
-        if self.mint.federation_config().is_none() {
-            return Err(cdk::Error::Custom(
-                "AlephBFT network finality requires federation config".to_string(),
-            ));
-        }
-        let Some(consensus) = &self.federation_consensus else {
-            return Err(cdk::Error::Custom(
-                "AlephBFT network finality requires federation consensus runtime".to_string(),
-            ));
-        };
-        let mut consensus = consensus.lock().await;
-        consensus.set_aleph_bft_finality_mode(
-            FederationAlephBftFinalityMode::NetworkFinalityAvailable,
-        )?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn mark_aleph_bft_network_finality_available_for_tests(&self) {
-        self.mark_aleph_bft_network_finality_available()
-            .await
-            .expect("test AlephBFT finality hook must target AlephBFT runtime");
-    }
-
     pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {
         let Some(sync) = &self.federation_sync else {
             return;
@@ -3686,22 +3594,23 @@ impl MintState {
         };
         let status = sync.lock().await.status();
         if status.is_ready() {
-            return self.ensure_aleph_bft_network_finality_available().await;
+            return self.ensure_aleph_bft_live_session_available().await;
         }
 
         Err(cdk::Error::Custom(status.not_ready_message()))
     }
 
-    async fn ensure_aleph_bft_network_finality_available(&self) -> Result<(), cdk::Error> {
+    async fn ensure_aleph_bft_live_session_available(&self) -> Result<(), cdk::Error> {
         if self.mint.federation_config().is_none() {
             return Ok(());
         }
-        let Some(status) = self.federation_aleph_bft_status().await else {
-            return Err(cdk::Error::Custom(
-                ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
-            ));
-        };
-        if status.finality == FederationAlephBftFinalityMode::NetworkFinalityAvailable {
+        #[cfg(test)]
+        if self.federation_local_finality_test || self.federation_manual_finality_test {
+            return Ok(());
+        }
+        if self.federation_aleph_bft_live_session_active().await
+            && self.federation_aleph_bft_network_inbound_active().await
+        {
             return Ok(());
         }
 
@@ -3710,12 +3619,13 @@ impl MintState {
         ))
     }
 
-    async fn aleph_bft_network_finality_available(&self) -> bool {
-        self.federation_aleph_bft_status()
-            .await
-            .is_some_and(|status| {
-                status.finality == FederationAlephBftFinalityMode::NetworkFinalityAvailable
-            })
+    async fn aleph_bft_live_session_available(&self) -> bool {
+        #[cfg(test)]
+        if self.federation_local_finality_test || self.federation_manual_finality_test {
+            return true;
+        }
+        self.federation_aleph_bft_live_session_active().await
+            && self.federation_aleph_bft_network_inbound_active().await
     }
 }
 
@@ -4045,7 +3955,6 @@ async fn create_mint_router_with_custom_cache_inner(
             .as_ref()
             .map(|_| Arc::new(FederationOperationNotifications::default())),
         #[cfg(feature = "federation")]
-        #[cfg(feature = "federation")]
         federation_private_rest_admission: federation_consensus.as_ref().map(|_| {
             Arc::new(tokio::sync::Semaphore::new(
                 federation_peer_sync_config.private_rest_inbound_concurrency_limit,
@@ -4069,14 +3978,11 @@ async fn create_mint_router_with_custom_cache_inner(
         federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         #[cfg(all(test, feature = "federation"))]
         federation_local_finality_test,
+        #[cfg(all(test, feature = "federation"))]
+        federation_manual_finality_test: false,
     };
     #[cfg(all(test, feature = "federation"))]
     if state.federation_local_finality_test {
-        if let Some(consensus) = &state.federation_consensus {
-            consensus.lock().await.set_aleph_bft_finality_mode(
-                FederationAlephBftFinalityMode::NetworkFinalityAvailable,
-            )?;
-        }
         state.federation_sync = state
             .federation_consensus
             .as_ref()

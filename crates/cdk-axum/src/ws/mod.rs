@@ -257,7 +257,6 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_notifications: None,
             #[cfg(feature = "federation")]
-            #[cfg(feature = "federation")]
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
             federation_dkg_member_admission: None,
@@ -271,6 +270,7 @@ mod tests {
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_local_finality_test: false,
+            federation_manual_finality_test: false,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

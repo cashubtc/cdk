@@ -1586,13 +1586,13 @@ mod tests {
     #[cfg(feature = "federation")]
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
-        FederationAlephBftFinalityMode, FederationAlephBftUnitPayload, FederationConfig,
-        FederationConsensusItem, FederationConsensusRuntime, FederationError,
-        FederationJournalEntry, FederationKeysetRotationOperation,
-        FederationMeltQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-        FederationOperationId, FederationPaymentObservationPolicy, InMemoryFederationJournal,
-        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusItem,
+        FederationConsensusRuntime, FederationError, FederationJournalEntry,
+        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
+        FederationOperation, FederationOperationEnvelope, FederationOperationId,
+        FederationPaymentObservationPolicy, InMemoryFederationJournal, MemberConfigPrivate,
+        MemberId, ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk::mint::Mint;
@@ -2275,7 +2275,6 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_notifications: None,
             #[cfg(feature = "federation")]
-            #[cfg(feature = "federation")]
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
             federation_dkg_member_admission: None,
@@ -2289,6 +2288,8 @@ mod tests {
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_local_finality_test: false,
+            #[cfg(feature = "federation")]
+            federation_manual_finality_test: false,
         }
     }
 
@@ -2745,6 +2746,31 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    async fn finalize_next_local_aleph_bft_unit(
+        state: &MintState,
+        expected_operation_id: FederationOperationId,
+    ) {
+        let unit = {
+            let mut consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            consensus
+                .next_aleph_bft_unit_payload()
+                .expect("next AlephBFT unit")
+                .expect("queued AlephBFT unit")
+        };
+        let finalized = state
+            .apply_federation_aleph_bft_finalized_unit(unit)
+            .await
+            .expect("local AlephBFT finality");
+        assert_eq!(finalized.len(), 1);
+        assert_eq!(finalized[0].operation_id, expected_operation_id);
+    }
+
+    #[cfg(feature = "federation")]
     async fn create_federated_test_state_with_backend_db_seed_and_finality(
         payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
         db: Arc<cdk_sqlite::MintSqliteDatabase>,
@@ -2776,7 +2802,7 @@ mod tests {
             .unwrap();
         mint.start().await.unwrap();
 
-        let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+        let consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
             runtime_config.federation_id(),
             runtime_config.member_id(),
             0,
@@ -2788,14 +2814,6 @@ mod tests {
             Vec::new(),
         )
         .expect("AlephBFT consensus runtime");
-        if local_finality_test {
-            consensus
-                .set_aleph_bft_finality_mode(
-                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
-                )
-                .expect("local test finality mode");
-        }
-
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
@@ -2826,6 +2844,7 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             federation_local_finality_test: local_finality_test,
+            federation_manual_finality_test: false,
         }
     }
 
@@ -2856,15 +2875,6 @@ mod tests {
             .expect("recreate federation runtime state from sqlite");
         state.federation_consensus = consensus;
         state.federation_sequences = sequences;
-        if let Some(consensus) = &state.federation_consensus {
-            consensus
-                .lock()
-                .await
-                .set_aleph_bft_finality_mode(
-                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
-                )
-                .expect("restarted local test finality");
-        }
         state
     }
 
@@ -2886,15 +2896,6 @@ mod tests {
             .expect("recreate federation runtime state from sqlite");
         state.federation_consensus = consensus;
         state.federation_sequences = sequences;
-        if let Some(consensus) = &state.federation_consensus {
-            consensus
-                .lock()
-                .await
-                .set_aleph_bft_finality_mode(
-                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
-                )
-                .expect("restarted local test finality");
-        }
         state
     }
 
@@ -3068,7 +3069,6 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_notifications: None,
             #[cfg(feature = "federation")]
-            #[cfg(feature = "federation")]
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
             federation_dkg_member_admission: None,
@@ -3082,6 +3082,8 @@ mod tests {
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_local_finality_test: false,
+            #[cfg(feature = "federation")]
+            federation_manual_finality_test: false,
         }
     }
 
@@ -3651,16 +3653,6 @@ mod tests {
                 .await
                 .expect("federation runtime state");
         let is_federated = federation_consensus.is_some();
-        if let Some(consensus) = &federation_consensus {
-            consensus
-                .lock()
-                .await
-                .set_aleph_bft_finality_mode(
-                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
-                )
-                .expect("local threshold-member test finality");
-        }
-
         MintState {
             mint,
             cache: Arc::new(HttpCache::default()),
@@ -3693,6 +3685,7 @@ mod tests {
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             federation_local_finality_test: is_federated,
+            federation_manual_finality_test: false,
         }
     }
 
@@ -4649,9 +4642,7 @@ mod tests {
     async fn pending_aleph_bft_mint_quote_is_not_persisted_before_consensus() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             ..crate::FederationPeerSyncConfig::default()
@@ -5592,9 +5583,7 @@ mod tests {
     async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
@@ -5691,24 +5680,7 @@ mod tests {
             1,
             "retrying an already queued mint should wait on the pending operation"
         );
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let response = retry
             .await
@@ -5783,9 +5755,7 @@ mod tests {
     async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
@@ -5904,24 +5874,7 @@ mod tests {
             1,
             "retrying an already queued single mint should wait on the pending operation"
         );
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let response = retry
             .await
@@ -6017,9 +5970,7 @@ mod tests {
     async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
@@ -6131,24 +6082,7 @@ mod tests {
         assert_eq!(stats.duplicate_submissions, 1);
         assert_eq!(stats.duplicate_pending_waiter_joins, 1);
 
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let first_response = first
             .await
@@ -6199,9 +6133,7 @@ mod tests {
     async fn duplicate_post_mint_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
@@ -6325,24 +6257,7 @@ mod tests {
         assert_eq!(stats.duplicate_submissions, 1);
         assert_eq!(stats.duplicate_pending_waiter_joins, 1);
 
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let first_response = first
             .await
@@ -6973,9 +6888,7 @@ mod tests {
     async fn post_swap_pending_aleph_bft_retry_returns_persisted_response_after_finality() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
@@ -7079,24 +6992,7 @@ mod tests {
             1,
             "retrying an already queued swap should wait on the pending operation"
         );
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let response = retry
             .await
@@ -7140,9 +7036,7 @@ mod tests {
     async fn duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
@@ -7259,24 +7153,7 @@ mod tests {
         assert_eq!(stats.duplicate_submissions, 1);
         assert_eq!(stats.duplicate_pending_waiter_joins, 1);
 
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let first_response = first
             .await
@@ -7799,9 +7676,7 @@ mod tests {
     async fn process_melt_pending_aleph_bft_retry_returns_persisted_response_after_finality() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
@@ -7937,24 +7812,7 @@ mod tests {
             1,
             "retrying an already queued melt should wait on the pending operation"
         );
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let response = retry
             .await
@@ -8019,9 +7877,7 @@ mod tests {
         )
         .await;
         state.mark_federation_healthy().await;
-        state
-            .mark_aleph_bft_network_finality_available_for_tests()
-            .await;
+        state.federation_manual_finality_test = true;
         state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
@@ -8170,24 +8026,7 @@ mod tests {
         assert_eq!(stats.duplicate_submissions, 1);
         assert_eq!(stats.duplicate_pending_waiter_joins, 1);
 
-        let unit = {
-            let consensus = state
-                .federation_consensus
-                .as_ref()
-                .expect("federation consensus")
-                .lock()
-                .await;
-            consensus
-                .preview_next_aleph_bft_unit_payload()
-                .expect("preview next AlephBFT unit")
-                .expect("queued AlephBFT unit")
-        };
-        let finalized = state
-            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
-            .await
-            .expect("local AlephBFT finality");
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].operation_id, operation_id);
+        finalize_next_local_aleph_bft_unit(&state, operation_id).await;
 
         let first_response = first
             .await

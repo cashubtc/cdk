@@ -7,8 +7,7 @@ use aleph_bft::{
     NodeCount, Terminator,
 };
 use cdk::federation::{
-    FederationAlephBftActivityRequest, FederationAlephBftFinalityMode, FederationOperationId,
-    MemberConfigPublic, MemberId,
+    FederationAlephBftActivityRequest, FederationOperationId, MemberConfigPublic, MemberId,
 };
 use cdk_common::database::DynMintDatabase;
 use cdk_http_client::{Async, Transport};
@@ -636,15 +635,6 @@ where
     });
     *state.federation_aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
 
-    if state
-        .federation_aleph_bft_status()
-        .await
-        .map(|status| status.finality)
-        == Some(FederationAlephBftFinalityMode::ExternalFinalizationRequired)
-    {
-        state.mark_aleph_bft_network_finality_available().await?;
-    }
-
     Ok(Some(handle))
 }
 
@@ -992,7 +982,7 @@ where
     };
 
     let next_session = {
-        let mut consensus = consensus.lock().await;
+        let consensus = consensus.lock().await;
         let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
         let pending = consensus.pending_mempool_len();
         if pending != 0 {
@@ -1003,11 +993,6 @@ where
         let next_session = status.session.checked_add(1).ok_or_else(|| {
             cdk::Error::Custom("AlephBFT live session rotation overflowed session id".to_string())
         })?;
-        consensus
-            .set_aleph_bft_finality_mode(
-                FederationAlephBftFinalityMode::ExternalFinalizationRequired,
-            )
-            .map_err(cdk::Error::from)?;
         next_session
     };
 
@@ -1087,11 +1072,6 @@ where
         let next_session = status.session.checked_add(1).ok_or_else(|| {
             cdk::Error::Custom("AlephBFT live session rotation overflowed session id".to_string())
         })?;
-        consensus
-            .set_aleph_bft_finality_mode(
-                FederationAlephBftFinalityMode::ExternalFinalizationRequired,
-            )
-            .map_err(cdk::Error::from)?;
         let requeued_items = consensus
             .begin_aleph_bft_session_requeue_pending_finalization(next_session)
             .map_err(cdk::Error::from)?;

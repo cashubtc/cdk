@@ -17,23 +17,22 @@ use cdk::cdk_payment::{
 };
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
-    FederationAlephBftConsensusAdapter, FederationAlephBftFinalityMode,
-    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
-    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftNetworkMessageResponse, FederationAlephBftNetworkRetryRecord,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
+    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
+    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservationPolicy,
+    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
+    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationRestoreOperation,
+    FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -1931,7 +1930,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         .await
         .expect("payment processor");
     let mint = builder.build_with_seed(db, seed).await.expect("mint");
-    let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+    let consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
         runtime_config.federation_id(),
         runtime_config.member_id(),
         0,
@@ -1940,12 +1939,6 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         Vec::new(),
     )
     .expect("AlephBFT consensus runtime");
-    if local_finality_test {
-        consensus
-            .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
-            .expect("local test finality mode");
-    }
-
     MintState {
         mint: Arc::new(mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
@@ -1991,6 +1984,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
         federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
         federation_local_finality_test: local_finality_test,
+        federation_manual_finality_test: false,
     }
 }
 
@@ -2538,15 +2532,8 @@ fn reset_federation_runtime_journal(state: &mut MintState) {
     )));
 }
 
-async fn activate_local_test_finality(state: &MintState) {
-    state
-        .federation_consensus
-        .as_ref()
-        .expect("federation consensus")
-        .lock()
-        .await
-        .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
-        .expect("activate local test finality");
+fn activate_local_test_finality(state: &mut MintState) {
+    state.federation_local_finality_test = true;
 }
 
 async fn peer_status_with_materialized_digest(
@@ -6835,7 +6822,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
             .expect("restart federation runtime from durable catch-up state");
     state.federation_consensus = replayed_consensus;
     state.federation_sequences = replayed_sequences;
-    activate_local_test_finality(&state).await;
+    activate_local_test_finality(&mut state);
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
 
     let persisted = state
@@ -7461,10 +7448,6 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
     let aleph_bft_status = local_status
         .aleph_bft_status
         .expect("AlephBFT local status");
-    assert_eq!(
-        aleph_bft_status.finality,
-        FederationAlephBftFinalityMode::NetworkFinalityAvailable
-    );
     assert_eq!(aleph_bft_status.accepted_operation_count, 1);
     assert!(
         local_status
@@ -9410,7 +9393,7 @@ async fn aleph_bft_live_session_startup_decision_spawns_for_federation_member() 
 }
 
 #[tokio::test]
-async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_finality() {
+async fn aleph_bft_live_session_start_installs_inbound_queue() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -9450,14 +9433,6 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
         .clone()
         .expect("stored live session handle");
     assert!(Arc::ptr_eq(&handle, &stored_handle));
-    assert_eq!(
-        state
-            .federation_aleph_bft_status()
-            .await
-            .expect("AlephBFT status")
-            .finality,
-        FederationAlephBftFinalityMode::NetworkFinalityAvailable
-    );
     assert_eq!(
         federation_aleph_bft_live_session_startup_decision(&state)
             .await
@@ -9629,10 +9604,6 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
     assert_eq!(status.next_unit_index, 0);
     assert_eq!(status.next_unit_finalization_index, 0);
     assert_eq!(
-        status.finality,
-        FederationAlephBftFinalityMode::NetworkFinalityAvailable
-    );
-    assert_eq!(
         state
             .mint
             .localstore()
@@ -9765,10 +9736,6 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
         .expect("unrotated AlephBFT status");
     assert_eq!(status.session, 0);
     assert_eq!(status.queued_item_count, 1);
-    assert_eq!(
-        status.finality,
-        FederationAlephBftFinalityMode::NetworkFinalityAvailable
-    );
     assert!(state.federation_aleph_bft_network_inbound_active().await);
     assert!(state.federation_aleph_bft_live_session_active().await);
 
@@ -10607,10 +10574,6 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
             .expect("rotated AlephBFT status");
         assert_eq!(status.session, 1);
         assert_eq!(status.finalized_item_count, 1);
-        assert_eq!(
-            status.finality,
-            FederationAlephBftFinalityMode::NetworkFinalityAvailable
-        );
         assert_eq!(
             state
                 .mint
@@ -16533,7 +16496,7 @@ async fn wait_for_aleph_bft_backup_bytes_longer_than(
 }
 
 #[tokio::test]
-async fn aleph_bft_public_submit_is_not_ready_until_network_finality_is_installed() {
+async fn aleph_bft_public_submit_is_not_ready_until_live_session_is_started() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -16550,7 +16513,7 @@ async fn aleph_bft_public_submit_is_not_ready_until_network_finality_is_installe
     let err = state
         .submit_federation_envelope(envelope)
         .await
-        .expect_err("AlephBFT public submit should be gated until network finality is installed");
+        .expect_err("AlephBFT public submit should be gated until a live session is started");
 
     assert!(
         err.to_string()
@@ -16572,7 +16535,7 @@ async fn aleph_bft_public_submit_is_not_ready_until_network_finality_is_installe
 }
 
 #[tokio::test]
-async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_network_finality() {
+async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_live_session() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -16588,21 +16551,15 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_networ
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
     ));
-    assert_eq!(
-        state
-            .federation_aleph_bft_status()
-            .await
-            .expect("aleph-bft status")
-            .finality,
-        FederationAlephBftFinalityMode::ExternalFinalizationRequired
-    );
+    assert!(!state.federation_aleph_bft_live_session_active().await);
+    assert!(!state.federation_aleph_bft_network_inbound_active().await);
 
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let err = state
         .submit_federation_envelope(envelope)
         .await
-        .expect_err("healthy sync must not reopen AlephBFT submit without network finality");
+        .expect_err("healthy sync must not reopen AlephBFT submit without a live session");
 
     assert!(
         err.to_string()
@@ -16624,34 +16581,29 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_networ
 }
 
 #[tokio::test]
-async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_for_finalized_unit() {
+async fn aleph_bft_live_session_opens_queueing_but_still_waits_for_finalized_unit() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
-        public_config,
+        public_config.clone(),
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
     )
     .await;
     state.mark_federation_healthy().await;
-    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+    let sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         ..FederationPeerSyncConfig::default()
-    });
+    };
+    state.federation_peer_sync_config = Some(sync_config);
     assert!(matches!(
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
     ));
-    assert_eq!(
-        state
-            .federation_aleph_bft_status()
-            .await
-            .expect("aleph-bft status")
-            .finality,
-        FederationAlephBftFinalityMode::ExternalFinalizationRequired
-    );
+    assert!(!state.federation_aleph_bft_live_session_active().await);
+    assert!(!state.federation_aleph_bft_network_inbound_active().await);
 
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
@@ -16659,7 +16611,7 @@ async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_fo
     let err = state
         .submit_federation_envelope(envelope.clone())
         .await
-        .expect_err("healthy sync without live AlephBFT finality must stay gated");
+        .expect_err("healthy sync without a live AlephBFT session must stay gated");
     assert!(
         err.to_string()
             .contains("public federation submissions are disabled"),
@@ -16679,23 +16631,25 @@ async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_fo
         assert_eq!(consensus.peer_status().operation_count, 0);
     }
 
-    state
-        .mark_aleph_bft_network_finality_available()
-        .await
-        .expect("AlephBFT runtime can enable network finality");
-    assert_eq!(
-        state
-            .federation_aleph_bft_status()
-            .await
-            .expect("aleph-bft status")
-            .finality,
-        FederationAlephBftFinalityMode::NetworkFinalityAvailable
+    let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
+        FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
     );
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut state,
+        sync_config,
+        CdkAlephBftNetworkPumpConfig::default(),
+        transport,
+    )
+    .await
+    .expect("start AlephBFT live session")
+    .expect("live session handle");
+    assert!(state.federation_aleph_bft_live_session_active().await);
+    assert!(state.federation_aleph_bft_network_inbound_active().await);
 
     let err = state
         .submit_federation_envelope(envelope)
         .await
-        .expect_err("network finality mode should still wait for a finalized unit");
+        .expect_err("live AlephBFT session should still wait for a finalized unit");
 
     assert_pending_finalization_error(&err, operation_id, 10);
     assert!(state
@@ -16709,6 +16663,7 @@ async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_fo
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert_eq!(consensus.peer_status().operation_count, 0);
+    drop(handle);
 }
 
 #[tokio::test]
@@ -17535,12 +17490,12 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
 }
 
 #[tokio::test]
-async fn aleph_bft_startup_restore_retires_startup_halt_after_live_finality_for_empty_history() {
+async fn aleph_bft_startup_restore_retires_startup_halt_after_live_session_for_empty_history() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let mut restored_state = federation_route_state_for_private_with_db_and_aleph_bft(
-        public_config,
+        public_config.clone(),
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
@@ -17552,10 +17507,22 @@ async fn aleph_bft_startup_restore_retires_startup_halt_after_live_finality_for_
             if reason.contains("public federation submissions are disabled")
     ));
 
-    restored_state
-        .mark_aleph_bft_network_finality_available()
-        .await
-        .expect("AlephBFT runtime can enable network finality");
+    let sync_config = FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        ..FederationPeerSyncConfig::default()
+    };
+    let transport = MockFederationTransport::default().with_aleph_bft_network_message_response(
+        FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
+    );
+    let handle = start_federation_aleph_bft_live_session_with_transport(
+        &mut restored_state,
+        sync_config,
+        CdkAlephBftNetworkPumpConfig::default(),
+        transport,
+    )
+    .await
+    .expect("start AlephBFT live session")
+    .expect("live session handle");
     restored_state.restore_federation_sync_status().await;
     restored_state.restore_federation_startup_readiness().await;
     assert_eq!(
@@ -17563,10 +17530,7 @@ async fn aleph_bft_startup_restore_retires_startup_halt_after_live_finality_for_
         Some(crate::FederationSyncStatus::Healthy)
     );
 
-    restored_state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
-        operation_submission_timeout: Duration::from_millis(10),
-        ..FederationPeerSyncConfig::default()
-    });
+    restored_state.federation_peer_sync_config = Some(sync_config);
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&restored_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -17590,6 +17554,7 @@ async fn aleph_bft_startup_restore_retires_startup_halt_after_live_finality_for_
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert_eq!(consensus.peer_status().operation_count, 0);
+    drop(handle);
 }
 
 #[tokio::test]
@@ -17634,7 +17599,8 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
     {
         let consensus = state.federation_consensus.as_ref().expect("consensus");
         let consensus = consensus.lock().await;
-        assert_eq!(consensus.queued_len(), 1);
+        assert_eq!(consensus.queued_len(), 0);
+        assert_eq!(consensus.pending_mempool_len(), 1);
         assert_eq!(consensus.peer_status().operation_count, 0);
     }
     drop(state);
@@ -17674,6 +17640,7 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
             .expect("restarted consensus");
         let consensus = consensus.lock().await;
         assert_eq!(consensus.queued_len(), 0);
+        assert_eq!(consensus.pending_mempool_len(), 0);
         assert_eq!(consensus.peer_status().operation_count, 0);
     }
 

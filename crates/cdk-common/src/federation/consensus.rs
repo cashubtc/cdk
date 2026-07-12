@@ -324,37 +324,9 @@ impl FederationAlephBftFinalizedItem {
     }
 }
 
-/// Finality mode currently feeding the AlephBFT adapter boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FederationAlephBftFinalityMode {
-    /// Finalized units are injected through the CDK external-finalization boundary.
-    ExternalFinalizationRequired,
-    /// A live network finality task owns finalized-unit delivery for public routes.
-    NetworkFinalityAvailable,
-}
-
-impl Default for FederationAlephBftFinalityMode {
-    fn default() -> Self {
-        Self::ExternalFinalizationRequired
-    }
-}
-
-impl fmt::Display for FederationAlephBftFinalityMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ExternalFinalizationRequired => f.write_str("external_finalization_required"),
-            Self::NetworkFinalityAvailable => f.write_str("network_finality_available"),
-        }
-    }
-}
-
 /// Operator-facing status for the AlephBFT adapter boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationAlephBftAdapterStatus {
-    /// Finality source currently feeding the adapter.
-    #[serde(default)]
-    pub finality: FederationAlephBftFinalityMode,
     /// Federation whose operations are being ordered.
     pub federation_id: FederationId,
     /// Local member producing unit payloads.
@@ -969,52 +941,6 @@ impl FederationAlephBftUnitDataProvider {
         self.next_unit_index = self.next_unit_index.saturating_add(1);
         Ok(Some(payload))
     }
-
-    /// Preview the next non-empty unit payload without draining queued items.
-    pub fn preview_next_unit_payload(&self) -> Result<Option<FederationAlephBftUnitPayload>> {
-        let mut preview = self.clone();
-        preview.next_unit_payload()
-    }
-
-    /// Drain the next unit only when it exactly matches a previously previewed payload.
-    pub fn drain_next_unit_payload_matching(
-        &mut self,
-        expected: &FederationAlephBftUnitPayload,
-    ) -> Result<FederationAlephBftUnitPayload> {
-        expected.ensure_supported_version()?;
-        let Some(found) = self.preview_next_unit_payload()? else {
-            return Err(FederationError::AlephBftUnitProposalUnavailable);
-        };
-        ensure_matching_aleph_bft_unit_proposal(expected, &found)?;
-
-        let Some(drained) = self.next_unit_payload()? else {
-            return Err(FederationError::AlephBftUnitProposalUnavailable);
-        };
-        ensure_matching_aleph_bft_unit_proposal(expected, &drained)?;
-        Ok(drained)
-    }
-}
-
-fn ensure_matching_aleph_bft_unit_proposal(
-    expected: &FederationAlephBftUnitPayload,
-    found: &FederationAlephBftUnitPayload,
-) -> Result<()> {
-    let expected_bytes = expected.canonical_bytes()?;
-    let found_bytes = found.canonical_bytes()?;
-    if expected_bytes != found_bytes {
-        return Err(FederationError::AlephBftUnitProposalMismatch {
-            expected_session: expected.session,
-            expected_member: expected.submitting_member,
-            expected_unit_index: expected.unit_index,
-            expected_body_hash: expected.body_hash.to_hex(),
-            found_session: found.session,
-            found_member: found.submitting_member,
-            found_unit_index: found.unit_index,
-            found_body_hash: found.body_hash.to_hex(),
-        });
-    }
-
-    Ok(())
 }
 
 /// Converts verified AlephBFT unit payloads into deterministic accepted items.
@@ -1432,7 +1358,6 @@ impl FederationAlephBftFinalizationHandler {
 pub struct FederationAlephBftConsensusAdapter {
     data_provider: FederationAlephBftUnitDataProvider,
     finalization_handler: FederationAlephBftFinalizationHandler,
-    finality: FederationAlephBftFinalityMode,
     journal: InMemoryFederationJournal,
     finalized_items: Vec<FederationAlephBftFinalizedItem>,
     pending_finalization_units:
@@ -1460,7 +1385,6 @@ impl FederationAlephBftConsensusAdapter {
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
             )
             .expect("default AlephBFT finalization limits are non-zero"),
-            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
@@ -1492,7 +1416,6 @@ impl FederationAlephBftConsensusAdapter {
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
                 allowed_members,
             )?,
-            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
@@ -1526,7 +1449,6 @@ impl FederationAlephBftConsensusAdapter {
                 0,
                 max_unit_payload_bytes,
             )?,
-            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
@@ -1602,7 +1524,6 @@ impl FederationAlephBftConsensusAdapter {
                 &finalized_items,
             )),
             finalization_handler,
-            finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
             journal,
             finalized_items,
             pending_finalization_units: BTreeMap::new(),
@@ -1657,7 +1578,6 @@ impl FederationAlephBftConsensusAdapter {
     #[must_use]
     pub fn status(&self) -> FederationAlephBftAdapterStatus {
         FederationAlephBftAdapterStatus {
-            finality: self.finality,
             federation_id: self.data_provider.federation_id,
             local_member: self.data_provider.submitting_member,
             session: self.session(),
@@ -1673,17 +1593,6 @@ impl FederationAlephBftConsensusAdapter {
             latest_accepted_operation_index: self.journal.entries().last().map(|entry| entry.index),
             allowed_member_count: self.finalization_handler.allowed_member_count(),
         }
-    }
-
-    /// Return the finality source currently feeding this adapter boundary.
-    #[must_use]
-    pub fn finality_mode(&self) -> FederationAlephBftFinalityMode {
-        self.finality
-    }
-
-    /// Set the finality source once a live network finality task owns delivery.
-    pub fn set_finality_mode(&mut self, finality: FederationAlephBftFinalityMode) {
-        self.finality = finality;
     }
 
     /// Return this member's current peer status from finalized operations.
@@ -1772,23 +1681,6 @@ impl FederationAlephBftConsensusAdapter {
         };
         self.remember_pending_finalization_unit(&payload)?;
         Ok(Some(payload))
-    }
-
-    /// Preview the next local unit payload without draining it.
-    pub fn preview_next_unit_payload(&self) -> Result<Option<FederationAlephBftUnitPayload>> {
-        self.data_provider.preview_next_unit_payload()
-    }
-
-    /// Drain the next local unit only if it exactly matches a prior preview.
-    pub fn drain_next_unit_payload_matching(
-        &mut self,
-        expected: &FederationAlephBftUnitPayload,
-    ) -> Result<FederationAlephBftUnitPayload> {
-        let payload = self
-            .data_provider
-            .drain_next_unit_payload_matching(expected)?;
-        self.remember_pending_finalization_unit(&payload)?;
-        Ok(payload)
     }
 
     /// Apply one finalized AlephBFT unit to the local accepted-operation journal.
@@ -2076,21 +1968,6 @@ impl FederationConsensusRuntime {
         self.adapter.next_unit_payload()
     }
 
-    /// Preview the next local AlephBFT unit payload without draining it.
-    pub fn preview_next_aleph_bft_unit_payload(
-        &self,
-    ) -> Result<Option<FederationAlephBftUnitPayload>> {
-        self.adapter.preview_next_unit_payload()
-    }
-
-    /// Drain the next AlephBFT unit only if it exactly matches a prior preview.
-    pub fn drain_next_aleph_bft_unit_payload_matching(
-        &mut self,
-        expected: &FederationAlephBftUnitPayload,
-    ) -> Result<FederationAlephBftUnitPayload> {
-        self.adapter.drain_next_unit_payload_matching(expected)
-    }
-
     /// Apply one externally finalized AlephBFT unit payload.
     pub fn finalize_aleph_bft_unit(
         &mut self,
@@ -2107,15 +1984,6 @@ impl FederationConsensusRuntime {
     /// Return AlephBFT adapter status when this runtime uses the AlephBFT adapter.
     pub fn aleph_bft_status(&self) -> Result<FederationAlephBftAdapterStatus> {
         Ok(self.adapter.status())
-    }
-
-    /// Set the AlephBFT finality mode after a live finality task is attached.
-    pub fn set_aleph_bft_finality_mode(
-        &mut self,
-        finality: FederationAlephBftFinalityMode,
-    ) -> Result<()> {
-        self.adapter.set_finality_mode(finality);
-        Ok(())
     }
 }
 

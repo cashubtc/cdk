@@ -601,23 +601,42 @@ should be retained or renamed according to its actual remaining responsibility.
 
 ## 7. Remove the legacy external-finalization Aleph driver
 
-**Status:** In progress (external driver and REST protocol removed 2026-07-12)
+**Status:** Completed (2026-07-12)
 
-### Progress
+### Result
 
 Deleted the periodic external-finalization driver, its router startup task,
 quorum-broadcast policy, private `/aleph-bft/finalized-units` route, signed
 request/response DTOs, REST message kind, peer-client method, mock transport
-surface, and driver/route-only tests. Submission, timeout, waiter, cache,
-duplicate, restart, and mempool tests now drain the next unit exactly as the
-upstream Aleph data provider does and feed upstream-finalized units through the
-normal durable application path.
+surface, finality-mode enum/status field, preview/exact-drain APIs and errors,
+and their driver-only tests. Removed the second durable finalized-unit apply
+implementation as well. Test fixtures now pull the next unit exactly once from
+the same data-provider API used by upstream AlephBFT and feed finalized units
+through the normal durable apply path.
 
-All 331 remaining federation-enabled `cdk-common` tests, seven focused submit
-tests, seven focused duplicate tests, and the Axum federation test build pass.
-The remaining work is to remove the redundant finality-mode field and
-preview/exact-drain APIs, then make readiness track the real live session
-directly.
+Public and authoritative-read readiness now requires both the real live-session
+handle and inbound network queue. A healthy sync flag alone cannot enable
+value operations. Operator status reports the observable live-session,
+inbound-network, queue, pending-finalization, finalized, and accepted counters;
+it no longer advertises a synthetic finality source.
+
+Verification:
+
+- all 328 federation-enabled `cdk-common` tests pass after deleting the
+  preview/exact-drain contract and its tests;
+- all 94 Axum custom-handler tests pass, including pending mint, swap, and melt
+  timeouts, duplicate waiter joins, manual finality, and persisted responses;
+- focused live-session startup, readiness, rotation, pending-mempool, restart,
+  status, and public `GET /v1/config` tests pass;
+- all 39 mintd federation-status tests pass and `cdk-mintd` checks without
+  warnings under the federation feature;
+- all 424 Axum federation tests pass after correcting one stale test to
+  distinguish the drained proposal queue from the pending-finalization set.
+
+A workspace production-code search finds no external-finalization mode,
+finalized-unit REST route, preview/exact-drain API, proposal-mismatch error, or
+second finalization driver. Finalization, partition/heal, equivocation,
+restart, rotation, and catch-up coverage now exercises upstream AlephBFT only.
 
 ### Problem
 
