@@ -3408,6 +3408,22 @@ async fn public_federation_config_route_returns_finalized_config_without_authent
         .route("/v1/config", axum::routing::get(get_public_config))
         .with_state(state);
 
+    let obsolete_response = router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/federation/v1/public")
+                .body(axum::body::Body::empty())
+                .expect("obsolete public config request"),
+        )
+        .await
+        .expect("obsolete public config response");
+    assert_eq!(
+        obsolete_response.status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+
     let response = router
         .oneshot(
             axum::http::Request::builder()
