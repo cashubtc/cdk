@@ -1304,6 +1304,19 @@ lagging-readiness, and one materialized-state-mismatch tests pass, including the
 Prometheus-enabled compile gate. DKG persistence and live task lifecycle remain
 before Item 17 can close.
 
+### Checkpoint 13: DKG ceremony-state ownership
+
+Authenticated sequence advancement, commitment/reveal persistence, secret-share
+verification and persistence, transcript-signature validation, activation,
+restartable setup-state loading, locally derived transcript hashing, and the
+finalized-member-config cache now execute on `FederationNodeRuntime`. DKG routes
+and the driver retain thin adapters and orchestration only. All 50 focused DKG
+tests pass, including restart at every durable phase, response loss after
+persistence, partition recovery, duplicate and conflict handling, cross-ceremony
+rejection, transcript/activation checks, admission fairness, and bounded CPU
+responsiveness. Live session task lifecycle remains and is coordinated with
+Item 18 rather than introducing two competing owners.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

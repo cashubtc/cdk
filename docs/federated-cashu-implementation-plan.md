@@ -213,7 +213,11 @@ Resolved blocking bugs:
   persist directly from the runtime, and startup sync restoration plus the
   replayed-journal quorum gate no longer depend on Axum state. Sixteen startup,
   two status-persistence, four quorum-prefix, two lagging-readiness, and one
-  materialized-state-mismatch regressions pass.
+  materialized-state-mismatch regressions pass. DKG commitment, reveal,
+  secret-share, transcript-signature, activation, transcript derivation, and
+  finalized-config admission state now belong to the runtime as well. All 50
+  focused DKG tests pass across restart, response-loss, partition, conflict,
+  transcript, fairness, and bounded-CPU cases.
 
 ## Recent performance checkpoint
 
