@@ -370,7 +370,7 @@ done
   federation add \
   --public-config "$FINAL_PUBLIC_CONFIG" \
   --local-mint-url "$MINT_URL" \
-  --primary-member-id 1 \
+  --quote-coordinator-member-id 1 \
   --member-request-timeout-secs 180 \
   --member-fallback-timeout-secs 180 \
   --quote-status-member-timeout-secs 180 \
@@ -382,7 +382,7 @@ done
   federation add \
   --public-config "$FINAL_PUBLIC_CONFIG" \
   --local-mint-url "$MINT_URL" \
-  --primary-member-id 1 \
+  --quote-coordinator-member-id 1 \
   --member-request-timeout-secs 180 \
   --member-fallback-timeout-secs 180 \
   --quote-status-member-timeout-secs 180 \

@@ -203,7 +203,7 @@ These findings focus on whether malicious, stale, offline, or slow federation
 members can cause incorrect wallet state, failed recovery, or avoidable race
 conditions.
 
-### P1: Single-Member Quote Status Fallback Can Corrupt Melt Recovery
+### P1: Single-Member Quote Status Fallback Can Corrupt Melt Recovery - Resolved
 
 The federated wallet connector can fall back to a single primary member for melt
 quote status:
@@ -250,6 +250,15 @@ Tests to add:
 - A malicious primary cannot cause `compensate_melt` to run without threshold
   status agreement.
 - Threshold `Pending` or unavailable status never mutates proofs to `Unspent`.
+
+Resolution: the wallet no longer has a single-member mint, batch-mint, or melt
+quote-status fallback. All authoritative quote-status reads require a matching
+threshold view from validated federation members, so unavailable quorum remains
+an ambiguous wallet error and the existing saga keeps recoverable state. The
+wallet preference is now named `quote_coordinator_member_id` and affects only
+the first quote-creation attempt. Focused regressions prove one member cannot
+decide any of the three status families, while threshold status, quote creation,
+ambiguous creation recovery, and the full federation wallet suite still pass.
 
 ### P1: Federation Member Validation Needs Explicit Timeouts
 

@@ -53,7 +53,7 @@ pub struct FederatedMintConnector {
     public_config: FederationConfig,
     config_digest: FederationConfigDigest,
     member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
-    primary_member_id: MemberId,
+    quote_coordinator_member_id: MemberId,
     config: FederatedMintConnectorConfig,
     valid_member_connectors_cache:
         Arc<tokio::sync::RwLock<Option<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>>>>,
@@ -62,8 +62,8 @@ pub struct FederatedMintConnector {
 /// Runtime policy for wallet-side federation member calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederatedMintConnectorConfig {
-    /// Preferred member for sequential first-healthy calls such as quote creation.
-    pub primary_member_id: Option<MemberId>,
+    /// Preferred member for the first quote-creation attempt.
+    pub quote_coordinator_member_id: Option<MemberId>,
     /// Timeout for sequential first-healthy-member calls such as quote creation.
     pub member_fallback_timeout: Duration,
     /// Per-attempt timeout for fanout calls to individual federation members.
@@ -83,7 +83,7 @@ pub struct FederatedMintConnectorConfig {
 impl Default for FederatedMintConnectorConfig {
     fn default() -> Self {
         Self {
-            primary_member_id: None,
+            quote_coordinator_member_id: None,
             member_fallback_timeout: Duration::from_secs(10),
             member_request_timeout: Duration::from_secs(10),
             member_request_max_retries: 0,
@@ -244,7 +244,10 @@ impl fmt::Debug for FederatedMintConnector {
         f.debug_struct("FederatedMintConnector")
             .field("federation_id", &self.public_config.federation_id)
             .field("member_ids", &self.member_connectors.keys())
-            .field("primary_member_id", &self.primary_member_id)
+            .field(
+                "quote_coordinator_member_id",
+                &self.quote_coordinator_member_id,
+            )
             .finish_non_exhaustive()
     }
 }
@@ -364,30 +367,33 @@ impl FederatedMintConnector {
             }
         }
 
-        let default_primary_member_id = public_config
+        let default_quote_coordinator_member_id = public_config
             .members
             .keys()
             .next()
             .copied()
             .ok_or_else(|| Error::InvalidMintResponse("empty federation roster".to_string()))?;
-        let primary_member_id = match config.primary_member_id {
-            Some(primary_member_id) => {
-                if !public_config.members.contains_key(&primary_member_id) {
+        let quote_coordinator_member_id = match config.quote_coordinator_member_id {
+            Some(quote_coordinator_member_id) => {
+                if !public_config
+                    .members
+                    .contains_key(&quote_coordinator_member_id)
+                {
                     return Err(FederationError::UnknownMember {
-                        member_id: primary_member_id,
+                        member_id: quote_coordinator_member_id,
                     }
                     .into());
                 }
-                primary_member_id
+                quote_coordinator_member_id
             }
-            None => default_primary_member_id,
+            None => default_quote_coordinator_member_id,
         };
 
         Ok(Self {
             public_config,
             config_digest,
             member_connectors,
-            primary_member_id,
+            quote_coordinator_member_id,
             config,
             valid_member_connectors_cache: Arc::new(tokio::sync::RwLock::new(None)),
         })
@@ -410,15 +416,6 @@ impl FederatedMintConnector {
             .fanout_concurrency
             .min(self.member_connectors.len())
             .max(1)
-    }
-
-    fn primary_connector(&self) -> Result<Arc<dyn MintConnector + Send + Sync>, Error> {
-        self.member_connectors
-            .get(&self.primary_member_id)
-            .cloned()
-            .ok_or_else(|| {
-                Error::InvalidMintResponse("missing primary member connector".to_string())
-            })
     }
 
     #[cfg(feature = "prometheus")]
@@ -451,11 +448,12 @@ impl FederatedMintConnector {
     {
         let mut failures = Vec::new();
 
-        let ordered_connectors = self.ordered_member_connectors(member_connectors);
-
-        for (member_id, connector) in ordered_connectors {
-            match tokio::time::timeout(self.config.member_fallback_timeout, call_member(connector))
-                .await
+        for (member_id, connector) in member_connectors {
+            match tokio::time::timeout(
+                self.config.member_fallback_timeout,
+                call_member(connector.clone()),
+            )
+            .await
             {
                 Err(_) => failures.push(format!(
                     "member {}: timed out after {}s",
@@ -479,16 +477,16 @@ impl FederatedMintConnector {
         )))
     }
 
-    fn ordered_member_connectors(
+    fn ordered_quote_creation_connectors(
         &self,
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     ) -> Vec<(MemberId, Arc<dyn MintConnector + Send + Sync>)> {
         let mut ordered_connectors = Vec::with_capacity(member_connectors.len());
-        if let Some(connector) = member_connectors.get(&self.primary_member_id) {
-            ordered_connectors.push((self.primary_member_id, connector.clone()));
+        if let Some(connector) = member_connectors.get(&self.quote_coordinator_member_id) {
+            ordered_connectors.push((self.quote_coordinator_member_id, connector.clone()));
         }
         for (member_id, connector) in member_connectors {
-            if *member_id != self.primary_member_id {
+            if *member_id != self.quote_coordinator_member_id {
                 ordered_connectors.push((*member_id, connector.clone()));
             }
         }
@@ -1014,7 +1012,6 @@ impl FederatedMintConnector {
     async fn collect_melt_quote_status_responses<F, Fut>(
         &self,
         mut call_member: F,
-        allow_primary_fallback: bool,
     ) -> Result<Vec<(MemberId, MeltQuoteResponse<String>)>, Error>
     where
         F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
@@ -1037,16 +1034,6 @@ impl FederatedMintConnector {
             return Ok(results.responses);
         }
 
-        if allow_primary_fallback {
-            if let Some((_, response)) = results
-                .responses
-                .iter()
-                .find(|(member_id, _)| *member_id == self.primary_member_id)
-            {
-                return Ok(vec![(self.primary_member_id, response.clone())]);
-            }
-        }
-
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation melt quote status responses: required {}, received {}, failures: {}",
             threshold,
@@ -1058,7 +1045,6 @@ impl FederatedMintConnector {
     async fn collect_mint_quote_status_responses<F, Fut>(
         &self,
         mut call_member: F,
-        allow_primary_fallback: bool,
     ) -> Result<Vec<(MemberId, MintQuoteResponse<String>)>, Error>
     where
         F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
@@ -1079,16 +1065,6 @@ impl FederatedMintConnector {
 
         if results.responses.len() >= threshold {
             return Ok(results.responses);
-        }
-
-        if allow_primary_fallback {
-            if let Some((_, response)) = results
-                .responses
-                .iter()
-                .find(|(member_id, _)| *member_id == self.primary_member_id)
-            {
-                return Ok(vec![(self.primary_member_id, response.clone())]);
-            }
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -1120,14 +1096,6 @@ impl FederatedMintConnector {
 
         if results.responses.len() >= threshold {
             return Ok(results.responses);
-        }
-
-        if let Some((_, response)) = results
-            .responses
-            .iter()
-            .find(|(member_id, _)| *member_id == self.primary_member_id)
-        {
-            return Ok(vec![(self.primary_member_id, response.clone())]);
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -1240,14 +1208,11 @@ impl FederatedMintConnector {
         let method = request.method();
         let quote = quote_id.to_string();
         let member_responses = match self
-            .collect_mint_quote_status_responses(
-                |connector| {
-                    let method = method.clone();
-                    let quote = quote.clone();
-                    async move { connector.get_mint_quote_status(method, &quote).await }
-                },
-                false,
-            )
+            .collect_mint_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote = quote.clone();
+                async move { connector.get_mint_quote_status(method, &quote).await }
+            })
             .await
         {
             Ok(responses) => responses,
@@ -1297,14 +1262,11 @@ impl FederatedMintConnector {
         let method = request.method();
         let quote = quote_id.to_string();
         let member_responses = match self
-            .collect_melt_quote_status_responses(
-                |connector| {
-                    let method = method.clone();
-                    let quote = quote.clone();
-                    async move { connector.get_melt_quote_status(method, &quote).await }
-                },
-                false,
-            )
+            .collect_melt_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote = quote.clone();
+                async move { connector.get_melt_quote_status(method, &quote).await }
+            })
             .await
         {
             Ok(responses) => responses,
@@ -1325,7 +1287,9 @@ impl FederatedMintConnector {
         let quote_id = QuoteId::new();
         let mut failures = Vec::new();
 
-        for (member_id, connector) in self.ordered_member_connectors(&self.member_connectors) {
+        for (member_id, connector) in
+            self.ordered_quote_creation_connectors(&self.member_connectors)
+        {
             let started = Instant::now();
             let result = tokio::time::timeout(
                 self.config.member_fallback_timeout,
@@ -1388,7 +1352,9 @@ impl FederatedMintConnector {
         let quote_id = QuoteId::new();
         let mut failures = Vec::new();
 
-        for (member_id, connector) in self.ordered_member_connectors(&self.member_connectors) {
+        for (member_id, connector) in
+            self.ordered_quote_creation_connectors(&self.member_connectors)
+        {
             let started = Instant::now();
             let result = tokio::time::timeout(
                 self.config.member_fallback_timeout,
@@ -1451,14 +1417,11 @@ impl FederatedMintConnector {
         let method = response.method();
         let quote_id = response.quote().to_string();
         let member_responses = self
-            .collect_mint_quote_status_responses(
-                |connector| {
-                    let method = method.clone();
-                    let quote_id = quote_id.clone();
-                    async move { connector.get_mint_quote_status(method, &quote_id).await }
-                },
-                false,
-            )
+            .collect_mint_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote_id = quote_id.clone();
+                async move { connector.get_mint_quote_status(method, &quote_id).await }
+            })
             .await?;
         let visible_response = self.aggregate_mint_quote_status_response(&member_responses)?;
         if visible_response.method() != response.method()
@@ -1509,14 +1472,11 @@ impl FederatedMintConnector {
             )
         })?;
         let member_responses = self
-            .collect_melt_quote_status_responses(
-                |connector| {
-                    let method = method.clone();
-                    let quote_id = quote_id.clone();
-                    async move { connector.get_melt_quote_status(method, &quote_id).await }
-                },
-                false,
-            )
+            .collect_melt_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote_id = quote_id.clone();
+                async move { connector.get_melt_quote_status(method, &quote_id).await }
+            })
             .await?;
         let visible_response = self.aggregate_melt_quote_status_response(&member_responses)?;
         if visible_response.method() != response.method() || visible_response.quote() != quote_id {
@@ -1776,17 +1736,6 @@ impl FederatedMintConnector {
     ) -> Result<MintQuoteResponse<String>, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
 
-        if member_responses.len() == 1 {
-            return member_responses
-                .first()
-                .map(|(_, response)| response.clone())
-                .ok_or_else(|| {
-                    Error::InvalidMintResponse(
-                        "missing federation mint quote status responses".to_string(),
-                    )
-                });
-        }
-
         let mut matching_views =
             Vec::<(serde_json::Value, MintQuoteResponse<String>, Vec<MemberId>)>::new();
 
@@ -1830,25 +1779,6 @@ impl FederatedMintConnector {
         member_responses: &[(MemberId, Vec<MintQuoteResponse<String>>)],
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-
-        if member_responses.len() == 1 {
-            let response = member_responses
-                .first()
-                .map(|(_, response)| response.clone())
-                .ok_or_else(|| {
-                    Error::InvalidMintResponse(
-                        "missing federation batch mint quote status responses".to_string(),
-                    )
-                })?;
-            if response.len() != expected_count {
-                return Err(Error::InvalidMintResponse(format!(
-                    "primary member returned {} batch mint quote statuses for {} requested quotes",
-                    response.len(),
-                    expected_count
-                )));
-            }
-            return Ok(response);
-        }
 
         let mut matching_views = Vec::<(
             serde_json::Value,
@@ -1902,17 +1832,6 @@ impl FederatedMintConnector {
         &self,
         member_responses: &[(MemberId, MeltQuoteResponse<String>)],
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        if member_responses.len() == 1 {
-            return member_responses
-                .first()
-                .map(|(_, response)| response.clone())
-                .ok_or_else(|| {
-                    Error::InvalidMintResponse(
-                        "missing federation melt quote status responses".to_string(),
-                    )
-                });
-        }
-
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         let matching_responses = matching_melt_quote_status_group(member_responses, threshold)
             .ok_or_else(|| {
@@ -2352,14 +2271,11 @@ impl MintConnector for FederatedMintConnector {
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
         let member_responses = self
-            .collect_mint_quote_status_responses(
-                |connector| {
-                    let method = method.clone();
-                    let quote_id = quote_id.to_string();
-                    async move { connector.get_mint_quote_status(method, &quote_id).await }
-                },
-                true,
-            )
+            .collect_mint_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote_id = quote_id.to_string();
+                async move { connector.get_mint_quote_status(method, &quote_id).await }
+            })
             .await?;
 
         self.aggregate_mint_quote_status_response(&member_responses)
@@ -2371,14 +2287,11 @@ impl MintConnector for FederatedMintConnector {
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let member_responses = self
-            .collect_melt_quote_status_responses(
-                |connector| {
-                    let method = method.clone();
-                    let quote_id = quote_id.to_string();
-                    async move { connector.get_melt_quote_status(method, &quote_id).await }
-                },
-                true,
-            )
+            .collect_melt_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote_id = quote_id.to_string();
+                async move { connector.get_melt_quote_status(method, &quote_id).await }
+            })
             .await?;
 
         self.aggregate_melt_quote_status_response(&member_responses)
@@ -2525,17 +2438,7 @@ impl MintConnector for FederatedMintConnector {
     }
 
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {
-        if let Ok(connector) = self.primary_connector() {
-            if let Some(wallet) = connector.get_auth_wallet().await {
-                return Some(wallet);
-            }
-        }
-
-        for (member_id, connector) in &self.member_connectors {
-            if *member_id == self.primary_member_id {
-                continue;
-            }
-
+        for connector in self.member_connectors.values() {
             if let Some(wallet) = connector.get_auth_wallet().await {
                 return Some(wallet);
             }

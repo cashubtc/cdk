@@ -4136,9 +4136,10 @@ Implementation checklist:
 - [x] Add all CLI options for wallet-side federation request policy. The CLI
   import path now exposes member fallback timeout, member request timeout,
   quote-status timeout, retry count, fanout concurrency, mint-quote visibility
-  controls, and `--primary-member-id` for sequential quote-style calls. The
-  persisted policy is validated against the public federation roster before the
-  wallet connector is constructed.
+  controls, and `--quote-coordinator-member-id` for the first quote-creation
+  attempt. The persisted policy is validated against the public federation
+  roster before the wallet connector is constructed and does not influence
+  status quorums or unrelated first-healthy calls.
 - [x] Ensure CLI output remains compatible with normal Cashu tokens and proofs
   after threshold aggregation; the first CLI smoke returned an ordinary Cashu
   token after online send/swap, not member-share artifacts.
@@ -4224,32 +4225,34 @@ Latest checkpoint:
   federation units fail before wallet creation, and unrelated mint URLs still use
   the standalone wallet path. A focused receive test now proves unimported
   federation-token mint URLs fail with an actionable import-config error before
-  network receive work starts. The wallet connector and CLI registry now also
-  persist and validate an explicit primary member preference: the connector
-  tries that member first for sequential quote creation, falls back to the rest
-  of the validated roster when needed, and rejects primary member IDs outside
-  the federation roster. Focused tests passed with `cargo test -p cdk --features
-  federation federated_mint_connector_uses_configured_primary_for_quote_creation
-  -- --test-threads 1` and `cargo test -p cdk-cli --features federation
-  federation -- --test-threads 1`. The next CLI receive checkpoint proves
-  imported member public mint URLs resolve to the imported federation metadata
-  path before wallet construction: `cargo test -p cdk-cli --features federation
-  receive_token -- --test-threads 1` passed both the unimported actionable-error
-  test and the imported-member URL resolution test. The invite-code CLI import
+  network receive work starts. The wallet connector and CLI registry persist
+  and validate an explicit quote coordinator preference: the connector tries
+  that member first only for quote creation, falls back to the rest of the
+  validated roster when needed, and rejects coordinator IDs outside the
+  federation roster. Mint, melt, and batch quote-status reads always require a
+  matching threshold view; generic first-healthy calls use roster order.
+  Focused tests passed with `cargo test -p cdk --features federation
+  wallet::federation::tests -- --test-threads 1` and `cargo test -p cdk-cli
+  --features federation federation -- --test-threads 1`. The next CLI receive
+  checkpoint proves imported member public mint URLs resolve to the imported
+  federation metadata path before wallet construction: `cargo test -p cdk-cli
+  --features federation receive_token -- --test-threads 1` passed both the
+  actionable error for an unimported federation and the imported-member URL
+  resolution test. The invite-code CLI import
   checkpoint now accepts either `--public-config` or `--invite-code`, rejects
   bad invite codes before registry mutation, and passed `cargo test -p cdk-cli
-  --features federation federation -- --test-threads 1` with 18 focused tests.
+  --features federation federation -- --test-threads 1` with 27 focused tests.
   The slow-member CLI smoke target now starts a five-member threshold-four
   AlephBFT fakewallet federation with member 5 configured for a 30-second
-  fakewallet incoming-payment delay. A fast-primary wallet mints and forces a
-  P2PK swap; a second wallet uses slow member 5 as quote primary, proves the
-  configured delay behaviorally, consumes its four 1 sat proofs offline, and
+  fakewallet incoming-payment delay. A fast-coordinator wallet mints and forces
+  a P2PK swap; a second wallet uses slow member 5 as quote coordinator, proves
+  the configured delay behaviorally, consumes its four 1 sat proofs offline, and
   melts 10 sat plus the 1 sat reserve so change signing is mandatory. A live
-  run on 2026-07-10 measured the P2PK swap at 3.55s, the delayed-primary mint at
-  37.60s, and the forced-change melt at 6.74s. All five members converged on the
-  exact 10-operation sequence with matching digests, zero duplicate
-  submissions, and no alerts, so fallback quote churn is excluded without
-  depending on log text.
+  run on 2026-07-10 measured the P2PK swap at 3.55s, the delayed-coordinator
+  mint at 37.60s, and the forced-change melt at 6.74s. All five members
+  converged on the exact 10-operation sequence with matching digests, zero
+  duplicate submissions, and no alerts, so fallback quote churn is excluded
+  without depending on log text.
   A direct value-operation benchmark on 2026-07-09 then forced a P2PK swap and
   a melt with real change output rather than relying on denomination luck. The
   all-members-live swap took 4.71s and the change melt took 8.06s; the same
@@ -4285,7 +4288,7 @@ just fed-regtest-start target/cdk-cli-fed-smoke-aleph-live 5 3 62705
 
 target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive \
   federation add --mint-url http://127.0.0.1:62705 \
-  --primary-member-id 1 \
+  --quote-coordinator-member-id 1 \
   --member-request-timeout-secs 60 \
   --member-fallback-timeout-secs 60 \
   --quote-status-member-timeout-secs 60
@@ -4319,8 +4322,8 @@ Tests and success criteria:
   stale public-config protocol versions, mismatched rosters, inactive keysets,
   and non-v3/BLS federation metadata before constructing a wallet connector.
   Focused tests also cover valid public config persistence, member public mint
-  URL resolution, connector construction, explicit primary-member request-policy
-  persistence, unknown primary-member rejection, and CLI parse shape.
+  URL resolution, connector construction, explicit quote-coordinator policy
+  persistence, unknown coordinator rejection, and CLI parse shape.
 - [x] CLI invite-code import parsing tests prove `cdk-cli federation add
   --invite-code <cashufed...>` reaches the federation add command, a valid
   `FederationInvite` decodes to the expected public config, and malformed

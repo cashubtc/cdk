@@ -516,7 +516,7 @@ mod tests {
             "add",
             "--public-config",
             "federation-public.json",
-            "--primary-member-id",
+            "--quote-coordinator-member-id",
             "2",
         ]);
 
@@ -526,6 +526,22 @@ mod tests {
                 command: sub_commands::federation::FederationSubCommand::Add(_)
             })
         ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn rejects_removed_federation_primary_member_option() {
+        let result = Cli::try_parse_from([
+            "cdk-cli",
+            "federation",
+            "add",
+            "--public-config",
+            "federation-public.json",
+            "--primary-member-id",
+            "2",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[cfg(feature = "federation")]

@@ -2032,7 +2032,7 @@ summaries for mint, swap, melt, restore, and state queries.
 
 ## 30. Separate payment quote coordination from generic wallet primary behavior
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2057,6 +2057,27 @@ to substitute for threshold evidence in paths that deserve separate policy.
 - Coordinate this with real payment-member election and failover design.
 - Test coordinator outage, delayed responses, quote recovery, status polling,
   and prevention of one-member state or rejection decisions.
+
+### Resolution
+
+- Renamed the wallet and CLI preference from `primary_member_id` /
+  `--primary-member-id` to `quote_coordinator_member_id` /
+  `--quote-coordinator-member-id`. The CLI registry schema is now version 2;
+  this undeployed federation code intentionally carries no compatibility alias.
+- Restricted the preference to ordering quote-creation attempts. A failed or
+  unavailable coordinator falls back through the validated roster using the
+  same assigned quote ID and existing threshold-visibility recovery.
+- Removed coordinator ordering from mint-info, LNURL, and auth-wallet lookup.
+  Those availability-only calls now use deterministic roster order and confer
+  no coordinator authority.
+- Removed single-member mint, batch-mint, and melt quote-status fallbacks and
+  the matching one-response aggregator branches. Public status and saga
+  recovery now require a matching threshold view; unavailable quorum stays an
+  ordinary ambiguous wallet error so existing saga recovery remains in charge.
+- Updated tracked CLI smoke commands and added explicit one-member rejection
+  tests for all three quote-status families. All 84 federation wallet tests and
+  all 27 serial CLI federation tests pass, including coordinator outage,
+  delayed/ambiguous quote creation, threshold status, and recovery coverage.
 
 ## 31. Derive transient federation readiness instead of persisting it
 

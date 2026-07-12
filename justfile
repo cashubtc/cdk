@@ -825,7 +825,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
   slow_mint_url="http://127.0.0.1:$(({{port_start}} + {{slow_member}} - 1))"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
-    --primary-member-id 1 \
+    --quote-coordinator-member-id 1 \
     --member-request-timeout-secs 45 \
     --member-fallback-timeout-secs 45 \
     --quote-status-member-timeout-secs 45 \
@@ -856,7 +856,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
 
   target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
-    --primary-member-id "{{slow_member}}" \
+    --quote-coordinator-member-id "{{slow_member}}" \
     --member-request-timeout-secs 90 \
     --member-fallback-timeout-secs 90 \
     --quote-status-member-timeout-secs 90 \
@@ -866,15 +866,15 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
   slow_mint_started="$(date +%s)"
   /usr/bin/time -p target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
     mint "$slow_mint_url" 20 --wait-duration 120 \
-    2>"{{wallet_dir}}/slow-primary-mint.time"
+    2>"{{wallet_dir}}/slow-coordinator-mint.time"
   slow_mint_elapsed="$(( $(date +%s) - slow_mint_started ))"
   if (( slow_mint_elapsed < {{slow_delay_secs}} - 2 )); then
     printf 'slow-member mint completed in %s seconds, below the configured %s second backend delay\n' \
       "$slow_mint_elapsed" "{{slow_delay_secs}}" >&2
     exit 1
   fi
-  printf 'slow-member primary mint elapsed_seconds=%s\n' "$slow_mint_elapsed"
-  cat "{{wallet_dir}}/slow-primary-mint.time"
+  printf 'slow-member coordinator mint elapsed_seconds=%s\n' "$slow_mint_elapsed"
+  cat "{{wallet_dir}}/slow-coordinator-mint.time"
   for _ in $(seq 1 4); do
     offline_token="$(target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
       send --mint-url "$slow_mint_url" --amount 1 --offline | tail -n 1)"
@@ -1031,7 +1031,7 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
   mint_url="http://127.0.0.1:{{port_start}}"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
-    --primary-member-id 1 \
+    --quote-coordinator-member-id 1 \
     --member-request-timeout-secs 60 \
     --member-fallback-timeout-secs 60 \
     --quote-status-member-timeout-secs 60 \
@@ -1100,7 +1100,7 @@ fed-regtest-cli-smoke-insufficient-valid-advertisements dir="target/cdk-fed-regt
   mint_url="http://127.0.0.1:{{port_start}}"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
-    --primary-member-id 1 \
+    --quote-coordinator-member-id 1 \
     --member-request-timeout-secs 60 \
     --member-fallback-timeout-secs 60 \
     --quote-status-member-timeout-secs 60 \
@@ -1171,7 +1171,7 @@ fed-regtest-cli-smoke-missing-metadata dir="target/cdk-fed-regtest-cli-missing-m
   mint_url="http://127.0.0.1:{{port_start}}"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     federation add --public-config "{{dir}}/federation-public.json" \
-    --primary-member-id 1 \
+    --quote-coordinator-member-id 1 \
     --member-request-timeout-secs 60 \
     --member-fallback-timeout-secs 60 \
     --quote-status-member-timeout-secs 60 \
