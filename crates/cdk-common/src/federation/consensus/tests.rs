@@ -381,113 +381,9 @@ fn consensus_engine_trait_accepts_operations_in_submit_order() {
 }
 
 #[test]
-fn consensus_runtime_replays_persisted_in_memory_entries() {
-    let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::in_memory(federation_id, member_id());
-    let first = runtime
-        .submit_envelope(mint_quote_envelope(federation_id))
-        .expect("submit first");
-    let second = runtime
-        .submit_envelope(mint_envelope(
-            federation_id,
-            "quote-1",
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
-        .expect("submit second");
-    runtime
-        .update_status(second.operation_id, FederationOperationStatus::Applied)
-        .expect("update status");
-
-    let replayed = FederationConsensusRuntime::in_memory_from_entries(
-        federation_id,
-        member_id(),
-        runtime.journal().entries().to_vec(),
-    )
-    .expect("replay runtime");
-
-    assert_eq!(replayed.peer_status().operation_count, 2);
-    assert_eq!(
-        replayed.peer_status().latest_order_digest,
-        runtime.peer_status().latest_order_digest
-    );
-    assert_eq!(replayed.state_digest(), runtime.state_digest());
-    assert_eq!(
-        replayed
-            .journal()
-            .entry_by_operation_id(first.operation_id)
-            .expect("first entry")
-            .index,
-        0
-    );
-    assert_eq!(
-        replayed
-            .journal()
-            .entry_by_operation_id(second.operation_id)
-            .expect("second entry")
-            .status,
-        FederationOperationStatus::Applied
-    );
-}
-
-#[test]
-fn consensus_runtime_replay_rejects_future_operation_versions() {
-    let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::in_memory(federation_id, member_id());
-    runtime
-        .submit_envelope(mint_quote_envelope(federation_id))
-        .expect("submit first");
-    let mut entries = runtime.journal().entries().to_vec();
-    entries[0].envelope.version = super::super::FEDERATION_OPERATION_VERSION + 1;
-
-    assert!(matches!(
-        FederationConsensusRuntime::in_memory_from_entries(federation_id, member_id(), entries),
-        Err(FederationError::OperationVersionMismatch {
-            expected: super::super::FEDERATION_OPERATION_VERSION,
-            found,
-        }) if found == super::super::FEDERATION_OPERATION_VERSION + 1
-    ));
-}
-
-#[test]
-fn consensus_backend_kind_parses_known_values_and_rejects_unknown() {
-    assert_eq!(
-        "in_memory"
-            .parse::<FederationConsensusBackendKind>()
-            .expect("in-memory backend"),
-        FederationConsensusBackendKind::InMemory
-    );
-    assert_eq!(
-        "memory"
-            .parse::<FederationConsensusBackendKind>()
-            .expect("memory alias"),
-        FederationConsensusBackendKind::InMemory
-    );
-    assert_eq!(
-        "aleph-bft"
-            .parse::<FederationConsensusBackendKind>()
-            .expect("aleph alias"),
-        FederationConsensusBackendKind::AlephBft
-    );
-    assert!("raft"
-        .parse::<FederationConsensusBackendKind>()
-        .expect_err("unknown backend should fail")
-        .contains("Unknown federation consensus backend"));
-}
-
-#[test]
 fn consensus_runtime_aleph_bft_reports_status_and_rejects_synchronous_submit() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::AlephBft,
-        federation_id,
-        member_id(),
-    )
-    .expect("aleph-bft runtime boundary");
-
-    assert_eq!(
-        runtime.backend_kind(),
-        FederationConsensusBackendKind::AlephBft
-    );
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
     assert!(matches!(
         runtime.submit_envelope(mint_envelope(
             federation_id,
@@ -502,12 +398,7 @@ fn consensus_runtime_aleph_bft_reports_status_and_rejects_synchronous_submit() {
 #[test]
 fn consensus_runtime_aleph_bft_previews_and_drains_matching_units() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::AlephBft,
-        federation_id,
-        member_id(),
-    )
-    .expect("aleph-bft runtime boundary");
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
     let envelope = mint_envelope(
         federation_id,
         "quote-1",
@@ -540,12 +431,7 @@ fn consensus_runtime_aleph_bft_previews_and_drains_matching_units() {
 #[test]
 fn consensus_runtime_begin_aleph_bft_session_rotates_empty_session() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::AlephBft,
-        federation_id,
-        member_id(),
-    )
-    .expect("aleph-bft runtime boundary");
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
 
     runtime
         .begin_aleph_bft_session(1)
@@ -583,12 +469,7 @@ fn consensus_runtime_begin_aleph_bft_session_rotates_empty_session() {
 #[test]
 fn consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::AlephBft,
-        federation_id,
-        member_id(),
-    )
-    .expect("aleph-bft runtime boundary");
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
 
     runtime
         .submit_aleph_bft_envelope(mint_envelope(
@@ -632,12 +513,7 @@ fn consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality() {
 #[test]
 fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::AlephBft,
-        federation_id,
-        member_id(),
-    )
-    .expect("aleph-bft runtime boundary");
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
 
     runtime
         .submit_aleph_bft_envelope(mint_envelope(
@@ -684,55 +560,6 @@ fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
     assert_eq!(finalized.queued_item_count, 0);
     assert_eq!(finalized.pending_finalization_item_count, 0);
     assert_eq!(finalized.next_item_index, 1);
-}
-
-#[test]
-fn consensus_runtime_begin_aleph_bft_session_rejects_in_memory_backend() {
-    let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::InMemory,
-        federation_id,
-        member_id(),
-    )
-    .expect("in-memory runtime");
-
-    assert!(matches!(
-        runtime.begin_aleph_bft_session(1),
-        Err(FederationError::UnsupportedConsensusBackend { ref backend })
-            if backend == "aleph_bft"
-    ));
-}
-
-#[test]
-fn consensus_runtime_replays_entries_with_selected_backend() {
-    let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::with_backend(
-        FederationConsensusBackendKind::InMemory,
-        federation_id,
-        member_id(),
-    )
-    .expect("in-memory runtime");
-    runtime
-        .submit_envelope(mint_quote_envelope(federation_id))
-        .expect("submit first");
-
-    let replayed = FederationConsensusRuntime::from_entries_with_backend(
-        FederationConsensusBackendKind::InMemory,
-        federation_id,
-        member_id(),
-        runtime.journal().entries().to_vec(),
-    )
-    .expect("replay runtime");
-
-    assert_eq!(
-        replayed.backend_kind(),
-        FederationConsensusBackendKind::InMemory
-    );
-    assert_eq!(replayed.peer_status().operation_count, 1);
-    assert_eq!(
-        replayed.peer_status().latest_order_digest,
-        runtime.peer_status().latest_order_digest
-    );
 }
 
 #[test]
@@ -2133,6 +1960,53 @@ fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
     assert_eq!(
         recovered.finalized_items()[2].status,
         FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_recovery_preserves_finalized_conflict_rejection() {
+    let federation_id = federation_id(14);
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 1);
+    let conflicting = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 2);
+    let unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(first),
+            FederationConsensusItem::operation(conflicting),
+        ],
+    )
+    .expect("conflicting finalized unit");
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        federation_id,
+        member_id_value(1),
+        0,
+        members,
+    )
+    .expect("adapter");
+    adapter.finalize_unit(unit).expect("finalize conflicts");
+    assert_eq!(
+        adapter.journal().entries()[1].status,
+        FederationOperationStatus::Rejected
+    );
+
+    let recovered = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+        federation_id,
+        member_id_value(1),
+        0,
+        members,
+        2,
+        adapter.finalized_items().to_vec(),
+    )
+    .expect("recover finalized conflict");
+
+    assert_eq!(recovered.journal().entries().len(), 2);
+    assert_eq!(
+        recovered.journal().entries()[1].status,
+        FederationOperationStatus::Rejected
     );
 }
 

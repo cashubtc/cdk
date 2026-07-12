@@ -1,11 +1,9 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationConsensusBackendKind, FederationConsensusEngine, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationPeerStatus, FederationSessionOutcome, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPublic,
-    MemberId,
+    FederationConsensusEngine, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalEntry, FederationPeerStatus, FederationSessionOutcome, FederationStateDigest,
+    MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -394,92 +392,6 @@ fn unverified_session_outcome_entries<'a>(
         .position(|entry| entry.index >= next_index)
         .unwrap_or(entries.len());
     &entries[start..]
-}
-
-pub(crate) async fn submit_operation_to_primary_if_needed(
-    state: &MintState,
-    envelope: FederationOperationEnvelope,
-    sequence: Option<(MemberId, u64)>,
-) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
-    submit_operation_to_primary_if_needed_with_transport(
-        state,
-        envelope,
-        sequence,
-        Async::default(),
-    )
-    .await
-}
-
-pub(super) async fn submit_operation_to_primary_if_needed_with_transport<T>(
-    state: &MintState,
-    envelope: FederationOperationEnvelope,
-    sequence: Option<(MemberId, u64)>,
-    transport: T,
-) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error>
-where
-    T: Transport,
-{
-    #[cfg(test)]
-    if state.federation_isolated_member_test {
-        return Ok(None);
-    }
-
-    let Some(runtime_config) = state.mint.federation_config() else {
-        return Ok(None);
-    };
-    if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
-        return Ok(None);
-    }
-    let Some(primary_member) = runtime_config.public_config().members.values().next() else {
-        return Err(cdk::Error::Custom(
-            "federation config has an empty member roster".to_string(),
-        ));
-    };
-    if primary_member.member_id == runtime_config.member_id() {
-        return Ok(None);
-    }
-
-    state
-        .validate_federation_envelope_admission(&envelope)
-        .await?;
-    let request = FederationSubmitOperationRequest::new(envelope);
-    request
-        .ensure_admissible_size()
-        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    let operation_id = request
-        .operation_id()
-        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    let client = FederationRestPeerClient::new_with_config(
-        transport,
-        runtime_config.public_config(),
-        runtime_config.private_config().clone(),
-        state.federation_peer_sync_config.unwrap_or_default(),
-    )
-    .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    let response = client
-        .submit_operation(primary_member, &request)
-        .await
-        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-
-    client
-        .sync_once_from_member(state, primary_member)
-        .await
-        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    let primary_peers = [primary_member];
-    collect_session_outcome_evidence_round(state, &client, &primary_peers, None).await;
-
-    if let Some((sender, sequence)) = sequence {
-        state.persist_federation_sequence(sender, sequence).await?;
-    }
-
-    if response.operation_id != operation_id {
-        return Err(cdk::Error::Custom(format!(
-            "federation primary returned operation id {} for submitted operation {}",
-            response.operation_id, operation_id
-        )));
-    }
-
-    Ok(Some(response))
 }
 
 pub(super) async fn persist_local_session_outcome_evidence_chunks(

@@ -1583,7 +1583,7 @@ impl FederationAlephBftConsensusAdapter {
         let mut journal = InMemoryFederationJournal::new();
         for finalized_item in &finalized_items {
             if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
-                journal.append_with_consensus_evidence(
+                journal.append_finalized_with_consensus_evidence(
                     envelope.clone(),
                     finalized_item.consensus_evidence(),
                 )?;
@@ -2083,14 +2083,10 @@ pub struct FederationQuorumVerifiedCatchUp {
     pub session_outcome_quorum: FederationSessionOutcomeQuorum,
 }
 
-/// Runtime-owned consensus engine.
-///
-/// CDK keeps this small enum instead of exposing the in-memory backend through
-/// server state. That lets Axum and storage code depend on the consensus engine
-/// contract while future engines can be added behind this wrapper.
+/// Runtime-owned AlephBFT consensus engine.
 #[derive(Debug, Clone)]
 pub struct FederationConsensusRuntime {
-    backend: FederationConsensusRuntimeBackend,
+    adapter: FederationAlephBftConsensusAdapter,
 }
 
 /// Consensus backend selected for ordering federation operations.
@@ -2141,39 +2137,12 @@ impl FromStr for FederationConsensusBackendKind {
     }
 }
 
-#[derive(Debug, Clone)]
-enum FederationConsensusRuntimeBackend {
-    InMemory(InMemoryFederationConsensus),
-    AlephBft(FederationAlephBftConsensusAdapter),
-}
-
 impl FederationConsensusRuntime {
-    /// Create an in-memory runtime for deterministic tests and local use.
+    /// Create an AlephBFT runtime at session zero.
     #[must_use]
-    pub fn in_memory(federation_id: FederationId, member_id: MemberId) -> Self {
+    pub fn new(federation_id: FederationId, member_id: MemberId) -> Self {
         Self {
-            backend: FederationConsensusRuntimeBackend::InMemory(InMemoryFederationConsensus::new(
-                federation_id,
-                member_id,
-            )),
-        }
-    }
-
-    /// Create a runtime for the requested backend.
-    pub fn with_backend(
-        backend: FederationConsensusBackendKind,
-        federation_id: FederationId,
-        member_id: MemberId,
-    ) -> Result<Self> {
-        match backend {
-            FederationConsensusBackendKind::InMemory => {
-                Ok(Self::in_memory(federation_id, member_id))
-            }
-            FederationConsensusBackendKind::AlephBft => Ok(Self {
-                backend: FederationConsensusRuntimeBackend::AlephBft(
-                    FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0),
-                ),
-            }),
+            adapter: FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0),
         }
     }
 
@@ -2191,49 +2160,26 @@ impl FederationConsensusRuntime {
     {
         let allowed_members = validate_adapter_roster(member_ids, consensus_threshold, member_id)?;
         Ok(Self {
-            backend: FederationConsensusRuntimeBackend::AlephBft(
-                FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-                    federation_id,
-                    member_id,
-                    session,
-                    allowed_members,
-                    finalized_items,
-                )?,
-            ),
+            adapter: FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+                federation_id,
+                member_id,
+                session,
+                allowed_members,
+                finalized_items,
+            )?,
         })
-    }
-
-    /// Return the backend selected for this runtime.
-    #[must_use]
-    pub fn backend_kind(&self) -> FederationConsensusBackendKind {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                FederationConsensusBackendKind::InMemory
-            }
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                FederationConsensusBackendKind::AlephBft
-            }
-        }
     }
 
     /// Return the number of locally queued consensus items, if the backend exposes a queue.
     #[must_use]
     pub fn queued_len(&self) -> usize {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(_) => 0,
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.queued_len(),
-        }
+        self.adapter.queued_len()
     }
 
     /// Return the number of dispatched consensus items awaiting finalization.
     #[must_use]
     pub fn pending_finalization_len(&self) -> usize {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(_) => 0,
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.pending_finalization_len()
-            }
-        }
+        self.adapter.pending_finalization_len()
     }
 
     /// Return queued plus dispatched consensus items awaiting finalization.
@@ -2245,16 +2191,7 @@ impl FederationConsensusRuntime {
 
     /// Begin a later AlephBFT session for this runtime.
     pub fn begin_aleph_bft_session(&mut self, session: u64) -> Result<()> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.begin_session(session),
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter.begin_session(session)
     }
 
     /// Begin a later AlephBFT session, requeueing local units that were not
@@ -2263,18 +2200,8 @@ impl FederationConsensusRuntime {
         &mut self,
         session: u64,
     ) -> Result<usize> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.begin_session_requeue_pending_finalization(session)
-            }
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter
+            .begin_session_requeue_pending_finalization(session)
     }
 
     /// Queue one operation for AlephBFT unit construction.
@@ -2282,50 +2209,19 @@ impl FederationConsensusRuntime {
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationConsensusItemAdmission> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.submit_operation(envelope)
-            }
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter.submit_operation(envelope)
     }
 
     /// Pull the next local AlephBFT unit payload from the runtime.
     pub fn next_aleph_bft_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.next_unit_payload(),
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter.next_unit_payload()
     }
 
     /// Preview the next local AlephBFT unit payload without draining it.
     pub fn preview_next_aleph_bft_unit_payload(
         &self,
     ) -> Result<Option<FederationAlephBftUnitPayload>> {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.preview_next_unit_payload()
-            }
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter.preview_next_unit_payload()
     }
 
     /// Drain the next AlephBFT unit only if it exactly matches a prior preview.
@@ -2333,18 +2229,7 @@ impl FederationConsensusRuntime {
         &mut self,
         expected: &FederationAlephBftUnitPayload,
     ) -> Result<FederationAlephBftUnitPayload> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.drain_next_unit_payload_matching(expected)
-            }
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter.drain_next_unit_payload_matching(expected)
     }
 
     /// Apply one externally finalized AlephBFT unit payload.
@@ -2352,44 +2237,17 @@ impl FederationConsensusRuntime {
         &mut self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.finalize_unit(payload),
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        self.adapter.finalize_unit(payload)
     }
 
     /// Return finalized AlephBFT items held by this runtime.
     pub fn aleph_bft_finalized_items(&self) -> Result<&[FederationAlephBftFinalizedItem]> {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => Ok(adapter.finalized_items()),
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        Ok(self.adapter.finalized_items())
     }
 
     /// Return AlephBFT adapter status when this runtime uses the AlephBFT adapter.
     pub fn aleph_bft_status(&self) -> Result<FederationAlephBftAdapterStatus> {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => Ok(adapter.status()),
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
+        Ok(self.adapter.status())
     }
 
     /// Set the AlephBFT finality mode after a live finality task is attached.
@@ -2397,83 +2255,26 @@ impl FederationConsensusRuntime {
         &mut self,
         finality: FederationAlephBftFinalityMode,
     ) -> Result<()> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.set_finality_mode(finality);
-                Ok(())
-            }
-            FederationConsensusRuntimeBackend::InMemory(_) => {
-                Err(FederationError::UnsupportedConsensusBackend {
-                    backend: FederationConsensusBackendKind::AlephBft
-                        .as_str()
-                        .to_string(),
-                })
-            }
-        }
-    }
-
-    /// Rebuild an in-memory runtime from persisted journal entries.
-    pub fn in_memory_from_entries(
-        federation_id: FederationId,
-        member_id: MemberId,
-        entries: Vec<FederationJournalEntry>,
-    ) -> Result<Self> {
-        Ok(Self {
-            backend: FederationConsensusRuntimeBackend::InMemory(
-                InMemoryFederationConsensus::from_entries(federation_id, member_id, entries)?,
-            ),
-        })
-    }
-
-    /// Rebuild a runtime for the requested backend from persisted journal entries.
-    pub fn from_entries_with_backend(
-        backend: FederationConsensusBackendKind,
-        federation_id: FederationId,
-        member_id: MemberId,
-        entries: Vec<FederationJournalEntry>,
-    ) -> Result<Self> {
-        match backend {
-            FederationConsensusBackendKind::InMemory => {
-                Self::in_memory_from_entries(federation_id, member_id, entries)
-            }
-            FederationConsensusBackendKind::AlephBft => {
-                if entries.is_empty() {
-                    Self::with_backend(backend, federation_id, member_id)
-                } else {
-                    Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "cannot recover AlephBFT runtime from journal entries without finalized items"
-                            .to_string(),
-                    })
-                }
-            }
-        }
+        self.adapter.set_finality_mode(finality);
+        Ok(())
     }
 }
 
 impl FederationConsensusEngine for FederationConsensusRuntime {
     fn backend_kind(&self) -> FederationConsensusBackendKind {
-        Self::backend_kind(self)
+        FederationConsensusBackendKind::AlephBft
     }
 
     fn federation_id(&self) -> FederationId {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.federation_id(),
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.status().federation_id,
-        }
+        self.adapter.status().federation_id
     }
 
     fn member_id(&self) -> MemberId {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.member_id(),
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.status().local_member,
-        }
+        self.adapter.status().local_member
     }
 
     fn journal(&self) -> &InMemoryFederationJournal {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.journal(),
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.journal(),
-        }
+        self.adapter.journal()
     }
 
     fn state_digest(&self) -> FederationStateDigest {
@@ -2481,112 +2282,74 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
     }
 
     fn journal_mut(&mut self) -> &mut InMemoryFederationJournal {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.journal_mut(),
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => &mut adapter.journal,
-        }
+        &mut self.adapter.journal
     }
 
     fn submit_envelope(
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.submit_envelope(envelope),
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                Err(requires_external_finalization_error())
-            }
-        }
+        let _ = envelope;
+        Err(requires_external_finalization_error())
     }
 
     fn submit_operation(
         &mut self,
         request: FederationSubmitOperationRequest,
     ) -> Result<FederationSubmitOperationResponse> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.submit_operation(request),
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                Err(requires_external_finalization_error())
-            }
-        }
+        let _ = request;
+        Err(requires_external_finalization_error())
     }
 
     fn peer_status(&self) -> FederationPeerStatus {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.peer_status(),
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                adapter.peer_status(self.federation_id(), self.member_id())
-            }
-        }
+        self.adapter
+            .peer_status(self.federation_id(), self.member_id())
     }
 
     fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
-        let request = FederationJournalCatchUpRequest::new(self.journal().next_index())
-            .with_known_order_digest(self.journal().latest_order_digest());
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(_) => request,
-            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
-                request.with_aleph_bft_next_item_index(adapter.next_item_index())
-            }
-        }
+        FederationJournalCatchUpRequest::new(self.journal().next_index())
+            .with_known_order_digest(self.journal().latest_order_digest())
+            .with_aleph_bft_next_item_index(self.adapter.next_item_index())
     }
 
     fn catch_up(
         &self,
         request: &FederationJournalCatchUpRequest,
     ) -> FederationJournalCatchUpResponse {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.catch_up(request),
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                FederationJournalCatchUpResponse::from_journal(
-                    self.federation_id(),
-                    self.journal(),
-                    request,
-                    DEFAULT_CATCH_UP_LIMIT,
-                    MAX_CATCH_UP_LIMIT,
-                )
-            }
-        }
+        FederationJournalCatchUpResponse::from_journal(
+            self.federation_id(),
+            self.journal(),
+            request,
+            DEFAULT_CATCH_UP_LIMIT,
+            MAX_CATCH_UP_LIMIT,
+        )
     }
 
     fn catch_up_checked(
         &self,
         request: &FederationJournalCatchUpRequest,
     ) -> Result<FederationJournalCatchUpResponse> {
-        match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine.catch_up_checked(request),
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                if let Some(known_order_digest) = request.known_order_digest {
-                    if let Some(expected_digest) =
-                        self.journal().order_digest_before(request.next_index)
-                    {
-                        if expected_digest != known_order_digest {
-                            return Err(FederationError::CatchUpDigestMismatch {
-                                index: request.next_index,
-                                expected: expected_digest,
-                                found: known_order_digest,
-                            });
-                        }
-                    }
+        if let Some(known_order_digest) = request.known_order_digest {
+            if let Some(expected_digest) = self.journal().order_digest_before(request.next_index) {
+                if expected_digest != known_order_digest {
+                    return Err(FederationError::CatchUpDigestMismatch {
+                        index: request.next_index,
+                        expected: expected_digest,
+                        found: known_order_digest,
+                    });
                 }
-
-                Ok(self.catch_up(request))
             }
         }
+
+        Ok(self.catch_up(request))
     }
 
     fn apply_catch_up_response(
         &mut self,
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => {
-                engine.apply_catch_up_response(response)
-            }
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                Err(requires_external_finalization_error())
-            }
-        }
+        let _ = response;
+        Err(requires_external_finalization_error())
     }
 
     fn apply_catch_up_response_with_session_outcome_quorum(
@@ -2595,17 +2358,8 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         config: &FederationConfig,
         additional_outcomes: &[FederationSessionOutcome],
     ) -> Result<FederationQuorumVerifiedCatchUp> {
-        match &mut self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine
-                .apply_catch_up_response_with_session_outcome_quorum(
-                    response,
-                    config,
-                    additional_outcomes,
-                ),
-            FederationConsensusRuntimeBackend::AlephBft(_) => {
-                Err(requires_external_finalization_error())
-            }
-        }
+        let _ = (response, config, additional_outcomes);
+        Err(requires_external_finalization_error())
     }
 
     fn update_status(

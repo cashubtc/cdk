@@ -1091,11 +1091,10 @@ mod tests {
         PartialMultisignature, Recipient, SpawnHandle, UnitFinalizationHandler,
     };
     use cdk::federation::{
-        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusBackendKind,
-        FederationConsensusDefaultItem, FederationConsensusItem, FederationConsensusRuntime,
-        FederationId, FederationMintQuoteOperation, FederationOperation,
-        FederationOperationEnvelope, MemberConfigPrivate, MemberConfigPublic, MemberId,
-        ThresholdParams,
+        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusDefaultItem,
+        FederationConsensusItem, FederationConsensusRuntime, FederationId,
+        FederationMintQuoteOperation, FederationOperation, FederationOperationEnvelope,
+        MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
     };
     use cdk::mint_url::MintUrl;
     use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, SecretKey};
@@ -1375,12 +1374,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_pulls_from_consensus_runtime_queue() {
-        let runtime = FederationConsensusRuntime::with_backend(
-            FederationConsensusBackendKind::AlephBft,
-            federation_id(8),
-            member_id(1),
-        )
-        .expect("runtime");
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         {
@@ -1408,12 +1402,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_wakes_for_local_submission() {
-        let runtime = FederationConsensusRuntime::with_backend(
-            FederationConsensusBackendKind::AlephBft,
-            federation_id(8),
-            member_id(1),
-        )
-        .expect("runtime");
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         let mut provider =
@@ -1444,12 +1433,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_yields_empty_data_for_peer_activity() {
-        let runtime = FederationConsensusRuntime::with_backend(
-            FederationConsensusBackendKind::AlephBft,
-            federation_id(8),
-            member_id(1),
-        )
-        .expect("runtime");
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         let mut provider =
@@ -1476,12 +1460,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_clears_activity_after_pending_finalization_drains() {
-        let runtime = FederationConsensusRuntime::with_backend(
-            FederationConsensusBackendKind::AlephBft,
-            federation_id(8),
-            member_id(1),
-        )
-        .expect("runtime");
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         {
             let mut runtime = consensus.lock().await;
@@ -1678,12 +1657,7 @@ mod tests {
             .await
             .expect("append persisted backup");
         tx.commit().await.expect("commit persisted backup");
-        let runtime = FederationConsensusRuntime::with_backend(
-            FederationConsensusBackendKind::AlephBft,
-            federation_id(8),
-            member_id(1),
-        )
-        .expect("runtime");
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         let session_io = CdkAlephBftSessionIo::from_db(

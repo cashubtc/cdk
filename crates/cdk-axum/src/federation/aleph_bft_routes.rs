@@ -6,8 +6,7 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationConsensusBackendKind, FederationError, FederationRestMessageKind,
-    FederationSignedRequest,
+    FederationError, FederationRestMessageKind, FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -32,16 +31,6 @@ pub(super) async fn post_aleph_bft_activity(
     )
     .await?;
     let runtime_config = federation_runtime_config(&state)?;
-    if runtime_config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "AlephBFT activity is not accepted for {} consensus backend",
-                runtime_config.consensus_backend()
-            ),
-        )
-            .into_response());
-    }
     state
         .mark_aleph_bft_peer_activity(payload.payload.session_id, payload.payload.operation_id)
         .await
@@ -118,18 +107,6 @@ pub(super) async fn post_aleph_bft_network_message(
         .map_err(federation_error_response)?;
     let runtime_config = federation_runtime_config(&state)?;
     let federation_id = runtime_config.federation_id();
-    let consensus_backend = runtime_config.consensus_backend();
-    if consensus_backend != FederationConsensusBackendKind::AlephBft {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "AlephBFT network messages are not accepted for {} consensus backend",
-                consensus_backend
-            ),
-        )
-            .into_response());
-    }
-
     let inbound = state
         .federation_aleph_bft_network_inbound
         .read()

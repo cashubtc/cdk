@@ -1585,13 +1585,14 @@ mod tests {
     };
     #[cfg(feature = "federation")]
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationConfig, FederationConsensusBackendKind,
-        FederationConsensusEngine, FederationConsensusRuntime, FederationJournalEntry,
-        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
-        FederationOperation, FederationOperationEnvelope, FederationOperationId,
-        FederationPaymentObservationPolicy, InMemoryFederationConsensus, InMemoryFederationJournal,
-        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
+        FederationAlephBftFinalityMode, FederationAlephBftUnitPayload, FederationConfig,
+        FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
+        FederationJournalEntry, FederationKeysetRotationOperation,
+        FederationMeltQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+        FederationOperationId, FederationPaymentObservationPolicy, InMemoryFederationConsensus,
+        InMemoryFederationJournal, MemberConfigPrivate, MemberId, ThresholdParams,
+        TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk::mint::Mint;
@@ -2274,7 +2275,6 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_notifications: None,
             #[cfg(feature = "federation")]
-            federation_finalizer: None,
             #[cfg(feature = "federation")]
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
@@ -2288,7 +2288,7 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
-            federation_isolated_member_test: false,
+            federation_local_finality_test: false,
         }
     }
 
@@ -2712,11 +2712,11 @@ mod tests {
         db: Arc<cdk_sqlite::MintSqliteDatabase>,
         seed: &[u8],
     ) -> MintState {
-        create_federated_test_state_with_backend_db_seed_and_consensus(
+        create_federated_test_state_with_backend_db_seed_and_finality(
             payment_processor,
             db,
             seed,
-            FederationConsensusBackendKind::InMemory,
+            true,
         )
         .await
     }
@@ -2735,21 +2735,21 @@ mod tests {
         );
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
         let mnemonic = Mnemonic::generate(12).unwrap();
-        create_federated_test_state_with_backend_db_seed_and_consensus(
+        create_federated_test_state_with_backend_db_seed_and_finality(
             Arc::new(fake),
             db,
             &mnemonic.to_seed_normalized(""),
-            FederationConsensusBackendKind::AlephBft,
+            false,
         )
         .await
     }
 
     #[cfg(feature = "federation")]
-    async fn create_federated_test_state_with_backend_db_seed_and_consensus(
+    async fn create_federated_test_state_with_backend_db_seed_and_finality(
         payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
         db: Arc<cdk_sqlite::MintSqliteDatabase>,
         seed: &[u8],
-        consensus_backend: FederationConsensusBackendKind,
+        local_finality_test: bool,
     ) -> MintState {
         let runtime_config = test_federation_runtime_config();
         let runtime_config = cdk::mint::FederationRuntimeConfig::new(
@@ -2776,45 +2776,43 @@ mod tests {
             .unwrap();
         mint.start().await.unwrap();
 
+        let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+            runtime_config.federation_id(),
+            runtime_config.member_id(),
+            0,
+            runtime_config.public_config().members.keys().copied(),
+            runtime_config
+                .public_config()
+                .threshold_params
+                .consensus_threshold,
+            Vec::new(),
+        )
+        .expect("AlephBFT consensus runtime");
+        if local_finality_test {
+            consensus
+                .set_aleph_bft_finality_mode(
+                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
+                )
+                .expect("local test finality mode");
+        }
+
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
-            federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
-                match consensus_backend {
-                    FederationConsensusBackendKind::InMemory => {
-                        FederationConsensusRuntime::in_memory(
-                            runtime_config.federation_id(),
-                            runtime_config.member_id(),
-                        )
-                    }
-                    FederationConsensusBackendKind::AlephBft => {
-                        FederationConsensusRuntime::aleph_bft_from_finalized_items(
-                            runtime_config.federation_id(),
-                            runtime_config.member_id(),
-                            0,
-                            runtime_config.public_config().members.keys().copied(),
-                            runtime_config
-                                .public_config()
-                                .threshold_params
-                                .consensus_threshold,
-                            Vec::new(),
-                        )
-                        .expect("AlephBFT consensus runtime")
-                    }
-                },
-            ))),
+            federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
             federation_peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
             federation_dkg_auto_start_config: None,
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 cdk::federation::FederationRestSequenceTracker::new(),
             ))),
-            federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
-                crate::FederationSyncState::for_consensus_backend(consensus_backend),
-            ))),
+            federation_sync: Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+                crate::FederationSyncState::default()
+            } else {
+                crate::FederationSyncState::for_aleph_bft()
+            }))),
             federation_notifications: Some(Arc::new(
                 crate::FederationOperationNotifications::default(),
             )),
-            federation_finalizer: None,
             federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
                 crate::FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
             ))),
@@ -2827,7 +2825,7 @@ mod tests {
             ))),
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            federation_isolated_member_test: false,
+            federation_local_finality_test: local_finality_test,
         }
     }
 
@@ -2858,6 +2856,15 @@ mod tests {
             .expect("recreate federation runtime state from sqlite");
         state.federation_consensus = consensus;
         state.federation_sequences = sequences;
+        if let Some(consensus) = &state.federation_consensus {
+            consensus
+                .lock()
+                .await
+                .set_aleph_bft_finality_mode(
+                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
+                )
+                .expect("restarted local test finality");
+        }
         state
     }
 
@@ -2879,6 +2886,15 @@ mod tests {
             .expect("recreate federation runtime state from sqlite");
         state.federation_consensus = consensus;
         state.federation_sequences = sequences;
+        if let Some(consensus) = &state.federation_consensus {
+            consensus
+                .lock()
+                .await
+                .set_aleph_bft_finality_mode(
+                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
+                )
+                .expect("restarted local test finality");
+        }
         state
     }
 
@@ -3003,7 +3019,6 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_notifications: None,
             #[cfg(feature = "federation")]
-            federation_finalizer: None,
             #[cfg(feature = "federation")]
             federation_private_rest_admission: None,
             #[cfg(feature = "federation")]
@@ -3017,7 +3032,7 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
-            federation_isolated_member_test: false,
+            federation_local_finality_test: false,
         }
     }
 
@@ -3582,13 +3597,20 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn threshold_member_state(mint: Arc<Mint>) -> MintState {
-        let runtime_config = mint.federation_config().expect("federation config");
-        let consensus_backend = runtime_config.consensus_backend();
         let (federation_consensus, federation_sequences) =
             crate::create_federation_runtime_state(&mint)
                 .await
                 .expect("federation runtime state");
         let is_federated = federation_consensus.is_some();
+        if let Some(consensus) = &federation_consensus {
+            consensus
+                .lock()
+                .await
+                .set_aleph_bft_finality_mode(
+                    FederationAlephBftFinalityMode::NetworkFinalityAvailable,
+                )
+                .expect("local threshold-member test finality");
+        }
 
         MintState {
             mint,
@@ -3600,12 +3622,11 @@ mod tests {
             federation_sequences,
             federation_sync: is_federated.then(|| {
                 Arc::new(tokio::sync::Mutex::new(
-                    crate::FederationSyncState::for_consensus_backend(consensus_backend),
+                    crate::FederationSyncState::default(),
                 ))
             }),
             federation_notifications: is_federated
                 .then(|| Arc::new(crate::FederationOperationNotifications::default())),
-            federation_finalizer: None,
             federation_private_rest_admission: is_federated.then(|| {
                 Arc::new(tokio::sync::Semaphore::new(
                     crate::FederationPeerSyncConfig::default()
@@ -3622,7 +3643,7 @@ mod tests {
                 .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
             federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            federation_isolated_member_test: false,
+            federation_local_finality_test: is_federated,
         }
     }
 
@@ -4047,17 +4068,52 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
+        let runtime_config = mint.federation_config().expect("federation config");
+        let retained_items = mint
+            .localstore()
+            .get_federation_aleph_bft_finalized_items()
+            .await
+            .expect("load finalized AlephBFT history");
+        let mut adapter =
+            FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+                runtime_config.federation_id(),
+                runtime_config.member_id(),
+                0,
+                runtime_config.public_config().members.keys().copied(),
+                retained_items.clone(),
+            )
+            .expect("recover finalized AlephBFT history");
+        let unit = FederationAlephBftUnitPayload::new(
+            runtime_config.federation_id(),
+            runtime_config.member_id(),
+            0,
+            retained_items.len() as u64,
+            vec![FederationConsensusItem::operation(entry.envelope.clone())],
+        )
+        .expect("test AlephBFT finalized unit");
+        adapter
+            .finalize_unit(unit)
+            .expect("finalize test AlephBFT unit");
+        let finalized_entry = adapter
+            .journal()
+            .entries()
+            .last()
+            .expect("finalized journal entry");
+        let new_items = &adapter.finalized_items()[retained_items.len()..];
         let mut tx = mint
             .localstore()
             .begin_transaction()
             .await
             .expect("begin tx");
-        tx.add_federation_journal_entry(entry)
+        tx.add_federation_aleph_bft_finalized_items(new_items)
+            .await
+            .expect("persist finalized AlephBFT item");
+        tx.add_federation_journal_entry(finalized_entry)
             .await
             .expect("persist journal entry");
         tx.commit().await.expect("commit journal entry");
 
-        mint.apply_federation_journal_entries(std::slice::from_ref(entry))
+        mint.apply_federation_journal_entries(std::slice::from_ref(finalized_entry))
             .await
             .expect("apply journal entry");
     }
@@ -4833,14 +4889,9 @@ mod tests {
 
         assert!(result.is_ok(), "initial mint quote check should succeed");
 
-        let (finalizer, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
-        let mut duplicate_state = state.clone();
-        duplicate_state.federation_finalizer = Some(finalizer);
-
         let duplicate = post_batch_check_mint_quote(
             AuthHeader::None,
-            State(duplicate_state),
+            State(state.clone()),
             Path("bolt11".to_string()),
             Json(BatchCheckMintQuoteRequest {
                 quotes: vec![quote_id],
@@ -5172,14 +5223,9 @@ mod tests {
 
         assert!(result.is_ok(), "initial melt quote check should succeed");
 
-        let (finalizer, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
-        let mut duplicate_state = state.clone();
-        duplicate_state.federation_finalizer = Some(finalizer);
-
         let duplicate = get_check_melt_custom_quote(
             AuthHeader::None,
-            State(duplicate_state),
+            State(state.clone()),
             Path(("bolt11".to_string(), quote_id)),
         )
         .await;
@@ -6733,9 +6779,27 @@ mod tests {
         );
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::Mint]
+            vec![
+                cdk::federation::FederationOperationKind::Mint,
+                cdk::federation::FederationOperationKind::Mint,
+            ]
         );
-        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].status,
+            cdk::federation::FederationOperationStatus::Applied
+        );
+        assert_eq!(
+            entries[1].status,
+            cdk::federation::FederationOperationStatus::Rejected
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 2);
 
         let unsigned_output = second_outputs
             .first()
@@ -7542,7 +7606,7 @@ mod tests {
             request_count - 1,
             "losing conflicting swaps should be terminal rejected or failed outcomes"
         );
-        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(state.federation_response_cache_entry_count(), request_count);
     }
 
     #[cfg(feature = "federation")]
@@ -7902,11 +7966,11 @@ mod tests {
         let (backend, make_payment_calls) = CountingFakeWallet::new();
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
         let mnemonic = Mnemonic::generate(12).unwrap();
-        let mut state = create_federated_test_state_with_backend_db_seed_and_consensus(
+        let mut state = create_federated_test_state_with_backend_db_seed_and_finality(
             backend,
             db,
             &mnemonic.to_seed_normalized(""),
-            FederationConsensusBackendKind::AlephBft,
+            false,
         )
         .await;
         state.mark_federation_healthy().await;

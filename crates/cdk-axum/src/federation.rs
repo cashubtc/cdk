@@ -98,14 +98,11 @@ use self::sync_config::{
     federation_peer_sync_disabled_value, federation_peer_sync_initial_delay,
     federation_peer_sync_interval, federation_reconnect_backoff_delay,
 };
+pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;
 #[cfg(test)]
 use self::sync_loop::{
     persist_local_session_outcome_evidence_chunks, run_federation_peer_sync_round,
     run_federation_peer_sync_round_with_backoff,
-    submit_operation_to_primary_if_needed_with_transport,
-};
-pub(crate) use self::sync_loop::{
-    spawn_federation_peer_sync_loop_with_config, submit_operation_to_primary_if_needed,
 };
 #[cfg(test)]
 use cdk::federation::{
@@ -322,18 +319,6 @@ async fn post_operation(
     let admission = verify_operation_admission(&state, &payload).await?;
     let sequence = Some(admission.sender_sequence());
     let envelope = admission.operation_envelope().clone();
-    if let Some(response) =
-        submit_operation_to_primary_if_needed(&state, envelope.clone(), sequence)
-            .await
-            .map_err(cdk_error_response)?
-    {
-        tracing::debug!(
-            "Forwarded federation operation {} to primary member",
-            response.operation_id
-        );
-        return Ok(Json(response));
-    }
-
     let response = state
         .submit_federation_envelope_with_sequence(envelope, sequence)
         .await

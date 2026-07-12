@@ -22,20 +22,19 @@ use cdk::federation::{
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
-    FederationConsensusBackendKind, FederationConsensusEngine, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMemberStatusKind,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
-    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
-    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
+    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
+    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservationPolicy,
+    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
+    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationRestoreOperation,
+    FederationSignedRequest, InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -1922,22 +1921,32 @@ async fn federation_route_state_for_private_with_db(
     db: Arc<cdk_sqlite::MintSqliteDatabase>,
     seed: &[u8],
 ) -> MintState {
-    federation_route_state_for_private_with_db_and_backend(
+    let fake: DynMintPayment = Arc::new(FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 0.0,
+        },
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    ));
+    federation_route_state_for_private_with_db_payment_and_finality(
         public_config,
         local_private,
         db,
         seed,
-        FederationConsensusBackendKind::InMemory,
+        fake,
+        true,
     )
     .await
 }
 
-async fn federation_route_state_for_private_with_db_and_backend(
+async fn federation_route_state_for_private_with_db_and_aleph_bft(
     public_config: FederationConfig,
     local_private: MemberConfigPrivate,
     db: Arc<cdk_sqlite::MintSqliteDatabase>,
     seed: &[u8],
-    consensus_backend: FederationConsensusBackendKind,
 ) -> MintState {
     let fake: DynMintPayment = Arc::new(FakeWallet::new(
         FeeReserve {
@@ -1949,24 +1958,42 @@ async fn federation_route_state_for_private_with_db_and_backend(
         0,
         CurrencyUnit::Sat,
     ));
-    federation_route_state_for_private_with_db_backend_and_payment_processor(
+    federation_route_state_for_private_with_db_payment_and_finality(
         public_config,
         local_private,
         db,
         seed,
-        consensus_backend,
         fake,
+        false,
     )
     .await
 }
 
-async fn federation_route_state_for_private_with_db_backend_and_payment_processor(
+async fn federation_route_state_for_private_with_db_and_aleph_bft_payment_processor(
     public_config: FederationConfig,
     local_private: MemberConfigPrivate,
     db: Arc<cdk_sqlite::MintSqliteDatabase>,
     seed: &[u8],
-    consensus_backend: FederationConsensusBackendKind,
     payment_processor: DynMintPayment,
+) -> MintState {
+    federation_route_state_for_private_with_db_payment_and_finality(
+        public_config,
+        local_private,
+        db,
+        seed,
+        payment_processor,
+        false,
+    )
+    .await
+}
+
+async fn federation_route_state_for_private_with_db_payment_and_finality(
+    public_config: FederationConfig,
+    local_private: MemberConfigPrivate,
+    db: Arc<cdk_sqlite::MintSqliteDatabase>,
+    seed: &[u8],
+    payment_processor: DynMintPayment,
+    local_finality_test: bool,
 ) -> MintState {
     let runtime_config =
         cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private.clone())
@@ -1984,28 +2011,25 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
         .await
         .expect("payment processor");
     let mint = builder.build_with_seed(db, seed).await.expect("mint");
+    let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        0,
+        public_config.members.keys().copied(),
+        public_config.threshold_params.consensus_threshold,
+        Vec::new(),
+    )
+    .expect("AlephBFT consensus runtime");
+    if local_finality_test {
+        consensus
+            .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
+            .expect("local test finality mode");
+    }
+
     MintState {
         mint: Arc::new(mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
-        federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(match consensus_backend {
-            FederationConsensusBackendKind::InMemory => FederationConsensusRuntime::with_backend(
-                consensus_backend,
-                runtime_config.federation_id(),
-                runtime_config.member_id(),
-            )
-            .expect("consensus runtime"),
-            FederationConsensusBackendKind::AlephBft => {
-                FederationConsensusRuntime::aleph_bft_from_finalized_items(
-                    runtime_config.federation_id(),
-                    runtime_config.member_id(),
-                    0,
-                    public_config.members.keys().copied(),
-                    public_config.threshold_params.consensus_threshold,
-                    Vec::new(),
-                )
-                .expect("AlephBFT consensus runtime")
-            }
-        }))),
+        federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
         federation_peer_sync_config: Some(FederationPeerSyncConfig::default()),
         federation_dkg_auto_start_config: Some(Arc::new(FederationDkgAutoStartConfig {
             ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
@@ -2022,13 +2046,14 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
         federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
             FederationRestSequenceTracker::new(),
         ))),
-        federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
-            crate::FederationSyncState::for_consensus_backend(consensus_backend),
-        ))),
+        federation_sync: Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+            crate::FederationSyncState::default()
+        } else {
+            crate::FederationSyncState::for_aleph_bft()
+        }))),
         federation_notifications: Some(
             Arc::new(crate::FederationOperationNotifications::default()),
         ),
-        federation_finalizer: None,
         federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
             FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
         ))),
@@ -2045,7 +2070,7 @@ async fn federation_route_state_for_private_with_db_backend_and_payment_processo
         ))),
         federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
         federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-        federation_isolated_member_test: false,
+        federation_local_finality_test: local_finality_test,
     }
 }
 
@@ -2149,6 +2174,60 @@ fn signed_catch_up_response(
     response
         .with_signed_session_outcome(private_config)
         .expect("signed catch-up response")
+}
+
+fn finalized_aleph_bft_history<I>(
+    public_config: &FederationConfig,
+    submitting_member: MemberId,
+    envelopes: I,
+) -> FederationAlephBftConsensusAdapter
+where
+    I: IntoIterator<Item = FederationOperationEnvelope>,
+{
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        public_config.federation_id,
+        submitting_member,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("test AlephBFT adapter");
+    for (unit_index, envelope) in (0_u64..).zip(envelopes) {
+        let unit = FederationAlephBftUnitPayload::new(
+            public_config.federation_id,
+            submitting_member,
+            0,
+            unit_index,
+            vec![FederationConsensusItem::operation(envelope)],
+        )
+        .expect("test AlephBFT finalized unit");
+        adapter
+            .finalize_unit(unit)
+            .expect("finalize test AlephBFT history");
+    }
+    adapter
+}
+
+fn aleph_bft_catch_up_response(
+    public_config: &FederationConfig,
+    adapter: &FederationAlephBftConsensusAdapter,
+    request: &FederationJournalCatchUpRequest,
+) -> FederationJournalCatchUpResponse {
+    let finalized_from = usize::try_from(request.aleph_bft_next_item_index).unwrap_or_default();
+    FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        adapter.journal(),
+        request,
+        50,
+        100,
+    )
+    .with_aleph_bft_finalized_items(
+        adapter
+            .finalized_items()
+            .get(finalized_from..)
+            .unwrap_or_default()
+            .to_vec(),
+        true,
+    )
 }
 
 fn dkg_reveal(
@@ -2486,13 +2565,19 @@ async fn consensus_operation_count(state: &MintState) -> u64 {
 fn reset_federation_runtime_journal(state: &mut MintState) {
     let runtime_config = state.mint.federation_config().expect("federation config");
     state.federation_consensus = Some(Arc::new(tokio::sync::Mutex::new(
-        FederationConsensusRuntime::with_backend(
-            FederationConsensusBackendKind::AlephBft,
-            runtime_config.federation_id(),
-            runtime_config.member_id(),
-        )
-        .expect("empty federation runtime"),
+        FederationConsensusRuntime::new(runtime_config.federation_id(), runtime_config.member_id()),
     )));
+}
+
+async fn activate_local_test_finality(state: &MintState) {
+    state
+        .federation_consensus
+        .as_ref()
+        .expect("federation consensus")
+        .lock()
+        .await
+        .set_aleph_bft_finality_mode(FederationAlephBftFinalityMode::NetworkFinalityAvailable)
+        .expect("activate local test finality");
 }
 
 async fn peer_status_with_materialized_digest(
@@ -2520,6 +2605,32 @@ async fn catch_up_response_with_materialized_digest(
     response
 }
 
+async fn aleph_bft_peer_status_with_materialized_digest(
+    state: &MintState,
+    public_config: &FederationConfig,
+    member_id: MemberId,
+    consensus: &FederationAlephBftConsensusAdapter,
+) -> FederationPeerStatus {
+    let mut status = consensus.peer_status(public_config.federation_id, member_id);
+    status.state_digest = materialized_state_digest(state, consensus.journal().entries())
+        .await
+        .expect("materialized AlephBFT peer status digest");
+    status
+}
+
+async fn aleph_bft_catch_up_response_with_materialized_digest(
+    state: &MintState,
+    public_config: &FederationConfig,
+    consensus: &FederationAlephBftConsensusAdapter,
+    request: &FederationJournalCatchUpRequest,
+) -> FederationJournalCatchUpResponse {
+    let mut response = aleph_bft_catch_up_response(public_config, consensus, request);
+    response.state_digest = materialized_state_digest(state, consensus.journal().entries())
+        .await
+        .expect("materialized AlephBFT catch-up state digest");
+    response
+}
+
 fn accept_test_journal_entry(
     consensus: &mut InMemoryFederationConsensus,
     envelope: FederationOperationEnvelope,
@@ -2533,16 +2644,74 @@ fn accept_test_journal_entry(
 }
 
 async fn persist_test_journal_entry(state: &MintState, entry: &FederationJournalEntry) {
+    let runtime_config = state.mint.federation_config().expect("federation config");
+    let db = state.mint.localstore();
+    let retained_items = db
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("load test AlephBFT finalized items");
+    let mut adapter = FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        0,
+        runtime_config.public_config().members.keys().copied(),
+        retained_items.clone(),
+    )
+    .expect("recover test AlephBFT history");
+    let unit = FederationAlephBftUnitPayload::new(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        0,
+        retained_items.len() as u64,
+        vec![FederationConsensusItem::operation(entry.envelope.clone())],
+    )
+    .expect("test AlephBFT finalized unit");
+    adapter
+        .finalize_unit(unit)
+        .expect("finalize test journal entry");
+    let finalized_entry = adapter
+        .journal()
+        .entries()
+        .last()
+        .expect("finalized test journal entry");
+    assert_eq!(finalized_entry.operation_id, entry.operation_id);
+    let new_items = &adapter.finalized_items()[retained_items.len()..];
     let mut tx = state
         .mint
         .localstore()
         .begin_transaction()
         .await
         .expect("begin journal transaction");
-    tx.add_federation_journal_entry(entry)
+    tx.add_federation_aleph_bft_finalized_items(new_items)
+        .await
+        .expect("persist test AlephBFT finalized item");
+    tx.add_federation_journal_entry(finalized_entry)
         .await
         .expect("persist journal entry");
     tx.commit().await.expect("commit journal entry");
+}
+
+async fn persist_finalized_aleph_bft_history(
+    state: &MintState,
+    adapter: &FederationAlephBftConsensusAdapter,
+) {
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin finalized AlephBFT history transaction");
+    tx.add_federation_aleph_bft_finalized_items(adapter.finalized_items())
+        .await
+        .expect("persist finalized AlephBFT history");
+    for entry in adapter.journal().entries() {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist finalized AlephBFT journal entry");
+    }
+    tx.commit()
+        .await
+        .expect("commit finalized AlephBFT history");
 }
 
 async fn add_blinded_message_conflict(
@@ -3551,191 +3720,6 @@ async fn rest_peer_client_rejects_submit_response_with_mismatched_outcome_operat
 }
 
 #[tokio::test]
-async fn non_primary_submit_forwards_to_primary_and_catches_up() {
-    let (public_config, primary_private, local_private, witness_private) = transport_config_three();
-    let federation_id = public_config.federation_id;
-    let state =
-        federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
-    let primary_member = public_config.member(member_id(1)).expect("primary member");
-    let blinded_secret = PublicKey::from(BlsG1PublicKey::hash_to_curve(
-        b"non primary forwarded restore",
-    ));
-    let envelope =
-        restore_envelope_with_output(federation_id, public_config.keysets[0].id, blinded_secret);
-    let operation_id = envelope.operation_id().expect("operation id");
-
-    let mut primary_consensus =
-        InMemoryFederationConsensus::new(federation_id, primary_member.member_id);
-    let submit_response = primary_consensus
-        .submit_operation(FederationSubmitOperationRequest::new(envelope.clone()))
-        .expect("primary submit response");
-    let local_catch_up_request = state
-        .federation_consensus
-        .as_ref()
-        .expect("local consensus")
-        .lock()
-        .await
-        .catch_up_request();
-    let mut catch_up_response = primary_consensus
-        .catch_up_checked(&local_catch_up_request)
-        .expect("primary catch-up response");
-    let state_digest =
-        FederationMaterializedStateSnapshot::from_rows([FederationMaterializedStateRow::new(
-            "blind_signatures",
-            blinded_secret.to_hex(),
-        )
-        .with_field("missing", "true")])
-        .digest()
-        .expect("state digest");
-    catch_up_response.state_digest = state_digest;
-    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
-    let catch_up_response = signed_catch_up_response(catch_up_response, &primary_private);
-    let primary_status = FederationPeerStatus::new_with_state_digest(
-        federation_id,
-        primary_member.member_id,
-        primary_consensus.peer_status().operation_count,
-        primary_consensus.peer_status().latest_index,
-        primary_consensus.peer_status().latest_order_digest,
-        state_digest,
-    );
-    let transport = MockFederationTransport::default()
-        .with_submit_response(submit_response.clone())
-        .with_status_response(primary_status)
-        .with_catch_up_response(catch_up_response)
-        .with_catch_up_response(witness_response);
-
-    let response = submit_operation_to_primary_if_needed_with_transport(
-        &state,
-        envelope,
-        None,
-        transport.clone(),
-    )
-    .await
-    .expect("forward to primary")
-    .expect("non-primary should forward");
-
-    assert_eq!(response.operation_id, operation_id);
-    assert_eq!(response.operation_id, submit_response.operation_id);
-    let submitted = transport.submitted_operations();
-    assert_eq!(submitted.len(), 1);
-    submitted[0]
-        .verify(&public_config, primary_member.member_id)
-        .expect("signed primary submit");
-    assert_eq!(submitted[0].sender, local_private.member_id);
-    assert_eq!(submitted[0].receiver, primary_member.member_id);
-    let persisted = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("persisted journal");
-    assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].operation_id, operation_id);
-}
-
-#[tokio::test]
-async fn aleph_bft_non_primary_submit_does_not_forward_to_primary() {
-    let (public_config, _, local_private) = transport_config();
-    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
-    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
-        public_config.clone(),
-        local_private,
-        db,
-        &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
-    )
-    .await;
-    let envelope = restore_envelope_for_config(
-        &public_config,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
-    let transport = MockFederationTransport::default();
-
-    let response = submit_operation_to_primary_if_needed_with_transport(
-        &state,
-        envelope,
-        None,
-        transport.clone(),
-    )
-    .await
-    .expect("AlephBFT submit forwarding check");
-
-    assert!(response.is_none());
-    assert!(transport.submitted_operations().is_empty());
-}
-
-#[tokio::test(start_paused = true)]
-async fn non_primary_submit_uses_configured_operation_submission_timeout() {
-    let (public_config, _, local_private) = transport_config();
-    let mut state = federation_route_state_for_private(public_config.clone(), local_private).await;
-    let timeout = Duration::from_secs(2);
-    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
-        operation_submission_timeout: timeout,
-        ..FederationPeerSyncConfig::default()
-    });
-    let envelope = restore_envelope_for_config(
-        &public_config,
-        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    );
-    let task = tokio::spawn(async move {
-        submit_operation_to_primary_if_needed_with_transport(
-            &state,
-            envelope,
-            None,
-            DelayTransport {
-                delay: timeout + Duration::from_secs(60),
-            },
-        )
-        .await
-    });
-
-    tokio::task::yield_now().await;
-    tokio::time::advance(timeout).await;
-    let err = task
-        .await
-        .expect("forwarding task")
-        .expect_err("forwarding should use configured timeout");
-
-    assert!(
-        err.to_string().contains("operation submission timed out"),
-        "unexpected forwarding timeout error: {err}"
-    );
-}
-
-#[tokio::test]
-async fn non_primary_submit_rejects_invalid_quote_admission_before_forwarding() {
-    let (public_config, _, local_private) = transport_config();
-    let state =
-        federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
-    let quote_id = QuoteId::new();
-    let envelope = invalid_mint_quote_transcript_envelope(&state, &quote_id);
-    let transport = MockFederationTransport::default();
-
-    let err = submit_operation_to_primary_if_needed_with_transport(
-        &state,
-        envelope,
-        None,
-        transport.clone(),
-    )
-    .await
-    .expect_err("invalid quote transcript should fail before forwarding");
-
-    assert!(matches!(err, cdk::Error::UnknownQuote));
-    assert!(transport.submitted_operations().is_empty());
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("journal entries");
-    assert!(
-        entries.is_empty(),
-        "invalid forwarded admission must not append locally"
-    );
-}
-
-#[tokio::test]
 async fn admission_validation_uses_effective_config_after_keyset_rotation() {
     let threshold_params = ThresholdParams::new(2, 2, 2).expect("threshold params");
     let inactive_rotation = TrustedDealerKeysetSpec::new(
@@ -3861,7 +3845,6 @@ async fn rest_peer_client_rejects_oversized_operation_before_broadcast() {
 async fn rest_peer_client_catches_up_local_consensus_from_member() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
-    let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let witness_member = public_config.member(member_id(3)).expect("witness member");
     let first = restore_envelope_for_config(
@@ -3872,21 +3855,18 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
     state
         .submit_federation_envelope(first.clone())
         .await
         .expect("local first operation");
-    peer_consensus
-        .submit_envelope(first)
-        .expect("peer first operation");
-    peer_consensus
-        .submit_envelope(second)
-        .expect("peer second operation");
+    let peer_consensus =
+        finalized_aleph_bft_history(&public_config, peer_member.member_id, [first, second]);
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("peer catch-up response");
+    let catch_up_response = aleph_bft_catch_up_response(
+        &public_config,
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    );
     let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
@@ -3914,7 +3894,9 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
             .await
             .peer_status()
             .latest_order_digest,
-        peer_consensus.peer_status().latest_order_digest
+        peer_consensus
+            .peer_status(public_config.federation_id, peer_member.member_id)
+            .latest_order_digest
     );
     let persisted = state
         .mint
@@ -3957,9 +3939,8 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
 
 #[tokio::test]
 async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
-    let (state, public_config, local_private, peer_private) =
-        federation_route_state_with_local_private().await;
-    let federation_id = public_config.federation_id;
+    let (state, public_config, local_private, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let first = restore_envelope_for_config(
         &public_config,
@@ -3969,28 +3950,38 @@ async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
     state
         .submit_federation_envelope(first.clone())
         .await
         .expect("local first operation");
-    peer_consensus
-        .submit_envelope(first)
-        .expect("peer first operation");
-    peer_consensus
-        .submit_envelope(second.clone())
-        .expect("peer second operation");
+    let peer_consensus = finalized_aleph_bft_history(
+        &public_config,
+        peer_member.member_id,
+        [first, second.clone()],
+    );
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("peer catch-up response");
+    let catch_up_response = aleph_bft_catch_up_response(
+        &public_config,
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    );
 
+    let peer_second_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_member.member_id,
+        0,
+        1,
+        vec![FederationConsensusItem::operation(second)],
+    )
+    .expect("peer second finalized unit");
     state
-        .submit_federation_envelope(second)
+        .apply_federation_aleph_bft_finalized_unit(peer_second_unit)
         .await
-        .expect("background sync applied second operation first");
+        .expect("background sync applied exact peer unit first");
+    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
-        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
+        .with_catch_up_response(witness_response);
     let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
         .expect("client");
 
@@ -4010,9 +4001,17 @@ async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
         .get_federation_session_outcomes()
         .await
         .expect("persisted session outcomes");
-    assert_eq!(persisted_outcomes.len(), 1);
-    assert_eq!(persisted_outcomes[0].from_index, 1);
-    assert_eq!(persisted_outcomes[0].signer, peer_member.member_id);
+    assert_eq!(persisted_outcomes.len(), 2);
+    assert!(persisted_outcomes
+        .iter()
+        .all(|outcome| outcome.from_index == 1));
+    assert_eq!(
+        persisted_outcomes
+            .iter()
+            .map(|outcome| outcome.signer)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([peer_private.member_id, witness_private.member_id])
+    );
     assert_eq!(transport.catch_up_requests()[0].payload.next_index, 2);
 }
 
@@ -4170,7 +4169,7 @@ async fn lagging_member_refuses_public_restore_and_checkstate_reads_until_health
 }
 
 #[tokio::test]
-async fn divergent_non_primary_refuses_public_submit_before_forwarding() {
+async fn divergent_member_refuses_public_submit() {
     let (public_config, _, secondary_private) = transport_config();
     let state = federation_route_state_for_private(public_config.clone(), secondary_private).await;
     let primary_member = public_config.member(member_id(1)).expect("primary member");
@@ -4190,7 +4189,7 @@ async fn divergent_non_primary_refuses_public_submit_before_forwarding() {
     assert!(
         err.to_string()
             .contains("materialized state digest convergence"),
-        "expected materialized-state readiness error before primary forwarding, got: {err}"
+        "expected materialized-state readiness error before submission, got: {err}"
     );
 }
 
@@ -4198,22 +4197,29 @@ async fn divergent_non_primary_refuses_public_submit_before_forwarding() {
 async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
-    let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope_for_state(
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(peer_entry)
-        .expect("peer accepted operation");
+    let peer_consensus =
+        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let catch_up_response =
-        catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
-            .await;
-    let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
+    let catch_up_response = aleph_bft_catch_up_response_with_materialized_digest(
+        &state,
+        &public_config,
+        &peer_consensus,
+        &catch_up_request,
+    )
+    .await;
+    let peer_status = aleph_bft_peer_status_with_materialized_digest(
+        &state,
+        &public_config,
+        peer_member.member_id,
+        &peer_consensus,
+    )
+    .await;
     let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(peer_status)
@@ -4248,22 +4254,29 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
 async fn peer_sync_round_catches_up_from_configured_peer() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
-    let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope_for_state(
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(peer_entry)
-        .expect("peer accepted operation");
+    let peer_consensus =
+        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let catch_up_response =
-        catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
-            .await;
-    let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
+    let catch_up_response = aleph_bft_catch_up_response_with_materialized_digest(
+        &state,
+        &public_config,
+        &peer_consensus,
+        &catch_up_request,
+    )
+    .await;
+    let peer_status = aleph_bft_peer_status_with_materialized_digest(
+        &state,
+        &public_config,
+        peer_member.member_id,
+        &peer_consensus,
+    )
+    .await;
     let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(peer_status)
@@ -4896,7 +4909,6 @@ async fn peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer() {
 async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
     let (state, public_config, local_private, _) =
         federation_route_state_with_local_private().await;
-    let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope_for_config(
         &public_config,
@@ -4906,16 +4918,15 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(peer_entry)
-        .expect("peer accepted operation");
+    let peer_consensus =
+        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
     state
         .submit_federation_envelope(local_entry)
         .await
         .expect("local accepted operation");
-    let transport =
-        MockFederationTransport::default().with_status_response(peer_consensus.peer_status());
+    let transport = MockFederationTransport::default().with_status_response(
+        peer_consensus.peer_status(public_config.federation_id, peer_member.member_id),
+    );
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
 
@@ -4933,12 +4944,11 @@ async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
@@ -4995,25 +5005,23 @@ async fn rest_peer_client_uses_status_as_cheap_order_status() {
 async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
-    let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(peer_entry)
-        .expect("peer accepted operation");
+    let peer_consensus =
+        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let mut catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
-        .expect("peer catch-up response");
+    let mut catch_up_response =
+        aleph_bft_catch_up_response(&public_config, &peer_consensus, &catch_up_request);
     catch_up_response.state_digest = cdk::federation::FederationStateDigest::from_bytes([9; 32]);
     let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
-        .with_status_response(peer_consensus.peer_status())
+        .with_status_response(
+            peer_consensus.peer_status(public_config.federation_id, peer_member.member_id),
+        )
         .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
         .with_catch_up_response(witness_response);
     let digest_recheck_delay = Duration::from_secs(2);
@@ -6894,6 +6902,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
             .expect("restart federation runtime from durable catch-up state");
     state.federation_consensus = replayed_consensus;
     state.federation_sequences = replayed_sequences;
+    activate_local_test_finality(&state).await;
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
 
     let persisted = state
@@ -7105,6 +7114,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     assert_eq!(local_digest, peer_digest);
 
     let conflicting_output = swap_output(&state, "offline-catch-up-conflicting-mint");
+    let conflicting_blinded_secret = conflicting_output.blinded_secret;
     let conflicting_mint = config
         .mint_operation(MintInput::Single(MintRequest {
             quote: mint_quote_id,
@@ -7112,13 +7122,29 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
             signature: None,
         }))
         .expect("conflicting mint envelope");
+    let conflicting_operation_id = conflicting_mint
+        .operation_id()
+        .expect("conflicting mint operation id");
     let conflict = state.submit_federation_envelope(conflicting_mint).await;
-    assert!(matches!(
-        conflict,
-        Err(cdk::Error::Federation(
-            FederationError::ConflictingOperation { .. }
-        ))
-    ));
+    assert!(conflict.is_err());
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after conflicting mint");
+    assert_eq!(entries.len(), 8);
+    assert_eq!(entries[7].operation_id, conflicting_operation_id);
+    assert_eq!(entries[7].status, FederationOperationStatus::Rejected);
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[conflicting_blinded_secret])
+            .await
+            .expect("conflicting mint signature lookup"),
+        vec![None]
+    );
 }
 
 #[tokio::test]
@@ -7283,43 +7309,21 @@ async fn federation_runtime_startup_skips_terminal_rejected_entries() {
         panic!("bolt11 mint quote response");
     };
     response.request.push_str("-conflict");
-    let mut journal = InMemoryFederationJournal::new();
-    let accepted_entry = match journal
-        .append_finalized_with_consensus_evidence(
-            envelope,
-            FederationJournalConsensusEvidence::new(0, 0, 0, member_id(1), 0),
-        )
-        .expect("append accepted operation")
-    {
-        FederationJournalAppendOutcome::Appended(entry) => entry,
-        FederationJournalAppendOutcome::Duplicate(_) => panic!("new operation must append"),
-    };
-    let rejected_entry = match journal
-        .append_finalized_with_consensus_evidence(
-            conflict,
-            FederationJournalConsensusEvidence::new(0, 1, 1, member_id(1), 1),
-        )
-        .expect("append rejected conflict")
-    {
-        FederationJournalAppendOutcome::Appended(entry) => entry,
-        FederationJournalAppendOutcome::Duplicate(_) => panic!("new conflict must append"),
-    };
+    let adapter = finalized_aleph_bft_history(
+        state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .public_config(),
+        member_id(1),
+        [envelope, conflict],
+    );
+    let accepted_entry = adapter.journal().entries()[0].clone();
+    let rejected_entry = adapter.journal().entries()[1].clone();
     assert_eq!(accepted_entry.status, FederationOperationStatus::Accepted);
     assert_eq!(rejected_entry.status, FederationOperationStatus::Rejected);
 
-    let mut tx = state
-        .mint
-        .localstore()
-        .begin_transaction()
-        .await
-        .expect("begin rejected-entry transaction");
-    tx.add_federation_journal_entry(&accepted_entry)
-        .await
-        .expect("persist accepted entry");
-    tx.add_federation_journal_entry(&rejected_entry)
-        .await
-        .expect("persist rejected conflict");
-    tx.commit().await.expect("commit rejected entry");
+    persist_finalized_aleph_bft_history(&state, &adapter).await;
 
     let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
@@ -7348,12 +7352,11 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -7415,10 +7418,6 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
     assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
 
     let mut consensus = consensus.lock().await;
-    assert_eq!(
-        consensus.backend_kind(),
-        FederationConsensusBackendKind::AlephBft
-    );
     assert_eq!(consensus.peer_status().operation_count, 1);
     assert_eq!(
         consensus.journal().entries()[0].operation_id,
@@ -7442,12 +7441,11 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -7580,12 +7578,11 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -7694,12 +7691,11 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         Arc::clone(&db),
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let stale_quote_id = QuoteId::new();
@@ -7854,12 +7850,11 @@ async fn aleph_bft_catch_up_advances_recovered_active_session() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         Arc::clone(&db),
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
 
@@ -7967,12 +7962,11 @@ async fn aleph_bft_catch_up_checkpoints_rejected_trailing_entry() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let config = state
@@ -8080,12 +8074,11 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let peer_member = public_config
@@ -8200,12 +8193,11 @@ async fn aleph_bft_catch_up_rejects_journal_entries_without_finalized_item_evide
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -8287,12 +8279,11 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let first_quote_id = QuoteId::new();
@@ -8390,12 +8381,11 @@ async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation()
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let first_quote_id = QuoteId::new();
@@ -8494,12 +8484,11 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let finalized_envelope = mint_quote_envelope(&state, &QuoteId::new());
@@ -8557,12 +8546,11 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -8639,12 +8627,11 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -8745,12 +8732,11 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let config = state
@@ -8875,12 +8861,11 @@ async fn federation_aleph_bft_finalized_unit_checkpoints_rejected_trailing_entry
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let config = state
@@ -8966,20 +8951,18 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let first_state = federation_route_state_for_private_with_db_and_backend(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let second_state = federation_route_state_for_private_with_db_and_backend(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private.clone(),
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let config = first_state
@@ -9344,12 +9327,11 @@ async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() 
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -9502,31 +9484,15 @@ fn assert_pending_finalization_error(
 }
 
 #[tokio::test]
-async fn aleph_bft_driver_startup_decision_spawns_only_for_aleph_bft_backend() {
+async fn aleph_bft_driver_startup_decision_spawns_for_federation_member() {
     let (public_config, local_private, _) = transport_config();
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let seed = mnemonic.to_seed_normalized("");
-    let in_memory_state = federation_route_state_for_private_with_db_and_backend(
-        public_config.clone(),
-        local_private.clone(),
-        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
-        &seed,
-        FederationConsensusBackendKind::InMemory,
-    )
-    .await;
-    assert_eq!(
-        federation_aleph_bft_driver_startup_decision(&in_memory_state),
-        FederationAlephBftDriverStartupDecision::NonAlephBftBackend {
-            backend: FederationConsensusBackendKind::InMemory,
-        }
-    );
-
-    let aleph_bft_state = federation_route_state_for_private_with_db_and_backend(
+    let aleph_bft_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private.clone(),
         Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     assert_eq!(
@@ -9539,33 +9505,15 @@ async fn aleph_bft_driver_startup_decision_spawns_only_for_aleph_bft_backend() {
 }
 
 #[tokio::test]
-async fn aleph_bft_live_session_startup_decision_spawns_only_for_aleph_bft_backend() {
+async fn aleph_bft_live_session_startup_decision_spawns_for_federation_member() {
     let (public_config, local_private, _) = transport_config();
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let seed = mnemonic.to_seed_normalized("");
-    let in_memory_state = federation_route_state_for_private_with_db_and_backend(
-        public_config.clone(),
-        local_private.clone(),
-        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
-        &seed,
-        FederationConsensusBackendKind::InMemory,
-    )
-    .await;
-    assert_eq!(
-        federation_aleph_bft_live_session_startup_decision(&in_memory_state)
-            .await
-            .expect("in-memory decision"),
-        FederationAlephBftLiveSessionStartupDecision::NonAlephBftBackend {
-            backend: FederationConsensusBackendKind::InMemory,
-        }
-    );
-
-    let aleph_bft_state = federation_route_state_for_private_with_db_and_backend(
+    let aleph_bft_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private.clone(),
         Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db")),
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     assert_eq!(
@@ -9585,12 +9533,11 @@ async fn aleph_bft_live_session_start_installs_inbound_queue_and_marks_network_f
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
 
@@ -9651,12 +9598,11 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let seed = mnemonic.to_seed_normalized("");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         Arc::clone(&db),
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state
@@ -9702,12 +9648,11 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
     );
     drop(handle);
 
-    let mut restarted_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restarted_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         Arc::clone(&db),
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let (consensus, sequences) = crate::create_federation_runtime_state(&restarted_state.mint)
@@ -9739,12 +9684,11 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
 
@@ -9875,12 +9819,11 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
 
@@ -9956,12 +9899,11 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
 
@@ -10373,20 +10315,18 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -10499,12 +10439,11 @@ async fn aleph_bft_four_live_sessions_finalize_operation_over_private_rest_netwo
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -10582,20 +10521,18 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -10674,20 +10611,18 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -10851,20 +10786,18 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -10999,20 +10932,18 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default()
@@ -11122,20 +11053,18 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private.clone(),
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -11282,20 +11211,18 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private.clone(),
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -11446,20 +11373,18 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport =
@@ -11569,12 +11494,11 @@ async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -11694,12 +11618,11 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -11922,12 +11845,11 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
 
     let honest_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("honest db"));
     let honest_mnemonic = Mnemonic::generate(12).expect("honest mnemonic");
-    let mut honest_state = federation_route_state_for_private_with_db_and_backend(
+    let mut honest_state = federation_route_state_for_private_with_db_and_aleph_bft(
         session.public_config.clone(),
         session.private_configs[0].clone(),
         honest_db,
         &honest_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     seed_aleph_bft_backup(&honest_state, 0, &duplicated_member_backup).await;
@@ -11951,12 +11873,11 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
 
     let fork_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("fork db"));
     let fork_mnemonic = Mnemonic::generate(12).expect("fork mnemonic");
-    let mut fork_state = federation_route_state_for_private_with_db_and_backend(
+    let mut fork_state = federation_route_state_for_private_with_db_and_aleph_bft(
         session.public_config.clone(),
         session.private_configs[0].clone(),
         fork_db,
         &fork_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     seed_aleph_bft_backup(&fork_state, 0, &duplicated_member_backup).await;
@@ -12200,12 +12121,11 @@ async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_du
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -12308,12 +12228,11 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -14325,12 +14244,11 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -14523,12 +14441,11 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -14719,12 +14636,11 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
             .expect("mnemonic")
             .to_seed_normalized("");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 Arc::clone(&db),
                 &seed,
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -14817,12 +14733,11 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
             .with_state(states[1].clone()),
     );
 
-    let mut restarted_first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restarted_first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         private_configs[0].clone(),
         Arc::clone(&dbs[0]),
         &seeds[0],
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let (replayed_consensus, replayed_sequences) =
@@ -14973,20 +14888,18 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
     let second_seed = Mnemonic::generate(12)
         .expect("second mnemonic")
         .to_seed_normalized("");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         Arc::clone(&first_db),
         &first_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private,
         second_db,
         &second_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -15064,12 +14977,11 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
             .with_state(second_state.clone()),
     );
 
-    let mut restarted_first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restarted_first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         first_private,
         Arc::clone(&first_db),
         &first_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let (replayed_consensus, replayed_sequences) =
@@ -15157,20 +15069,18 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let second_seed = Mnemonic::generate(12)
         .expect("second mnemonic")
         .to_seed_normalized("");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private,
         second_db,
         &second_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -15251,12 +15161,11 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
             .await
             .expect("crash-window first db"),
     );
-    let mut recovered_first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut recovered_first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         first_private,
         Arc::clone(&crash_window_db),
         &first_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let mut tx = recovered_first_state
@@ -15448,12 +15357,11 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
             .expect("mnemonic")
             .to_seed_normalized("");
         states.push(
-            federation_route_state_for_private_with_db_and_backend(
+            federation_route_state_for_private_with_db_and_aleph_bft(
                 public_config.clone(),
                 private_config,
                 Arc::clone(&db),
                 &seed,
-                FederationConsensusBackendKind::AlephBft,
             )
             .await,
         );
@@ -15522,12 +15430,11 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
             .with_state(states[1].clone()),
     );
 
-    let mut restarted_first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restarted_first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         private_configs[0].clone(),
         Arc::clone(&dbs[0]),
         &seeds[0],
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let (replayed_consensus, replayed_sequences) =
@@ -15638,12 +15545,11 @@ async fn aleph_bft_live_session_startup_clears_orphan_network_retries_without_ba
         transport_config_with_federation_api_urls(first_url, second_url);
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         first_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let orphan_retry = FederationAlephBftNetworkRetryRecord {
@@ -15701,12 +15607,11 @@ async fn aleph_bft_live_session_startup_clears_recovered_session_orphan_network_
         transport_config_with_federation_api_urls(first_url, second_url);
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         first_private,
         Arc::clone(&db),
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let mut tx = state
@@ -15811,20 +15716,18 @@ async fn aleph_bft_live_session_startup_reloads_network_retries_when_backup_exis
     let second_seed = Mnemonic::generate(12)
         .expect("second mnemonic")
         .to_seed_normalized("");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         Arc::clone(&first_db),
         &first_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private.clone(),
         second_db,
         &second_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let sync_config = FederationPeerSyncConfig {
@@ -15933,12 +15836,11 @@ async fn aleph_bft_live_session_startup_reloads_network_retries_when_backup_exis
         vec![retry]
     );
 
-    let mut restarted_first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restarted_first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         first_private,
         Arc::clone(&first_db),
         &first_seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let (replayed_consensus, replayed_sequences) =
@@ -16220,20 +16122,18 @@ async fn start_two_member_aleph_bft_live_session(
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_backend(
+    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_backend(
+    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private,
         second_db,
         &second_mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = RouterFederationTransportRegistry::default();
@@ -16329,12 +16229,11 @@ async fn start_multi_member_aleph_bft_live_session_with_payment_policy(
         let (payment_processor, member_make_payment_calls) =
             CountingFakeWallet::with_call_counter();
         states.push(
-            federation_route_state_for_private_with_db_backend_and_payment_processor(
+            federation_route_state_for_private_with_db_and_aleph_bft_payment_processor(
                 public_config.clone(),
                 private_config,
                 db,
                 &mnemonic.to_seed_normalized(""),
-                FederationConsensusBackendKind::AlephBft,
                 payment_processor,
             )
             .await,
@@ -16757,12 +16656,11 @@ async fn aleph_bft_public_submit_is_not_ready_until_network_finality_is_installe
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -16797,12 +16695,11 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_networ
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.mark_federation_healthy().await;
@@ -16846,43 +16743,15 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_networ
 }
 
 #[tokio::test]
-async fn aleph_bft_network_finality_activation_rejects_non_aleph_bft_runtime() {
-    let (public_config, local_private, _) = transport_config();
-    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
-    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
-        public_config,
-        local_private,
-        db,
-        &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::InMemory,
-    )
-    .await;
-
-    let err = state
-        .mark_aleph_bft_network_finality_available()
-        .await
-        .expect_err("in-memory runtime must not activate AlephBFT finality");
-
-    assert!(
-        err.to_string()
-            .contains("requires aleph_bft consensus backend"),
-        "unexpected error: {err}"
-    );
-    assert!(state.federation_aleph_bft_status().await.is_none());
-}
-
-#[tokio::test]
 async fn aleph_bft_network_finality_activation_opens_queueing_but_still_waits_for_finalized_unit() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.mark_federation_healthy().await;
@@ -16966,12 +16835,11 @@ async fn aleph_bft_private_rest_broadcast_stand_in_idles_after_network_finality_
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -17784,12 +17652,11 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let first_state = federation_route_state_for_private_with_db_and_backend(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db.clone(),
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     first_state.mark_federation_healthy().await;
@@ -17798,12 +17665,11 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
         Some(crate::FederationSyncStatus::Healthy)
     ));
 
-    let restored_state = federation_route_state_for_private_with_db_and_backend(
+    let restored_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     restored_state.restore_federation_sync_status().await;
@@ -17848,12 +17714,11 @@ async fn aleph_bft_startup_restore_retires_startup_halt_after_live_finality_for_
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut restored_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restored_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     assert!(matches!(
@@ -17908,12 +17773,11 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let seed = mnemonic.to_seed_normalized("");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db.clone(),
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -17950,12 +17814,11 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
     }
     drop(state);
 
-    let restarted_state = federation_route_state_for_private_with_db_and_backend(
+    let restarted_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     assert!(restarted_state
@@ -18009,12 +17872,11 @@ async fn aleph_bft_broadcast_round_drains_and_applies_after_threshold_delivery()
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -18084,12 +17946,11 @@ async fn aleph_bft_submit_envelope_waits_for_driver_finalization() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -18146,12 +18007,11 @@ async fn aleph_bft_submit_envelope_persists_sequence_after_driver_finalization()
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -18211,12 +18071,11 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18253,12 +18112,11 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18345,12 +18203,11 @@ async fn aleph_bft_submit_envelope_releases_response_waiter_after_timeout() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18383,12 +18240,11 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18446,12 +18302,11 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18492,7 +18347,7 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
     }
     assert_eq!(state.federation_pending_response_waiter_count(), 2);
     let stats = state.federation_operation_notification_stats();
-    assert_eq!(stats.response_cache_lookups, 3);
+    assert_eq!(stats.response_cache_lookups, 2);
     assert_eq!(stats.response_cache_hits, 0);
     assert_eq!(stats.duplicate_submissions, 1);
     assert_eq!(stats.duplicate_pending_waiter_joins, 1);
@@ -18543,12 +18398,11 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18636,12 +18490,11 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18764,12 +18617,11 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let peer = public_config
@@ -18855,12 +18707,11 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
     let seed = Mnemonic::generate(12)
         .expect("mnemonic")
         .to_seed_normalized("");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         Arc::clone(&db),
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -18924,12 +18775,11 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
             .await
             .expect("restarted mint db"),
     );
-    let mut restarted_state = federation_route_state_for_private_with_db_and_backend(
+    let mut restarted_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private,
         restarted_db,
         &seed,
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let (replayed_consensus, replayed_sequences) =
@@ -19011,12 +18861,11 @@ async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let peer = public_config
@@ -19103,12 +18952,11 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_backend(
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
@@ -19243,12 +19091,11 @@ async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuein
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -19324,12 +19171,11 @@ async fn aleph_bft_driver_tick_returns_idle_without_peer_request() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = MockFederationTransport::default();
@@ -19363,12 +19209,11 @@ async fn aleph_bft_driver_tick_rejects_zero_work_bound_before_peer_request() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let transport = MockFederationTransport::default();
@@ -19424,12 +19269,11 @@ async fn aleph_bft_driver_tick_applies_bounded_unit_then_stops_at_idle() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -19496,12 +19340,11 @@ async fn aleph_bft_driver_tick_applies_batched_unit_with_multiple_responses() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let first_quote_id = QuoteId::new();
@@ -19610,12 +19453,11 @@ async fn aleph_bft_broadcast_round_stops_remote_delivery_after_quorum() {
     let (public_config, local_private, second_private, third_private) = transport_config_three();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -19674,12 +19516,11 @@ async fn aleph_bft_broadcast_round_reports_distinct_skipped_members() {
     let (public_config, local_private, second_private, third_private) = transport_config_three();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -19735,12 +19576,11 @@ async fn aleph_bft_broadcast_round_counts_distinct_remote_members_for_quorum() {
         );
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -19806,12 +19646,11 @@ async fn aleph_bft_broadcast_round_times_out_slow_peer_and_uses_next_for_quorum(
     let (public_config, local_private, second_private, third_private) = transport_config_three();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -19911,12 +19750,11 @@ async fn aleph_bft_broadcast_round_five_members_tolerates_bad_ack_before_quorum(
     let local_private = private_configs[0].clone();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -20003,12 +19841,11 @@ async fn aleph_bft_broadcast_round_retries_after_partial_delivery_reaches_quorum
         );
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -20110,12 +19947,11 @@ async fn aleph_bft_broadcast_round_rejects_delivery_limit_below_quorum_before_pe
         );
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -20174,12 +20010,11 @@ async fn aleph_bft_broadcast_round_keeps_queue_when_delivery_lacks_quorum() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -20230,12 +20065,11 @@ async fn aleph_bft_broadcast_round_rejects_invalid_remote_ack_without_draining()
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -20294,12 +20128,11 @@ async fn aleph_bft_local_exact_drain_mismatch_keeps_queue_and_state() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let quote_id = QuoteId::new();
@@ -20355,22 +20188,9 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
         .await
         .expect("control status");
 
-    let mut crashed_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
-    let response = crashed_consensus
-        .submit_envelope(envelope)
-        .expect("accepted before crash");
-    let entry = response.outcome.entry().clone();
-    let mut tx = restarted_state
-        .mint
-        .localstore()
-        .begin_transaction()
-        .await
-        .expect("begin crash window transaction");
-    tx.add_federation_journal_entry(&entry)
-        .await
-        .expect("persist accepted journal entry");
-    tx.commit().await.expect("commit crash window journal");
+    let crashed_history =
+        finalized_aleph_bft_history(&public_config, local_private.member_id, [envelope]);
+    persist_finalized_aleph_bft_history(&restarted_state, &crashed_history).await;
 
     assert!(restarted_state
         .mint
@@ -20446,22 +20266,9 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
         .await
         .expect("control status");
 
-    let mut crashed_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
-    let response = crashed_consensus
-        .submit_envelope(envelope)
-        .expect("accepted before crash");
-    let entry = response.outcome.entry().clone();
-    let mut tx = restarted_state
-        .mint
-        .localstore()
-        .begin_transaction()
-        .await
-        .expect("begin crash window transaction");
-    tx.add_federation_journal_entry(&entry)
-        .await
-        .expect("persist accepted journal entry");
-    tx.commit().await.expect("commit crash window journal");
+    let crashed_history =
+        finalized_aleph_bft_history(&public_config, local_private.member_id, [envelope]);
+    persist_finalized_aleph_bft_history(&restarted_state, &crashed_history).await;
     assert!(restarted_state
         .mint
         .localstore()
@@ -21344,8 +21151,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
 
 #[tokio::test]
 async fn submit_federation_envelope_notifies_operation_acceptance() {
-    let (mut state, _, _) = federation_route_state().await;
-    state.start_federation_finalization_loop();
+    let (state, _, _) = federation_route_state().await;
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -21465,8 +21271,8 @@ async fn submit_federation_envelope_bounds_response_cache() {
     assert_eq!(state.federation_response_cache_entry_count(), 1);
     let stats = state.federation_operation_notification_stats();
     assert_eq!(stats.response_cache_items, 1);
-    assert_eq!(stats.response_cache_lookups, 3);
-    assert_eq!(stats.response_cache_hits, 3);
+    assert_eq!(stats.response_cache_lookups, 2);
+    assert_eq!(stats.response_cache_hits, 0);
     assert_eq!(stats.duplicate_submissions, 1);
     assert_eq!(stats.duplicate_pending_waiter_joins, 0);
 }
@@ -23339,12 +23145,11 @@ async fn private_journal_route_returns_whole_aleph_bft_finalized_item_units() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
     let local_member = local_private.member_id;

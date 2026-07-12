@@ -436,7 +436,7 @@ defined interpretation adds schema and conflict surface without functionality.
 
 ## 6. Remove the production in-memory consensus backend
 
-**Status:** In progress (dead simulator/adapter layer removed 2026-07-12)
+**Status:** In progress (production/runtime dispatch removed 2026-07-12)
 
 ### Progress
 
@@ -478,10 +478,8 @@ test-only dependency removal.
 
 `FederationRuntimeConfig` no longer stores a consensus-backend field or exposes
 an alternate backend constructor. Mintd startup and durable DKG activation now
-build the same validated runtime config, while the temporary backend accessor
-returns the sole production choice until the Axum/status enum is removed. The
-focused mint runtime tests, Axum federation test build, and mintd AlephBFT
-startup test pass.
+build the same validated runtime config. The focused mint runtime tests, Axum
+federation test build, and mintd AlephBFT startup test pass.
 
 Peer status and operator digest comparison no longer carry or compare a
 consensus-backend label. With AlephBFT mandatory, that field was constant wire
@@ -491,6 +489,24 @@ order digest, materialized-state digest, operation height, and quorum evidence
 remain the safety checks. Verification passes 356 `cdk-common` tests, 22 Axum
 peer-client tests, 10 digest-comparison tests, 39 mintd status tests, three
 private journal-route tests, and seven Aleph catch-up tests.
+
+The Axum runtime is now a direct `FederationAlephBftConsensusAdapter` rather
+than an enum-dispatched backend. Startup recovery, submission, catch-up,
+readiness, private Aleph routes, and live-session startup no longer branch on a
+backend label. The old synchronous append/finalize branch and its idle
+finalization task are deleted. Tests that need immediate deterministic
+application use one narrow `#[cfg(test)]` hook that drains and applies the real
+Aleph adapter unit; explicit finality, timeout, live-session, restart, and
+catch-up tests continue to control finalization externally.
+
+This checkpoint also fixes a notification-state shortcut exposed by the
+runtime migration. A pre-registered response observer is no longer mistaken
+for a queued operation; duplicate proposal detection remains owned by the
+Aleph data provider under the consensus lock, and duplicate callers join the
+same waiter without requeueing. All 352 federation-enabled `cdk-common` tests,
+all 99 mint federation tests, and the complete 456-test Axum federation suite
+pass, including duplicate/fanout, Aleph catch-up, startup-decision, live
+private-message finality, and mint/swap/melt/notification coverage.
 
 ### Problem
 
@@ -598,7 +614,27 @@ ordering engine and becomes idle when network finality is available.
 
 ## 8. Remove legacy mint-to-mint primary forwarding
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed `submit_operation_to_primary_if_needed`, its generic transport path,
+the first-roster-member selection, forwarding-specific readiness gate, local
+catch-up/evidence collection after forwarding, and all forwarding-only tests.
+Every federation member now admits and queues operations directly through its
+AlephBFT runtime; no member is a privileged consensus ingress.
+
+Wallet quote coordination is unchanged. The wallet may still prefer or fall
+back between members for payment-facing quote creation, which is distinct from
+the deleted mint-to-mint consensus forwarding path.
+
+Verification proves direct Aleph submission and notification for mint, swap,
+melt, payment observations, and private member operation requests; duplicate
+fanout queues one operation and joins existing waiters; live private-REST
+Aleph sessions finalize successfully; and catch-up/restart paths retain their
+ordering, finalized-item, quorum-evidence, and materialized-state checks. A
+workspace search finds no forwarding helper, primary-forwarding readiness
+logic, or forwarding-specific test path.
 
 ### Problem
 

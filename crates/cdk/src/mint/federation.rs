@@ -12,13 +12,12 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationBlindSignatureShareSet, FederationConfig, FederationConfigDigest,
-    FederationConsensusBackendKind, FederationError, FederationId, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationBlindSignatureShareSet, FederationConfig, FederationConfigDigest, FederationError,
+    FederationId, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
+    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationRestoreOperation, FederationSignatureShareRecord, FederationSwapOperation,
@@ -174,12 +173,6 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn private_config(&self) -> &MemberConfigPrivate {
         &self.private_config
-    }
-
-    /// Consensus backend used by federation members.
-    #[must_use]
-    pub fn consensus_backend(&self) -> FederationConsensusBackendKind {
-        FederationConsensusBackendKind::AlephBft
     }
 
     /// Local member ID.

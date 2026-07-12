@@ -3,8 +3,7 @@ use std::collections::BTreeSet;
 use cdk::federation::{
     FederationAlephBftFinalityMode, FederationAlephBftFinalizedUnitRequest,
     FederationAlephBftFinalizedUnitResponse, FederationAlephBftUnitPayload,
-    FederationConsensusBackendKind, FederationSubmitOperationResponse, MemberConfigPublic,
-    MemberId,
+    FederationSubmitOperationResponse, MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 
@@ -74,11 +73,6 @@ pub(crate) struct FederationAlephBftDriverTickOutcome {
 pub(crate) enum FederationAlephBftDriverStartupDecision {
     /// The mint is not configured as a federation member.
     NoFederationConfig,
-    /// Federation is configured with a different consensus backend.
-    NonAlephBftBackend {
-        /// Configured consensus backend.
-        backend: FederationConsensusBackendKind,
-    },
     /// AlephBFT is configured, but no remote peer can receive finalized units.
     NoRemotePeers {
         /// Local federation member.
@@ -100,11 +94,6 @@ pub(crate) fn federation_aleph_bft_driver_startup_decision(
     let Some(config) = state.mint.federation_config() else {
         return FederationAlephBftDriverStartupDecision::NoFederationConfig;
     };
-    let backend = config.consensus_backend();
-    if backend != FederationConsensusBackendKind::AlephBft {
-        return FederationAlephBftDriverStartupDecision::NonAlephBftBackend { backend };
-    }
-
     let local_member = config.member_id();
     let peer_count = config
         .public_config()
@@ -143,7 +132,6 @@ pub(crate) fn spawn_federation_aleph_bft_driver_loop_with_config(
     match federation_aleph_bft_driver_startup_decision(&state) {
         FederationAlephBftDriverStartupDecision::Spawn { .. } => {}
         FederationAlephBftDriverStartupDecision::NoFederationConfig
-        | FederationAlephBftDriverStartupDecision::NonAlephBftBackend { .. }
         | FederationAlephBftDriverStartupDecision::NoRemotePeers { .. } => return,
     }
 
@@ -316,13 +304,6 @@ where
     let config = state.mint.federation_config().ok_or_else(|| {
         cdk::Error::Custom("AlephBFT broadcast requested without federation config".to_string())
     })?;
-    if config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
-        return Err(cdk::Error::Custom(format!(
-            "AlephBFT broadcast requested for {} consensus backend",
-            config.consensus_backend()
-        )));
-    }
-
     let unit = {
         let consensus = state.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())

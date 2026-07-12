@@ -6,12 +6,11 @@ async fn aleph_bft_route_state() -> (MintState, FederationConfig, MemberConfigPr
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let state = federation_route_state_for_private_with_db_and_backend(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private,
         db,
         &mnemonic.to_seed_normalized(""),
-        FederationConsensusBackendKind::AlephBft,
     )
     .await;
 

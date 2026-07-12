@@ -687,6 +687,12 @@ async fn dkg_driver_times_out_one_slow_member_without_blocking_fast_members() {
         assert_eq!(sender_commitments, usize::from(index != 2));
     }
 
+    federation.members[0].client = FederationRestPeerClient::new(
+        federation.transport.clone(),
+        &federation.public_config,
+        federation.members[0].private_config.clone(),
+    )
+    .expect("recovered DKG client");
     let _ = federation.drive_until_complete(12).await;
     federation.assert_complete_and_consistent().await;
 }

@@ -7,8 +7,8 @@ use aleph_bft::{
     NodeCount, Terminator,
 };
 use cdk::federation::{
-    FederationAlephBftActivityRequest, FederationAlephBftFinalityMode,
-    FederationConsensusBackendKind, FederationOperationId, MemberConfigPublic, MemberId,
+    FederationAlephBftActivityRequest, FederationAlephBftFinalityMode, FederationOperationId,
+    MemberConfigPublic, MemberId,
 };
 use cdk_common::database::DynMintDatabase;
 use cdk_http_client::{Async, Transport};
@@ -145,11 +145,6 @@ impl Default for FederationAlephBftLiveSessionOptions {
 pub(crate) enum FederationAlephBftLiveSessionStartupDecision {
     /// The mint is not configured as a federation member.
     NoFederationConfig,
-    /// Federation is configured with a different consensus backend.
-    NonAlephBftBackend {
-        /// Configured consensus backend.
-        backend: FederationConsensusBackendKind,
-    },
     /// Federation state is missing its consensus runtime.
     MissingConsensusRuntime,
     /// A live session inbound queue is already installed.
@@ -177,10 +172,6 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
     let Some(config) = state.mint.federation_config() else {
         return Ok(FederationAlephBftLiveSessionStartupDecision::NoFederationConfig);
     };
-    let backend = config.consensus_backend();
-    if backend != FederationConsensusBackendKind::AlephBft {
-        return Ok(FederationAlephBftLiveSessionStartupDecision::NonAlephBftBackend { backend });
-    }
     if state
         .federation_aleph_bft_live_session
         .read()
