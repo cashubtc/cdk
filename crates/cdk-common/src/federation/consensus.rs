@@ -324,14 +324,14 @@ impl FederationAlephBftFinalizedItem {
     }
 }
 
-/// Operator-facing status for the AlephBFT adapter boundary.
+/// Operator-facing status for the consensus runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FederationAlephBftAdapterStatus {
+pub struct FederationConsensusRuntimeStatus {
     /// Federation whose operations are being ordered.
     pub federation_id: FederationId,
     /// Local member producing unit payloads.
     pub local_member: MemberId,
-    /// Current AlephBFT session accepted by the adapter.
+    /// Current AlephBFT session accepted by the runtime.
     pub session: u64,
     /// Next local unit index that will be used by the data provider.
     pub next_unit_index: u64,
@@ -343,9 +343,9 @@ pub struct FederationAlephBftAdapterStatus {
     pub queued_item_count: u64,
     /// Number of drained local consensus items waiting for finality.
     pub pending_finalization_item_count: u64,
-    /// Number of finalized consensus items retained by the adapter.
+    /// Number of finalized consensus items retained by the runtime.
     pub finalized_item_count: u64,
-    /// Number of accepted operation entries in the adapter journal.
+    /// Number of accepted operation entries in the runtime journal.
     pub accepted_operation_count: u64,
     /// Highest accepted operation index, if any operation has been accepted.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -640,7 +640,7 @@ pub enum FederationConsensusItemAdmission {
 
 /// Bounded pending-item queue for consensus data providers.
 #[derive(Debug, Clone)]
-pub struct FederationConsensusItemQueue {
+pub(crate) struct FederationConsensusItemQueue {
     max_item_bytes: usize,
     pending: VecDeque<FederationConsensusItem>,
     pending_operation_ids: BTreeSet<FederationOperationId>,
@@ -679,6 +679,7 @@ impl FederationConsensusItemQueue {
 
     /// Return true when the queue has no pending items.
     #[must_use]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
@@ -715,6 +716,7 @@ impl FederationConsensusItemQueue {
     }
 
     /// Drain up to `limit` items in FIFO order.
+    #[cfg(test)]
     pub fn drain_batch(&mut self, limit: usize) -> Vec<FederationConsensusItem> {
         let mut batch = Vec::new();
         for _ in 0..limit {
@@ -807,7 +809,7 @@ fn pending_operation_metadata_from_envelope(
 
 /// Bounded AlephBFT data provider for local pending CDK consensus items.
 #[derive(Debug, Clone)]
-pub struct FederationAlephBftUnitDataProvider {
+pub(crate) struct FederationAlephBftUnitDataProvider {
     federation_id: FederationId,
     submitting_member: MemberId,
     session: u64,
@@ -875,6 +877,7 @@ impl FederationAlephBftUnitDataProvider {
 
     /// Return true when the provider has no queued consensus items.
     #[must_use]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -940,7 +943,7 @@ impl FederationAlephBftUnitDataProvider {
 
 /// Converts verified AlephBFT unit payloads into deterministic accepted items.
 #[derive(Debug, Clone)]
-pub struct FederationAlephBftFinalizationHandler {
+pub(crate) struct FederationAlephBftFinalizationHandler {
     federation_id: FederationId,
     session: u64,
     next_unit_finalization_index: u64,
@@ -953,6 +956,7 @@ pub struct FederationAlephBftFinalizationHandler {
 
 impl FederationAlephBftFinalizationHandler {
     /// Create a finalization handler for session zero with default limits.
+    #[cfg(test)]
     pub fn new(federation_id: FederationId) -> Self {
         Self::with_limits(
             federation_id,
@@ -1217,6 +1221,7 @@ impl FederationAlephBftFinalizationHandler {
 
     /// Return the session accepted by this handler.
     #[must_use]
+    #[cfg(test)]
     pub fn session(&self) -> u64 {
         self.session
     }
@@ -1343,14 +1348,14 @@ impl FederationAlephBftFinalizationHandler {
     }
 }
 
-/// AlephBFT-facing adapter boundary for operation submission and finalization.
+/// AlephBFT consensus runtime for operation submission and finalization.
 ///
 /// This does not run AlephBFT networking. It owns the CDK side of the boundary:
 /// wallet/public handlers can enqueue operations, an AlephBFT task can pull
 /// canonical unit payloads from the data provider, and finalized units are
 /// converted back into deterministic journal responses.
 #[derive(Debug, Clone)]
-pub struct FederationAlephBftConsensusAdapter {
+pub struct FederationConsensusRuntime {
     data_provider: FederationAlephBftUnitDataProvider,
     finalization_handler: FederationAlephBftFinalizationHandler,
     journal: InMemoryFederationJournal,
@@ -1364,8 +1369,8 @@ pub struct FederationAlephBftConsensusAdapter {
 
 type FederationAlephBftPendingUnitKey = (u64, MemberId, u64, FederationAlephBftUnitBodyHash);
 
-impl FederationAlephBftConsensusAdapter {
-    /// Create an AlephBFT adapter boundary with default limits.
+impl FederationConsensusRuntime {
+    /// Create an AlephBFT runtime with default limits.
     #[must_use]
     pub fn new(federation_id: FederationId, local_member: MemberId, session: u64) -> Self {
         Self {
@@ -1389,7 +1394,7 @@ impl FederationAlephBftConsensusAdapter {
         }
     }
 
-    /// Create an AlephBFT adapter boundary that only accepts finalized units from known members.
+    /// Create a runtime that only accepts finalized units from known members.
     pub fn for_members<I>(
         federation_id: FederationId,
         local_member: MemberId,
@@ -1420,7 +1425,7 @@ impl FederationAlephBftConsensusAdapter {
         })
     }
 
-    /// Create an AlephBFT adapter boundary with explicit limits.
+    /// Create an AlephBFT runtime with explicit limits.
     pub fn with_limits(
         federation_id: FederationId,
         local_member: MemberId,
@@ -1453,7 +1458,7 @@ impl FederationAlephBftConsensusAdapter {
         })
     }
 
-    /// Recover an AlephBFT adapter boundary from retained finalized items.
+    /// Recover an AlephBFT runtime from retained finalized items.
     pub fn recover_from_finalized_items(
         federation_id: FederationId,
         local_member: MemberId,
@@ -1463,7 +1468,7 @@ impl FederationAlephBftConsensusAdapter {
         Self::recover_inner(federation_id, local_member, session, None, finalized_items)
     }
 
-    /// Recover an AlephBFT adapter boundary with a roster-bound finalization guard.
+    /// Recover a runtime with a roster-bound finalization guard.
     pub fn recover_for_members_from_finalized_items<I>(
         federation_id: FederationId,
         local_member: MemberId,
@@ -1570,10 +1575,10 @@ impl FederationAlephBftConsensusAdapter {
         &self.finalized_items
     }
 
-    /// Return an operator-facing status snapshot for this adapter.
+    /// Return an operator-facing status snapshot for this runtime.
     #[must_use]
-    pub fn status(&self) -> FederationAlephBftAdapterStatus {
-        FederationAlephBftAdapterStatus {
+    pub fn status(&self) -> FederationConsensusRuntimeStatus {
+        FederationConsensusRuntimeStatus {
             federation_id: self.data_provider.federation_id,
             local_member: self.data_provider.submitting_member,
             session: self.session(),
@@ -1593,7 +1598,7 @@ impl FederationAlephBftConsensusAdapter {
 
     /// Return this member's current peer status from finalized operations.
     #[must_use]
-    pub fn peer_status(
+    pub fn peer_status_for(
         &self,
         federation_id: FederationId,
         member_id: MemberId,
@@ -1878,21 +1883,7 @@ pub struct FederationQuorumVerifiedCatchUp {
     pub session_outcome_quorum: FederationSessionOutcomeQuorum,
 }
 
-/// Runtime-owned AlephBFT consensus engine.
-#[derive(Debug, Clone)]
-pub struct FederationConsensusRuntime {
-    adapter: FederationAlephBftConsensusAdapter,
-}
-
 impl FederationConsensusRuntime {
-    /// Create an AlephBFT runtime at session zero.
-    #[must_use]
-    pub fn new(federation_id: FederationId, member_id: MemberId) -> Self {
-        Self {
-            adapter: FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0),
-        }
-    }
-
     /// Recover an AlephBFT runtime from retained finalized items.
     pub fn aleph_bft_from_finalized_items<I>(
         federation_id: FederationId,
@@ -1905,28 +1896,14 @@ impl FederationConsensusRuntime {
     where
         I: IntoIterator<Item = MemberId>,
     {
-        let allowed_members = validate_adapter_roster(member_ids, consensus_threshold, member_id)?;
-        Ok(Self {
-            adapter: FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-                federation_id,
-                member_id,
-                session,
-                allowed_members,
-                finalized_items,
-            )?,
-        })
-    }
-
-    /// Return the number of locally queued consensus items, if the backend exposes a queue.
-    #[must_use]
-    pub fn queued_len(&self) -> usize {
-        self.adapter.queued_len()
-    }
-
-    /// Return the number of dispatched consensus items awaiting finalization.
-    #[must_use]
-    pub fn pending_finalization_len(&self) -> usize {
-        self.adapter.pending_finalization_len()
+        let allowed_members = validate_runtime_roster(member_ids, consensus_threshold, member_id)?;
+        Self::recover_for_members_from_finalized_items(
+            federation_id,
+            member_id,
+            session,
+            allowed_members,
+            finalized_items,
+        )
     }
 
     /// Return queued plus dispatched consensus items awaiting finalization.
@@ -1938,7 +1915,7 @@ impl FederationConsensusRuntime {
 
     /// Begin a later AlephBFT session for this runtime.
     pub fn begin_aleph_bft_session(&mut self, session: u64) -> Result<()> {
-        self.adapter.begin_session(session)
+        self.begin_session(session)
     }
 
     /// Begin a later AlephBFT session, requeueing local units that were not
@@ -1947,8 +1924,7 @@ impl FederationConsensusRuntime {
         &mut self,
         session: u64,
     ) -> Result<usize> {
-        self.adapter
-            .begin_session_requeue_pending_finalization(session)
+        self.begin_session_requeue_pending_finalization(session)
     }
 
     /// Queue one operation for AlephBFT unit construction.
@@ -1956,12 +1932,12 @@ impl FederationConsensusRuntime {
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationConsensusItemAdmission> {
-        self.adapter.submit_operation(envelope)
+        self.submit_operation(envelope)
     }
 
     /// Pull the next local AlephBFT unit payload from the runtime.
     pub fn next_aleph_bft_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
-        self.adapter.next_unit_payload()
+        self.next_unit_payload()
     }
 
     /// Apply one externally finalized AlephBFT unit payload.
@@ -1969,17 +1945,17 @@ impl FederationConsensusRuntime {
         &mut self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>> {
-        self.adapter.finalize_unit(payload)
+        self.finalize_unit(payload)
     }
 
     /// Return finalized AlephBFT items held by this runtime.
     pub fn aleph_bft_finalized_items(&self) -> Result<&[FederationAlephBftFinalizedItem]> {
-        Ok(self.adapter.finalized_items())
+        Ok(self.finalized_items())
     }
 
-    /// Return AlephBFT adapter status when this runtime uses the AlephBFT adapter.
-    pub fn aleph_bft_status(&self) -> Result<FederationAlephBftAdapterStatus> {
-        Ok(self.adapter.status())
+    /// Return the current AlephBFT runtime status.
+    pub fn aleph_bft_status(&self) -> Result<FederationConsensusRuntimeStatus> {
+        Ok(self.status())
     }
 }
 
@@ -1987,19 +1963,13 @@ impl FederationConsensusRuntime {
     /// Return this member's federation ID.
     #[must_use]
     pub fn federation_id(&self) -> FederationId {
-        self.adapter.status().federation_id
+        self.status().federation_id
     }
 
     /// Return this member's ID.
     #[must_use]
     pub fn member_id(&self) -> MemberId {
-        self.adapter.status().local_member
-    }
-
-    /// Return the journal reconstructed from finalized AlephBFT items.
-    #[must_use]
-    pub fn journal(&self) -> &InMemoryFederationJournal {
-        self.adapter.journal()
+        self.status().local_member
     }
 
     /// Return the journal state digest.
@@ -2009,14 +1979,13 @@ impl FederationConsensusRuntime {
     }
 
     fn journal_mut(&mut self) -> &mut InMemoryFederationJournal {
-        &mut self.adapter.journal
+        &mut self.journal
     }
 
     /// Return this member's current peer status.
     #[must_use]
     pub fn peer_status(&self) -> FederationPeerStatus {
-        self.adapter
-            .peer_status(self.federation_id(), self.member_id())
+        self.peer_status_for(self.federation_id(), self.member_id())
     }
 
     /// Return a catch-up request for the next local finalized item.
@@ -2024,7 +1993,7 @@ impl FederationConsensusRuntime {
     pub fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
         FederationJournalCatchUpRequest::new(self.journal().next_index())
             .with_known_order_digest(self.journal().latest_order_digest())
-            .with_aleph_bft_next_item_index(self.adapter.next_item_index())
+            .with_aleph_bft_next_item_index(self.next_item_index())
     }
 
     /// Return journal entries for a catch-up request.
@@ -2083,7 +2052,7 @@ impl FederationConsensusRuntime {
     }
 }
 
-fn validate_adapter_roster<I>(
+fn validate_runtime_roster<I>(
     member_ids: I,
     consensus_threshold: u16,
     local_member: MemberId,

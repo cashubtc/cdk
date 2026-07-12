@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftAdapterStatus, FederationMaterializedStateRowFingerprint,
+    FederationConsensusRuntimeStatus, FederationMaterializedStateRowFingerprint,
     FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
     FederationRestMessageKind, FederationSignedRequest, MemberId, FEDERATION_REST_API_VERSION,
 };
@@ -127,7 +127,7 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
+    pub(crate) aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
     pub(crate) aleph_bft_live_session_active: bool,
     pub(crate) aleph_bft_network_inbound_active: bool,
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
@@ -148,7 +148,7 @@ impl FederationLocalStatusResponse {
         response_cache_hits: u64,
         duplicate_submissions: u64,
         duplicate_pending_waiter_joins: u64,
-        aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
+        aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
         aleph_bft_live_session_active: bool,
         aleph_bft_network_inbound_active: bool,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,

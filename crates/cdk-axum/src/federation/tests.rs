@@ -17,21 +17,21 @@ use cdk::cdk_payment::{
 };
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
-    FederationAlephBftConsensusAdapter, FederationAlephBftNetworkMessageRequest,
-    FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
+    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
+    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservationPolicy,
+    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
+    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -2090,11 +2090,11 @@ fn finalized_aleph_bft_history<I>(
     public_config: &FederationConfig,
     submitting_member: MemberId,
     envelopes: I,
-) -> FederationAlephBftConsensusAdapter
+) -> FederationConsensusRuntime
 where
     I: IntoIterator<Item = FederationOperationEnvelope>,
 {
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         submitting_member,
         0,
@@ -2120,13 +2120,13 @@ where
 fn test_aleph_bft_peer(
     federation_id: cdk::federation::FederationId,
     member_id: MemberId,
-) -> FederationAlephBftConsensusAdapter {
-    FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0)
+) -> FederationConsensusRuntime {
+    FederationConsensusRuntime::new(federation_id, member_id, 0)
 }
 
 fn aleph_bft_catch_up_response(
     public_config: &FederationConfig,
-    adapter: &FederationAlephBftConsensusAdapter,
+    adapter: &FederationConsensusRuntime,
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
     let finalized_from = usize::try_from(request.aleph_bft_next_item_index).unwrap_or_default();
@@ -2148,7 +2148,7 @@ fn aleph_bft_catch_up_response(
 }
 
 fn test_catch_up_response(
-    adapter: &FederationAlephBftConsensusAdapter,
+    adapter: &FederationConsensusRuntime,
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
     let status = adapter.status();
@@ -2171,7 +2171,7 @@ fn test_catch_up_response(
 }
 
 fn checked_test_catch_up_response(
-    adapter: &FederationAlephBftConsensusAdapter,
+    adapter: &FederationConsensusRuntime,
     request: &FederationJournalCatchUpRequest,
 ) -> Result<FederationJournalCatchUpResponse, FederationError> {
     if let Some(known_order_digest) = request.known_order_digest {
@@ -2525,7 +2525,11 @@ async fn consensus_operation_count(state: &MintState) -> u64 {
 fn reset_federation_runtime_journal(state: &mut MintState) {
     let runtime_config = state.mint.federation_config().expect("federation config");
     state.federation.consensus = Some(Arc::new(tokio::sync::Mutex::new(
-        FederationConsensusRuntime::new(runtime_config.federation_id(), runtime_config.member_id()),
+        FederationConsensusRuntime::new(
+            runtime_config.federation_id(),
+            runtime_config.member_id(),
+            0,
+        ),
     )));
 }
 
@@ -2535,11 +2539,11 @@ fn activate_local_test_finality(state: &mut MintState) {
 
 async fn peer_status_with_materialized_digest(
     state: &MintState,
-    consensus: &FederationAlephBftConsensusAdapter,
+    consensus: &FederationConsensusRuntime,
 ) -> FederationPeerStatus {
     let adapter_status = consensus.status();
     let mut status =
-        consensus.peer_status(adapter_status.federation_id, adapter_status.local_member);
+        consensus.peer_status_for(adapter_status.federation_id, adapter_status.local_member);
     status.state_digest = materialized_state_digest(state, consensus.journal().entries())
         .await
         .expect("materialized peer status digest");
@@ -2548,7 +2552,7 @@ async fn peer_status_with_materialized_digest(
 
 async fn catch_up_response_with_materialized_digest(
     state: &MintState,
-    consensus: &FederationAlephBftConsensusAdapter,
+    consensus: &FederationConsensusRuntime,
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
     let mut response = test_catch_up_response(consensus, request);
@@ -2562,9 +2566,9 @@ async fn aleph_bft_peer_status_with_materialized_digest(
     state: &MintState,
     public_config: &FederationConfig,
     member_id: MemberId,
-    consensus: &FederationAlephBftConsensusAdapter,
+    consensus: &FederationConsensusRuntime,
 ) -> FederationPeerStatus {
-    let mut status = consensus.peer_status(public_config.federation_id, member_id);
+    let mut status = consensus.peer_status_for(public_config.federation_id, member_id);
     status.state_digest = materialized_state_digest(state, consensus.journal().entries())
         .await
         .expect("materialized AlephBFT peer status digest");
@@ -2574,7 +2578,7 @@ async fn aleph_bft_peer_status_with_materialized_digest(
 async fn aleph_bft_catch_up_response_with_materialized_digest(
     state: &MintState,
     public_config: &FederationConfig,
-    consensus: &FederationAlephBftConsensusAdapter,
+    consensus: &FederationConsensusRuntime,
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
     let mut response = aleph_bft_catch_up_response(public_config, consensus, request);
@@ -2585,7 +2589,7 @@ async fn aleph_bft_catch_up_response_with_materialized_digest(
 }
 
 fn finalize_test_operation(
-    consensus: &mut FederationAlephBftConsensusAdapter,
+    consensus: &mut FederationConsensusRuntime,
     envelope: FederationOperationEnvelope,
 ) -> Result<FederationSubmitOperationResponse, FederationError> {
     let status = consensus.status();
@@ -2608,7 +2612,7 @@ fn finalize_test_operation(
 }
 
 fn finalize_test_entry(
-    consensus: &mut FederationAlephBftConsensusAdapter,
+    consensus: &mut FederationConsensusRuntime,
     envelope: FederationOperationEnvelope,
 ) -> FederationJournalEntry {
     finalize_test_operation(consensus, envelope)
@@ -2625,7 +2629,7 @@ async fn persist_test_journal_entry(state: &MintState, entry: &FederationJournal
         .get_federation_aleph_bft_finalized_items()
         .await
         .expect("load test AlephBFT finalized items");
-    let mut adapter = FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+    let mut adapter = FederationConsensusRuntime::recover_for_members_from_finalized_items(
         runtime_config.federation_id(),
         runtime_config.member_id(),
         0,
@@ -2668,7 +2672,7 @@ async fn persist_test_journal_entry(state: &MintState, entry: &FederationJournal
 
 async fn persist_finalized_aleph_bft_history(
     state: &MintState,
-    adapter: &FederationAlephBftConsensusAdapter,
+    adapter: &FederationConsensusRuntime,
 ) {
     let mut tx = state
         .mint
@@ -3805,7 +3809,7 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
             .peer_status()
             .latest_order_digest,
         peer_consensus
-            .peer_status(public_config.federation_id, peer_member.member_id)
+            .peer_status_for(public_config.federation_id, peer_member.member_id)
             .latest_order_digest
     );
     let persisted = state
@@ -4818,7 +4822,7 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
         .await
         .expect("local accepted operation");
     let transport = MockFederationTransport::default().with_status_response(
-        peer_consensus.peer_status(public_config.federation_id, peer_member.member_id),
+        peer_consensus.peer_status_for(public_config.federation_id, peer_member.member_id),
     );
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
@@ -4913,7 +4917,7 @@ async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
     let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(
-            peer_consensus.peer_status(public_config.federation_id, peer_member.member_id),
+            peer_consensus.peer_status_for(public_config.federation_id, peer_member.member_id),
         )
         .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
         .with_catch_up_response(witness_response);
@@ -7274,7 +7278,7 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
     .await;
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         local_private.member_id,
         0,
@@ -7357,7 +7361,7 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         local_private.member_id,
         0,
@@ -7490,7 +7494,7 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -7607,7 +7611,7 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
     let suffix_quote_id = QuoteId::new();
     let suffix_envelope = mint_quote_envelope(&state, &suffix_quote_id);
     let suffix_operation_id = suffix_envelope.operation_id().expect("operation id");
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -7791,7 +7795,7 @@ async fn aleph_bft_catch_up_advances_recovered_active_session() {
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         2,
@@ -7897,7 +7901,7 @@ async fn aleph_bft_catch_up_applies_rejected_trailing_entry() {
         .operation_id()
         .expect("conflicting operation id");
 
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -7993,7 +7997,7 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
         .apply_federation_aleph_bft_finalized_unit(first_unit.clone())
         .await
         .expect("local first finalized unit");
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -8040,7 +8044,7 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
         response.with_aleph_bft_finalized_items(peer_adapter.finalized_items()[1..].to_vec(), true);
     let transport = MockFederationTransport::default()
         .with_status_response(
-            peer_adapter.peer_status(public_config.federation_id, peer_private.member_id),
+            peer_adapter.peer_status_for(public_config.federation_id, peer_private.member_id),
         )
         .with_catch_up_response(response);
     let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
@@ -8096,7 +8100,7 @@ async fn aleph_bft_catch_up_rejects_journal_entries_without_finalized_item_evide
     .await;
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -8183,7 +8187,7 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
     .await;
     let first_quote_id = QuoteId::new();
     let second_quote_id = QuoteId::new();
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -8286,7 +8290,7 @@ async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation()
     .await;
     let first_quote_id = QuoteId::new();
     let second_quote_id = QuoteId::new();
-    let mut peer_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
         0,
@@ -8390,7 +8394,7 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     .await;
     let finalized_envelope = mint_quote_envelope(&state, &QuoteId::new());
     let mismatched_envelope = mint_quote_envelope(&state, &QuoteId::new());
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         local_private.member_id,
         0,
@@ -9229,7 +9233,7 @@ async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() 
     )
     .expect("AlephBFT finalized unit");
 
-    let mut conflicting_adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut conflicting_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         local_private.member_id,
         0,
@@ -9814,7 +9818,7 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
 
     let initial_quote_id = QuoteId::new();
     let initial_envelope = mint_quote_envelope(&state, &initial_quote_id);
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         local_private.member_id,
         1,

@@ -444,12 +444,12 @@ fn status_line_includes_response_cache_and_duplicate_counters() {
 }
 
 #[test]
-fn status_line_includes_aleph_bft_adapter_counters_when_present() {
+fn status_line_includes_consensus_runtime_counters_when_present() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 2);
     status.aleph_bft_live_session_active = true;
     status.aleph_bft_network_inbound_active = true;
-    status.aleph_bft_status = Some(FederationAlephBftAdapterStatus {
+    status.aleph_bft_status = Some(FederationConsensusRuntimeStatus {
         federation_id: public_config.federation_id,
         local_member: MemberId::new(1).expect("member one"),
         session: 4,

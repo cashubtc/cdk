@@ -632,7 +632,7 @@ Implementation checklist:
 - [x] Make AlephBFT the mandatory mintd federation backend; remove backend
   selection from config, environment variables, generated scripts, and recipes.
 - [x] Implement the AlephBFT-backed engine for multi-member BFT ordering.
-  `FederationAlephBftConsensusAdapter` owns canonical pending/finalized state,
+  `FederationConsensusRuntime` owns canonical pending/finalized state,
   while router startup wires the adapter through upstream `aleph_bft::run_session`,
   the roster keychain, private-REST network pump, durable backup IO, and the
   single ordered apply loop. Live two-, four-, five-, and seven-member tests plus
@@ -654,9 +654,9 @@ Tests and success criteria:
 - [x] Restarting a node mid-session replays accepted items without duplicating state changes.
 - [x] AlephBFT integration test finalizes sessions for 4 nodes and 5 nodes.
   Covered at the CDK adapter boundary by
-  `aleph_bft_consensus_adapter_finalizes_four_member_order_with_faulty_duplicates`
+  `consensus_runtime_finalizes_four_member_order_with_faulty_duplicates`
   and
-  `aleph_bft_consensus_adapter_finalizes_five_member_sessions_with_silent_member`.
+  `consensus_runtime_finalizes_five_member_sessions_with_silent_member`.
   Live network/process-level AlephBFT finality remains tracked separately below.
 - [x] Consensus halts or rejects when fewer than the required quorum is reachable.
 
@@ -692,12 +692,12 @@ Fedimint lessons to adopt:
 
 Architecture checklist:
 
-- [x] Add a production `AlephBftFederationConsensus` backend behind the existing
-  consensus abstraction, using Fedimint's AlephBFT integration as the reference
+- [x] Add one production `FederationConsensusRuntime`, using Fedimint's AlephBFT
+  integration as the reference
   for data provider, finalization handler, keychain, network, session outcome,
-  crash recovery, and catch-up design. CDK names the concrete adapter
-  `FederationAlephBftConsensusAdapter`; `FederationConsensusRuntime` selects it
-  by backend kind, and Axum owns the upstream live-session tasks and durable
+  crash recovery, and catch-up design. The runtime directly owns proposal,
+  finalized-item, journal, and catch-up state; there is no backend selector or
+  parallel adapter type. Axum owns the upstream live-session tasks and durable
   recovery boundary.
 - [x] Keep Cashu/CDK simpler than Fedimint where possible: CDK needs strict
   operation ordering and deterministic mint execution, not Fedimint's full module
@@ -760,12 +760,12 @@ Architecture checklist:
   `DataProvider`, drains canonical units from that runtime, waits on an activity
   notification instead of busy-looping when idle, and is passed through
   `LocalIO` into router-owned `run_session` tasks.
-  `FederationAlephBftConsensusAdapter` now wires the primitive to the CDK-side
+  `FederationConsensusRuntime` now wires the primitive to the CDK-side
   operation submission boundary so tests can verify queued operations become
-  canonical unit payloads. The backend adapter runtime can now select the
-  AlephBFT adapter, validate roster, threshold, and local-member membership
-  before queueing, and expose explicit preview/drain/finalize methods for the
-  future AlephBFT task. Axum now has a focused broadcast round that exercises
+  canonical unit payloads. The runtime validates roster, threshold, and
+  local-member membership before queueing and exposes explicit
+  proposal/finalization methods to the AlephBFT task. Axum now has a focused
+  broadcast round that exercises
   that handoff over signed private REST, retains the queued proposal when remote
   acknowledgements do not reach the configured consensus threshold, and covers a
   batched finalized unit carrying multiple operation responses through driver
@@ -780,7 +780,7 @@ Architecture checklist:
   upstream AlephBFT's data and unit finalization traits and feeds the finalized
   payload channel consumed by exactly one router-owned async apply task. The
   current
-  `FederationAlephBftConsensusAdapter` accepts externally finalized units,
+  `FederationConsensusRuntime` accepts externally finalized units,
   validates them, appends operation outcomes to the in-memory accepted-operation
   journal, and records finalized item metadata. Axum now exposes a controlled
   finalized-unit apply path that persists the finalized-item delta and newly
@@ -965,18 +965,18 @@ Architecture checklist:
 - [x] Expose status for AlephBFT session, pending item
   count, finalized item count, signed session outcome height, catch-up state,
   member lag, response-cache hit rate, and duplicate submissions. The
-  `FederationAlephBftAdapterStatus` snapshot now exposes the adapter-visible
+  `FederationConsensusRuntimeStatus` snapshot now exposes the runtime-visible
   subset through signed local status and `cdk-mintd federation status`: backend,
   finality mode, federation, local member, session, next local unit index, next
   unit finalization index, next global item index, queued item count, drained
   pending-finalization item count, finalized item count, accepted operation
   count, latest accepted operation index, and roster-bound member count.
-  `cdk-mintd federation status` now prints all of those adapter-visible fields
+  `cdk-mintd federation status` now prints all of those runtime-visible fields
   instead of only the older session/queue/finalized/accepted subset. Signed
   local status and `cdk-mintd federation status` now also expose whether the
   router has installed the live AlephBFT session task and inbound network queue,
   so process-level checks can distinguish real live-session ownership from an
-  adapter finality flag alone. Cargo registry checks confirm upstream
+  runtime finality flag alone. Cargo registry checks confirm upstream
   `aleph-bft = 0.45.4` and `fedimint-aleph-bft = 0.36.0` are available, and the
   federation-enabled mintd status test compiles through upstream
   `aleph-bft v0.45.4`. Signed local status and `cdk-mintd federation status`
@@ -1278,14 +1278,14 @@ AlephBFT and consensus unit tests:
 - [x] A 4-member AlephBFT test finalizes ordered sessions with one faulty or
   offline member and all honest members store identical accepted item order.
   Covered at the adapter boundary by
-  `aleph_bft_consensus_adapter_finalizes_four_member_order_with_faulty_duplicates`,
+  `consensus_runtime_finalizes_four_member_order_with_faulty_duplicates`,
   which finalizes accepted, duplicate, and conflicting units across four
   roster-bound adapters and compares their journal and finalized-item
   fingerprints.
 - [x] A 5-member AlephBFT test finalizes ordered sessions with one faulty or
   offline member and all honest members store identical accepted item order.
   Covered at the adapter boundary by
-  `aleph_bft_consensus_adapter_finalizes_five_member_sessions_with_silent_member`,
+  `consensus_runtime_finalizes_five_member_sessions_with_silent_member`,
   which advances from session 0 to session 1, leaves member three silent, and
   proves the other adapters converge.
 - [x] Runtime-level AlephBFT session rollover has focused unit coverage.

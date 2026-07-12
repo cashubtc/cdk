@@ -494,7 +494,7 @@ remain the safety checks. Verification passes 356 `cdk-common` tests, 22 Axum
 peer-client tests, 10 digest-comparison tests, 39 mintd status tests, three
 private journal-route tests, and seven Aleph catch-up tests.
 
-The Axum runtime is now a direct `FederationAlephBftConsensusAdapter` rather
+The Axum runtime is now a direct `FederationConsensusRuntime` rather
 than an enum-dispatched backend. Startup recovery, submission, catch-up,
 readiness, private Aleph routes, and live-session startup no longer branch on a
 backend label. The old synchronous append/finalize branch and its idle
@@ -663,7 +663,7 @@ ordering engine and becomes idle when network finality is available.
 - `crates/cdk-axum/src/federation/aleph_bft_driver.rs`.
 - `crates/cdk-axum/src/federation/aleph_bft_routes.rs`,
   `peer_client.rs`, `aleph_bft_session.rs`, and Axum startup wiring.
-- `crates/cdk-common/src/federation/transport.rs` and consensus adapter APIs.
+- `crates/cdk-common/src/federation/transport.rs` and obsolete external-finalization APIs.
 - Verify proposal, finalization, partition/heal, restart, and catch-up using only
   upstream AlephBFT finality, then search for finalized-unit terminology.
 
@@ -1410,7 +1410,28 @@ Rotation and failure handling are spread across startup and runtime paths.
 
 ## 19. Collapse duplicate consensus abstraction layers
 
-**Status:** Todo
+**Status:** Complete
+
+### Review and result
+
+The wrapper problem was real but narrower than the original wording implied.
+`FederationConsensusRuntime` forwarded every operation to its sole Aleph
+adapter instance, so the wrapper state and adapter type were collapsed into one
+concrete runtime. Axum, database tests, and common
+consensus tests now use that single type directly. The bounded proposal queue,
+unit data provider, and finalized-unit verifier remain as private concrete
+components because they enforce distinct size, deduplication, roster,
+session-order, and replay invariants and provide useful direct unit-test
+boundaries. Axum's similarly named types implement upstream Aleph I/O traits and
+only bridge the runtime to `run_session`; they are not a second consensus
+engine. No generic trait, backend enum, alias, or one-implementation dispatch
+remains at the production consensus boundary.
+
+The public federation facade no longer exports the internal queue, data
+provider, or finalization verifier. All 329 `cdk-common` tests pass, including
+the direct consensus and database restart/recovery cases. Axum federation test
+compilation plus 5 finalized-unit, 7 submission, and 29 catch-up regressions
+pass.
 
 ### Problem
 

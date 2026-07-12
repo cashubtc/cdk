@@ -39,17 +39,15 @@ pub const FEDERATION_MAX_DKG_KEYSET_AMOUNTS: usize = 64;
 pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 pub use self::consensus::{
-    FederationAlephBftAdapterStatus, FederationAlephBftConsensusAdapter,
-    FederationAlephBftFinalizationHandler, FederationAlephBftFinalizedItem,
-    FederationAlephBftFinalizedItemStatus, FederationAlephBftFinalizedUnitOutcome,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitBodyHash,
-    FederationAlephBftUnitDataProvider, FederationAlephBftUnitPayload,
-    FederationConsensusDefaultItem, FederationConsensusItem, FederationConsensusItemAdmission,
-    FederationConsensusItemQueue, FederationConsensusModuleFact, FederationConsensusRuntime,
-    FederationQuorumVerifiedCatchUp, FederationVerifiedOperationAdmission,
-    FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
+    FederationAlephBftFinalizedUnitOutcome, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusDefaultItem,
+    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusModuleFact,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationQuorumVerifiedCatchUp,
+    FederationVerifiedOperationAdmission, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
+    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,

@@ -1420,7 +1420,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_pulls_from_consensus_runtime_queue() {
-        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         {
@@ -1448,7 +1448,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_wakes_for_local_submission() {
-        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         let mut provider =
@@ -1479,7 +1479,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_yields_empty_data_for_peer_activity() {
-        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         let mut provider =
@@ -1506,7 +1506,7 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_data_provider_clears_activity_after_pending_finalization_drains() {
-        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         {
             let mut runtime = consensus.lock().await;
@@ -1703,7 +1703,7 @@ mod tests {
             .await
             .expect("append persisted backup");
         tx.commit().await.expect("commit persisted backup");
-        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1));
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
         let session_io = CdkAlephBftSessionIo::from_db(

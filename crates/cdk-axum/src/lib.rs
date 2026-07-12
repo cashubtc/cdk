@@ -19,9 +19,9 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    redact_federation_operator_message, FederationAlephBftAdapterStatus,
-    FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusRuntime, FederationDkgActivationRequest,
+    redact_federation_operator_message, FederationAlephBftFinalizedItem,
+    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
     FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
@@ -1583,7 +1583,7 @@ impl MintState {
 
     pub(crate) async fn federation_aleph_bft_status(
         &self,
-    ) -> Option<FederationAlephBftAdapterStatus> {
+    ) -> Option<FederationConsensusRuntimeStatus> {
         self.federation.aleph_bft_status().await
     }
 

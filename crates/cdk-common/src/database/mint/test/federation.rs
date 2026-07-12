@@ -7,18 +7,18 @@ use std::sync::Arc;
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
-    FederationAlephBftConsensusAdapter, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationConfig, FederationConfigDigest,
-    FederationConfigSnapshot, FederationConsensusItem, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
-    FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
+    FederationConfigDigest, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -566,7 +566,7 @@ where
         vec![FederationConsensusItem::operation(envelope)],
     )
     .expect("duplicate AlephBFT unit");
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         federation_id,
         member_one,
         0,
@@ -613,7 +613,7 @@ where
     assert_eq!(ranged.len(), 1);
     assert_eq!(ranged[0].accepted_item_index, 1);
 
-    let recovered = FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+    let recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
         federation_id,
         member_one,
         0,

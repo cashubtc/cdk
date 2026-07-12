@@ -1575,14 +1575,13 @@ mod tests {
     };
     #[cfg(feature = "federation")]
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
-        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusItem,
-        FederationConsensusRuntime, FederationError, FederationJournalEntry,
-        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
-        FederationOperation, FederationOperationEnvelope, FederationOperationId,
-        FederationPaymentObservationPolicy, InMemoryFederationJournal, MemberConfigPrivate,
-        MemberId, ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
-        TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationAlephBftUnitPayload, FederationConfig,
+        FederationConsensusItem, FederationConsensusRuntime, FederationError,
+        FederationJournalEntry, FederationKeysetRotationOperation,
+        FederationMeltQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+        FederationOperationId, FederationPaymentObservationPolicy, InMemoryFederationJournal,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk::mint::Mint;
@@ -2913,13 +2912,13 @@ mod tests {
     fn test_aleph_bft_peer(
         federation_id: cdk::federation::FederationId,
         member_id: MemberId,
-    ) -> FederationAlephBftConsensusAdapter {
-        FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0)
+    ) -> FederationConsensusRuntime {
+        FederationConsensusRuntime::new(federation_id, member_id, 0)
     }
 
     #[cfg(feature = "federation")]
     fn finalize_test_operation(
-        peer: &mut FederationAlephBftConsensusAdapter,
+        peer: &mut FederationConsensusRuntime,
         envelope: FederationOperationEnvelope,
     ) -> Result<cdk::federation::FederationSubmitOperationResponse, FederationError> {
         let status = peer.status();
@@ -2942,10 +2941,7 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
-    async fn apply_peer_catch_up(
-        state: &MintState,
-        peer_consensus: &FederationAlephBftConsensusAdapter,
-    ) {
+    async fn apply_peer_catch_up(state: &MintState, peer_consensus: &FederationConsensusRuntime) {
         let local_consensus = state
             .federation
             .consensus
@@ -4058,15 +4054,14 @@ mod tests {
             .get_federation_aleph_bft_finalized_items()
             .await
             .expect("load finalized AlephBFT history");
-        let mut adapter =
-            FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-                runtime_config.federation_id(),
-                runtime_config.member_id(),
-                0,
-                runtime_config.public_config().members.keys().copied(),
-                retained_items.clone(),
-            )
-            .expect("recover finalized AlephBFT history");
+        let mut adapter = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+            runtime_config.federation_id(),
+            runtime_config.member_id(),
+            0,
+            runtime_config.public_config().members.keys().copied(),
+            retained_items.clone(),
+        )
+        .expect("recover finalized AlephBFT history");
         let unit = FederationAlephBftUnitPayload::new(
             runtime_config.federation_id(),
             runtime_config.member_id(),

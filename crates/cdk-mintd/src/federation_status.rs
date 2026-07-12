@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationAlephBftAdapterStatus, FederationConfig,
+    redact_federation_operator_message, FederationConfig, FederationConsensusRuntimeStatus,
     FederationId, FederationMaterializedStateRowFingerprint,
     FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
     FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
@@ -56,7 +56,7 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
+    pub(crate) aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
     pub(crate) aleph_bft_live_session_active: bool,
     pub(crate) aleph_bft_network_inbound_active: bool,
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,

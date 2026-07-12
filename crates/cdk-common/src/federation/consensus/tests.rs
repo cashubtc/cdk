@@ -170,11 +170,11 @@ fn member_roster(count: u16) -> Vec<MemberId> {
 fn aleph_adapters_for_roster(
     federation_id: FederationId,
     members: &[MemberId],
-) -> Vec<FederationAlephBftConsensusAdapter> {
+) -> Vec<FederationConsensusRuntime> {
     members
         .iter()
         .map(|member| {
-            FederationAlephBftConsensusAdapter::for_members(
+            FederationConsensusRuntime::for_members(
                 federation_id,
                 *member,
                 0,
@@ -206,7 +206,7 @@ fn aleph_operation_unit(
 }
 
 fn journal_fingerprint(
-    adapter: &FederationAlephBftConsensusAdapter,
+    adapter: &FederationConsensusRuntime,
 ) -> Vec<(
     u64,
     String,
@@ -233,7 +233,7 @@ fn journal_fingerprint(
 }
 
 fn finalized_item_fingerprint(
-    adapter: &FederationAlephBftConsensusAdapter,
+    adapter: &FederationConsensusRuntime,
 ) -> Vec<(
     u64,
     u64,
@@ -263,7 +263,7 @@ fn finalized_item_fingerprint(
         .collect()
 }
 
-fn assert_aleph_adapters_converged(adapters: &[FederationAlephBftConsensusAdapter]) {
+fn assert_aleph_adapters_converged(adapters: &[FederationConsensusRuntime]) {
     let first = adapters.first().expect("at least one adapter");
     let expected_journal = journal_fingerprint(first);
     let expected_finalized = finalized_item_fingerprint(first);
@@ -307,7 +307,7 @@ fn assert_aleph_adapters_converged(adapters: &[FederationAlephBftConsensusAdapte
 #[test]
 fn consensus_runtime_begin_aleph_bft_session_rotates_empty_session() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
 
     runtime
         .begin_aleph_bft_session(1)
@@ -345,7 +345,7 @@ fn consensus_runtime_begin_aleph_bft_session_rotates_empty_session() {
 #[test]
 fn consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
 
     runtime
         .submit_aleph_bft_envelope(mint_envelope(
@@ -389,7 +389,7 @@ fn consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality() {
 #[test]
 fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
     let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
 
     runtime
         .submit_aleph_bft_envelope(mint_envelope(
@@ -1306,7 +1306,7 @@ fn aleph_bft_finalization_handler_advances_to_later_sessions() {
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
+fn consensus_runtime_builds_units_and_applies_finalized_operations() {
     let federation_id = federation_id(13);
     let first = mint_envelope(
         federation_id,
@@ -1320,7 +1320,7 @@ fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let second_id = second.operation_id().expect("second operation id");
-    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let mut adapter = FederationConsensusRuntime::new(federation_id, member_id_value(1), 0);
 
     assert_eq!(
         adapter.submit_operation(first).expect("submit first"),
@@ -1373,7 +1373,7 @@ fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_marks_duplicate_finalized_operations_idempotently() {
+fn consensus_runtime_marks_duplicate_finalized_operations_idempotently() {
     let federation_id = federation_id(13);
     let envelope = mint_envelope(
         federation_id,
@@ -1397,7 +1397,7 @@ fn aleph_bft_consensus_adapter_marks_duplicate_finalized_operations_idempotently
         vec![FederationConsensusItem::operation(envelope)],
     )
     .expect("duplicate unit");
-    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let mut adapter = FederationConsensusRuntime::new(federation_id, member_id_value(1), 0);
 
     let first_response = adapter
         .finalize_unit(first_unit)
@@ -1419,7 +1419,7 @@ fn aleph_bft_consensus_adapter_marks_duplicate_finalized_operations_idempotently
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_finalizes_four_member_order_with_faulty_duplicates() {
+fn consensus_runtime_finalizes_four_member_order_with_faulty_duplicates() {
     let federation_id = federation_id(13);
     let members = member_roster(4);
     let first = mint_quote_envelope_with_amount(federation_id, "quote-four-a", 1);
@@ -1507,7 +1507,7 @@ fn aleph_bft_consensus_adapter_finalizes_four_member_order_with_faulty_duplicate
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_finalizes_five_member_sessions_with_silent_member() {
+fn consensus_runtime_finalizes_five_member_sessions_with_silent_member() {
     let federation_id = federation_id(14);
     let members = member_roster(5);
     let session_zero_first = mint_quote_envelope_with_amount(federation_id, "quote-five-a", 1);
@@ -1632,7 +1632,7 @@ fn aleph_bft_consensus_adapter_finalizes_five_member_sessions_with_silent_member
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
+fn consensus_runtime_recovers_from_finalized_items() {
     let federation_id = federation_id(13);
     let envelope = mint_envelope(
         federation_id,
@@ -1664,7 +1664,7 @@ fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
         vec![FederationConsensusItem::operation(envelope)],
     )
     .expect("later duplicate unit");
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+    let mut adapter = FederationConsensusRuntime::for_members(
         federation_id,
         member_id_value(1),
         0,
@@ -1701,15 +1701,14 @@ fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
         2
     );
 
-    let mut recovered =
-        FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-            federation_id,
-            member_id_value(1),
-            0,
-            [member_id_value(1), member_id_value(2), member_id_value(3)],
-            finalized_items,
-        )
-        .expect("recovered adapter");
+    let mut recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+        federation_id,
+        member_id_value(1),
+        0,
+        [member_id_value(1), member_id_value(2), member_id_value(3)],
+        finalized_items,
+    )
+    .expect("recovered adapter");
 
     assert_eq!(recovered.journal().len(), 1);
     assert_eq!(recovered.journal().entries()[0].operation_id, operation_id);
@@ -1739,7 +1738,7 @@ fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_recovery_preserves_finalized_conflict_rejection() {
+fn consensus_runtime_recovery_preserves_finalized_conflict_rejection() {
     let federation_id = federation_id(14);
     let first = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 1);
     let conflicting = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 2);
@@ -1755,13 +1754,9 @@ fn aleph_bft_consensus_adapter_recovery_preserves_finalized_conflict_rejection()
     )
     .expect("conflicting finalized unit");
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
-    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
-        federation_id,
-        member_id_value(1),
-        0,
-        members,
-    )
-    .expect("adapter");
+    let mut adapter =
+        FederationConsensusRuntime::for_members(federation_id, member_id_value(1), 0, members)
+            .expect("adapter");
     adapter.finalize_unit(unit).expect("finalize conflicts");
     assert_eq!(
         adapter.journal().entries()[1].status,
@@ -1786,11 +1781,11 @@ fn aleph_bft_consensus_adapter_recovery_preserves_finalized_conflict_rejection()
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_from_finalized_items() {
+fn consensus_runtime_recovers_next_local_unit_index_from_finalized_items() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
     let mut adapter =
-        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+        FederationConsensusRuntime::for_members(federation_id, members[0], 0, members)
             .expect("adapter");
 
     adapter
@@ -1810,15 +1805,14 @@ fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_from_finalized_ite
         .finalize_unit(first_unit)
         .expect("finalize first local unit");
 
-    let mut recovered =
-        FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-            federation_id,
-            members[0],
-            0,
-            members,
-            adapter.finalized_items().to_vec(),
-        )
-        .expect("recovered adapter");
+    let mut recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+        federation_id,
+        members[0],
+        0,
+        members,
+        adapter.finalized_items().to_vec(),
+    )
+    .expect("recovered adapter");
     assert_eq!(recovered.next_unit_index(), 1);
 
     recovered
@@ -1837,11 +1831,11 @@ fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_from_finalized_ite
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_session_rotation_waits_for_pending_local_finality() {
+fn consensus_runtime_session_rotation_waits_for_pending_local_finality() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
     let mut adapter =
-        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+        FederationConsensusRuntime::for_members(federation_id, members[0], 0, members)
             .expect("adapter");
 
     adapter
@@ -1885,11 +1879,11 @@ fn aleph_bft_consensus_adapter_session_rotation_waits_for_pending_local_finality
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_per_rotated_session() {
+fn consensus_runtime_recovers_next_local_unit_index_per_rotated_session() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
     let mut adapter =
-        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+        FederationConsensusRuntime::for_members(federation_id, members[0], 0, members)
             .expect("adapter");
 
     adapter
@@ -1927,15 +1921,14 @@ fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_per_rotated_sessio
         .finalize_unit(session_one_unit)
         .expect("finalize session one unit");
 
-    let mut recovered =
-        FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-            federation_id,
-            members[0],
-            1,
-            members,
-            adapter.finalized_items().to_vec(),
-        )
-        .expect("recover rotated adapter");
+    let mut recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+        federation_id,
+        members[0],
+        1,
+        members,
+        adapter.finalized_items().to_vec(),
+    )
+    .expect("recover rotated adapter");
     let status = recovered.status();
     assert_eq!(status.session, 1);
     assert_eq!(status.next_unit_index, 1);
@@ -1958,11 +1951,11 @@ fn aleph_bft_consensus_adapter_recovers_next_local_unit_index_per_rotated_sessio
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_advances_local_unit_index_from_replayed_finalized_unit() {
+fn consensus_runtime_advances_local_unit_index_from_replayed_finalized_unit() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
     let mut adapter =
-        FederationAlephBftConsensusAdapter::for_members(federation_id, members[0], 0, members)
+        FederationConsensusRuntime::for_members(federation_id, members[0], 0, members)
             .expect("adapter");
 
     let replayed_envelope = mint_envelope(
@@ -2001,7 +1994,7 @@ fn aleph_bft_consensus_adapter_advances_local_unit_index_from_replayed_finalized
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
+fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let federation_id = federation_id(13);
     let envelope = mint_envelope(
         federation_id,
@@ -2013,7 +2006,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
         "quote-2",
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
-    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let mut adapter = FederationConsensusRuntime::new(federation_id, member_id_value(1), 0);
     let unit = FederationAlephBftUnitPayload::new(
         federation_id,
         member_id_value(2),
@@ -2058,8 +2051,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
         vec![FederationConsensusItem::operation(second_ordered_envelope)],
     )
     .expect("ordered second unit");
-    let mut ordered_adapter =
-        FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let mut ordered_adapter = FederationConsensusRuntime::new(federation_id, member_id_value(1), 0);
     ordered_adapter
         .finalize_unit(ordered_first_unit)
         .expect("first ordered unit finalized");
@@ -2072,7 +2064,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let mut gap = finalized_items.clone();
     gap[0].accepted_item_index = 7;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2086,7 +2078,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     mismatched_operation_id[0].operation_id =
         Some(other_envelope.operation_id().expect("other operation id"));
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2099,7 +2091,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let mut mismatched_body_hash = finalized_items.clone();
     mismatched_body_hash[0].unit_body_hash = FederationAlephBftUnitBodyHash::from_bytes([9; 32]);
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2112,7 +2104,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let mut non_contiguous_item_index = finalized_items.clone();
     non_contiguous_item_index[0].item_index_in_unit = 1;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2127,7 +2119,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     out_of_order_unit_items[0].accepted_item_index = 0;
     out_of_order_unit_items[1].accepted_item_index = 1;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2142,7 +2134,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     interleaved_unit_items[1].accepted_item_index = 1;
     interleaved_unit_items[2].accepted_item_index = 2;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2155,7 +2147,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let mut non_advancing_unit_finalization = ordered_finalized_items.clone();
     non_advancing_unit_finalization[2].unit_finalization_index = 0;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2168,7 +2160,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let mut skipped_unit_finalization = ordered_finalized_items.clone();
     skipped_unit_finalization[2].unit_finalization_index = 7;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2181,7 +2173,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
     let mut impossible_duplicate = finalized_items;
     impossible_duplicate[0].status = FederationAlephBftFinalizedItemStatus::DuplicateOperation;
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             0,
@@ -2193,9 +2185,9 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_recovery_rejects_out_of_order_sessions() {
+fn consensus_runtime_recovery_rejects_out_of_order_sessions() {
     let federation_id = federation_id(13);
-    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let mut adapter = FederationConsensusRuntime::new(federation_id, member_id_value(1), 0);
     let session_zero_unit = FederationAlephBftUnitPayload::new(
         federation_id,
         member_id_value(2),
@@ -2230,7 +2222,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_out_of_order_sessions() {
         vec![0, 1]
     );
 
-    FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+    FederationConsensusRuntime::recover_from_finalized_items(
         federation_id,
         member_id_value(1),
         1,
@@ -2244,7 +2236,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_out_of_order_sessions() {
     backwards_sessions[1].accepted_item_index = 1;
 
     assert!(matches!(
-        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+        FederationConsensusRuntime::recover_from_finalized_items(
             federation_id,
             member_id_value(1),
             1,
@@ -2256,7 +2248,7 @@ fn aleph_bft_consensus_adapter_recovery_rejects_out_of_order_sessions() {
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_rejects_invalid_finalized_units_before_journal_append() {
+fn consensus_runtime_rejects_invalid_finalized_units_before_journal_append() {
     let federation = federation_id(13);
     let wrong_federation = federation_id(14);
     let wrong_federation_unit =
@@ -2266,7 +2258,7 @@ fn aleph_bft_consensus_adapter_rejects_invalid_finalized_units_before_journal_ap
         FederationAlephBftUnitPayload::new(federation, member_id_value(2), 0, 0, Vec::new())
             .expect("tampered unit");
     tampered_unit.body_hash = FederationAlephBftUnitBodyHash::from_bytes([3; 32]);
-    let mut adapter = FederationAlephBftConsensusAdapter::new(federation, member_id_value(1), 0);
+    let mut adapter = FederationConsensusRuntime::new(federation, member_id_value(1), 0);
 
     assert!(matches!(
         adapter.finalize_unit(wrong_federation_unit),
@@ -2281,9 +2273,9 @@ fn aleph_bft_consensus_adapter_rejects_invalid_finalized_units_before_journal_ap
 }
 
 #[test]
-fn aleph_bft_consensus_adapter_advances_sessions_for_units_and_finalization() {
+fn consensus_runtime_advances_sessions_for_units_and_finalization() {
     let federation_id = federation_id(13);
-    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let mut adapter = FederationConsensusRuntime::new(federation_id, member_id_value(1), 0);
     adapter.begin_session(1).expect("begin next session");
     assert_eq!(adapter.session(), 1);
     assert_eq!(adapter.next_unit_index(), 0);

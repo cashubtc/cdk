@@ -11,12 +11,10 @@ use crate::{
     FederationOperationWaitRegistration, FederationRestAdmissionHandle, FederationSequenceHandle,
     FederationSyncHandle, FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
 };
-#[cfg(test)]
-use cdk::federation::FederationAlephBftConsensusAdapter;
 use cdk::federation::{
-    FederationAlephBftAdapterStatus, FederationAlephBftFinalizedItem,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationConfig, FederationConsensusItemAdmission,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
     FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
@@ -610,7 +608,7 @@ impl FederationNodeRuntime {
         }
     }
 
-    pub(crate) async fn aleph_bft_status(&self) -> Option<FederationAlephBftAdapterStatus> {
+    pub(crate) async fn aleph_bft_status(&self) -> Option<FederationConsensusRuntimeStatus> {
         let consensus = self.consensus.as_ref()?;
         consensus.lock().await.aleph_bft_status().ok()
     }
@@ -878,8 +876,8 @@ impl FederationNodeRuntime {
             .unwrap_or(runtime_config.member_id());
         let target_session =
             crate::latest_aleph_bft_finalized_session(&local_finalized_items).max(status.session);
-        let mut adapter =
-            FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+        let mut recovered_runtime =
+            FederationConsensusRuntime::recover_for_members_from_finalized_items(
                 public_config.federation_id,
                 runtime_config.member_id(),
                 target_session,
@@ -907,7 +905,7 @@ impl FederationNodeRuntime {
                 })
                 .collect(),
         )?;
-        adapter.finalize_unit(unit)?;
+        recovered_runtime.finalize_unit(unit)?;
         let request =
             cdk::federation::FederationJournalCatchUpRequest::new(local_entries.len() as u64)
                 .with_known_order_digest(
@@ -920,13 +918,13 @@ impl FederationNodeRuntime {
                 .with_aleph_bft_next_item_index(local_finalized_items.len() as u64);
         let mut aleph_response = FederationJournalCatchUpResponse::from_journal(
             public_config.federation_id,
-            adapter.journal(),
+            recovered_runtime.journal(),
             &request,
             u16::MAX,
             u16::MAX,
         )
         .with_aleph_bft_finalized_items(
-            adapter.finalized_items()[local_finalized_items.len()..].to_vec(),
+            recovered_runtime.finalized_items()[local_finalized_items.len()..].to_vec(),
             true,
         );
         aleph_response.complete = response.complete;
