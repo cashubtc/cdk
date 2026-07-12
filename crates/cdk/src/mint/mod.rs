@@ -19,6 +19,8 @@ use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
+#[cfg(feature = "federation")]
+use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
@@ -58,6 +60,8 @@ const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
 const PAYMENT_EVENT_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
+#[cfg(feature = "federation")]
+const FEDERATION_PAYMENT_EVENT_CHANNEL_CAPACITY: usize = 256;
 
 #[cfg(feature = "federation")]
 fn federation_restore_share_matches_output(
@@ -115,6 +119,9 @@ pub struct Mint {
     /// Cached federation config after applying accepted keyset rotations.
     #[cfg(feature = "federation")]
     federation_effective_config_cache: Arc<Mutex<Option<EffectiveFederationConfigCache>>>,
+    /// Backend payment events consumed by the consensus-aware observer.
+    #[cfg(feature = "federation")]
+    federation_payment_events: broadcast::Sender<cdk_common::payment::Event>,
 }
 
 impl std::fmt::Debug for Mint {
@@ -293,10 +300,21 @@ impl Mint {
         }
 
         let payment_processors = Arc::new(payment_processors);
+        #[cfg(feature = "federation")]
+        let pubsub_queries_mutate_payment_state = !federation_mode.is_member();
+        #[cfg(not(feature = "federation"))]
+        let pubsub_queries_mutate_payment_state = true;
+        #[cfg(feature = "federation")]
+        let (federation_payment_events, _) =
+            broadcast::channel(FEDERATION_PAYMENT_EVENT_CHANNEL_CAPACITY);
 
         Ok(Self {
             signatory,
-            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
+            pubsub_manager: PubSubManager::new((
+                localstore.clone(),
+                payment_processors.clone(),
+                pubsub_queries_mutate_payment_state,
+            )),
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
@@ -316,6 +334,8 @@ impl Mint {
             federation_config,
             #[cfg(feature = "federation")]
             federation_effective_config_cache: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "federation")]
+            federation_payment_events,
         })
     }
 
@@ -342,13 +362,17 @@ impl Mint {
             // Don't fail startup
         }
 
-        // Recover from incomplete melt sagas
-        // This cleans up incomplete melt operations using persisted saga state
-        // Now includes checking payment status with LN backend to determine
-        // whether to finalize (if paid) or compensate (if failed/unpaid)
-        if let Err(e) = self.recover_from_incomplete_melt_sagas().await {
-            tracing::error!("Failed to recover incomplete melt sagas: {}", e);
-            // Don't fail startup
+        #[cfg(feature = "federation")]
+        let recover_melt_sagas = self.federation_config().is_none();
+        #[cfg(not(feature = "federation"))]
+        let recover_melt_sagas = true;
+        if recover_melt_sagas {
+            // Standalone recovery owns backend reconciliation. Federation
+            // recovery is driven by the consensus-aware payment observer.
+            if let Err(e) = self.recover_from_incomplete_melt_sagas().await {
+                tracing::error!("Failed to recover incomplete melt sagas: {}", e);
+                // Don't fail startup
+            }
         }
 
         let mut task_state = self.task_state.lock().await;
@@ -395,7 +419,6 @@ impl Mint {
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
         let shutdown_clone = shutdown_notify.clone();
 
-        // Spawn the supervisor task
         let supervisor_handle = tokio::spawn(async move {
             Self::wait_for_paid_invoices(
                 mint_clone,
@@ -569,6 +592,14 @@ impl Mint {
     #[inline]
     pub fn federation_config(&self) -> Option<&FederationRuntimeConfig> {
         self.federation_config.as_ref()
+    }
+
+    /// Subscribe to backend payment events without applying standalone state transitions.
+    #[cfg(feature = "federation")]
+    pub fn subscribe_federation_payment_events(
+        &self,
+    ) -> broadcast::Receiver<cdk_common::payment::Event> {
+        self.federation_payment_events.subscribe()
     }
 
     /// Pub Sub manager
@@ -829,6 +860,12 @@ impl Mint {
                                         let Some(event) = maybe_event else {
                                             break;
                                         };
+
+                                        #[cfg(feature = "federation")]
+                                        if mint.federation_config().is_some() {
+                                            let _ = mint.federation_payment_events.send(event);
+                                            continue;
+                                        }
 
                                         match event {
                                             cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {

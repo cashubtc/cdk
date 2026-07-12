@@ -484,14 +484,20 @@ impl MintConnector for LocalFederatedMemberConnector {
             .await?;
         let config = self.effective_federation_config().await?;
         let envelope = config.melt_operation(request.clone())?;
-        let operation_id = envelope.operation_id()?;
         self.append_and_apply_to_federation(envelope).await?;
-
-        Ok(self
+        if let Some(observation) = self
             .mint
-            .melt_federation(&request, operation_id)
+            .probe_federation_melt_quote_payment(request.quote_id())
             .await?
-            .into())
+        {
+            let envelope = FederationOperationEnvelope::new(
+                config.federation_id(),
+                FederationOperation::MeltQuotePayment(observation),
+            );
+            self.append_and_apply_to_federation(envelope).await?;
+        }
+
+        Ok(self.mint.check_melt_quote(request.quote_id()).await?.into())
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, crate::Error> {

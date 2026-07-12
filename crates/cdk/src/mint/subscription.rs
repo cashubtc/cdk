@@ -27,6 +27,7 @@ use crate::event::MintEvent;
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    query_backend: bool,
 }
 
 impl MintPubSubSpec {
@@ -48,13 +49,15 @@ impl MintPubSubSpec {
             .into_iter()
             .flatten()
         {
-            Mint::check_mint_quote_payments(
-                self.db.clone(),
-                self.payment_processors.clone(),
-                None,
-                &mut quote,
-            )
-            .await?;
+            if self.query_backend {
+                Mint::check_mint_quote_payments(
+                    self.db.clone(),
+                    self.payment_processors.clone(),
+                    None,
+                    &mut quote,
+                )
+                .await?;
+            }
 
             quotes.insert(quote.id.clone(), quote);
         }
@@ -183,12 +186,14 @@ impl Spec for MintPubSubSpec {
     type Context = (
         DynMintDatabase,
         Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        bool,
     );
 
     fn new_instance(context: Self::Context) -> Arc<Self> {
         Arc::new(Self {
             db: context.0,
             payment_processors: context.1,
+            query_backend: context.2,
         })
     }
 
@@ -214,6 +219,7 @@ impl PubSubManager {
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+            bool,
         ),
     ) -> Arc<Self> {
         Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(context))))
@@ -423,6 +429,7 @@ mod tests {
         let spec = MintPubSubSpec {
             db,
             payment_processors: Arc::new(HashMap::new()),
+            query_backend: true,
         };
         let events = spec
             .get_events_from_db(&[

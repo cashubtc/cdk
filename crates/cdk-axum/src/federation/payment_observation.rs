@@ -2,14 +2,239 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cdk::cdk_payment::Event;
 use cdk::federation::{
-    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
+    FederationPaymentObservation, FederationPaymentObservationQuarantineRecord,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary,
 };
+use cdk::mint::QuoteId;
+use cdk::nuts::{MeltQuoteState, MintQuoteState};
 
 use crate::MintState;
 
 const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
+const FEDERATION_PAYMENT_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FederationPaymentObserver {
+    melt: std::sync::Arc<tokio::sync::Mutex<()>>,
+}
+
+impl FederationPaymentObserver {
+    pub(crate) async fn observe_mint_quotes(
+        &self,
+        state: &MintState,
+        quote_ids: &[QuoteId],
+    ) -> Result<usize, cdk::Error> {
+        let mut submitted = 0usize;
+        for quote_id in quote_ids {
+            let Some(observation) = state
+                .mint
+                .probe_federation_mint_quote_payment(quote_id)
+                .await?
+            else {
+                continue;
+            };
+            if submit_observation(state, FederationPaymentObservation::MintQuote(observation))
+                .await?
+            {
+                submitted = submitted.saturating_add(1);
+            }
+        }
+        Ok(submitted)
+    }
+
+    pub(crate) async fn observe_melt_quote(
+        &self,
+        state: &MintState,
+        quote_id: &QuoteId,
+    ) -> Result<bool, cdk::Error> {
+        let _guard = self.melt.lock().await;
+        let Some(observation) = state
+            .mint
+            .probe_federation_melt_quote_payment(quote_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await
+    }
+
+    pub(crate) async fn observe_event(
+        &self,
+        state: &MintState,
+        event: Event,
+    ) -> Result<usize, cdk::Error> {
+        match event {
+            Event::PaymentReceived(payment) => {
+                let Some(quote) = state
+                    .mint
+                    .localstore()
+                    .get_mint_quote_by_request_lookup_id(&payment.payment_identifier)
+                    .await?
+                else {
+                    return Ok(0);
+                };
+                self.observe_mint_quotes(state, std::slice::from_ref(&quote.id))
+                    .await
+            }
+            Event::PaymentSuccessful { quote_id, .. } | Event::PaymentFailed { quote_id, .. } => {
+                Ok(usize::from(
+                    self.observe_melt_quote(state, &quote_id).await?,
+                ))
+            }
+        }
+    }
+
+    pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {
+        if state.mint.federation_config().is_none() {
+            return Ok(0);
+        }
+
+        let mint_quote_ids = state
+            .mint
+            .localstore()
+            .get_mint_quotes()
+            .await?
+            .into_iter()
+            .filter(|quote| quote.state() != MintQuoteState::Issued)
+            .map(|quote| quote.id)
+            .collect::<Vec<_>>();
+        let mut submitted = 0usize;
+        for quote_ids in mint_quote_ids.chunks(FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE) {
+            submitted = submitted.saturating_add(self.observe_mint_quotes(state, quote_ids).await?);
+        }
+
+        let melt_quote_ids = state
+            .mint
+            .localstore()
+            .get_melt_quotes()
+            .await?
+            .into_iter()
+            .filter(|quote| quote.state == MeltQuoteState::Pending)
+            .map(|quote| quote.id)
+            .collect::<Vec<_>>();
+        for quote_id in melt_quote_ids {
+            if self.observe_melt_quote(state, &quote_id).await? {
+                submitted = submitted.saturating_add(1);
+            }
+        }
+
+        Ok(submitted)
+    }
+
+    pub(crate) fn spawn(self, state: MintState) {
+        if state.mint.federation_config().is_none() {
+            return;
+        }
+
+        let mut payment_events = state.mint.subscribe_federation_payment_events();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(FEDERATION_PAYMENT_OBSERVER_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+
+            loop {
+                let result = tokio::select! {
+                    _ = interval.tick() => self.run_round(&state).await,
+                    event = payment_events.recv() => match event {
+                        Ok(event) => self.observe_event(&state, event).await,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                "Federation payment observer lagged; running repair scan"
+                            );
+                            self.run_round(&state).await
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                };
+                match result {
+                    Ok(submitted) if submitted > 0 => {
+                        tracing::debug!(
+                            submitted,
+                            "Federation payment observer submitted observations"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!("Federation payment observer failed: {}", err),
+                }
+            }
+        });
+    }
+}
+
+async fn submit_observation(
+    state: &MintState,
+    candidate: FederationPaymentObservation,
+) -> Result<bool, cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(false);
+    };
+    let records = state
+        .mint
+        .localstore()
+        .get_federation_payment_observations(candidate.context(), candidate.quote())
+        .await?;
+    if records.iter().any(|record| {
+        record.observation.context() == candidate.context()
+            && record.observation.quote() == candidate.quote()
+            && record.observation.observer() == candidate.observer()
+            && record.observation.state_label() == candidate.state_label()
+    }) {
+        return Ok(false);
+    }
+
+    let observations = records
+        .iter()
+        .map(|record| &record.observation)
+        .collect::<Vec<_>>();
+    let policy = *config
+        .public_config()
+        .payment_verification_policy(candidate.context());
+    if let Some(base) = observations
+        .iter()
+        .copied()
+        .find(|observation| candidate.matches_payment_evidence(observation))
+    {
+        let quorum = base.quorum(
+            observations.iter().copied(),
+            policy.required_matching_observations(),
+        );
+        if policy.evaluate_quorum(&quorum).is_ok() {
+            return Ok(false);
+        }
+    }
+
+    let envelope = match candidate {
+        FederationPaymentObservation::MintQuote(observation) => config
+            .mint_quote_payment_observation_with_metadata(
+                observation.quote,
+                observation.method,
+                observation.state,
+                observation.amount_paid,
+                observation.amount_issued,
+                observation.payment_proof,
+                observation.payment_id,
+            ),
+        FederationPaymentObservation::MeltQuote(observation) => config
+            .melt_quote_payment_observation_with_metadata(
+                observation.quote,
+                observation.method,
+                observation.state,
+                observation.amount,
+                observation.fee_reserve,
+                observation.payment_proof,
+                observation.payment_id,
+            ),
+    };
+    state
+        .submit_federation_payment_observation_envelope(envelope)
+        .await?;
+    Ok(true)
+}
 
 pub(super) async fn payment_observation_report_summaries(
     state: &MintState,

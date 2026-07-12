@@ -2340,6 +2340,7 @@ async fn create_mint_router_with_custom_cache_inner(
                     FederationInvalidOperationAlertTracker::default(),
                 ))
             }),
+            payment_observer: federation::FederationPaymentObserver::default(),
             aleph_bft_pending_sequences: federation_consensus
                 .as_ref()
                 .map(|_| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
@@ -2447,7 +2448,11 @@ async fn create_mint_router_with_custom_cache_inner(
 
     #[cfg(feature = "federation")]
     if state.federation.consensus.is_some() {
-        custom_handlers::spawn_federation_mint_payment_observer_loop(state.clone());
+        state
+            .federation
+            .payment_observer
+            .clone()
+            .spawn(state.clone());
         if spawn_federation_peer_sync {
             federation::spawn_federation_peer_sync_loop_with_config(
                 state.clone(),

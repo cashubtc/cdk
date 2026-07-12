@@ -11,6 +11,8 @@ use cdk_common::database::{DynMintDatabase, Error as DatabaseError};
 use cdk_common::federation::FederationOperationId;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
+#[cfg(feature = "federation")]
+use cdk_common::mint::Saga;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::nuts::nut17::{Kind, NotificationPayload};
@@ -163,6 +165,23 @@ impl std::future::IntoFuture for PendingMelt {
 }
 
 impl Mint {
+    #[cfg(feature = "federation")]
+    pub(crate) async fn attempt_federation_external_melt_payment(
+        &self,
+        quote: MeltQuote,
+        saga: Saga,
+    ) -> Result<cdk_common::payment::MakePaymentResponse, Error> {
+        MeltSaga::resume_federation_external_payment(
+            Arc::new(self.clone()),
+            self.localstore.clone(),
+            Arc::clone(&self.pubsub_manager),
+            quote,
+            saga,
+        )?
+        .attempt_external_payment_for_federation_observation()
+        .await
+    }
+
     /// Return an existing melt quote for an idempotent federation retry.
     pub async fn existing_federation_melt_quote(
         &self,
@@ -970,7 +989,13 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            self.handle_pending_melt_quote(&mut quote).await?;
+            #[cfg(feature = "federation")]
+            let reconcile_backend = self.federation_config().is_none();
+            #[cfg(not(feature = "federation"))]
+            let reconcile_backend = true;
+            if reconcile_backend {
+                self.handle_pending_melt_quote(&mut quote).await?;
+            }
 
             let blind_signatures = self
                 .localstore
@@ -1346,7 +1371,7 @@ impl Mint {
     }
 
     #[cfg(feature = "federation")]
-    async fn resume_paid_federation_melt_finalization(
+    pub(crate) async fn resume_paid_federation_melt_finalization(
         &self,
         quote: &mut MeltQuote,
         saga: &cdk_common::mint::Saga,
@@ -1397,9 +1422,6 @@ impl Mint {
             .await?
             .ok_or(Error::Internal)?;
         federation_config.validate_melt_change_outputs(melt_request)?;
-        let should_attempt_external_payment =
-            federation_config.should_attempt_melt_payment(federation_operation_id);
-
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
             if outputs_count > self.max_outputs {
@@ -1519,31 +1541,15 @@ impl Mint {
         let setup_saga = init_saga
             .setup_melt(melt_request, verification, quote.payment_method.clone())
             .await?;
-        let setup_saga = match setup_saga
+        match setup_saga
             .finalize_internal_settlement_federation(federation_operation_id, accepted_time)
             .await?
         {
             FederationInternalSettlementOutcome::Finalized(response) => return Ok(response),
-            FederationInternalSettlementOutcome::External(setup_saga) => setup_saga,
-        };
-        let (setup_saga, settlement) = setup_saga.attempt_internal_settlement(melt_request).await?;
-
-        match setup_saga
-            .make_payment_if_elected(settlement, should_attempt_external_payment)
-            .await?
-        {
-            PaymentOutcome::Confirmed(payment_saga) => {
-                payment_saga
-                    .finalize_federation(federation_operation_id)
-                    .await
-            }
-            PaymentOutcome::Pending {
-                #[cfg(feature = "prometheus")]
-                    metrics: _,
-            } => {
-                let mut quote_clone = quote;
-                quote_clone.state = MeltQuoteState::Pending;
-                Ok(quote_clone.into_response(None))
+            FederationInternalSettlementOutcome::External(_setup_saga) => {
+                let mut quote = quote;
+                quote.state = MeltQuoteState::Pending;
+                Ok(quote.into_response(None))
             }
         }
     }

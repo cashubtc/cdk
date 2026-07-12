@@ -25,7 +25,9 @@ use cdk_common::federation::{
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
-use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
+use cdk_common::mint::{
+    MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
+};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltQuoteRequest,
@@ -41,6 +43,7 @@ use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
 use super::Mint;
 use super::MintInput;
 use crate::fees::calculate_fee;
+use crate::types::PaymentProcessorKey;
 
 /// Defines whether a mint runs as a standalone Cashu mint or as a federation member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -113,35 +116,6 @@ impl FederationRuntimeConfig {
             .keysets
             .iter()
             .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-    }
-
-    pub(crate) fn elected_melt_payment_member(
-        &self,
-        operation_id: FederationOperationId,
-    ) -> MemberId {
-        let members = self
-            .public_config
-            .members
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        let operation_bytes = operation_id.to_bytes();
-        let mut selector_bytes = [0_u8; 8];
-        selector_bytes.copy_from_slice(&operation_bytes[..8]);
-        let selector = u64::from_be_bytes(selector_bytes);
-        let index = (selector % members.len() as u64) as usize;
-        members[index]
-    }
-
-    pub(crate) fn should_attempt_melt_payment(&self, operation_id: FederationOperationId) -> bool {
-        let policy = *self
-            .public_config
-            .payment_verification_policy(FederationPaymentObservationContext::MeltQuote);
-        if policy.permits_single_observation_finality() {
-            return true;
-        }
-
-        self.elected_melt_payment_member(operation_id) == self.member_id()
     }
 
     /// Return a new runtime config with a replaced public config.
@@ -942,6 +916,140 @@ impl Mint {
 
         let response = serde_json::from_value(serde_json::to_value(&operation.response)?)?;
         Ok(Some((response, operation.request_lookup_id.clone())))
+    }
+
+    /// Probe an incoming payment backend without mutating federated quote state.
+    pub async fn probe_federation_mint_quote_payment(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<FederationMintQuotePaymentObservation>, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        if quote.state() == MintQuoteState::Issued {
+            return Ok(None);
+        }
+
+        let processor = self
+            .payment_processors
+            .get(&PaymentProcessorKey::new(
+                quote.unit.clone(),
+                quote.payment_method.clone(),
+            ))
+            .ok_or(Error::UnsupportedUnit)?;
+        let payments = processor
+            .check_incoming_payment_status(&quote.request_lookup_id)
+            .await?;
+        let mut observed_quote = quote.clone();
+        let mut payment_id = None;
+
+        for payment in payments {
+            if payment.payment_amount.value() == 0
+                || observed_quote.payment_ids().contains(&&payment.payment_id)
+            {
+                continue;
+            }
+            let amount = payment.payment_amount.convert_to(&observed_quote.unit)?;
+            payment_id = Some(federation_payment_identifier_from_label(
+                &payment.payment_id,
+            ));
+            observed_quote.add_payment(amount, payment.payment_id, None)?;
+        }
+
+        if observed_quote.state() != MintQuoteState::Paid
+            || observed_quote.amount_paid().value() == 0
+        {
+            return Ok(None);
+        }
+        if payment_id.is_none() {
+            payment_id = observed_quote
+                .payments
+                .last()
+                .map(|payment| federation_payment_identifier_from_label(&payment.payment_id));
+        }
+
+        Ok(Some(FederationMintQuotePaymentObservation {
+            quote: observed_quote.id.to_string(),
+            observer: config.member_id(),
+            method: observed_quote.payment_method.clone(),
+            state: MintQuoteState::Paid,
+            amount_paid: observed_quote.amount_paid().into(),
+            amount_issued: observed_quote.amount_issued().into(),
+            payment_id,
+            payment_proof: None,
+        }))
+    }
+
+    /// Probe or initiate an outgoing federated payment without finalizing its saga.
+    pub async fn probe_federation_melt_quote_payment(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<FederationMeltQuotePaymentObservation>, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        if quote.state != cdk_common::MeltQuoteState::Pending {
+            return Ok(None);
+        }
+        let Some(saga) = self.localstore.get_melt_saga_by_quote_id(quote_id).await? else {
+            return Ok(None);
+        };
+        let operation_id = saga
+            .federation_operation_id
+            .as_deref()
+            .ok_or(Error::Internal)?
+            .parse::<FederationOperationId>()?;
+        let is_elected = config
+            .public_config()
+            .elected_melt_payment_member(operation_id)
+            .ok_or(Error::Internal)?
+            == config.member_id();
+
+        let payment = match saga.state {
+            SagaStateEnum::Melt(MeltSagaState::SetupComplete) if is_elected => {
+                self.attempt_federation_external_melt_payment(quote.clone(), saga)
+                    .await?
+            }
+            SagaStateEnum::Melt(
+                MeltSagaState::SetupComplete
+                | MeltSagaState::PaymentAttempted
+                | MeltSagaState::Finalizing,
+            ) => self.check_melt_payment_status(&quote).await?,
+            SagaStateEnum::Swap(_) => return Err(Error::Internal),
+        };
+
+        match payment.status {
+            cdk_common::MeltQuoteState::Paid => {}
+            cdk_common::MeltQuoteState::Failed | cdk_common::MeltQuoteState::Unpaid
+                if is_elected => {}
+            cdk_common::MeltQuoteState::Failed
+            | cdk_common::MeltQuoteState::Unpaid
+            | cdk_common::MeltQuoteState::Pending
+            | cdk_common::MeltQuoteState::Unknown => return Ok(None),
+        }
+
+        Ok(Some(FederationMeltQuotePaymentObservation {
+            quote: quote.id.to_string(),
+            observer: config.member_id(),
+            method: quote.payment_method.clone(),
+            state: payment.status,
+            amount: quote.amount().into(),
+            fee_reserve: quote.fee_reserve().into(),
+            payment_id: Some(payment.payment_lookup_id),
+            payment_proof: payment.payment_proof,
+        }))
     }
 
     async fn persisted_signature_shares_for_outputs(
@@ -1988,6 +2096,21 @@ impl Mint {
             }
         } else if can_finalize {
             ensure_melt_quote_payment_proof_matches(&quote, observation)?;
+            if observation.state == cdk_common::MeltQuoteState::Paid {
+                if let Some(saga) = self.localstore.get_melt_saga_by_quote_id(&quote_id).await? {
+                    let melt_operation_id = saga
+                        .federation_operation_id
+                        .as_deref()
+                        .ok_or(Error::Internal)?
+                        .parse::<FederationOperationId>()?;
+                    self.resume_paid_federation_melt_finalization(
+                        &mut quote,
+                        &saga,
+                        melt_operation_id,
+                    )
+                    .await?;
+                }
+            }
         }
 
         let transaction = self.localstore.begin_transaction().await?;
@@ -2487,6 +2610,14 @@ fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {
         MeltQuoteRequest::Bolt12(request) => request.request.clone(),
         MeltQuoteRequest::Onchain(request) => request.request.clone(),
         MeltQuoteRequest::Custom(request) => request.request.clone(),
+    }
+}
+
+fn federation_payment_identifier_from_label(payment_id: &str) -> PaymentIdentifier {
+    match payment_id.split_once(':') {
+        Some((kind, identifier)) => PaymentIdentifier::new(kind, identifier)
+            .unwrap_or_else(|_| PaymentIdentifier::CustomId(payment_id.to_string())),
+        None => PaymentIdentifier::CustomId(payment_id.to_string()),
     }
 }
 

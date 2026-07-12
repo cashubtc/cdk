@@ -488,6 +488,52 @@ pub(super) fn federation_operation_uuid(operation_id: FederationOperationId) -> 
 
 impl MeltSaga<SetupComplete> {
     #[cfg(feature = "federation")]
+    pub(super) fn resume_federation_external_payment(
+        mint: Arc<super::Mint>,
+        db: DynMintDatabase,
+        pubsub: Arc<PubSubManager>,
+        quote: cdk_common::mint::MeltQuote,
+        saga: Saga,
+    ) -> Result<Self, Error> {
+        if saga.state != SagaStateEnum::Melt(MeltSagaState::SetupComplete) {
+            return Err(Error::Internal);
+        }
+        let federation_operation_id = saga
+            .federation_operation_id
+            .as_deref()
+            .ok_or(Error::Internal)?
+            .parse::<FederationOperationId>()?;
+        let quote_id = quote.id.to_string();
+        if saga.operation_id != federation_operation_uuid(federation_operation_id)
+            || saga.quote_id.as_deref() != Some(quote_id.as_str())
+        {
+            return Err(Error::Internal);
+        }
+
+        Ok(Self {
+            mint,
+            db,
+            pubsub,
+            compensations: Arc::new(Mutex::new(VecDeque::new())),
+            operation_id: saga.operation_id,
+            #[cfg(feature = "prometheus")]
+            metrics: None,
+            federation_operation_id: Some(federation_operation_id),
+            state_data: SetupComplete { quote },
+        })
+    }
+
+    #[cfg(feature = "federation")]
+    pub(super) async fn attempt_external_payment_for_federation_observation(
+        self,
+    ) -> Result<MakePaymentResponse, Error> {
+        let response = self.attempt_external_payment().await?;
+        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
+            .await;
+        Ok(response)
+    }
+
+    #[cfg(feature = "federation")]
     pub(super) async fn finalize_internal_settlement_federation(
         self,
         federation_operation_id: FederationOperationId,
@@ -755,27 +801,6 @@ impl MeltSaga<SetupComplete> {
                 payment_result,
             },
         })))
-    }
-
-    #[cfg(feature = "federation")]
-    pub async fn make_payment_if_elected(
-        self,
-        settlement: SettlementDecision,
-        should_attempt_external_payment: bool,
-    ) -> Result<PaymentOutcome, Error> {
-        match settlement {
-            SettlementDecision::RequiresExternalPayment if !should_attempt_external_payment => {
-                tracing::info!(
-                    "Federation member reserved melt quote {} and deferred external payment to the elected member",
-                    self.state_data.quote.id
-                );
-                Ok(PaymentOutcome::Pending {
-                    #[cfg(feature = "prometheus")]
-                    metrics: self.metrics,
-                })
-            }
-            settlement => self.make_payment(settlement).await,
-        }
     }
 
     fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
@@ -1188,16 +1213,6 @@ impl MeltSaga<PaymentConfirmed> {
             None,
         )
         .await
-    }
-
-    #[cfg(feature = "federation")]
-    #[instrument(skip_all)]
-    pub async fn finalize_federation(
-        mut self,
-        federation_operation_id: FederationOperationId,
-    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
-        self.finalize_with_federation_operation(Some(federation_operation_id))
-            .await
     }
 }
 

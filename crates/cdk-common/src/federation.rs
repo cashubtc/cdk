@@ -4949,6 +4949,29 @@ impl FederationConfig {
         self.payment_observation_policy.policy_for(context)
     }
 
+    /// Select the member responsible for initiating an external melt payment.
+    ///
+    /// Returns `None` only for an invalid config with an empty member roster.
+    #[must_use]
+    pub fn elected_melt_payment_member(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Option<MemberId> {
+        let operation_bytes = operation_id.to_bytes();
+        let mut selector_bytes = [0_u8; 8];
+        selector_bytes.copy_from_slice(&operation_bytes[..8]);
+        let selector = u64::from_be_bytes(selector_bytes);
+        let member_count = u64::try_from(self.members.len()).ok()?;
+        if member_count == 0 {
+            return None;
+        }
+        let index = selector % member_count;
+        self.members
+            .keys()
+            .nth(usize::try_from(index).ok()?)
+            .copied()
+    }
+
     /// Return a member by ID.
     #[must_use]
     pub fn member(&self, member_id: MemberId) -> Option<&MemberConfigPublic> {

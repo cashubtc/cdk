@@ -28,10 +28,12 @@ use cdk::federation::{
     FederationKeysetRotationOperation, FederationMemberStatusKind,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentObservationRecord, FederationPaymentObservationReportAction,
+    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -1976,6 +1978,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
+            payment_observer: crate::federation::FederationPaymentObserver::default(),
             aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
@@ -3016,6 +3019,66 @@ fn melt_payment_observation_envelope(
         Amount::from(1),
         payment_proof,
     )
+}
+
+async fn submit_melt_payment_observation_from_backend(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> FederationPaymentObservationRecord {
+    let observer = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let observed = state
+                .federation
+                .payment_observer
+                .observe_melt_quote(state, quote_id)
+                .await
+                .expect("probe and submit melt payment observation");
+            if observed {
+                return state
+                    .mint
+                    .localstore()
+                    .get_federation_payment_observations(
+                        FederationPaymentObservationContext::MeltQuote,
+                        &quote_id.to_string(),
+                    )
+                    .await
+                    .expect("melt payment observation lookup")
+                    .into_iter()
+                    .find(|record| record.observation.observer() == observer)
+                    .expect("observer payment record");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("melt payment observation timeout")
+}
+
+fn matching_melt_payment_observation_envelope(
+    state: &MintState,
+    evidence: &FederationPaymentObservation,
+) -> FederationOperationEnvelope {
+    let FederationPaymentObservation::MeltQuote(evidence) = evidence else {
+        panic!("expected melt payment evidence");
+    };
+    state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .melt_quote_payment_observation_with_metadata(
+            evidence.quote.clone(),
+            evidence.method.clone(),
+            evidence.state,
+            evidence.amount.clone(),
+            evidence.fee_reserve.clone(),
+            evidence.payment_proof.clone(),
+            evidence.payment_id.clone(),
+        )
 }
 
 fn test_operation_envelope(
@@ -5428,9 +5491,20 @@ async fn catch_up_applies_melt_operation_to_local_store() {
         cdk::nuts::MeltRequest::new(quote_id.clone(), inputs, Some(vec![change_output.clone()]));
     let envelope = config.melt_operation(request).expect("melt envelope");
     let operation_id = envelope.operation_id().expect("operation id");
+    let payment_envelope = melt_payment_observation_envelope(
+        &state,
+        &quote_id,
+        MeltQuoteState::Paid,
+        Some(String::new()),
+    );
+    let payment_operation_id = payment_envelope
+        .operation_id()
+        .expect("payment operation id");
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
+    finalize_test_operation(&mut peer_consensus, payment_envelope)
+        .expect("peer accepted melt payment observation");
     let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
@@ -5483,18 +5557,21 @@ async fn catch_up_applies_melt_operation_to_local_store() {
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
-    assert_eq!(
-        local_consensus
-            .lock()
-            .await
-            .journal()
-            .entry_by_operation_id(operation_id)
-            .expect("runtime entry")
-            .status(),
-        FederationOperationStatus::Applied
-    );
+    assert_eq!(persisted.len(), 2);
+    assert!(persisted
+        .iter()
+        .all(|entry| entry.status() == FederationOperationStatus::Applied));
+    let runtime_consensus = local_consensus.lock().await;
+    for operation_id in [operation_id, payment_operation_id] {
+        assert_eq!(
+            runtime_consensus
+                .journal()
+                .entry_by_operation_id(operation_id)
+                .expect("runtime entry")
+                .status(),
+            FederationOperationStatus::Applied
+        );
+    }
 }
 
 #[tokio::test]
@@ -8996,6 +9073,12 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
             FederationConsensusItem::operation(first_swap_envelope),
             FederationConsensusItem::operation(melt_quote_envelope),
             FederationConsensusItem::operation(first_melt_envelope),
+            FederationConsensusItem::operation(melt_payment_observation_envelope(
+                &first_state,
+                &melt_quote_id,
+                MeltQuoteState::Paid,
+                Some(String::new()),
+            )),
         ],
     )
     .expect("first AlephBFT finalized unit");
@@ -9022,7 +9105,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
                 .iter()
                 .map(|response| response.outcome.entry().status())
                 .collect::<Vec<_>>(),
-            vec![FederationOperationStatus::Applied; 6]
+            vec![FederationOperationStatus::Applied; 7]
         );
         assert_eq!(first_responses[2].operation_id, first_mint_operation_id);
         assert_eq!(first_responses[3].operation_id, first_swap_operation_id);
@@ -9183,7 +9266,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
             .get_federation_journal_entries()
             .await
             .expect("journal lookup");
-        assert_eq!(persisted.len(), 9);
+        assert_eq!(persisted.len(), 10);
         assert_eq!(
             persisted
                 .iter()
@@ -9196,20 +9279,21 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
                 FederationOperationStatus::Applied,
                 FederationOperationStatus::Applied,
                 FederationOperationStatus::Applied,
+                FederationOperationStatus::Applied,
                 FederationOperationStatus::Rejected,
                 FederationOperationStatus::Rejected,
                 FederationOperationStatus::Rejected,
             ]
         );
         assert!(matches!(
-            persisted[6].rejection().cloned().map(cdk::Error::from),
+            persisted[7].rejection().cloned().map(cdk::Error::from),
             Some(cdk::Error::IssuedQuote)
         ));
         assert!(matches!(
-            persisted[7].rejection().cloned().map(cdk::Error::from),
+            persisted[8].rejection().cloned().map(cdk::Error::from),
             Some(cdk::Error::TokenAlreadySpent)
         ));
-        assert!(persisted[8].rejection().is_none());
+        assert!(persisted[9].rejection().is_none());
     }
 
     let first_entries = first_state
@@ -13270,32 +13354,31 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         .keys()
         .position(|member_id| *member_id == elected_member)
         .expect("below-finality elected payment member index");
-    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
-    assert_eq!(
-        make_payment_calls
-            .iter()
-            .map(|calls| calls.load(Ordering::SeqCst))
-            .sum::<usize>(),
-        1,
-        "recovered melt must elect exactly one payment actor"
-    );
-
     let mut observation_operation_ids = Vec::new();
-    for observer_index in 0..4 {
-        let observer_config = session.states[observer_index]
-            .mint
-            .federation_config()
-            .expect("below-finality melt observer config");
-        let observation = observer_config.melt_quote_payment_observation(
-            melt_quote_id.clone(),
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            MeltQuoteState::Paid,
-            Amount::from(1),
-            Amount::from(1),
-            Some(String::new()),
+    let elected_observation = submit_melt_payment_observation_from_backend(
+        &session.states[elected_index],
+        &melt_quote_id,
+    )
+    .await;
+    observation_operation_ids.push(elected_observation.operation_id);
+    for state in &session.states[..4] {
+        wait_for_applied_operation_with_context(
+            state,
+            elected_observation.operation_id,
+            "below-finality elected melt payment observation",
+        )
+        .await;
+    }
+    for observer_index in (0..4).filter(|observer_index| *observer_index != elected_index) {
+        let observation = matching_melt_payment_observation_envelope(
+            &session.states[observer_index],
+            &elected_observation.observation,
         );
-        let operation_id =
-            submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
+        let operation_id = submit_live_operation_allowing_pending_timeout(
+            &session.states[observer_index],
+            observation,
+        )
+        .await;
         observation_operation_ids.push(operation_id);
         for state in &session.states[..4] {
             wait_for_applied_operation_with_context(
@@ -13306,6 +13389,15 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             .await;
         }
     }
+    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        1,
+        "recovered melt must elect exactly one payment actor"
+    );
 
     session.states[4]
         .mark_federation_catching_up(member_id(1))
@@ -13793,33 +13885,34 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         .keys()
         .position(|member_id| *member_id == elected_member)
         .expect("elected melt member index");
-    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
-    assert_eq!(
-        make_payment_calls
-            .iter()
-            .map(|calls| calls.load(Ordering::SeqCst))
-            .sum::<usize>(),
-        1,
-        "accepted melt must elect exactly one outgoing payment actor"
-    );
-    assert_eq!(make_payment_calls[offline_index].load(Ordering::SeqCst), 0);
-
     let mut melt_payment_operation_ids = Vec::new();
-    for observer_index in 0..connected_member_count {
-        let observer_config = session.states[observer_index]
-            .mint
-            .federation_config()
-            .expect("melt observer federation config");
-        let observation = observer_config.melt_quote_payment_observation(
-            melt_quote_id.clone(),
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            MeltQuoteState::Paid,
-            Amount::from(1),
-            Amount::from(1),
-            Some(String::new()),
+    let elected_observation = submit_melt_payment_observation_from_backend(
+        &session.states[elected_index],
+        &melt_quote_id,
+    )
+    .await;
+    expected_operation_ids.push(elected_observation.operation_id);
+    melt_payment_operation_ids.push(elected_observation.operation_id);
+    for state in &session.states[..offline_index] {
+        wait_for_applied_operation_with_context(
+            state,
+            elected_observation.operation_id,
+            "one-offline elected melt payment observation",
+        )
+        .await;
+    }
+    for observer_index in
+        (0..connected_member_count).filter(|observer_index| *observer_index != elected_index)
+    {
+        let observation = matching_melt_payment_observation_envelope(
+            &session.states[observer_index],
+            &elected_observation.observation,
         );
-        let operation_id =
-            submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
+        let operation_id = submit_live_operation_allowing_pending_timeout(
+            &session.states[observer_index],
+            observation,
+        )
+        .await;
         for state in &session.states[..offline_index] {
             wait_for_applied_operation_with_context(
                 state,
@@ -13831,6 +13924,16 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         expected_operation_ids.push(operation_id);
         melt_payment_operation_ids.push(operation_id);
     }
+    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
+    assert_eq!(
+        make_payment_calls
+            .iter()
+            .map(|calls| calls.load(Ordering::SeqCst))
+            .sum::<usize>(),
+        1,
+        "accepted melt must elect exactly one outgoing payment actor"
+    );
+    assert_eq!(make_payment_calls[offline_index].load(Ordering::SeqCst), 0);
 
     for state in &session.states[..offline_index] {
         for operation_id in &melt_payment_operation_ids {
@@ -19807,9 +19910,17 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
     let request =
         cdk::nuts::MeltRequest::new(quote_id.clone(), inputs, Some(vec![change_output.clone()]));
     let envelope = config.melt_operation(request).expect("melt envelope");
+    let payment_envelope = melt_payment_observation_envelope(
+        &state,
+        &quote_id,
+        MeltQuoteState::Paid,
+        Some(String::new()),
+    );
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
+    finalize_test_operation(&mut peer_consensus, payment_envelope)
+        .expect("peer accepted melt payment observation");
     let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
     let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
@@ -19940,7 +20051,7 @@ async fn materialized_state_digest_tracks_completed_operation_rows_for_value_ope
     melt_change.amount = Amount::ZERO;
     let melt_envelope = config
         .melt_operation(cdk::nuts::MeltRequest::new(
-            melt_quote_id,
+            melt_quote_id.clone(),
             melt_inputs,
             Some(vec![melt_change]),
         ))
@@ -19950,6 +20061,15 @@ async fn materialized_state_digest_tracks_completed_operation_rows_for_value_ope
         .submit_federation_envelope(melt_envelope)
         .await
         .expect("submit melt operation");
+    state
+        .submit_federation_envelope(melt_payment_observation_envelope(
+            &state,
+            &melt_quote_id,
+            MeltQuoteState::Paid,
+            Some(String::new()),
+        ))
+        .await
+        .expect("submit melt payment observation");
 
     let entries = state
         .federation

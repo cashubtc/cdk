@@ -73,6 +73,7 @@ use self::dkg_routes::{
 };
 pub(crate) use self::node_runtime::FederationNodeRuntime;
 use self::payment_observation::payment_observation_report_summaries;
+pub(crate) use self::payment_observation::FederationPaymentObserver;
 #[cfg(test)]
 use self::peer_client::FederationRestPeerClient;
 #[cfg(test)]

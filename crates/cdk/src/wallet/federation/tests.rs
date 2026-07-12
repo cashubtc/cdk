@@ -1249,6 +1249,24 @@ async fn rotated_fake_wallet_member_connectors_with_state(
     connectors
 }
 
+async fn settled_federation_melt_response(
+    connector: &FederatedMintConnector,
+    quote_id: &QuoteId,
+    initial: MeltQuoteResponse<String>,
+) -> MeltQuoteResponse<String> {
+    if initial.state() == MeltQuoteState::Paid {
+        return initial;
+    }
+    assert_eq!(initial.state(), MeltQuoteState::Pending);
+    connector
+        .get_melt_quote_status(
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            &quote_id.to_string(),
+        )
+        .await
+        .expect("settled federation melt status")
+}
+
 fn assert_aggregate_response_valid(
     bundle: &TrustedDealerConfigBundle,
     outputs: &[BlindedMessage],
@@ -2065,7 +2083,7 @@ async fn federated_mint_connector_aggregates_fake_wallet_member_shares() {
         .into_iter()
         .next()
         .expect("change output")];
-    let melt_response = connector
+    let initial_melt_response = connector
         .post_melt(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MeltRequest::new(
@@ -2076,6 +2094,8 @@ async fn federated_mint_connector_aggregates_fake_wallet_member_shares() {
         )
         .await
         .expect("melt response");
+    let melt_response =
+        settled_federation_melt_response(&connector, &melt_quote_id, initial_melt_response).await;
     let change = melt_response.change().cloned().expect("change signatures");
     let mut signed_change_output = change_outputs[0].clone();
     signed_change_output.amount = Amount::from(2);
@@ -2157,7 +2177,7 @@ async fn federated_mint_connector_aggregates_rotated_fake_wallet_member_shares()
         },
     );
 
-    let melt_response = connector
+    let initial_melt_response = connector
         .post_melt(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MeltRequest::new(
@@ -2168,6 +2188,8 @@ async fn federated_mint_connector_aggregates_rotated_fake_wallet_member_shares()
         )
         .await
         .expect("rotated melt response");
+    let melt_response =
+        settled_federation_melt_response(&connector, &melt_quote_id, initial_melt_response).await;
     let change = melt_response.change().cloned().expect("change signatures");
     let mut signed_change_output = next_change_outputs[0].clone();
     signed_change_output.amount = Amount::from(2);
@@ -2391,7 +2413,7 @@ async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
 
     let melt_proof = proof_for_amount(&bundle, 4, "rotated-http-melt");
     let melt_y = melt_proof.y().expect("melt proof y");
-    let melt_response = connector
+    let initial_melt_response = connector
         .post_melt(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MeltRequest::new(
@@ -2402,6 +2424,8 @@ async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
         )
         .await
         .expect("rotated HTTP melt response");
+    let melt_response =
+        settled_federation_melt_response(&connector, &melt_quote_id, initial_melt_response).await;
     let change = melt_response.change().cloned().expect("change signatures");
     let mut signed_change_output = next_change_outputs[0].clone();
     signed_change_output.amount = Amount::from(2);

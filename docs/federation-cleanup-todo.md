@@ -1903,7 +1903,58 @@ parallel configuration model.
 
 ## 28. Centralize federation payment observation in one service
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Confirmed the split ownership and replaced it with one backend-neutral
+`FederationPaymentObserver`, owned by `FederationNodeRuntime`. Mint and melt
+notifications, repair scans, quote-status requests, immediate post-quote probes,
+and pre-signing mint checks now all use the same probe, duplicate suppression,
+quorum check, envelope construction, and consensus-submission path. Production
+HTTP handlers no longer contain their own payment-observation builders or
+submission rules.
+
+Normal CDK payment event streams remain active in federation mode. Instead of
+running standalone quote or saga mutations, the mint forwards events through a
+bounded 256-entry broadcast channel. The observer targets the affected quote,
+re-queries the backend rather than trusting the notification payload as durable
+evidence, and submits the result through consensus. A lagged channel, startup
+race, backend without notifications, or temporarily offline observer is repaired
+by the five-second scan; backend probes are grouped in batches of at most 100.
+Federation pubsub reads likewise avoid the standalone backend-query side effect.
+Standalone event handling and saga recovery are unchanged.
+
+Accepted external melts now reserve the quote, proofs, outputs, and saga as
+`Pending` without performing backend I/O during deterministic consensus apply.
+The deterministically elected member initiates payment through the observer;
+other members observe according to the configured policy; an accepted
+`MeltQuotePayment` operation alone finalizes or rolls back the saga. Fake wallet
+uses this same backend-neutral path. Catch-up and restart replay observations
+without repeating payment, while `Pending` and backend `Unknown` remain
+recoverable rather than durable terminal quote states.
+
+The wallet now keeps the elected payer in its bounded melt connector cohort and
+does not return a pending threshold view before that member responds. This fixes
+the liveness hole where keyset-validation threshold selection or two fast
+pending members could cancel the only member able to initiate payment. Terminal
+threshold responses still win immediately, and ambiguous mixed views remain
+recoverable.
+
+Verification:
+
+- all 100 mint federation tests and all 84 wallet federation tests pass;
+- all 91 federation handler tests pass, including notification-before-consensus,
+  success, failure, unknown, delayed settlement, duplicate submission, restart,
+  catch-up, and real HTTP connector coverage;
+- all 41 live AlephBFT tests pass, including below-finality recovery and the
+  four- and five-member one-offline payment windows with exactly one external
+  payment;
+- all 417 non-ignored federation-enabled Axum tests pass (the one ignored test
+  is the manual materialized-state benchmark);
+- standalone payment-stream retry and all 12 standalone custom-handler tests
+  pass, and federation-enabled core/Axum checks are warning-free apart from an
+  unrelated deprecated test helper warning.
 
 ### Problem
 

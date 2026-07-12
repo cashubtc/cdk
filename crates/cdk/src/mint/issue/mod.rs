@@ -642,6 +642,11 @@ impl Mint {
 
             let mut responses = Vec::with_capacity(quote_ids.len());
 
+            #[cfg(feature = "federation")]
+            let query_backend = self.federation_config().is_none();
+            #[cfg(not(feature = "federation"))]
+            let query_backend = true;
+
             for quote_id in quote_ids {
                 let mut quote = self
                     .localstore
@@ -649,7 +654,9 @@ impl Mint {
                     .await?
                     .ok_or(Error::UnknownQuote)?;
 
-                self.check_mint_quote_paid(&mut quote).await?;
+                if query_backend {
+                    self.check_mint_quote_paid(&mut quote).await?;
+                }
 
                 responses.push(quote.try_into()?);
             }
