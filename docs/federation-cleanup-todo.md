@@ -1246,6 +1246,15 @@ writes. `MintState` retains thin delegators and mint-state application ordering.
 All five finalized-unit and all 29 focused catch-up regressions pass after the
 transaction move.
 
+### Checkpoint 8: replay and rejection application
+
+Journal replay, transient storage retry/backoff, durable Applied/Failed/Rejected
+status updates, standard Cashu `ErrorResponse` rejection persistence, consensus
+application-state overlay, and catch-up rejection equality checks now execute on
+`FederationNodeRuntime`. The existing error classifier and transaction order are
+unchanged. Failed mint/swap replay, rejected-swap response, catch-up rejection
+mismatch, and accepted-on-startup replay regressions pass.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

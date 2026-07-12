@@ -189,7 +189,10 @@ Resolved blocking bugs:
   first mint-dependent method moved and passes rotated-keyset plus all 28
   standalone Axum regressions. Atomic journal/session-outcome, pending-operation,
   finalization, source-sequence, and catch-up transactions now belong to the
-  runtime; five finalized-unit and all 29 focused catch-up tests pass.
+  runtime; five finalized-unit and all 29 focused catch-up tests pass. Replay,
+  lock retry/backoff, durable application/rejection state, standard
+  `ErrorResponse` persistence, and catch-up rejection verification now also run
+  there, with failed mint/swap and startup replay regressions green.
 
 ## Recent performance checkpoint
 

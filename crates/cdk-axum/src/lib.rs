@@ -2969,164 +2969,16 @@ impl MintState {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
-        let mut applied = Vec::new();
-        for entry in entries {
-            if let Some(operation_id) = self
-                .apply_federation_journal_entry_for_replay(entry)
-                .await?
-            {
-                applied.push(operation_id);
-            }
-        }
-        self.mark_federation_operations_applied(&applied).await?;
-        Ok(applied)
+        self.federation.apply_journal_entries(entries).await
     }
 
     async fn verify_federation_catch_up_rejections(
         &self,
         peer_entries: &[FederationJournalEntry],
     ) -> Result<(), cdk::Error> {
-        for peer_entry in peer_entries
-            .iter()
-            .filter(|entry| entry.status == FederationOperationStatus::Rejected)
-        {
-            let local_entry = self
-                .mint
-                .localstore()
-                .get_federation_journal_entry_by_operation_id(peer_entry.operation_id)
-                .await?
-                .ok_or_else(|| {
-                    cdk::Error::Federation(FederationError::UnknownOperation {
-                        operation_id: peer_entry.operation_id.to_string(),
-                    })
-                })?;
-            if local_entry.status != FederationOperationStatus::Rejected
-                || local_entry.rejection != peer_entry.rejection
-            {
-                return Err(cdk::Error::Federation(
-                    FederationError::SessionOutcomeMismatch {
-                        reason: format!(
-                            "catch-up rejection mismatch at operation {}",
-                            peer_entry.operation_id
-                        ),
-                    },
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn apply_federation_journal_entry_for_replay(
-        &self,
-        entry: &FederationJournalEntry,
-    ) -> Result<Option<FederationOperationId>, cdk::Error> {
-        let mut attempts = 0usize;
-        let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
-
-        loop {
-            match self.mint.apply_accepted_federation_operation(entry).await {
-                Ok(true) => {
-                    if attempts > 0 {
-                        tracing::info!(
-                            operation_id = %entry.operation_id,
-                            retry_attempts = attempts,
-                            "Federation journal replay apply recovered after transient storage contention"
-                        );
-                    }
-                    return Ok(Some(entry.operation_id));
-                }
-                Ok(false) => return Ok(None),
-                Err(err) if is_retryable_federation_apply_error(&err) => {
-                    attempts = attempts.saturating_add(1);
-                    if attempts == 1 || attempts % 10 == 0 {
-                        tracing::warn!(
-                            operation_id = %entry.operation_id,
-                            retry_attempts = attempts,
-                            retry_delay_ms = retry_delay.as_millis(),
-                            "Federation journal replay apply hit transient storage contention; retrying"
-                        );
-                    }
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = retry_delay
-                        .saturating_mul(2)
-                        .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
-                }
-                Err(err) => {
-                    let (status, err) = self
-                        .mark_federation_operation_apply_failure(entry.operation_id, err)
-                        .await?;
-                    if status == FederationOperationStatus::Rejected {
-                        return Ok(None);
-                    }
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    async fn mark_federation_operations_applied(
-        &self,
-        operation_ids: &[FederationOperationId],
-    ) -> Result<(), cdk::Error> {
-        let Some(consensus) = &self.federation.consensus else {
-            return Ok(());
-        };
-        let mut consensus = consensus.lock().await;
-        for operation_id in operation_ids {
-            consensus.update_status(*operation_id, FederationOperationStatus::Applied)?;
-        }
-        Ok(())
-    }
-
-    async fn mark_federation_operation_status(
-        &self,
-        operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-    ) -> Result<(), cdk::Error> {
-        let db = self.mint.localstore();
-        let mut tx = db.begin_transaction().await?;
-        tx.update_federation_operation_status(operation_id, status)
-            .await?;
-        tx.commit().await?;
-
-        if let Some(consensus) = &self.federation.consensus {
-            consensus.lock().await.update_status(operation_id, status)?;
-        }
-
-        Ok(())
-    }
-
-    async fn mark_federation_operation_apply_failure(
-        &self,
-        operation_id: FederationOperationId,
-        error: cdk::Error,
-    ) -> Result<(FederationOperationStatus, cdk::Error), cdk::Error> {
-        if !error.is_definitive_failure() {
-            self.mark_federation_operation_status(operation_id, FederationOperationStatus::Failed)
-                .await?;
-            return Ok((FederationOperationStatus::Failed, error));
-        }
-
-        let rejection = cdk::error::ErrorResponse::from(error);
-        let db = self.mint.localstore();
-        let mut tx = db.begin_transaction().await?;
-        tx.reject_federation_operation(operation_id, &rejection)
-            .await?;
-        tx.commit().await?;
-
-        if let Some(consensus) = &self.federation.consensus {
-            consensus.lock().await.update_application_state(
-                operation_id,
-                FederationOperationStatus::Rejected,
-                Some(rejection.clone()),
-            )?;
-        }
-
-        Ok((
-            FederationOperationStatus::Rejected,
-            cdk::Error::from(rejection),
-        ))
+        self.federation
+            .verify_catch_up_rejections(peer_entries)
+            .await
     }
 
     pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
