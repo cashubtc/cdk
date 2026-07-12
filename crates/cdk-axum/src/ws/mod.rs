@@ -270,6 +270,7 @@ mod tests {
             federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "federation")]
             federation_local_finality_test: false,
+            #[cfg(feature = "federation")]
             federation_manual_finality_test: false,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
