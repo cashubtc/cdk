@@ -4593,6 +4593,21 @@ Verified implementation result:
   completed melt, restore, balance, and full convergence. The paired
   insufficient-threshold smoke timed out ambiguously and produced no proofs.
 
+## Post-review critical restart revalidation
+
+- [x] Preserve the materialized-state digest authenticated by each verified
+  catch-up certificate quorum and carry the latest digest across a fully
+  contiguous certified prefix.
+- [x] Keep startup fail-closed while loading the journal, verifying certificate
+  coverage, projecting local materialized state, and comparing the recomputed
+  digest with certified evidence. Publish one final status only if no newer
+  readiness transition superseded the startup check.
+- [x] Prove matching evidence opens Healthy and a valid quorum for a different
+  digest remains `MaterializedStateMismatch` while submission, restore, and
+  check-state stay blocked. Seven focused shared-core certificate tests, 18
+  Axum startup tests, five Axum quorum tests, all 28 standalone Axum tests, and
+  the no-default-features `cdk-common` check pass.
+
 ## Final completion audit
 
 Status: complete for the implementation plan's fakewallet federation scope.

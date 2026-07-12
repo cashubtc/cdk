@@ -2132,6 +2132,21 @@ work and can restore stale operational labels.
   federation tests (two loopback tests run with network permission), and all 28
   standalone Axum tests; one manual benchmark remains ignored.
 
+### Security follow-up (2026-07-13)
+
+The security review found that the count-only startup reconstruction discarded
+the materialized-state digest authenticated by catch-up certificate quorum.
+Startup could therefore reopen Healthy after restart without proving the local
+projection still matched certified evidence. The follow-up retains the latest
+digest across a contiguous certified prefix, recomputes the local projection
+while readiness remains fail-closed, and publishes one final status only if the
+startup state has not been superseded. Matching evidence opens Healthy;
+incomplete coverage remains verifying; mismatched evidence remains
+`MaterializedStateMismatch`; and storage/projection failures remain Halted.
+Focused shared-core certificate, Axum quorum-prefix, matching startup, and
+mismatched startup/read-gating tests pass. No general persisted readiness
+snapshot was restored.
+
 ## 32. Split private REST replay protection by message semantics
 
 **Status:** Completed

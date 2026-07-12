@@ -138,6 +138,8 @@ fn catch_up_certificate_quorum_prefix_stops_when_next_index_would_overflow() {
             latest_index: u64::MAX,
             operation_count: u64::MAX,
             range_order_digest: cdk::federation::FederationJournalDigest::genesis(),
+            materialized_state_digest: cdk::federation::FederationMaterializedStateDigest::genesis(
+            ),
         }],
     );
 
@@ -147,6 +149,46 @@ fn catch_up_certificate_quorum_prefix_stops_when_next_index_would_overflow() {
     assert_eq!(status.from_index, 0);
     assert_eq!(status.latest_index, u64::MAX);
     assert_eq!(status.operation_count, u64::MAX);
+}
+
+#[test]
+fn catch_up_certificate_quorum_prefix_retains_latest_certified_state_digest() {
+    let signers = BTreeSet::from([member_id(1)]);
+    let first_digest = cdk::federation::FederationMaterializedStateDigest::from_bytes([1; 32]);
+    let latest_digest = cdk::federation::FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let mut quorums = BTreeMap::new();
+    quorums.insert(
+        0,
+        vec![cdk::federation::FederationCatchUpCertificateQuorum {
+            required: 1,
+            signers: signers.clone(),
+            from_index: 0,
+            latest_index: 0,
+            operation_count: 1,
+            range_order_digest: cdk::federation::FederationJournalDigest::from_bytes([1; 32]),
+            materialized_state_digest: first_digest,
+        }],
+    );
+    quorums.insert(
+        1,
+        vec![cdk::federation::FederationCatchUpCertificateQuorum {
+            required: 1,
+            signers,
+            from_index: 1,
+            latest_index: 1,
+            operation_count: 1,
+            range_order_digest: cdk::federation::FederationJournalDigest::from_bytes([2; 32]),
+            materialized_state_digest: latest_digest,
+        }],
+    );
+
+    let status =
+        contiguous_catch_up_certificate_quorum_prefix(&quorums).expect("quorum prefix status");
+
+    assert_eq!(status.from_index, 0);
+    assert_eq!(status.latest_index, 1);
+    assert_eq!(status.operation_count, 2);
+    assert_eq!(status.materialized_state_digest, latest_digest);
 }
 
 #[test]
@@ -21053,45 +21095,19 @@ async fn startup_returns_healthy_when_replayed_journal_has_catch_up_certificate_
         .submit_federation_envelope(history_envelope)
         .await
         .expect("persist accepted operation");
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("journal entries");
-    let journal = InMemoryFederationJournal::from_entries(entries).expect("startup journal");
-    let mut response = FederationJournalCatchUpResponse::from_journal(
-        public_config.federation_id,
-        &journal,
-        FederationMaterializedStateDigest::genesis(),
-        &FederationJournalCatchUpRequest::new(0),
-        100,
-        100,
-    );
-    response.materialized_state_digest = local_peer_status(&state)
+    let local_digest = local_peer_status(&state)
         .await
         .expect("local status")
         .materialized_state_digest
         .expect("local status has materialized-state digest");
-    let peer_certificate = signed_catch_up_response(response.clone(), &peer_private)
-        .catch_up_certificate
-        .expect("peer catch-up certificate");
-    let witness_certificate = signed_catch_up_response(response, &witness_private)
-        .catch_up_certificate
-        .expect("witness catch-up certificate");
-    let mut tx = state
-        .mint
-        .localstore()
-        .begin_transaction()
-        .await
-        .expect("begin evidence transaction");
-    tx.add_federation_catch_up_certificate(&peer_certificate)
-        .await
-        .expect("persist peer outcome");
-    tx.add_federation_catch_up_certificate(&witness_certificate)
-        .await
-        .expect("persist witness outcome");
-    tx.commit().await.expect("commit evidence");
+    persist_startup_catch_up_certificate_quorum(
+        &state,
+        &public_config,
+        &peer_private,
+        &witness_private,
+        local_digest,
+    )
+    .await;
 
     let mut restarted = state.clone();
     restarted.federation.sync = Some(Arc::new(tokio::sync::Mutex::new(
@@ -21125,6 +21141,117 @@ async fn startup_returns_healthy_when_replayed_journal_has_catch_up_certificate_
     )
     .await
     .expect("verified startup member can serve restore");
+}
+
+async fn persist_startup_catch_up_certificate_quorum(
+    state: &MintState,
+    public_config: &cdk::federation::FederationConfig,
+    peer_private: &MemberConfigPrivate,
+    witness_private: &MemberConfigPrivate,
+    materialized_state_digest: FederationMaterializedStateDigest,
+) {
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    let journal = InMemoryFederationJournal::from_entries(entries).expect("startup journal");
+    let mut response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        &journal,
+        FederationMaterializedStateDigest::genesis(),
+        &FederationJournalCatchUpRequest::new(0),
+        100,
+        100,
+    );
+    response.materialized_state_digest = materialized_state_digest;
+    let peer_certificate = signed_catch_up_response(response.clone(), peer_private)
+        .catch_up_certificate
+        .expect("peer catch-up certificate");
+    let witness_certificate = signed_catch_up_response(response, witness_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin evidence transaction");
+    tx.add_federation_catch_up_certificate(&peer_certificate)
+        .await
+        .expect("persist peer outcome");
+    tx.add_federation_catch_up_certificate(&witness_certificate)
+        .await
+        .expect("persist witness outcome");
+    tx.commit().await.expect("commit evidence");
+}
+
+#[tokio::test]
+async fn startup_rejects_catch_up_quorum_for_another_materialized_state() {
+    let (state, public_config, _, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
+    let peer_member = peer_private.member_id;
+    state
+        .submit_federation_envelope(test_operation_envelope_for_config(
+            &public_config,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .await
+        .expect("persist accepted operation");
+    let local_digest = local_peer_status(&state)
+        .await
+        .expect("local status")
+        .materialized_state_digest
+        .expect("local status has materialized-state digest");
+    let certified_digest = FederationMaterializedStateDigest::from_bytes([42; 32]);
+    assert_ne!(certified_digest, local_digest);
+    persist_startup_catch_up_certificate_quorum(
+        &state,
+        &public_config,
+        &peer_private,
+        &witness_private,
+        certified_digest,
+    )
+    .await;
+
+    let mut restarted = state.clone();
+    restarted.federation.sync = Some(Arc::new(tokio::sync::Mutex::new(
+        crate::FederationSyncState::for_aleph_bft(),
+    )));
+    restarted.restore_federation_startup_readiness().await;
+
+    assert_eq!(
+        restarted.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::MaterializedStateMismatch {
+            peer: peer_member,
+            operation_count: 1,
+        })
+    );
+
+    let y = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"startup mismatched checkstate read",
+    ));
+    crate::router_handlers::post_check(
+        AuthHeader::None,
+        State(restarted.clone()),
+        Json(CheckStateRequest { ys: vec![y] }),
+    )
+    .await
+    .expect_err("mismatched startup member must not serve check-state");
+
+    restarted
+        .submit_federation_envelope(test_operation_envelope_for_config(
+            &public_config,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        ))
+        .await
+        .expect_err("mismatched startup member must reject new submissions");
+    let restore_request =
+        restore_request_for_config(&public_config, "startup mismatched restore output");
+    crate::router_handlers::post_restore(AuthHeader::None, State(restarted), Json(restore_request))
+        .await
+        .expect_err("mismatched startup member must not serve restore");
 }
 
 #[tokio::test]

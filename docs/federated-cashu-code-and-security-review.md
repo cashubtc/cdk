@@ -69,11 +69,10 @@ cleaned up at the same time.
 
 ## Critical Priority
 
-The following finding requires first attention because it affects whether a
-member may safely become authoritative:
-
-- **P12:** restart can clear a confirmed materialized-state mismatch without
-  comparing the local state digest with certified quorum evidence.
+No Critical finding remains open. P12 was resolved on 2026-07-13 by retaining
+the digest authenticated by catch-up certificate quorum, recomputing the local
+materialized-state digest during fail-closed startup, and publishing Healthy
+only after the two match.
 
 P14 is a pre-release protocol-boundary cleanup rather than a Critical security
 finding under the explicit cut-through policy that pre-cleanup federation
@@ -104,7 +103,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P9 | False-healthy outcome confirmed; original task-exit mechanism was misstated | High | 92% | Release blocker: an essential apply failure must halt/quarantine the session generation. |
 | P10 | Inconsistent Halted teardown confirmed; automatic-rotation scope overstated | Medium | 85% | Use one generation-scoped teardown path for every terminal Halted transition. |
 | P11 | Confirmed latent soft-skip of local certificate production | Medium | 88% | Fix with P12 so local digest/status failure cannot look like an empty successful round. |
-| P12 | Confirmed fail-open restart revalidation gap | Critical | 99% | Release blocker. Preserve certified digest evidence and compare it with recomputed local state before Healthy. |
+| P12 | Restart revalidation now compares local state with certified quorum evidence | Resolved (was Critical) | 99% | Complete: startup remains fail-closed until certified order and materialized-state commitments match. |
 | P13 | Readiness bypass confirmed; correct policy remains a design decision | Medium | 75% | Define and test a middle gate at minimum: live current session and not Halted. |
 | P14 | Cut-through policy is incomplete while federation-owned v2 labels remain | Medium | 98% | Make every current federation-owned protocol/artifact boundary the initial v1, remove pre-cut-through compatibility, regenerate all affected artifacts, and freeze v1. |
 | P15 | Fresh-schema migration squash accepted; development databases unsupported | Complete | — | No further upgrade work required; freeze the consolidated migration at the first supported release. |
@@ -113,7 +112,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
 | P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
 
-Production priority is therefore P12 first, followed by P6/P7/P9/P16. P1
+Production priority is therefore P6/P7/P9/P16. P1
 remains a production-startup blocker if the product continues
 to claim one-member federation support even though its general security impact
 is Medium. P5 should not remain an open broad transaction-refactor request in
@@ -123,7 +122,7 @@ its current wording.
 
 ### P1: A Valid Single-Member Federation Starts but Cannot Operate
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
 `ThresholdParams::validate` accepts a one-member federation with non-zero
 thresholds, and mintd accepts and logs that configuration as an AlephBFT
@@ -704,6 +703,21 @@ Acceptance criteria:
 materialized state can become authoritative after restart without proving that
 the divergence was repaired.
 
+**Resolution:** `FederationCatchUpCertificateQuorum` and the contiguous quorum
+status now retain the materialized-state digest authenticated by the verified
+certificate signatures. Startup no longer promotes its initial fail-closed
+status before reading durable evidence. For non-empty history it requires a
+fully contiguous certificate quorum, projects the current local materialized
+state, compares the two digests, and makes one generation-safe final status
+transition. A matching digest opens Healthy; incomplete coverage remains in
+certificate verification; a mismatch remains `MaterializedStateMismatch`; and
+projection, digest, or storage errors remain Halted. The final transition is
+discarded if a newer readiness state was published while the asynchronous
+checks ran, so startup cannot overwrite a concurrent safety decision.
+
+No general status snapshot or compatibility table was restored. Durable
+journal rows and signed catch-up certificates remain the authoritative evidence.
+
 The readiness cleanup removed durable `FederationMemberStatusSnapshot` state,
 including `MaterializedStateMismatch` and safety-relevant `Halted` reasons.
 Startup now reconstructs readiness from the local journal length and stored
@@ -759,23 +773,23 @@ Relevant code:
 
 TODO:
 
-- [ ] Preserve the quorum-certified materialized-state digest in
+- [x] Preserve the quorum-certified materialized-state digest in
   `CatchUpCertificateQuorumStatus`; do not reduce safety evidence to operation
   count alone.
-- [ ] Recompute the local materialized-state digest during startup and compare
+- [x] Recompute the local materialized-state digest during startup and compare
   it with the certified digest before marking the member Healthy.
-- [ ] Persist a minimal durable quarantine/safety latch for confirmed
+- [x] Persist a minimal durable quarantine/safety latch for confirmed
   materialized-state mismatch, or prove that startup revalidation always
   reconstructs an equivalent fail-closed state before authoritative routes
   open.
-- [ ] Keep ordinary Lagging/CatchingUp status transient; do not restore the
+- [x] Keep ordinary Lagging/CatchingUp status transient; do not restore the
   entire old status-snapshot mechanism solely to fix the safety latch.
-- [ ] Add a restart regression with valid quorum certificates for digest A and
+- [x] Add a restart regression with valid quorum certificates for digest A and
   a deliberately altered local projection producing digest B. Assert that
   authoritative reads and public submission remain blocked.
-- [ ] Add the matching control case proving digest A == local digest returns
+- [x] Add the matching control case proving digest A == local digest returns
   Healthy.
-- [ ] Test empty history, partially certified history, multiple contiguous
+- [x] Test empty history, partially certified history, multiple contiguous
   certificate ranges, and a mismatch at the latest fully certified range.
 - [ ] Coordinate with P10 so a digest-mismatch halt also tears down live Aleph
   resources and cannot be reopened by the count-only startup path.
@@ -788,6 +802,20 @@ Acceptance criteria:
   materialized-state commitments match verified quorum evidence.
 - A confirmed materialized-state mismatch remains fail-closed across restart
   until the underlying divergence is repaired and revalidated.
+
+Verification:
+
+- all seven focused `cdk-common` catch-up-certificate tests pass, including
+  preservation of the authenticated materialized-state digest;
+- all 18 Axum startup tests pass, including matching-digest Healthy,
+  insufficient-quorum verification, empty history, and a valid quorum for a
+  deliberately different digest that blocks submission, restore, and
+  check-state;
+- five focused Axum catch-up quorum tests pass, including a two-range prefix
+  proving the latest certified digest governs the completed prefix;
+- all 28 standalone Axum tests pass and `cdk-common` checks without default
+  features, confirming the federation-only repair does not alter standalone
+  behavior.
 
 ### P13: Payment-Observation Submit Bypasses Public Federation Readiness
 
@@ -1449,14 +1477,13 @@ through branch:
 
 ## Review Verdict
 
-The cleanup branch is not production ready. The reassessment assigns one
-Critical finding (P12), four High findings (P6, P7, P9, P16), ten Medium
-findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
+The cleanup branch is not production ready. P12, the sole Critical finding, is
+resolved. The reassessment retains four High findings (P6, P7, P9, P16), ten
+Medium findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
 findings (P5, P19). P15 is complete under the accepted fresh-database policy;
 P17 is closed as superseded by P14's cut-through registry reset.
 
-P12 requires first attention because it covers fail-open materialized-state
-readiness after restart. P6, P7, P9, and P16 are the next production blockers
+P6, P7, P9, and P16 are the remaining production blockers
 because they affect admission atomicity, pending-operation restart recovery,
 application of finalized state, and federation-wide melt-observer liveness. P1
 must also be resolved before production if one-member configs remain accepted,

@@ -1108,6 +1108,22 @@ impl FederationSyncState {
         self.status.clone()
     }
 
+    fn finish_startup_revalidation(
+        &mut self,
+        expected: &FederationSyncStatus,
+        next: FederationSyncStatus,
+    ) {
+        if &self.status != expected {
+            return;
+        }
+        self.status = match next {
+            FederationSyncStatus::Halted { reason } => FederationSyncStatus::Halted {
+                reason: redact_federation_operator_message(&reason),
+            },
+            status => status,
+        };
+    }
+
     fn update_status<F>(&mut self, update: F)
     where
         F: FnOnce(&mut Self),

@@ -379,6 +379,7 @@ struct CatchUpCertificateQuorumStatus {
     from_index: u64,
     latest_index: u64,
     operation_count: u64,
+    materialized_state_digest: FederationMaterializedStateDigest,
 }
 
 impl From<FederationCatchUpCertificateQuorum> for CatchUpCertificateQuorumStatus {
@@ -388,6 +389,7 @@ impl From<FederationCatchUpCertificateQuorum> for CatchUpCertificateQuorumStatus
             from_index: quorum.from_index,
             latest_index: quorum.latest_index,
             operation_count: quorum.operation_count,
+            materialized_state_digest: quorum.materialized_state_digest,
         }
     }
 }
@@ -401,6 +403,7 @@ impl CatchUpCertificateQuorumStatus {
             .checked_sub(self.from_index)
             .and_then(|span| span.checked_add(1))
             .unwrap_or(u64::MAX);
+        self.materialized_state_digest = quorum.materialized_state_digest;
     }
 }
 

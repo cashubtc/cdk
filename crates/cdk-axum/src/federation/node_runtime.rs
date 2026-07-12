@@ -383,52 +383,20 @@ impl FederationNodeRuntime {
         let Some(config) = mint.federation_config() else {
             return;
         };
-        let current_status = sync.lock().await.status();
-        if current_status.is_aleph_bft_startup_halt() {
+        let initial_status = sync.lock().await.status();
+        if initial_status.is_aleph_bft_startup_halt() {
             if !self.live_session_available().await {
                 return;
             }
-            sync.lock().await.mark_healthy();
         }
-        match sync.lock().await.status() {
+        match &initial_status {
             FederationSyncStatus::Healthy
             | FederationSyncStatus::VerifyingCatchUpCertificate { .. } => {}
+            FederationSyncStatus::Halted { .. } if initial_status.is_aleph_bft_startup_halt() => {}
             FederationSyncStatus::Lagging { .. }
             | FederationSyncStatus::CatchingUp { .. }
             | FederationSyncStatus::MaterializedStateMismatch { .. }
             | FederationSyncStatus::Halted { .. } => return,
-        }
-
-        let entries = match mint.localstore().get_federation_journal_entries().await {
-            Ok(entries) => entries,
-            Err(err) => {
-                self.mark_halted(format!(
-                    "could not inspect federation startup journal for quorum evidence: {err}"
-                ))
-                .await;
-                return;
-            }
-        };
-        let operation_count = entries.len() as u64;
-        if operation_count == 0 {
-            return;
-        }
-
-        let verified_operation_count = match super::catch_up_certificate_quorum_status(mint).await {
-            Ok(Some(quorum)) => quorum.operation_count,
-            Ok(None) => 0,
-            Err(err) => {
-                self.mark_halted(format!(
-                    "could not inspect federation startup catch-up certificate quorum: {err}"
-                ))
-                .await;
-                return;
-            }
-        };
-        if verified_operation_count >= operation_count {
-            self.mark_healthy_if_catch_up_certificate_verified(verified_operation_count)
-                .await;
-            return;
         }
 
         let peer = config
@@ -438,7 +406,116 @@ impl FederationNodeRuntime {
             .find(|member| member.member_id != config.member_id())
             .map(|member| member.member_id)
             .unwrap_or_else(|| config.member_id());
-        self.mark_verifying_catch_up_certificate(peer, operation_count)
+
+        let entries = match mint.localstore().get_federation_journal_entries().await {
+            Ok(entries) => entries,
+            Err(err) => {
+                self.finish_startup_revalidation(
+                    &initial_status,
+                    FederationSyncStatus::Halted {
+                        reason: format!(
+                            "could not inspect federation startup journal for quorum evidence: {err}"
+                        ),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+        let operation_count = entries.len() as u64;
+        if operation_count == 0 {
+            self.finish_startup_revalidation(&initial_status, FederationSyncStatus::Healthy)
+                .await;
+            return;
+        }
+
+        let quorum = match super::catch_up_certificate_quorum_status(mint).await {
+            Ok(quorum) => quorum,
+            Err(err) => {
+                self.finish_startup_revalidation(
+                    &initial_status,
+                    FederationSyncStatus::Halted {
+                        reason: format!(
+                            "could not inspect federation startup catch-up certificate quorum: {err}"
+                        ),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+
+        let Some(quorum) = quorum else {
+            self.finish_startup_revalidation(
+                &initial_status,
+                FederationSyncStatus::VerifyingCatchUpCertificate {
+                    peer,
+                    operation_count,
+                },
+            )
+            .await;
+            return;
+        };
+
+        if quorum.operation_count < operation_count {
+            self.finish_startup_revalidation(
+                &initial_status,
+                FederationSyncStatus::VerifyingCatchUpCertificate {
+                    peer,
+                    operation_count,
+                },
+            )
+            .await;
+            return;
+        }
+
+        let local_digest = match mint.federation_materialized_state_snapshot(&entries).await {
+            Ok(snapshot) => match snapshot.digest() {
+                Ok(digest) => digest,
+                Err(err) => {
+                    self.finish_startup_revalidation(
+                        &initial_status,
+                        FederationSyncStatus::Halted {
+                            reason: format!(
+                                "could not compute federation startup materialized-state digest: {err}"
+                            ),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            },
+            Err(err) => {
+                self.finish_startup_revalidation(
+                    &initial_status,
+                    FederationSyncStatus::Halted {
+                        reason: format!(
+                            "could not project federation startup materialized state: {err}"
+                        ),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+        let next_status = if local_digest == quorum.materialized_state_digest {
+            FederationSyncStatus::Healthy
+        } else {
+            FederationSyncStatus::MaterializedStateMismatch {
+                peer,
+                operation_count,
+            }
+        };
+        self.finish_startup_revalidation(&initial_status, next_status)
+            .await;
+    }
+
+    async fn finish_startup_revalidation(
+        &self,
+        expected: &FederationSyncStatus,
+        next: FederationSyncStatus,
+    ) {
+        self.update_sync_status(|sync| sync.finish_startup_revalidation(expected, next))
             .await;
     }
 

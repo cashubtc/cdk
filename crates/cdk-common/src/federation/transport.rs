@@ -1887,6 +1887,8 @@ pub struct FederationCatchUpCertificateQuorum {
     pub operation_count: u64,
     /// Order digest after the covered range.
     pub range_order_digest: FederationJournalDigest,
+    /// Materialized-state digest bound by the verified certificates.
+    pub materialized_state_digest: FederationMaterializedStateDigest,
 }
 
 impl FederationCatchUpCertificate {
@@ -2205,6 +2207,7 @@ impl FederationJournalCatchUpResponse {
                 latest_index: self.from_index.saturating_sub(1),
                 operation_count: 0,
                 range_order_digest: self.latest_order_digest,
+                materialized_state_digest: self.materialized_state_digest,
             });
         }
 
@@ -2249,6 +2252,7 @@ impl FederationJournalCatchUpResponse {
             latest_index: latest_entry.index,
             operation_count: self.entries.len() as u64,
             range_order_digest: latest_entry.order_digest,
+            materialized_state_digest: self.materialized_state_digest,
         })
     }
 }
@@ -3064,6 +3068,10 @@ mod tests {
         assert_eq!(quorum.required, 2);
         assert_eq!(quorum.from_index, 0);
         assert_eq!(quorum.operation_count, 2);
+        assert_eq!(
+            quorum.materialized_state_digest,
+            FederationMaterializedStateDigest::genesis()
+        );
         assert_eq!(quorum.signers.len(), 2);
         assert!(quorum.signers.contains(&private_members[0].member_id));
         assert!(quorum.signers.contains(&private_members[1].member_id));
