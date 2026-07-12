@@ -1001,6 +1001,10 @@
             <p>Mint, swap, melt, duplicate-submit, finalized-operation, latency-stage, and in-process Aleph network-message tests now wait on explicit test notifications instead of short sleep loops or fixed scheduler-yield counts. Every event wait retains a bounded diagnostic timeout, and database state is still asserted after finalization. Deliberate fault delays, retry and backoff cadence, Aleph idle/activity grace, real HTTP readiness, and asynchronous backup persistence keep wall-clock coverage because timing is part of those contracts. A controlled duplicate-request comparison was runtime-neutral at 2.54 seconds before and 2.50 seconds after; five repeated post-change runs passed in 2.46-2.49 seconds. The complete federation Axum suite passes 419 tests with one manual benchmark ignored in 97.24 seconds, and standalone Axum remains 28/28.</p>
           </article>
           <article class="item">
+            <h3>Common federation types have domain owners</h3>
+            <p>The shared facade no longer implements configuration and DKG in one 7,200-line file. Identity, thresholds, payment policy, keysets, public and private configs, invites, and snapshots live in one focused config module; dealer-free ceremony records, participant state, commitment rounds, transcript verification, and finalized setup assembly live in a focused DKG module. Existing operation, journal, consensus, signing, transport, orchestration, and trusted-dealer modules remain intact. Explicit sibling imports expose dependency direction while the established public API, serialized fields, canonical bytes, hashes, and protocol versions remain unchanged. Verification passes all 332 shared tests, 187 mint and wallet federation tests, 419 Axum federation tests with one manual benchmark ignored, and all 28 standalone Axum tests; PostgreSQL and mintd federation targets compile cleanly.</p>
+          </article>
+          <article class="item">
             <h3>Feature-off compatibility</h3>
             <p>The first Rust scaffold is gated so normal standalone builds do not see federation mint fields or APIs.</p>
           </article>

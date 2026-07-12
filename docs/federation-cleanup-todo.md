@@ -2241,7 +2241,7 @@ catch-up protocol the wallet never uses.
 
 ## 34. Split the cdk-common federation module by domain
 
-**Status:** Todo (unblocked; Item 43 skipped)
+**Status:** Completed (2026-07-13)
 
 ### Problem
 
@@ -2278,6 +2278,42 @@ direction and make unsafe cross-layer coupling easy.
   fine-grained file hierarchy sketched in R11 unless a compile-time dependency
   boundary requires it. This is a mechanical ownership cleanup, not an excuse
   to alter federation behavior or wire formats.
+
+### Resolution
+
+- Extracted federation identity, threshold, payment-policy, keyset,
+  public/private config, invite, and snapshot ownership into a private
+  `federation/config.rs` module.
+- Extracted dealer-free ceremony records, participant state, commitment rounds,
+  transcript verification, and finalized DKG config assembly into a private
+  `federation/dkg.rs` module.
+- Kept the established `cdk_common::federation::*` public paths through the
+  existing facade. The new modules use explicit imports across config, DKG,
+  operation, and transport boundaries; no Axum type or concern entered the
+  common domain.
+- Left operation, journal/application state, consensus, signing, private
+  transport/certificates, DKG orchestration, and trusted-dealer ownership in
+  their existing focused modules. A finer file-per-type split and public API
+  relocation were rejected as churn without a stronger dependency boundary.
+- Preserved every struct field, serde representation, canonical encoding, hash
+  domain, protocol version, and validation path. The only internal visibility
+  adjustments are `pub(super)` accesses that replace same-file private access
+  between the new sibling modules and existing tests.
+
+### Verification
+
+- All 332 `cdk-common` federation-enabled tests pass, including operation-ID,
+  journal-digest, config, DKG transcript/signature, restart, and trusted-dealer
+  coverage.
+- All 187 focused `cdk` mint and wallet federation tests pass.
+- The complete federation-enabled Axum suite passes 419 tests with one manual
+  benchmark ignored; all 28 standalone Axum tests pass unchanged.
+- Federation-enabled PostgreSQL tests compile, the SQLite/fake-wallet mintd
+  federation target compiles, and `cdk-common` compiles without federation or
+  default features.
+- A warning-denying Clippy run remains blocked by pre-existing federation and
+  standalone lints outside this mechanical move; normal warning-free checks for
+  the changed shared crate pass.
 
 ## 35. Split federation database traits and centralize row codecs
 

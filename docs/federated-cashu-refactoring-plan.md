@@ -199,7 +199,7 @@ The intended ownership boundaries are:
 | 10 | Split the giant test file | Worthwhile around R4 | Low | Faster diagnosis without preserving obsolete tests |
 | 11 | Add a typed private request boundary | Conditional on message classification | Medium | Shared authentication without hidden sequence side effects |
 | 12 | Centralize SQL journal row encoding | Worthwhile after schema cleanup | Low-medium | Less schema and column-order drift |
-| 13 | Split federation common types by domain | Defer | Low | Smaller modules after protocol shape stabilizes |
+| 13 | Split federation common types by domain | Completed | Low | Coarse config and DKG ownership modules behind the stable facade |
 | 14 | Structure runtime errors | Apply selectively | Medium | Typed retry and readiness decisions without error-type proliferation |
 
 ## Refactoring checkpoints
@@ -1192,14 +1192,24 @@ Halted(reason)
 
 Reduce the 5,900-line common facade and make dependency direction visible.
 
-### Review verdict: Useful but defer until protocol deletion stabilizes
+### Review verdict: Completed with coarse ownership modules
 
-Mechanical organization has low behavioral risk, but doing it before removing
-obsolete consensus, restore, transcript, conflict, and transport types creates
-needless movement and merge noise. Start with a few coarse ownership modules,
-such as config/DKG, ordered operations, journal/application state, and private
-transport. Do not force every small identity, threshold, keyset, or error type
-into its own file unless that establishes a real dependency boundary.
+The split was performed after the obsolete consensus, restore, transcript,
+conflict, migration, and transport paths were removed. Identity, thresholds,
+payment policy, keysets, public/private configs, invites, and snapshots now live
+in one private `config` module. Dealer-free ceremony records, participant state,
+commitment rounds, transcript verification, and finalized DKG assembly live in
+one private `dkg` module. Operations, journal/application state, consensus,
+signing, private transport/certificates, DKG orchestration, and trusted-dealer
+generation retain their existing focused modules.
+
+The facade preserves every established `cdk_common::federation::*` path and all
+wire and hash forms. Explicit sibling imports enforce the new ownership edges.
+The finer proposed file-per-type hierarchy and public API relocation were not
+implemented because they would add modules and downstream churn without a new
+compile-time invariant. The top-level production implementation is now about
+1,260 lines, with the remaining bulk being the intentionally retained shared
+error definition and test module.
 
 ### Target layout
 
