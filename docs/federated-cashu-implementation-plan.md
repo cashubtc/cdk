@@ -242,10 +242,9 @@ Resolved blocking bugs:
   be confused with an AlephBFT session result. Certificate JSON derives its
   operation count, last index, and range digest from the first index, previous
   digest, and ordered operation IDs; the unused duplicate SQL columns are gone.
-  Readiness transitions now
-  persist directly from the runtime, and startup sync restoration plus the
-  replayed-journal quorum gate no longer depend on Axum state. Sixteen startup,
-  two status-persistence, four quorum-prefix, two lagging-readiness, and one
+  Readiness transitions now remain in memory on the runtime, and startup
+  derives the replayed-journal quorum gate without restoring an operational
+  label. Seventeen startup, four quorum-prefix, two lagging-readiness, and one
   materialized-state-mismatch regressions pass. DKG commitment, reveal,
   secret-share, transcript-signature, activation, transcript derivation, and
   finalized-config admission state now belong to the runtime as well. All 50
@@ -898,11 +897,9 @@ Architecture checklist:
   owns task shutdown, forwards finalized units into the CDK apply loop, and
   activates network-finality mode for valid AlephBFT federations with remote
   peers. Router startup now owns that live-session handle for `aleph_bft` mints,
-  starts the session before restoring sync status and before the old
-  private-REST finalized-unit driver, keeps stale persisted healthy status
-  ignored until live finality exists, clears the startup halt for empty verified
-  histories, and keeps replayed histories in catch-up certificate verification until
-  catch-up/recovery evidence explicitly opens public routes. A focused
+  starts the session before deriving readiness, clears the startup halt for
+  empty verified histories, and keeps replayed histories in catch-up certificate
+  verification until catch-up/recovery evidence explicitly opens public routes. A focused
   two-member in-process live-session test now injects the private REST transport
   into both router-owned upstream AlephBFT tasks, queues a real mint-quote
   operation on one member, exchanges SCALE AlephBFT network messages through the
@@ -955,13 +952,12 @@ Architecture checklist:
   routes. The in-memory path already restores persisted journal/session evidence
   and readiness; the AlephBFT path now restores local finalized-item state and
   can durably apply externally finalized units. Router startup now starts the
-  live AlephBFT session before sync restore, keeps stale persisted healthy sync
-  snapshots ignored until live finality is available, clears the startup halt
-  for empty histories once live finality exists, and sends replayed histories to
+  live AlephBFT session before deriving readiness, clears the startup halt for
+  empty histories once live finality exists, and sends replayed histories to
   catch-up certificate verification rather than opening public routes immediately.
   Public
   authoritative wallet routes also check the adapter finality mode directly, so
-  a same-process healthy sync marker cannot bypass the
+  a same-process healthy readiness value cannot bypass the
   network-finality guard. Peer fetch now uses both
   accepted-operation lag and finalized-item cursor lag, requests finalized-item
   suffixes by cursor, and rejects incomplete whole-unit pages before durable
@@ -2141,7 +2137,8 @@ Implementation checklist:
   - [x] `federation_signature_share`, implemented as `federation_signature_shares`.
   - [x] `federation_payment_observations`.
   - [x] `federation_member_sequences` for private REST sequence watermarks.
-  - [x] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
+  - [x] Keep runtime member readiness derived and in memory; the obsolete
+    `federation_member_status` table and database API were removed.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.
 - [x] Add `signature_share` rows instead of overloading final `blind_signature` semantics for federated members.
 - [x] Add state digest calculation over consensus-visible tables only.

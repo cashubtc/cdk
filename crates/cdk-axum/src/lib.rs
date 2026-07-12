@@ -26,9 +26,9 @@ use cdk::federation::{
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSubmitOperationResponse, MemberId,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSubmitOperationResponse,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -1071,141 +1071,6 @@ impl FederationSyncStatus {
             }
         }
     }
-
-    fn to_member_status_snapshot(
-        &self,
-        member_id: MemberId,
-        updated_time: u64,
-    ) -> FederationMemberStatusSnapshot {
-        match self {
-            Self::Healthy => FederationMemberStatusSnapshot {
-                member_id,
-                status: FederationMemberStatusKind::Healthy,
-                peer: None,
-                local_operation_count: None,
-                peer_operation_count: None,
-                operation_count: None,
-                message: None,
-                updated_time,
-            },
-            Self::Lagging {
-                peer,
-                local_operation_count,
-                peer_operation_count,
-            } => FederationMemberStatusSnapshot {
-                member_id,
-                status: FederationMemberStatusKind::Lagging,
-                peer: Some(*peer),
-                local_operation_count: Some(*local_operation_count),
-                peer_operation_count: Some(*peer_operation_count),
-                operation_count: None,
-                message: Some(self.not_ready_message()),
-                updated_time,
-            },
-            Self::CatchingUp { peer } => FederationMemberStatusSnapshot {
-                member_id,
-                status: FederationMemberStatusKind::CatchingUp,
-                peer: Some(*peer),
-                local_operation_count: None,
-                peer_operation_count: None,
-                operation_count: None,
-                message: Some(self.not_ready_message()),
-                updated_time,
-            },
-            Self::VerifyingCatchUpCertificate {
-                peer,
-                operation_count,
-            } => FederationMemberStatusSnapshot {
-                member_id,
-                status: FederationMemberStatusKind::VerifyingCatchUpCertificate,
-                peer: Some(*peer),
-                local_operation_count: None,
-                peer_operation_count: None,
-                operation_count: Some(*operation_count),
-                message: Some(self.not_ready_message()),
-                updated_time,
-            },
-            Self::MaterializedStateMismatch {
-                peer,
-                operation_count,
-            } => FederationMemberStatusSnapshot {
-                member_id,
-                status: FederationMemberStatusKind::MaterializedStateMismatch,
-                peer: Some(*peer),
-                local_operation_count: None,
-                peer_operation_count: None,
-                operation_count: Some(*operation_count),
-                message: Some(self.not_ready_message()),
-                updated_time,
-            },
-            Self::Halted { reason } => FederationMemberStatusSnapshot {
-                member_id,
-                status: FederationMemberStatusKind::Halted,
-                peer: None,
-                local_operation_count: None,
-                peer_operation_count: None,
-                operation_count: None,
-                message: Some(reason.clone()),
-                updated_time,
-            },
-        }
-    }
-
-    fn try_from_member_status_snapshot(
-        snapshot: FederationMemberStatusSnapshot,
-    ) -> std::result::Result<Self, String> {
-        let peer = || {
-            snapshot.peer.ok_or_else(|| {
-                format!(
-                    "persisted {} federation sync status is missing peer member id",
-                    snapshot.status
-                )
-            })
-        };
-        let operation_count = || {
-            snapshot.operation_count.ok_or_else(|| {
-                format!(
-                    "persisted {} federation sync status is missing operation count",
-                    snapshot.status
-                )
-            })
-        };
-
-        match snapshot.status {
-            FederationMemberStatusKind::Healthy => Ok(Self::Healthy),
-            FederationMemberStatusKind::Lagging => Ok(Self::Lagging {
-                peer: peer()?,
-                local_operation_count: snapshot.local_operation_count.ok_or_else(|| {
-                    "persisted lagging federation sync status is missing local operation count"
-                        .to_string()
-                })?,
-                peer_operation_count: snapshot.peer_operation_count.ok_or_else(|| {
-                    "persisted lagging federation sync status is missing peer operation count"
-                        .to_string()
-                })?,
-            }),
-            FederationMemberStatusKind::CatchingUp => Ok(Self::CatchingUp { peer: peer()? }),
-            FederationMemberStatusKind::VerifyingCatchUpCertificate => {
-                Ok(Self::VerifyingCatchUpCertificate {
-                    peer: peer()?,
-                    operation_count: operation_count()?,
-                })
-            }
-            FederationMemberStatusKind::MaterializedStateMismatch => {
-                Ok(Self::MaterializedStateMismatch {
-                    peer: peer()?,
-                    operation_count: operation_count()?,
-                })
-            }
-            FederationMemberStatusKind::Halted => Ok(Self::Halted {
-                reason: snapshot
-                    .message
-                    .as_deref()
-                    .map(redact_federation_operator_message)
-                    .unwrap_or_else(|| "persisted federation halt".to_string()),
-            }),
-        }
-    }
 }
 
 #[cfg(feature = "federation")]
@@ -1228,14 +1093,11 @@ impl FederationSyncState {
         self.status.clone()
     }
 
-    fn update_status<F>(&mut self, update: F) -> Option<FederationSyncStatus>
+    fn update_status<F>(&mut self, update: F)
     where
         F: FnOnce(&mut Self),
     {
-        let previous = self.status();
         update(self);
-        let current = self.status();
-        (current != previous).then_some(current)
     }
 
     fn mark_lagging(
@@ -1313,13 +1175,6 @@ impl FederationSyncState {
         let reason = redact_federation_operator_message(&reason);
         self.status = FederationSyncStatus::Halted { reason };
     }
-}
-
-#[cfg(feature = "federation")]
-fn federation_status_unix_time() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -1908,10 +1763,6 @@ impl MintState {
         self.federation.record_sequence(sender, sequence).await;
     }
 
-    pub(crate) async fn restore_federation_sync_status(&self) {
-        self.federation.restore_sync_status().await;
-    }
-
     pub(crate) async fn restore_federation_startup_readiness(&self) {
         self.federation.restore_startup_readiness().await;
     }
@@ -2415,10 +2266,6 @@ async fn create_mint_router_with_custom_cache_inner(
             federation_peer_sync_config,
         )
         .await?;
-    }
-    #[cfg(feature = "federation")]
-    if spawn_federation_peer_sync {
-        state.restore_federation_sync_status().await;
     }
     #[cfg(feature = "federation")]
     if spawn_federation_peer_sync {

@@ -67,17 +67,6 @@ ON federation_signature_shares (operation_id, output_index);
 CREATE INDEX idx_federation_signature_shares_blinded_message
 ON federation_signature_shares (blinded_message);
 
-CREATE TABLE federation_member_status (
-    member_id BIGINT PRIMARY KEY NOT NULL,
-    status TEXT NOT NULL,
-    peer_member_id BIGINT,
-    local_operation_count BIGINT,
-    peer_operation_count BIGINT,
-    operation_count BIGINT,
-    message TEXT,
-    updated_time BIGINT NOT NULL
-);
-
 CREATE TABLE federation_config (
     federation_id TEXT PRIMARY KEY NOT NULL,
     config_digest TEXT NOT NULL,

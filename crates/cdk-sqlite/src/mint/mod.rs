@@ -186,15 +186,6 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_member_status_persistence() {
-        cdk_common::database::mint::test::federation_member_status_persistence(
-            provide_db("federation_member_status_persistence".to_string()).await,
-        )
-        .await;
-    }
-
-    #[cfg(feature = "federation")]
-    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_db("federation_signature_share_persistence".to_string()).await,
@@ -469,7 +460,6 @@ mod test {
             "federation_aleph_bft_pending_operations",
             "federation_aleph_bft_session_state",
             "federation_payment_observations",
-            "federation_member_status",
             "federation_config",
             "federation_signature_shares",
             "federation_dkg_setup_messages",

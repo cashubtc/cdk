@@ -356,81 +356,7 @@ impl FederationNodeRuntime {
         let Some(sync) = self.sync.as_ref() else {
             return;
         };
-        let status = sync.lock().await.update_status(update);
-        if let Some(status) = status.as_ref() {
-            self.persist_sync_status(status).await;
-        }
-    }
-
-    async fn persist_sync_status(&self, status: &FederationSyncStatus) {
-        let Ok(mint) = self.active_mint() else {
-            return;
-        };
-        let Some(config) = mint.federation_config() else {
-            return;
-        };
-        let snapshot = status
-            .to_member_status_snapshot(config.member_id(), crate::federation_status_unix_time());
-        let db = mint.localstore();
-        let mut tx = match db.begin_transaction().await {
-            Ok(tx) => tx,
-            Err(err) => {
-                tracing::warn!("Could not begin federation sync status transaction: {err}");
-                return;
-            }
-        };
-
-        if let Err(err) = tx.set_federation_member_status(&snapshot).await {
-            tracing::warn!("Could not persist federation sync status: {err}");
-            let _ = tx.rollback().await;
-            return;
-        }
-
-        if let Err(err) = tx.commit().await {
-            tracing::warn!("Could not commit federation sync status transaction: {err}");
-        }
-    }
-
-    pub(crate) async fn restore_sync_status(&self) {
-        let Some(sync) = &self.sync else {
-            return;
-        };
-        let Ok(mint) = self.active_mint() else {
-            return;
-        };
-        let Some(config) = mint.federation_config() else {
-            return;
-        };
-        let current_status = sync.lock().await.status();
-        let startup_halt = current_status.is_aleph_bft_startup_halt();
-        if startup_halt && !self.live_session_available().await {
-            self.persist_sync_status(&current_status).await;
-            return;
-        }
-
-        match mint
-            .localstore()
-            .get_federation_member_status(config.member_id())
-            .await
-        {
-            Ok(Some(snapshot)) => {
-                match FederationSyncStatus::try_from_member_status_snapshot(snapshot) {
-                    Ok(status) => sync.lock().await.status = status,
-                    Err(err) => {
-                        tracing::warn!("Could not restore persisted federation sync status: {err}");
-                    }
-                }
-            }
-            Ok(None) => {
-                if startup_halt {
-                    self.update_sync_status(FederationSyncState::mark_healthy)
-                        .await;
-                }
-            }
-            Err(err) => {
-                tracing::warn!("Could not load persisted federation sync status: {err}");
-            }
-        }
+        sync.lock().await.update_status(update);
     }
 
     pub(crate) async fn restore_startup_readiness(&self) {
@@ -443,6 +369,13 @@ impl FederationNodeRuntime {
         let Some(config) = mint.federation_config() else {
             return;
         };
+        let current_status = sync.lock().await.status();
+        if current_status.is_aleph_bft_startup_halt() {
+            if !self.live_session_available().await {
+                return;
+            }
+            sync.lock().await.mark_healthy();
+        }
         match sync.lock().await.status() {
             FederationSyncStatus::Healthy
             | FederationSyncStatus::VerifyingCatchUpCertificate { .. } => {}

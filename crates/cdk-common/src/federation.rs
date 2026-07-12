@@ -58,8 +58,7 @@ pub use self::journal::{
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateDigest, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationStatus,
-    InMemoryFederationJournal,
+    FederationOperationStatus, InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,

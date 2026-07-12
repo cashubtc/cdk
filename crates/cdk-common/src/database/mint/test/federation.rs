@@ -18,13 +18,13 @@ use crate::federation::{
     FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
     FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationMemberStatusKind, FederationMemberStatusSnapshot,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FederationMaterializedStateDigest, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
+    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
@@ -1010,70 +1010,6 @@ where
         .await
         .is_err());
     tx.rollback().await.expect("rollback conflicting config");
-}
-
-/// Assert local federation member sync status snapshots are durable and idempotent.
-pub async fn federation_member_status_persistence<DB>(db: DB)
-where
-    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
-{
-    let local_member = MemberId::new(1).expect("local member");
-    let peer_member = MemberId::new(2).expect("peer member");
-    let missing_member = MemberId::new(3).expect("missing member");
-    let lagging = FederationMemberStatusSnapshot {
-        member_id: local_member,
-        status: FederationMemberStatusKind::Lagging,
-        peer: Some(peer_member),
-        local_operation_count: Some(3),
-        peer_operation_count: Some(7),
-        operation_count: None,
-        message: Some("lagging behind peer".to_string()),
-        updated_time: 11,
-    };
-
-    let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.set_federation_member_status(&lagging)
-        .await
-        .expect("persist lagging status");
-    tx.commit().await.expect("commit lagging status");
-
-    assert_eq!(
-        db.get_federation_member_status(local_member)
-            .await
-            .expect("lagging status"),
-        Some(lagging.clone())
-    );
-    assert_eq!(
-        db.get_federation_member_status(missing_member)
-            .await
-            .expect("missing status"),
-        None
-    );
-
-    let healthy = FederationMemberStatusSnapshot {
-        member_id: local_member,
-        status: FederationMemberStatusKind::Healthy,
-        peer: None,
-        local_operation_count: None,
-        peer_operation_count: None,
-        operation_count: None,
-        message: None,
-        updated_time: 12,
-    };
-    let mut tx = Database::begin_transaction(&db)
-        .await
-        .expect("begin update");
-    tx.set_federation_member_status(&healthy)
-        .await
-        .expect("persist healthy status");
-    tx.commit().await.expect("commit healthy status");
-
-    assert_eq!(
-        db.get_federation_member_status(local_member)
-            .await
-            .expect("healthy status"),
-        Some(healthy)
-    );
 }
 
 /// Assert projection quote-state reads preserve input order and missing rows.

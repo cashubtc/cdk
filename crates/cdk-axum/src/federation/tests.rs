@@ -25,10 +25,9 @@ use cdk::federation::{
     FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
     FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationKeysetRotationOperation, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationRecord, FederationPaymentObservationReportAction,
     FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
@@ -17066,7 +17065,7 @@ async fn aleph_bft_network_retry_queue_evicts_oldest_delivery_at_bound() {
 }
 
 #[tokio::test]
-async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy_status() {
+async fn aleph_bft_startup_does_not_restore_transient_healthy_status() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -17090,8 +17089,6 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    restored_state.restore_federation_sync_status().await;
-
     assert!(matches!(
         restored_state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Halted { reason })
@@ -17103,7 +17100,7 @@ async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy
     let err = restored_state
         .submit_federation_envelope(envelope)
         .await
-        .expect_err("stale persisted healthy status must not reopen AlephBFT public submit");
+        .expect_err("transient healthy status must not reopen AlephBFT public submit");
 
     assert!(
         err.to_string()
@@ -17162,7 +17159,6 @@ async fn aleph_bft_startup_restore_retires_startup_halt_after_live_session_for_e
     .await
     .expect("start AlephBFT live session")
     .expect("live session handle");
-    restored_state.restore_federation_sync_status().await;
     restored_state.restore_federation_startup_readiness().await;
     assert_eq!(
         restored_state.federation_sync_status().await,
@@ -20782,76 +20778,20 @@ async fn private_local_status_route_reports_lagging_sync_state() {
 }
 
 #[tokio::test]
-async fn sync_status_transitions_persist_member_status_snapshot() {
-    let (state, _, peer_private) = federation_route_state().await;
-    let local_member = state
-        .mint
-        .federation_config()
-        .expect("federation config")
-        .member_id();
-    let peer_member = peer_private.member_id;
-
-    state.mark_federation_lagging(peer_member, 1, 4).await;
-    let lagging = state
-        .mint
-        .localstore()
-        .get_federation_member_status(local_member)
-        .await
-        .expect("persisted lagging status")
-        .expect("lagging status");
-    assert_eq!(lagging.status, FederationMemberStatusKind::Lagging);
-    assert_eq!(lagging.peer, Some(peer_member));
-    assert_eq!(lagging.local_operation_count, Some(1));
-    assert_eq!(lagging.peer_operation_count, Some(4));
-    assert!(lagging
-        .message
-        .expect("lagging message")
-        .contains("lagging behind peer"));
-
-    state
-        .mark_federation_halted(
-            "halted while reading secret=sync-secret from /home/example/fed/private.json",
-        )
-        .await;
-    let halted = state
-        .mint
-        .localstore()
-        .get_federation_member_status(local_member)
-        .await
-        .expect("persisted halted status")
-        .expect("halted status");
-    let halted_message = halted.message.expect("halted message");
-    assert_eq!(halted.status, FederationMemberStatusKind::Halted);
-    assert!(halted_message.contains("secret=[REDACTED]"));
-    assert!(halted_message.contains("[REDACTED_PATH]"));
-    assert!(!halted_message.contains("sync-secret"));
-    assert!(!halted_message.contains("/home/example"));
-}
-
-#[tokio::test]
-async fn startup_restores_persisted_federation_sync_status() {
+async fn startup_discards_transient_federation_sync_status() {
     let (state, _, peer_private) = federation_route_state().await;
     let peer_member = peer_private.member_id;
     state.mark_federation_lagging(peer_member, 2, 5).await;
 
     let mut restarted = state.clone();
     restarted.federation.sync = Some(Arc::new(tokio::sync::Mutex::new(
-        crate::FederationSyncState::default(),
+        crate::FederationSyncState::for_aleph_bft(),
     )));
+    restarted.restore_federation_startup_readiness().await;
+
     assert_eq!(
         restarted.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
-    );
-
-    restarted.restore_federation_sync_status().await;
-
-    assert_eq!(
-        restarted.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::Lagging {
-            peer: peer_member,
-            local_operation_count: 2,
-            peer_operation_count: 5,
-        })
     );
 }
 

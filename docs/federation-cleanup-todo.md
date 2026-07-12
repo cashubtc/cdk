@@ -1218,10 +1218,9 @@ source-sequence persistence-after-finalization regression pass.
 Readiness status lookup and every lagging, catching-up, evidence-verification,
 materialized-mismatch, healthy, and halted transition now execute on
 `FederationNodeRuntime`. Live Aleph session/network availability is checked by
-the runtime as part of authoritative-read admission. `MintState` persists only
-the changed status returned by the runtime and retains digest-mismatch metrics.
-Status persistence, startup restoration, readiness, and five public-submit
-gating regressions pass.
+the runtime as part of authoritative-read admission. Readiness is now entirely
+derived in memory; the former status writes and startup label restoration have
+been removed. Digest-mismatch metrics and public-submit gating remain.
 
 ### Checkpoint 5: live-session control
 
@@ -1296,17 +1295,16 @@ reordered evidence; digest divergence; rejected-entry continuation; stale local
 overlap retries; and mint, swap, melt, payment-observation, and quarantine
 materialization.
 
-### Checkpoint 12: durable readiness ownership
+### Checkpoint 12: derived readiness ownership
 
-Every readiness transition now persists its member-status snapshot inside
-`FederationNodeRuntime`, including lagging, catching up, quorum verification,
-materialized-state mismatch, healthy, and halted states. Startup restoration and
-the replayed-journal quorum gate also run there. The catch-up certificate helper now
-accepts only `&Mint`, the dependency it actually reads, instead of all of Axum
-`MintState`. Sixteen startup, two status-persistence, four quorum-prefix, two
-lagging-readiness, and one materialized-state-mismatch tests pass, including the
-Prometheus-enabled compile gate. DKG persistence and live task lifecycle remain
-before Item 17 can close.
+Every readiness transition is owned in memory by `FederationNodeRuntime`,
+including lagging, catching up, quorum verification, materialized-state
+mismatch, healthy, and halted states. Startup derives readiness from live Aleph
+availability, journal position, and catch-up certificate quorum instead of
+restoring an operational label. The catch-up certificate helper accepts only
+`&Mint`, the dependency it actually reads, instead of all of Axum `MintState`.
+Startup, quorum-prefix, lagging-readiness, and materialized-state-mismatch tests
+cover the fail-closed gates.
 
 ### Checkpoint 13: DKG ceremony-state ownership
 
@@ -2081,7 +2079,7 @@ to substitute for threshold evidence in paths that deserve separate policy.
 
 ## 31. Derive transient federation readiness instead of persisting it
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2104,6 +2102,31 @@ work and can restore stale operational labels.
   status routes, and readiness gates.
 - Test restart from each readiness condition, stale persisted state removal,
   partition/heal, mismatch quarantine, and reduced database writes.
+
+### Resolution
+
+- Removed `FederationMemberStatusKind`, `FederationMemberStatusSnapshot`, the
+  mint database trait methods, SQL row conversion and queries, SQLite/Postgres
+  backend tests, and the undeployed `federation_member_status` schema table.
+  Readiness transitions no longer open database transactions.
+- Kept healthy, lagging, catching-up, catch-up-certificate verification,
+  materialized-state mismatch, and runtime halt as one in-memory
+  `FederationSyncStatus` state machine owned by `FederationNodeRuntime`.
+- Removed the startup status-restore pass. After the live Aleph session is
+  available, startup derives readiness from journal length and verified catch-up
+  certificate quorum: empty or fully certified history opens healthy; replayed
+  uncertified history remains fail-closed in verification.
+- Durable safety evidence remains in its real sources: finalized journal and
+  Aleph items, catch-up certificates, materialized-state digest comparison,
+  payment-observation quarantine operations, and Aleph backup/session records.
+  A stale operational label can no longer reopen or indefinitely halt a member.
+- Seventeen focused startup/restart tests pass, including transient lag discard,
+  no-live-session halt, empty-history activation, replay without quorum,
+  restore/check-state gating, and replay with quorum. The SQLite empty-schema
+  migration test and federation-enabled PostgreSQL build also pass. Final gates
+  pass all 329 shared-core tests, all 156 SQLite tests, all 416 non-ignored Axum
+  federation tests (two loopback tests run with network permission), and all 28
+  standalone Axum tests; one manual benchmark remains ignored.
 
 ## 32. Split private REST replay protection by message semantics
 
