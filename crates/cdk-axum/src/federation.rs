@@ -821,15 +821,6 @@ async fn materialized_state_snapshot(
                         .map(|output| output.blinded_secret),
                 );
             }
-            FederationOperation::Restore(operation) => {
-                blinded_messages.extend(
-                    operation
-                        .request
-                        .outputs
-                        .iter()
-                        .map(|output| output.blinded_secret),
-                );
-            }
             FederationOperation::KeysetRotation(operation) => {
                 keyset_rotations.push((entry.index, entry.operation_id, operation.keyset.clone()));
             }

@@ -30,9 +30,9 @@ use cdk::federation::{
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
     FederationOperationStatus, FederationPaymentObservationPolicy,
     FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
-    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationRestoreOperation,
-    FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -3010,66 +3010,60 @@ fn melt_payment_observation_envelope(
     )
 }
 
-fn restore_envelope(
+fn test_operation_envelope(
     federation_id: FederationId,
-    label: &'static str,
+    label: &str,
 ) -> FederationOperationEnvelope {
-    restore_envelope_with_output(
+    let hash = BlsG1PublicKey::hash_to_curve(label.as_bytes()).to_bytes();
+    let mut quote_bytes = [0u8; 16];
+    quote_bytes.copy_from_slice(&hash[..16]);
+    let quote = QuoteId::from(uuid::Uuid::from_bytes(quote_bytes)).to_string();
+    FederationOperationEnvelope::new(
         federation_id,
-        cdk::nuts::Id::from_str("00bfa73302d12ffd").expect("keyset id"),
-        PublicKey::from_hex(label).expect("public key"),
+        FederationOperation::PaymentObservationQuarantine(
+            cdk::federation::FederationPaymentObservationQuarantine {
+                context: cdk::federation::FederationPaymentObservationContext::MintQuote,
+                quote,
+                reason: cdk::federation::FederationPaymentObservationQuarantineReason::OperatorHalt,
+                evidence_operation_ids: Vec::new(),
+            },
+        ),
     )
 }
 
-fn restore_envelope_for_state(
+fn test_operation_envelope_for_state(
     state: &MintState,
-    label: &'static str,
+    label: &str,
 ) -> FederationOperationEnvelope {
     let config = state.mint.federation_config().expect("federation config");
-    restore_envelope_for_config(config.public_config(), label)
+    test_operation_envelope_for_config(config.public_config(), label)
 }
 
-fn restore_envelope_for_config(
+fn test_operation_envelope_for_config(
     config: &FederationConfig,
-    label: &'static str,
+    label: &str,
 ) -> FederationOperationEnvelope {
-    restore_envelope_with_output(
-        config.federation_id,
-        config.keysets[0].id,
-        PublicKey::from(BlsG1PublicKey::hash_to_curve(label.as_bytes())),
-    )
+    test_operation_envelope(config.federation_id, label)
 }
 
-fn indexed_restore_envelope_for_config(
+fn indexed_test_operation_envelope_for_config(
     config: &FederationConfig,
     index: u64,
 ) -> FederationOperationEnvelope {
-    restore_envelope_with_output(
+    test_operation_envelope(
         config.federation_id,
-        config.keysets[0].id,
-        PublicKey::from(BlsG1PublicKey::hash_to_curve(
-            format!("federation evidence restore {index}").as_bytes(),
-        )),
+        &format!("federation evidence operation {index}"),
     )
 }
 
-fn restore_envelope_with_output(
-    federation_id: FederationId,
-    keyset_id: Id,
-    blinded_secret: PublicKey,
-) -> FederationOperationEnvelope {
-    FederationOperationEnvelope::new(
-        federation_id,
-        FederationOperation::Restore(cdk::federation::FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: vec![cdk::nuts::BlindedMessage::new(
-                    Amount::from(1),
-                    keyset_id,
-                    blinded_secret,
-                )],
-            },
-        }),
-    )
+fn restore_request_for_config(config: &FederationConfig, label: &str) -> RestoreRequest {
+    RestoreRequest {
+        outputs: vec![cdk::nuts::BlindedMessage::new(
+            Amount::ZERO,
+            config.keysets[0].id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(label.as_bytes())),
+        )],
+    }
 }
 
 #[tokio::test]
@@ -3144,7 +3138,7 @@ async fn rest_peer_client_applies_configured_operation_submission_timeout() {
         .expect("peer member")
         .clone();
     let timeout = Duration::from_secs(2);
-    let request = FederationSubmitOperationRequest::new(restore_envelope(
+    let request = FederationSubmitOperationRequest::new(test_operation_envelope(
         federation_id,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     ));
@@ -3608,7 +3602,7 @@ async fn rest_peer_client_rejects_submit_response_with_mismatched_outcome_operat
     let request = FederationSubmitOperationRequest::new(envelope);
     let expected_operation_id = request.operation_id().expect("expected operation id");
     let mut peer_consensus = test_aleph_bft_peer(federation_id, member.member_id);
-    let other_envelope = restore_envelope(
+    let other_envelope = test_operation_envelope(
         federation_id,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -3768,11 +3762,11 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
         federation_route_state_three_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let witness_member = public_config.member(member_id(3)).expect("witness member");
-    let first = restore_envelope_for_config(
+    let first = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let second = restore_envelope_for_config(
+    let second = test_operation_envelope_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -3863,11 +3857,11 @@ async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let first = restore_envelope_for_config(
+    let first = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let second = restore_envelope_for_config(
+    let second = test_operation_envelope_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -3942,11 +3936,11 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let first = restore_envelope_for_config(
+    let first = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let second = restore_envelope_for_config(
+    let second = test_operation_envelope_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -3993,7 +3987,7 @@ async fn lagging_member_refuses_public_federation_submit_until_healthy() {
     state
         .mark_federation_lagging(peer_member.member_id, 0, 1)
         .await;
-    let envelope = restore_envelope_for_state(
+    let envelope = test_operation_envelope_for_state(
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4037,15 +4031,10 @@ async fn lagging_member_refuses_public_restore_and_checkstate_reads_until_health
     let y = PublicKey::from(BlsG1PublicKey::hash_to_curve(
         b"lagging member checkstate read",
     ));
-    let restore_request = match restore_envelope_for_state(
-        &state,
+    let restore_request = restore_request_for_config(
+        &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-    )
-    .operation
-    {
-        FederationOperation::Restore(operation) => operation.request,
-        _ => unreachable!("helper returns restore operation"),
-    };
+    );
 
     let check_error = crate::router_handlers::post_check(
         AuthHeader::None,
@@ -4095,7 +4084,7 @@ async fn divergent_member_refuses_public_submit() {
     state
         .mark_federation_materialized_state_mismatch(primary_member.member_id, 1)
         .await;
-    let envelope = restore_envelope_for_state(
+    let envelope = test_operation_envelope_for_state(
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4117,7 +4106,7 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope_for_state(
+    let peer_entry = test_operation_envelope_for_state(
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4161,7 +4150,7 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         })
     ));
 
-    let next = restore_envelope_for_state(
+    let next = test_operation_envelope_for_state(
         &state,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -4174,7 +4163,7 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope_for_state(
+    let peer_entry = test_operation_envelope_for_state(
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4217,7 +4206,7 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         Some(crate::FederationSyncStatus::Healthy)
     ));
 
-    let next = restore_envelope_for_state(
+    let next = test_operation_envelope_for_state(
         &state,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -4352,7 +4341,7 @@ async fn peer_sync_round_skips_evidence_for_failed_or_backing_off_peer() {
     let (state, public_config, local_private, _) =
         federation_route_state_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let entry = restore_envelope_for_config(
+    let entry = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4418,7 +4407,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
     let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     let operation_count = 3;
     for index in 0..operation_count {
-        let entry = indexed_restore_envelope_for_config(&public_config, index);
+        let entry = indexed_test_operation_envelope_for_config(&public_config, index);
         state
             .submit_federation_envelope(entry.clone())
             .await
@@ -4486,7 +4475,7 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let entry = restore_envelope_for_config(
+    let entry = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4537,7 +4526,7 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let entry = restore_envelope_for_config(
+    let entry = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -4558,7 +4547,7 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
         catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
             .await;
     let mut catch_up_response = signed_catch_up_response(catch_up_response, &peer_private);
-    let mismatched_operation_id = restore_envelope_for_config(
+    let mismatched_operation_id = test_operation_envelope_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     )
@@ -4615,7 +4604,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
     let chunk_size = 2;
     let operation_count = chunk_size + 1;
     for index in 0..operation_count as u64 {
-        let entry = indexed_restore_envelope_for_config(&public_config, index);
+        let entry = indexed_test_operation_envelope_for_config(&public_config, index);
         state
             .submit_federation_envelope(entry.clone())
             .await
@@ -4694,7 +4683,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
     let chunk_size = 2;
     let operation_count = chunk_size + 1;
     for index in 0..operation_count as u64 {
-        let entry = indexed_restore_envelope_for_config(&public_config, index);
+        let entry = indexed_test_operation_envelope_for_config(&public_config, index);
         state
             .submit_federation_envelope(entry.clone())
             .await
@@ -4819,11 +4808,11 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
     let (state, public_config, local_private, _) =
         federation_route_state_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope_for_config(
+    let peer_entry = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let local_entry = restore_envelope_for_config(
+    let local_entry = test_operation_envelope_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -4915,7 +4904,7 @@ async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
     let (state, public_config, local_private, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope_for_config(
+    let peer_entry = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -7070,11 +7059,11 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
 async fn diverged_member_rejects_peer_catch_up_digest_mismatch() {
     let (state, public_config, _) = federation_route_state().await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope_for_config(
+    let peer_entry = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let local_entry = restore_envelope_for_config(
+    let local_entry = test_operation_envelope_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
@@ -7179,7 +7168,7 @@ async fn federation_runtime_startup_rejects_conflicting_public_config_snapshot()
 async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let peer_member = peer_private.member_id;
-    let envelope = restore_envelope_for_config(
+    let envelope = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -13596,18 +13585,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         wait_for_applied_operation_with_context(state, swap_operation_id, "one-offline swap").await;
     }
 
-    let restore_envelope = runtime_config.operation_envelope(FederationOperation::Restore(
-        FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: vec![swap_blinded_output.clone()],
-            },
-        },
-    ));
-    let restore_operation_id =
-        submit_live_operation_allowing_pending_timeout(&session.states[0], restore_envelope).await;
-    expected_operation_ids.push(restore_operation_id);
     for state in &session.states[..offline_index] {
-        wait_for_recorded_operation(state, restore_operation_id).await;
         let restored = state
             .mint
             .restore(RestoreRequest {
@@ -20501,71 +20479,6 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
     assert!(signatures[0].is_some());
 }
 
-#[tokio::test]
-async fn materialized_state_digest_tracks_restore_output_share_rows() {
-    let (state, public_config, _) = federation_route_state().await;
-    let config = state
-        .mint
-        .federation_config()
-        .expect("federation config")
-        .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let quote_id = QuoteId::new();
-    let output = mint_output(&state, &quote_id);
-    let mut restore_output = output.clone();
-    restore_output.amount = Amount::ZERO;
-    let restore_envelope = FederationOperationEnvelope::new(
-        public_config.federation_id,
-        FederationOperation::Restore(FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: vec![restore_output],
-            },
-        }),
-    );
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
-    finalize_test_operation(&mut peer_consensus, restore_envelope).expect("peer accepted restore");
-    let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
-        .expect("catch-up response");
-
-    let missing_digest = materialized_state_digest(&state, &catch_up_response.entries)
-        .await
-        .expect("missing digest");
-    state
-        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
-        .await
-        .expect("submit mint quote");
-    state
-        .submit_federation_envelope(paid_observation_envelope(&state, &quote_id))
-        .await
-        .expect("submit paid observation");
-    let input = MintInput::Single(MintRequest {
-        quote: quote_id,
-        outputs: vec![output.clone()],
-        signature: None,
-    });
-    state
-        .submit_federation_envelope(config.mint_operation(input).expect("mint envelope"))
-        .await
-        .expect("submit mint");
-    let materialized_digest = materialized_state_digest(&state, &catch_up_response.entries)
-        .await
-        .expect("materialized digest");
-
-    assert_ne!(missing_digest, materialized_digest);
-    assert_ne!(materialized_digest, FederationStateDigest::genesis());
-
-    let signatures = state
-        .mint
-        .localstore()
-        .get_blind_signatures(&[output.blinded_secret])
-        .await
-        .expect("signature lookup");
-    assert!(signatures[0].is_some());
-}
-
 fn completed_operation_snapshot_row(
     snapshot: &FederationMaterializedStateSnapshot,
     operation_id: FederationOperationId,
@@ -21144,7 +21057,7 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
         .federation_config()
         .expect("federation config")
         .member_id();
-    let envelope = restore_envelope_for_config(
+    let envelope = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
@@ -21377,7 +21290,7 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
     state
-        .submit_federation_envelope(restore_envelope_for_config(
+        .submit_federation_envelope(test_operation_envelope_for_config(
             &public_config,
             "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
         ))
@@ -21399,7 +21312,7 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
     );
 
     let blocked = restarted
-        .submit_federation_envelope(restore_envelope_for_config(
+        .submit_federation_envelope(test_operation_envelope_for_config(
             &public_config,
             "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
         ))
@@ -21413,7 +21326,7 @@ async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads()
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
     state
-        .submit_federation_envelope(restore_envelope_for_config(
+        .submit_federation_envelope(test_operation_envelope_for_config(
             &public_config,
             "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
         ))
@@ -21449,15 +21362,10 @@ async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads()
         "check-state should fail closed while startup verifies session outcome: {check_body}"
     );
 
-    let restore_request = match restore_envelope_for_config(
+    let restore_request = restore_request_for_config(
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
-    )
-    .operation
-    {
-        FederationOperation::Restore(operation) => operation.request,
-        _ => unreachable!("helper returns restore operation"),
-    };
+    );
     let restore_error = crate::router_handlers::post_restore(
         AuthHeader::None,
         State(restarted),
@@ -21477,16 +21385,14 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
     let (state, public_config, _, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
-    let restore_envelope = restore_envelope_for_config(
+    let history_envelope = test_operation_envelope_for_config(
         &public_config,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let restore_request = match &restore_envelope.operation {
-        FederationOperation::Restore(operation) => operation.request.clone(),
-        _ => unreachable!("helper returns restore operation"),
-    };
+    let restore_request =
+        restore_request_for_config(&public_config, "startup healthy restore output");
     state
-        .submit_federation_envelope(restore_envelope)
+        .submit_federation_envelope(history_envelope)
         .await
         .expect("persist accepted operation");
     let entries = state

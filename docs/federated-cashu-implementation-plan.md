@@ -9,7 +9,8 @@ The grand vision of this project is to evolve Cashu from a single-operator Chaum
 
 ## Scope
 
-- Federate CDK mint issuance, swap, restore, check-state, and eventually melt flows.
+- Federate CDK mint issuance, swap, and melt state transitions; serve restore
+  and check-state as threshold authoritative reads of accepted state.
 - Let a federation-aware CDK wallet talk to multiple mint members and aggregate BLS blind signature shares into normal Cashu proofs.
 - Serialize all safety-critical mint state transitions through consensus before any member returns a usable signature share.
 - Keep existing standalone mint and wallet behavior unchanged unless federation mode is explicitly enabled.
@@ -22,7 +23,9 @@ BLS blind signatures are only supported for Cashu keyset v3, represented in CDK 
 
 - Federation configs must only create, import, advertise, and validate aggregate v3/BLS keysets.
 - Federation startup must reject any aggregate keyset, member public share, or local secret share that is not tied to a v3/BLS keyset.
-- Federated mint, swap, restore, and change-output signing paths must reject outputs targeting non-v3 keysets before consensus signing.
+- Federated mint, swap, and change-output signing paths must reject outputs
+  targeting non-v3 keysets before consensus signing. Restore must reject
+  non-v3 placeholders before reading or returning persisted shares.
 - Federation-aware wallets must reject member sets that advertise mismatched aggregate keysets or any non-v3 federation keyset.
 - Standalone non-federated mints remain unaffected and may keep supporting whatever keyset versions CDK otherwise supports.
 - There is no legacy federation compatibility mode. Old experimental federation configs, invites, keyset metadata, fixtures, and route semantics should be regenerated or removed rather than migrated.
@@ -962,11 +965,12 @@ Mint-side restructuring checklist:
   rejection before fanout for mint, batch mint, swap, restore, and melt change.
   Fresh targeted coverage also proves common federation config rejects v1, v2,
   and non-BLS aggregate keysets, Axum public routes reject non-v3 mint, swap,
-  restore, and melt-change outputs before consensus work, mintd federation
+  and melt-change outputs before consensus work and reject non-v3 restore
+  placeholders before the local share read, mintd federation
   startup rejects non-v3/non-BLS aggregate configs, and standalone
   non-federated mint builders still honor legacy keyset-version settings.
 - [x] Add a bounded operation response cache keyed by operation hash for mint,
-  swap, melt, restore, and quote state responses that need idempotent
+  swap, melt, and quote state responses that need idempotent
   public API behavior. The local accepted-operation notification cache now
   retains a bounded `response_cache_limit` of accepted responses for idempotent
   waiters and status visibility. Active waiters keep a per-operation response
@@ -1124,7 +1128,10 @@ Federated public API checklist:
   states derived from accepted consensus-visible state. Public Axum restore and
   check-state handlers now verify federation sync readiness after auth and
   before local mint reads; the focused lagging-member regression proves both
-  routes fail closed while lagging and resume once healthy.
+  routes fail closed while lagging and resume once healthy. Restore is not a
+  consensus operation: it reads signature-share provenance persisted by prior
+  accepted mint, swap, or melt-change operations, while the wallet validates
+  matching threshold views and aggregates the returned BLS shares.
 - [x] Public APIs must support the race where the accepted operation arrives
   between admission validation and queue submission: the submit path should then
   return the cached accepted response. Submit responses now recompute the

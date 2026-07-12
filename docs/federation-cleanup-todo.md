@@ -713,7 +713,40 @@ private submission path and single-ingress assumption.
 
 ## 9. Remove restore from the consensus operation model
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed `FederationRestoreOperation`, the restore operation kind and enum
+variant, its no-op admission/apply branches, transcript and balance handling,
+materialized-state projection, public export, and all restore-envelope
+fixtures. Generic private-route and catch-up fixtures now use an actual
+payment-observation quarantine operation instead of relying on a state-free
+restore journal entry. The artificial restore state-digest test was deleted;
+real mint, swap, melt, quarantine, and completed-operation tests cover rows
+that consensus can actually create.
+
+Restore remains a direct, readiness-gated read of signature-share rows that
+were persisted by accepted mint, swap, or melt-change operations. Mint members
+still reject non-v3 restore placeholders, the wallet still requires matching
+threshold member views and validates/aggregates BLS shares, and lagging members
+still refuse both restore and check-state responses.
+
+Verification:
+
+- a production-code search finds no restore consensus type, kind, enum
+  variant, envelope constructor, apply branch, or projection branch;
+- all 217 focused `cdk-common` federation tests and all 99 mint federation
+  tests pass;
+- all 73 federated connector tests pass, including threshold restore
+  aggregation, matching-view, no-threshold, and non-v3 pre-fanout coverage;
+- the interrupted-receive recovery regression passes, proving the existing
+  check-state-then-restore saga path remains the sole recovery mechanism;
+- all seven normal standalone restore tests pass under CDK's default
+  non-federation features;
+- all 423 Axum federation tests pass, including direct restore admission,
+  authoritative-read readiness, startup replay, catch-up, private REST, DKG,
+  and live four- and five-member one-offline mint/swap/restore/melt windows.
 
 ### Problem
 

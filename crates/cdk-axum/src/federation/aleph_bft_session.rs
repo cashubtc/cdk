@@ -1178,9 +1178,9 @@ mod tests {
 
     use cdk::federation::{
         FederationAlephBftPendingOperationRecord, FederationId, FederationOperation,
-        FederationOperationEnvelope, FederationRestoreOperation,
+        FederationOperationEnvelope, FederationPaymentObservationContext,
+        FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     };
-    use cdk::nuts::RestoreRequest;
 
     use super::*;
 
@@ -1198,11 +1198,14 @@ mod tests {
 
         let envelope = FederationOperationEnvelope::new(
             FederationId::from_bytes([7; 32]),
-            FederationOperation::Restore(FederationRestoreOperation {
-                request: RestoreRequest {
-                    outputs: Vec::new(),
+            FederationOperation::PaymentObservationQuarantine(
+                FederationPaymentObservationQuarantine {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "00000000-0000-0000-0000-000000000001".to_string(),
+                    reason: FederationPaymentObservationQuarantineReason::OperatorHalt,
+                    evidence_operation_ids: Vec::new(),
                 },
-            }),
+            ),
         );
         let operation_id = envelope.operation_id().expect("pending operation id");
         let pending = FederationAlephBftPendingOperationRecord {
@@ -1212,11 +1215,14 @@ mod tests {
         };
         let other_envelope = FederationOperationEnvelope::new(
             FederationId::from_bytes([8; 32]),
-            FederationOperation::Restore(FederationRestoreOperation {
-                request: RestoreRequest {
-                    outputs: Vec::new(),
+            FederationOperation::PaymentObservationQuarantine(
+                FederationPaymentObservationQuarantine {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "00000000-0000-0000-0000-000000000002".to_string(),
+                    reason: FederationPaymentObservationQuarantineReason::OperatorHalt,
+                    evidence_operation_ids: Vec::new(),
                 },
-            }),
+            ),
         );
         let other_session = FederationAlephBftPendingOperationRecord {
             operation_id: other_envelope

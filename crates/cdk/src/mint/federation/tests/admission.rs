@@ -319,13 +319,6 @@ fn runtime_config_operation_submission_admission_rejects_invalid_wallet_operatio
                 Some(vec![non_v3_output.clone()]),
             ),
         }));
-    let restore = runtime_config.operation_envelope(FederationOperation::Restore(
-        FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: vec![non_v3_output],
-            },
-        },
-    ));
     let mut inactive_keyset = runtime_config.public_config().keysets[0].clone();
     inactive_keyset.active = false;
     let rotation = runtime_config.operation_envelope(FederationOperation::KeysetRotation(
@@ -334,7 +327,7 @@ fn runtime_config_operation_submission_admission_rejects_invalid_wallet_operatio
         },
     ));
 
-    for envelope in [mint, swap, melt, restore, rotation] {
+    for envelope in [mint, swap, melt, rotation] {
         assert!(runtime_config
             .validate_federated_operation_submission(&envelope.operation)
             .is_err());
@@ -366,13 +359,6 @@ fn runtime_config_operation_submission_admission_accepts_valid_wallet_operations
             Some(vec![change]),
         ))
         .expect("melt operation");
-    let restore = runtime_config.operation_envelope(FederationOperation::Restore(
-        FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: vec![output_for_runtime(&runtime_config, b"valid routed restore")],
-            },
-        },
-    ));
     let rotation_runtime_config = runtime_config_with_inactive_rotation_keyset();
     let mut rotation_keyset = rotation_runtime_config
         .public_config()
@@ -388,7 +374,7 @@ fn runtime_config_operation_submission_admission_accepts_valid_wallet_operations
         },
     ));
 
-    for envelope in [mint, swap, melt, restore] {
+    for envelope in [mint, swap, melt] {
         runtime_config
             .validate_federated_operation_submission(&envelope.operation)
             .expect("valid wallet operation admission");

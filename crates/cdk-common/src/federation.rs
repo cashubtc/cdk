@@ -75,7 +75,7 @@ pub use self::operation::{
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
     FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
     FederationPaymentObservationReportSummary, FederationRequestTranscript,
-    FederationRequestTranscriptHash, FederationRestoreOperation, FederationSwapOperation,
+    FederationRequestTranscriptHash, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{

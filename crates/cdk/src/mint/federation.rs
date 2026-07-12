@@ -20,8 +20,7 @@ use cdk_common::federation::{
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationRestoreOperation, FederationSignatureShareRecord, FederationSwapOperation,
-    MemberConfigPrivate, MemberId,
+    FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
@@ -537,9 +536,6 @@ impl FederationRuntimeConfig {
             FederationOperation::Swap(operation) => {
                 self.validate_federated_swap_submission(&operation.request)
             }
-            FederationOperation::Restore(operation) => {
-                self.validate_federated_restore_submission(operation)
-            }
             FederationOperation::KeysetRotation(operation) => {
                 self.validate_federated_keyset_rotation_submission(operation)
             }
@@ -798,14 +794,6 @@ impl FederationRuntimeConfig {
         self.verify_proofs(request.inputs())?;
         request.verify_spending_conditions()?;
         Ok(())
-    }
-
-    /// Validate a federated restore operation envelope before consensus admission.
-    pub fn validate_federated_restore_submission(
-        &self,
-        operation: &FederationRestoreOperation,
-    ) -> Result<(), Error> {
-        self.validate_restore_outputs(&operation.request)
     }
 
     /// Validate a federated keyset rotation operation before consensus admission.
@@ -1267,7 +1255,6 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
-            FederationOperation::Restore(_) => Ok(false),
         }
     }
 

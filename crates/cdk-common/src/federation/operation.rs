@@ -3,7 +3,7 @@
 //! Federation consensus orders these envelopes, not ad hoc HTTP handler
 //! side effects. Keeping the operation payloads separate from the Cashu REST
 //! API lets standalone mints keep their existing protocol surface while
-//! federation members agree on the exact mint, swap, melt, restore, and
+//! federation members agree on the exact mint, swap, and melt
 //! payment-observation requests before signing or mutating spend state.
 
 use core::fmt;
@@ -22,8 +22,7 @@ use super::{
 use crate::payment::PaymentIdentifier;
 use crate::{
     Amount, BatchMintRequest, BlindedMessage, Id, MeltQuoteRequest, MeltQuoteState, MeltRequest,
-    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod,
-    RestoreRequest, SwapRequest,
+    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, SwapRequest,
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v2";
@@ -269,8 +268,6 @@ pub enum FederationOperationKind {
     Melt,
     /// Spend proofs and sign replacement outputs.
     Swap,
-    /// Recreate signatures for previously signed blinded outputs.
-    Restore,
     /// Propose a new federated v3/BLS aggregate keyset.
     KeysetRotation,
 }
@@ -286,7 +283,6 @@ impl fmt::Display for FederationOperationKind {
             Self::PaymentObservationQuarantine => f.write_str("payment_observation_quarantine"),
             Self::Melt => f.write_str("melt"),
             Self::Swap => f.write_str("swap"),
-            Self::Restore => f.write_str("restore"),
             Self::KeysetRotation => f.write_str("keyset_rotation"),
         }
     }
@@ -612,7 +608,6 @@ impl FederationPaymentObservation {
             | FederationOperation::PaymentObservationQuarantine(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::Restore(_)
             | FederationOperation::KeysetRotation(_) => None,
         }
     }
@@ -768,7 +763,6 @@ impl FederationPaymentObservationQuarantineRecord {
             | FederationOperation::MeltQuotePayment(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::Restore(_)
             | FederationOperation::KeysetRotation(_) => None,
         }
     }
@@ -1215,13 +1209,6 @@ pub struct FederationSwapOperation {
     pub request: SwapRequest,
 }
 
-/// Request to restore signatures for blinded outputs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FederationRestoreOperation {
-    /// Original wallet restore request.
-    pub request: RestoreRequest,
-}
-
 /// Request to add a new federated aggregate keyset through consensus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationKeysetRotationOperation {
@@ -1333,8 +1320,6 @@ pub enum FederationOperation {
     Melt(FederationMeltOperation),
     /// Spend proofs and sign replacement outputs.
     Swap(FederationSwapOperation),
-    /// Recreate signatures for previously signed blinded outputs.
-    Restore(FederationRestoreOperation),
     /// Add a new federated aggregate keyset after consensus.
     KeysetRotation(FederationKeysetRotationOperation),
 }
@@ -1354,7 +1339,6 @@ impl FederationOperation {
             }
             Self::Melt(_) => FederationOperationKind::Melt,
             Self::Swap(_) => FederationOperationKind::Swap,
-            Self::Restore(_) => FederationOperationKind::Restore,
             Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
         }
     }
@@ -1413,7 +1397,7 @@ impl FederationOperation {
                     keyset_id: operation.keyset.id,
                 }]
             }
-            Self::Swap(_) | Self::Restore(_) => Vec::new(),
+            Self::Swap(_) => Vec::new(),
         }
     }
 
@@ -1428,17 +1412,14 @@ impl FederationOperation {
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::PaymentObservationQuarantine(operation) => Some(operation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
-            Self::Swap(_) | Self::Restore(_) | Self::KeysetRotation(_) => None,
+            Self::Swap(_) | Self::KeysetRotation(_) => None,
         }
     }
 
     /// Return true when this operation carries a wallet request that can authorize signing.
     #[must_use]
     pub fn has_request_transcript(&self) -> bool {
-        matches!(
-            self,
-            Self::Mint(_) | Self::Melt(_) | Self::Swap(_) | Self::Restore(_)
-        )
+        matches!(self, Self::Mint(_) | Self::Melt(_) | Self::Swap(_))
     }
 
     /// Compute the operation-local balance audit for this consensus payload.
@@ -1468,9 +1449,7 @@ impl FederationOperation {
                 fee_reserve: Amount::ZERO,
                 remainder: Amount::ZERO,
             }),
-            Self::MeltQuote(_) | Self::Restore(_) => {
-                Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
-            }
+            Self::MeltQuote(_) => Ok(FederationOperationBalanceAudit::unchecked(operation_kind)),
             Self::MeltQuotePayment(observation) => Ok(FederationOperationBalanceAudit::external(
                 operation_kind,
                 observation.amount,
@@ -3165,14 +3144,6 @@ mod tests {
                 )],
             ),
         });
-        let restore = FederationOperation::Restore(FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: vec![output(
-                    10,
-                    "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39",
-                )],
-            },
-        });
         let rotation = keyset_rotation_operation(7);
         let quarantine = FederationOperation::PaymentObservationQuarantine(
             FederationPaymentObservationQuarantine {
@@ -3207,7 +3178,6 @@ mod tests {
             ),
             (melt, FederationOperationKind::Melt, Some("melt-quote")),
             (swap, FederationOperationKind::Swap, None),
-            (restore, FederationOperationKind::Restore, None),
             (rotation, FederationOperationKind::KeysetRotation, None),
         ];
 
