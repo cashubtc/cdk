@@ -1,0 +1,8 @@
+[database]
+engine = "postgres"
+
+[database.postgres]
+url = @@URL@@
+tls_mode = "disable"
+max_connections = 20
+connection_timeout_seconds = 10

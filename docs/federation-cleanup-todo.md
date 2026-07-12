@@ -2413,7 +2413,7 @@ defaults and conversion code.
 
 ## 37. Move generated federation smoke programs out of Rust source
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2436,6 +2436,42 @@ review.
   and generated local federation scripts.
 - Shell-check or execute generated scripts, test paths containing spaces, and
   verify no private key or local identifying path reaches committed fixtures.
+
+### Review decision
+
+- The problem still existed in `federation_setup.rs`: two Bash programs totaling
+  roughly 1,500 lines and three stable TOML templates were embedded in Rust
+  format strings. They now live under `crates/cdk-mintd/dev/federation` and are
+  included only by the explicit fakewallet federation development build.
+- Rust still owns every generated mnemonic, path, URL, member ID, unit, port,
+  schema name, and member-case block. Existing TOML encoding and shell
+  single-quote helpers run before rendering, so extraction did not move secret
+  creation or trust input strings to shell.
+- One small fail-closed renderer requires each declared marker exactly once,
+  rejects duplicate substitutions and unknown markers, and performs no
+  evaluation. Multiline insertion markers are valid Bash comments in the raw
+  templates, allowing direct syntax inspection as well as generated-script
+  checks.
+- `federation_smoke.rs` remains Rust. It contains typed wallet/mint orchestration
+  and state assertions rather than embedded script text; moving it would hide
+  behavior and add indirection without reducing generated baggage.
+
+### Verification
+
+- Both committed `.sh.in` templates pass `bash -n`; generated scripts also pass
+  the existing `bash -n` checks after every marker is rendered.
+- `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`:
+  all 16 core/setup tests passed, including fail-closed renderer cases,
+  deterministic core artifacts, restrictive private-file permissions, SQLite
+  and PostgreSQL config generation, four/five-member matrices, and generated
+  scripts rooted in a path containing spaces.
+- `cargo check -p cdk-mintd --no-default-features --features federation,sqlite`
+  passes, proving production-minimal federation compilation does not require or
+  expose fakewallet setup rendering.
+- `cargo package -p cdk-mintd --list --allow-dirty` includes all five templates.
+  Workspace search finds no private key, credential, or machine-local path in
+  the committed templates; generated secret-bearing files remain runtime
+  artifacts protected by the existing restrictive writers.
 
 ## 38. Add a federation production build profile
 

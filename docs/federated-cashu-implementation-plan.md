@@ -4065,6 +4065,12 @@ Tests and success criteria:
   validation and display without duplicate DTOs or compatibility defaults. All
   44 transport tests, ten focused status-route tests, and 42 mintd status
   command tests pass.
+- [x] Stable local federation development artifacts are external templates:
+  trusted-dealer and live-DKG Bash programs plus member, live-DKG, and
+  PostgreSQL TOML templates live under `cdk-mintd/dev/federation`. Rust retains
+  validated value generation, TOML encoding, shell quoting, secret-safe writes,
+  and a fail-closed exact-marker renderer. Both raw and generated scripts pass
+  Bash syntax checks, and all 16 setup tests pass with paths containing spaces.
 - [x] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
 - [x] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
 - [x] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.

@@ -115,7 +115,7 @@ fn fakewallet_is_documented_as_development_backend() {
 
 #[test]
 fn trusted_dealer_artifacts_are_written_and_validated() {
-    let output_dir = temp_output_dir("artifacts");
+    let output_dir = temp_output_dir("artifacts with spaces");
     let _ = std::fs::remove_dir_all(&output_dir);
     let mut args = generator_args(output_dir.clone());
     args.dkg_setup_route_probes = true;
@@ -805,6 +805,37 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert_eq!(live_dkg_ceremony_ids.len(), 1);
 
     let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generated_template_renderer_rejects_incomplete_or_ambiguous_markers() {
+    assert_eq!(
+        render_generated_template("value=@@VALUE@@\n", &[("@@VALUE@@", "'safe value'")])
+            .expect("complete template"),
+        "value='safe value'\n"
+    );
+
+    let missing = render_generated_template("value=plain\n", &[("@@VALUE@@", "value")])
+        .expect_err("missing marker rejected");
+    assert!(missing.to_string().contains("occurs 0 times"));
+
+    let repeated = render_generated_template(
+        "first=@@VALUE@@ second=@@VALUE@@\n",
+        &[("@@VALUE@@", "value")],
+    )
+    .expect_err("repeated marker rejected");
+    assert!(repeated.to_string().contains("occurs 2 times"));
+
+    let duplicate = render_generated_template(
+        "value=@@VALUE@@\n",
+        &[("@@VALUE@@", "first"), ("@@VALUE@@", "second")],
+    )
+    .expect_err("duplicate substitution rejected");
+    assert!(duplicate.to_string().contains("duplicate"));
+
+    let unknown =
+        render_generated_template("value=@@UNKNOWN@@\n", &[]).expect_err("unknown marker rejected");
+    assert!(unknown.to_string().contains("unknown marker"));
 }
 
 #[test]
