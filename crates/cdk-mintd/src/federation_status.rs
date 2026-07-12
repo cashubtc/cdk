@@ -2,66 +2,17 @@ use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+pub(crate) use cdk_common::federation::FederationLocalStatusResponse;
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationConfig, FederationConsensusRuntimeStatus,
-    FederationId, FederationMaterializedStateRowFingerprint,
+    redact_federation_operator_message, FederationConfig, FederationId,
     FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationPaymentObservationReportSummary, FederationPeerStatusRequest,
     FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
     MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
-use serde::{Deserialize, Serialize};
 
 use crate::cli::{CLIArgs, FederationStatusArgs};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FederationInvalidOperationAlertSummary {
-    pub(crate) source: String,
-    pub(crate) alerting_buckets: u64,
-    pub(crate) max_count: u64,
-    pub(crate) threshold: u64,
-    pub(crate) window_secs: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FederationLocalStatusResponse {
-    pub(crate) version: u16,
-    pub(crate) peer_status: FederationPeerStatus,
-    pub(crate) sync_state: String,
-    pub(crate) sync_ready: bool,
-    pub(crate) sync_message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_peer: Option<MemberId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_local_operation_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_peer_operation_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_operation_count: Option<u64>,
-    pub(crate) pending_mempool_items: u64,
-    pub(crate) pending_response_waiters: u64,
-    pub(crate) response_cache_items: u64,
-    pub(crate) response_cache_lookups: u64,
-    pub(crate) response_cache_hits: u64,
-    pub(crate) response_cache_hit_rate_bps: u64,
-    pub(crate) duplicate_submissions: u64,
-    pub(crate) duplicate_pending_waiter_joins: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) catch_up_certificate_quorum_operation_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) catch_up_certificate_quorum_from_index: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) catch_up_certificate_quorum_latest_index: Option<u64>,
-    pub(crate) catch_up_certificate_quorum_signers: Vec<MemberId>,
-    pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
-    pub(crate) aleph_bft_live_session_active: bool,
-    pub(crate) aleph_bft_network_inbound_active: bool,
-    pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
-    pub(crate) invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
-}
 
 pub(crate) async fn run_status_command(
     cli_args: &CLIArgs,

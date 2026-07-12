@@ -17,6 +17,8 @@ use cdk::federation::{
     FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
     InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
+#[cfg(test)]
+use cdk::federation::FederationLocalStatusResponse;
 use cdk::mint::Mint;
 use serde::Serialize;
 use tracing::instrument;
@@ -76,8 +78,6 @@ use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
 #[cfg(test)]
 use self::peer_client::FederationRestPeerClient;
-#[cfg(test)]
-pub(crate) use self::status_routes::FederationLocalStatusResponse;
 use self::status_routes::{post_local_status, post_status};
 #[cfg(test)]
 use self::sync_config::FederationPeerReconnectBackoff;

@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationConsensusRuntimeStatus, FederationMaterializedStateRowFingerprint,
+    FederationConsensusRuntimeStatus, FederationInvalidOperationAlertSummary,
+    FederationLocalStatusResponse, FederationMaterializedStateRowFingerprint,
     FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, MemberId, FEDERATION_REST_API_VERSION,
+    FederationRestMessageKind, FederationSignedRequest, FEDERATION_REST_API_VERSION,
 };
-use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 use crate::MintState;
@@ -80,7 +80,7 @@ pub(super) async fn post_local_status(
     let aleph_bft_network_inbound_active =
         state.federation_aleph_bft_network_inbound_active().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
-    let response = FederationLocalStatusResponse::new(
+    let response = federation_local_status_response(
         peer_status,
         sync_status,
         catch_up_certificate_quorum,
@@ -103,110 +103,69 @@ pub(super) async fn post_local_status(
     Ok(Json(response))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FederationLocalStatusResponse {
-    pub(crate) version: u16,
-    pub(crate) peer_status: FederationPeerStatus,
-    pub(crate) sync_state: String,
-    pub(crate) sync_ready: bool,
-    pub(crate) sync_message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_peer: Option<MemberId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_local_operation_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_peer_operation_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sync_operation_count: Option<u64>,
-    pub(crate) pending_mempool_items: u64,
-    pub(crate) pending_response_waiters: u64,
-    pub(crate) response_cache_items: u64,
-    pub(crate) response_cache_lookups: u64,
-    pub(crate) response_cache_hits: u64,
-    pub(crate) response_cache_hit_rate_bps: u64,
-    pub(crate) duplicate_submissions: u64,
-    pub(crate) duplicate_pending_waiter_joins: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) catch_up_certificate_quorum_operation_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) catch_up_certificate_quorum_from_index: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) catch_up_certificate_quorum_latest_index: Option<u64>,
-    pub(crate) catch_up_certificate_quorum_signers: Vec<cdk::federation::MemberId>,
-    pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
-    pub(crate) aleph_bft_live_session_active: bool,
-    pub(crate) aleph_bft_network_inbound_active: bool,
-    pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
-    pub(crate) invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
-}
-
-impl FederationLocalStatusResponse {
-    fn new(
-        peer_status: FederationPeerStatus,
-        sync_status: crate::FederationSyncStatus,
-        catch_up_certificate_quorum: Option<CatchUpCertificateQuorumStatus>,
-        payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
-        materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
-        pending_mempool_items: u64,
-        pending_response_waiters: u64,
-        response_cache_items: u64,
-        response_cache_lookups: u64,
-        response_cache_hits: u64,
-        duplicate_submissions: u64,
-        duplicate_pending_waiter_joins: u64,
-        aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
-        aleph_bft_live_session_active: bool,
-        aleph_bft_network_inbound_active: bool,
-        invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
-    ) -> Self {
-        let (
-            catch_up_certificate_quorum_operation_count,
-            catch_up_certificate_quorum_from_index,
-            catch_up_certificate_quorum_latest_index,
-            catch_up_certificate_quorum_signers,
-        ) = match catch_up_certificate_quorum {
-            Some(quorum) => (
-                Some(quorum.operation_count),
-                Some(quorum.from_index),
-                Some(quorum.latest_index),
-                quorum.signers.into_iter().collect(),
-            ),
-            None => (None, None, None, Vec::new()),
-        };
-        Self {
-            version: FEDERATION_REST_API_VERSION,
-            peer_status,
-            sync_state: sync_status.state_name().to_string(),
-            sync_ready: sync_status.is_ready(),
-            sync_message: sync_status.not_ready_message(),
-            sync_peer: sync_status.peer(),
-            sync_local_operation_count: sync_status.local_operation_count(),
-            sync_peer_operation_count: sync_status.peer_operation_count(),
-            sync_operation_count: sync_status.operation_count(),
-            pending_mempool_items,
-            pending_response_waiters,
-            response_cache_items,
-            response_cache_lookups,
+fn federation_local_status_response(
+    peer_status: FederationPeerStatus,
+    sync_status: crate::FederationSyncStatus,
+    catch_up_certificate_quorum: Option<CatchUpCertificateQuorumStatus>,
+    payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
+    pending_mempool_items: u64,
+    pending_response_waiters: u64,
+    response_cache_items: u64,
+    response_cache_lookups: u64,
+    response_cache_hits: u64,
+    duplicate_submissions: u64,
+    duplicate_pending_waiter_joins: u64,
+    aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
+    aleph_bft_live_session_active: bool,
+    aleph_bft_network_inbound_active: bool,
+    invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
+) -> FederationLocalStatusResponse {
+    let (
+        catch_up_certificate_quorum_operation_count,
+        catch_up_certificate_quorum_from_index,
+        catch_up_certificate_quorum_latest_index,
+        catch_up_certificate_quorum_signers,
+    ) = match catch_up_certificate_quorum {
+        Some(quorum) => (
+            Some(quorum.operation_count),
+            Some(quorum.from_index),
+            Some(quorum.latest_index),
+            quorum.signers.into_iter().collect(),
+        ),
+        None => (None, None, None, Vec::new()),
+    };
+    FederationLocalStatusResponse {
+        version: FEDERATION_REST_API_VERSION,
+        peer_status,
+        sync_state: sync_status.state_name().to_string(),
+        sync_ready: sync_status.is_ready(),
+        sync_message: sync_status.not_ready_message(),
+        sync_peer: sync_status.peer(),
+        sync_local_operation_count: sync_status.local_operation_count(),
+        sync_peer_operation_count: sync_status.peer_operation_count(),
+        sync_operation_count: sync_status.operation_count(),
+        pending_mempool_items,
+        pending_response_waiters,
+        response_cache_items,
+        response_cache_lookups,
+        response_cache_hits,
+        response_cache_hit_rate_bps: response_cache_hit_rate_bps(
             response_cache_hits,
-            response_cache_hit_rate_bps: response_cache_hit_rate_bps(
-                response_cache_hits,
-                response_cache_lookups,
-            ),
-            duplicate_submissions,
-            duplicate_pending_waiter_joins,
-            catch_up_certificate_quorum_operation_count,
-            catch_up_certificate_quorum_from_index,
-            catch_up_certificate_quorum_latest_index,
-            catch_up_certificate_quorum_signers,
-            payment_observation_reports,
-            aleph_bft_status,
-            aleph_bft_live_session_active,
-            aleph_bft_network_inbound_active,
-            materialized_state_rows,
-            invalid_operation_alerts,
-        }
+            response_cache_lookups,
+        ),
+        duplicate_submissions,
+        duplicate_pending_waiter_joins,
+        catch_up_certificate_quorum_operation_count,
+        catch_up_certificate_quorum_from_index,
+        catch_up_certificate_quorum_latest_index,
+        catch_up_certificate_quorum_signers,
+        payment_observation_reports,
+        aleph_bft_status,
+        aleph_bft_live_session_active,
+        aleph_bft_network_inbound_active,
+        materialized_state_rows,
+        invalid_operation_alerts,
     }
 }
 

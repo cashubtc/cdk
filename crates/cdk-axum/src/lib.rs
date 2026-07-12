@@ -25,10 +25,11 @@ use cdk::federation::{
     FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, MemberId,
+    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSubmitOperationResponse,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -242,16 +243,6 @@ impl FederationInvalidOperationSourceKind {
             Self::Anonymous => "anonymous",
         }
     }
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct FederationInvalidOperationAlertSummary {
-    pub(crate) source: String,
-    pub(crate) alerting_buckets: u64,
-    pub(crate) max_count: u64,
-    pub(crate) threshold: u64,
-    pub(crate) window_secs: u64,
 }
 
 #[cfg(feature = "federation")]

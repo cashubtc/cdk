@@ -2352,7 +2352,7 @@ different ownership and lifecycle requirements.
 
 ## 36. Consolidate duplicate federation status DTOs
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2374,6 +2374,42 @@ defaults and conversion code.
 - `crates/cdk-mintd/src/federation_status.rs`.
 - Add one serialization fixture and prove status output remains complete for
   healthy, lagging, catching-up, quarantined, and halted members.
+
+### Review decision
+
+- The duplication still existed exactly: Axum and mintd each declared the same
+  detailed local-status response and invalid-operation alert summary. The
+  canonical private REST wire records now live beside `FederationPeerStatus` in
+  `cdk-common` transport, where both producer and consumer already share their
+  other signed status payloads.
+- Axum retains ownership of deriving synchronization state, runtime counters,
+  payment reports, and alert summaries. Mintd retains only query, validation,
+  guard, and display behavior. Neither crate defines a second serialization
+  shape or conversion layer.
+- Every current field remains required on deserialization unless it is an
+  explicitly optional value. No undeployed compatibility defaults or fallback
+  decoding were added.
+
+### Verification
+
+- Workspace search finds one `FederationLocalStatusResponse` and one
+  `FederationInvalidOperationAlertSummary` definition, both in
+  `cdk-common/src/federation/transport.rs`.
+- `cargo test -p cdk-common --features federation federation::transport -- --test-threads 1`:
+  all 44 private transport tests passed, including an exact 27-field local
+  status JSON fixture with optional values, Aleph counters, row fingerprints,
+  and invalid-operation alerts.
+- `cargo test -p cdk-axum --features federation private_local_status_route_reports_ -- --test-threads 1`:
+  all eight focused reporting tests passed for lagging, catching-up, catch-up
+  verification, payment conflicts, stale payment observations,
+  invalid-operation alerts, and redacted halted state. Separate focused healthy
+  and quarantined-payment local-status route tests also passed.
+- `cargo test -p cdk-mintd --features federation,sqlite federation_status -- --test-threads 1`:
+  all 42 status query, display, convergence, readiness, catch-up evidence,
+  payment alert, invalid-operation alert, and redaction tests passed.
+- `cargo check -p cdk-mintd --features federation,sqlite` passes without
+  warnings; standalone builds do not compile or expose these federation-only
+  records.
 
 ## 37. Move generated federation smoke programs out of Rust source
 

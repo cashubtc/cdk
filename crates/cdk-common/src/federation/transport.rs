@@ -15,13 +15,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationState, FederationConfig,
-    FederationConfigDigest, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
+    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationReportSummary, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -1305,6 +1307,88 @@ impl FederationDkgSetupResponse {
     }
 }
 
+/// Aggregated invalid-operation alert counters exposed to federation operators.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationInvalidOperationAlertSummary {
+    /// Redacted source category, such as `auth_token` or `client_ip`.
+    pub source: String,
+    /// Number of source buckets currently above the alert threshold.
+    pub alerting_buckets: u64,
+    /// Highest invalid-operation count among alerting buckets.
+    pub max_count: u64,
+    /// Count required for one bucket to alert.
+    pub threshold: u64,
+    /// Alert aggregation window in seconds.
+    pub window_secs: u64,
+}
+
+/// Detailed private federation member status used by operator tooling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationLocalStatusResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Consensus-order and materialized-state status for this member.
+    pub peer_status: FederationPeerStatus,
+    /// Stable local synchronization state name.
+    pub sync_state: String,
+    /// Whether public federation operations may currently be served.
+    pub sync_ready: bool,
+    /// Redacted operator-facing synchronization detail.
+    pub sync_message: String,
+    /// Peer involved in the current synchronization state, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_peer: Option<MemberId>,
+    /// Local operation count for a lagging state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_local_operation_count: Option<u64>,
+    /// Peer operation count for a lagging state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_peer_operation_count: Option<u64>,
+    /// Operation count being verified after catch-up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_operation_count: Option<u64>,
+    /// Operations waiting in the local AlephBFT mempool.
+    pub pending_mempool_items: u64,
+    /// Public requests waiting for an operation result.
+    pub pending_response_waiters: u64,
+    /// Cached completed operation responses.
+    pub response_cache_items: u64,
+    /// Total response-cache lookups.
+    pub response_cache_lookups: u64,
+    /// Total response-cache hits.
+    pub response_cache_hits: u64,
+    /// Response-cache hit rate in basis points.
+    pub response_cache_hit_rate_bps: u64,
+    /// Duplicate operation submissions observed locally.
+    pub duplicate_submissions: u64,
+    /// Duplicate submissions joined to an existing pending waiter.
+    pub duplicate_pending_waiter_joins: u64,
+    /// Operation count covered by quorum catch-up certificate evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catch_up_certificate_quorum_operation_count: Option<u64>,
+    /// First operation index covered by quorum catch-up certificate evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catch_up_certificate_quorum_from_index: Option<u64>,
+    /// Latest operation index covered by quorum catch-up certificate evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catch_up_certificate_quorum_latest_index: Option<u64>,
+    /// Members whose certificates establish the reported catch-up quorum.
+    pub catch_up_certificate_quorum_signers: Vec<MemberId>,
+    /// Payment-observation health summaries.
+    pub payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    /// Local AlephBFT runtime counters, when the runtime is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
+    /// Whether the local AlephBFT live session is active.
+    pub aleph_bft_live_session_active: bool,
+    /// Whether the AlephBFT network inbound queue is active.
+    pub aleph_bft_network_inbound_active: bool,
+    /// Optional redacted materialized-state row fingerprints.
+    pub materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
+    /// Aggregated invalid-operation alerts.
+    pub invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
+}
+
 /// Peer status response for federation health and catch-up checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPeerStatus {
@@ -2476,6 +2560,112 @@ mod tests {
         let decoded: FederationPeerStatus = serde_json::from_str(&json).expect("status");
 
         assert_eq!(decoded.aleph_bft_next_item_index, Some(7));
+    }
+
+    #[test]
+    fn local_status_wire_fixture_round_trips_every_current_field() {
+        let member = member_id();
+        let status = FederationLocalStatusResponse {
+            version: FEDERATION_REST_API_VERSION,
+            peer_status: FederationPeerStatus::new(
+                federation_id(),
+                member,
+                4,
+                Some(3),
+                FederationJournalDigest::genesis(),
+            ),
+            sync_state: "catching_up".to_string(),
+            sync_ready: false,
+            sync_message: "catching up from federation member 1".to_string(),
+            sync_peer: Some(member),
+            sync_local_operation_count: Some(2),
+            sync_peer_operation_count: Some(4),
+            sync_operation_count: Some(4),
+            pending_mempool_items: 1,
+            pending_response_waiters: 2,
+            response_cache_items: 3,
+            response_cache_lookups: 5,
+            response_cache_hits: 4,
+            response_cache_hit_rate_bps: 8_000,
+            duplicate_submissions: 6,
+            duplicate_pending_waiter_joins: 7,
+            catch_up_certificate_quorum_operation_count: Some(4),
+            catch_up_certificate_quorum_from_index: Some(0),
+            catch_up_certificate_quorum_latest_index: Some(3),
+            catch_up_certificate_quorum_signers: vec![member],
+            payment_observation_reports: Vec::new(),
+            aleph_bft_status: Some(FederationConsensusRuntimeStatus {
+                federation_id: federation_id(),
+                local_member: member,
+                session: 1,
+                next_unit_index: 2,
+                next_unit_finalization_index: 3,
+                next_item_index: 4,
+                queued_item_count: 5,
+                pending_finalization_item_count: 6,
+                finalized_item_count: 7,
+                accepted_operation_count: 4,
+                latest_accepted_operation_index: Some(3),
+                allowed_member_count: Some(3),
+            }),
+            aleph_bft_live_session_active: true,
+            aleph_bft_network_inbound_active: true,
+            materialized_state_rows: vec![FederationMaterializedStateRowFingerprint {
+                table: "mint_quotes".to_string(),
+                key_digest: FederationMaterializedStateDigest::genesis(),
+                row_digest: FederationMaterializedStateDigest::genesis(),
+            }],
+            invalid_operation_alerts: vec![FederationInvalidOperationAlertSummary {
+                source: "auth_token".to_string(),
+                alerting_buckets: 1,
+                max_count: 20,
+                threshold: 20,
+                window_secs: 60,
+            }],
+        };
+
+        let value = serde_json::to_value(&status).expect("local status json");
+        let fields = value
+            .as_object()
+            .expect("local status object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            fields,
+            BTreeSet::from([
+                "aleph_bft_live_session_active",
+                "aleph_bft_network_inbound_active",
+                "aleph_bft_status",
+                "catch_up_certificate_quorum_from_index",
+                "catch_up_certificate_quorum_latest_index",
+                "catch_up_certificate_quorum_operation_count",
+                "catch_up_certificate_quorum_signers",
+                "duplicate_pending_waiter_joins",
+                "duplicate_submissions",
+                "invalid_operation_alerts",
+                "materialized_state_rows",
+                "payment_observation_reports",
+                "peer_status",
+                "pending_mempool_items",
+                "pending_response_waiters",
+                "response_cache_hit_rate_bps",
+                "response_cache_hits",
+                "response_cache_items",
+                "response_cache_lookups",
+                "sync_local_operation_count",
+                "sync_message",
+                "sync_operation_count",
+                "sync_peer",
+                "sync_peer_operation_count",
+                "sync_ready",
+                "sync_state",
+                "version",
+            ])
+        );
+        let decoded: FederationLocalStatusResponse =
+            serde_json::from_value(value).expect("local status round trip");
+        assert_eq!(decoded, status);
     }
 
     #[test]

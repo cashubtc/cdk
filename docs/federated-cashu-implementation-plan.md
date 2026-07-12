@@ -4060,6 +4060,11 @@ Tests and success criteria:
   driver tests pass; the full
   PostgreSQL federation test target compiles, while live execution still needs
   a running local PostgreSQL test service.
+- [x] Private local-status serialization has one owner in `cdk-common` transport.
+  Axum derives and emits the shared wire record, while mintd imports it for
+  validation and display without duplicate DTOs or compatibility defaults. All
+  44 transport tests, ten focused status-route tests, and 42 mintd status
+  command tests pass.
 - [x] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
 - [x] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
 - [x] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.

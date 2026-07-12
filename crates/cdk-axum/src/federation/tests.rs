@@ -20763,6 +20763,54 @@ async fn private_local_status_route_reports_lagging_sync_state() {
 }
 
 #[tokio::test]
+async fn private_local_status_route_reports_catching_up_sync_state() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let peer_member = peer_private.member_id;
+    state.mark_federation_catching_up(peer_member).await;
+
+    let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+    let response = post_local_status(State(state), Json(request))
+        .await
+        .expect("local status response")
+        .0;
+
+    assert_eq!(response.sync_state, "catching_up");
+    assert!(!response.sync_ready);
+    assert_eq!(response.sync_peer, Some(peer_member));
+    assert!(response.sync_message.contains("catching up from peer"));
+}
+
+#[tokio::test]
+async fn private_local_status_route_reports_redacted_halted_sync_state() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    state
+        .mark_federation_halted("digest mismatch token=operator-secret")
+        .await;
+
+    let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+    let response = post_local_status(State(state), Json(request))
+        .await
+        .expect("local status response")
+        .0;
+
+    assert_eq!(response.sync_state, "halted");
+    assert!(!response.sync_ready);
+    assert_eq!(response.sync_peer, None);
+    assert!(response.sync_message.contains("digest mismatch"));
+    assert!(!response.sync_message.contains("operator-secret"));
+}
+
+#[tokio::test]
 async fn startup_discards_transient_federation_sync_status() {
     let (state, _, peer_private) = federation_route_state().await;
     let peer_member = peer_private.member_id;

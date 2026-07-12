@@ -3,9 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationJournalDigest, FederationMaterializedStateDigest,
-    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederationConsensusRuntimeStatus,
+    FederationInvalidOperationAlertSummary, FederationJournalDigest,
+    FederationMaterializedStateDigest, FederationPaymentObservationContext,
+    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
