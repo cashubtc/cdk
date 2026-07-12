@@ -783,6 +783,16 @@ make rollback deterministic rather than redesigning mint business logic. The
 self-consuming wrapper below is illustrative, not required; a scoped helper or
 transaction callback that follows existing database conventions may be simpler.
 
+**Implementation verdict: Complete with the staged-melt boundary preserved.**
+Two small finalizer functions now own successful commit and explicit rollback
+for every mint federation applier transaction. Domain writes and `Applied`
+status share one transaction where they can. Runtime persistence of `Failed`
+or `Rejected(ErrorResponse)` is one explicit post-rollback path and retains the
+existing Cashu classifier. External payment and melt saga phases remain
+separate, idempotent transactions because a database transaction cannot contain
+an outgoing payment; operation identity and saga replay provide the required
+crash safety there.
+
 ### Target abstraction
 
 Introduce a narrow transaction context around the existing mint database

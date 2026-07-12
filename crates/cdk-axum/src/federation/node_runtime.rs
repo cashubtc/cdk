@@ -1643,21 +1643,46 @@ impl FederationNodeRuntime {
         Ok(())
     }
 
-    async fn mark_operation_status(
+    async fn persist_operation_apply_failure(
         &self,
         operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-    ) -> Result<(), cdk::Error> {
+        rejection: Option<&cdk::error::ErrorResponse>,
+    ) -> Result<FederationOperationStatus, cdk::Error> {
+        let status = match rejection {
+            Some(_) => FederationOperationStatus::Rejected,
+            None => FederationOperationStatus::Failed,
+        };
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.update_federation_operation_status(operation_id, status)
-            .await?;
-        tx.commit().await?;
+        let outcome = match rejection {
+            Some(rejection) => {
+                tx.reject_federation_operation(operation_id, rejection)
+                    .await
+            }
+            None => {
+                tx.update_federation_operation_status(operation_id, status)
+                    .await
+            }
+        };
+        match outcome {
+            Ok(()) => tx.commit().await?,
+            Err(error) => {
+                tx.rollback().await?;
+                return Err(error.into());
+            }
+        }
 
         if let Some(consensus) = &self.consensus {
-            consensus.lock().await.update_status(operation_id, status)?;
+            match rejection {
+                Some(rejection) => consensus.lock().await.update_application_state(
+                    operation_id,
+                    status,
+                    Some(rejection.clone()),
+                )?,
+                None => consensus.lock().await.update_status(operation_id, status)?,
+            };
         }
-        Ok(())
+        Ok(status)
     }
 
     async fn mark_operation_apply_failure(
@@ -1666,29 +1691,17 @@ impl FederationNodeRuntime {
         error: cdk::Error,
     ) -> Result<(FederationOperationStatus, cdk::Error), cdk::Error> {
         if !error.is_definitive_failure() {
-            self.mark_operation_status(operation_id, FederationOperationStatus::Failed)
+            let status = self
+                .persist_operation_apply_failure(operation_id, None)
                 .await?;
-            return Ok((FederationOperationStatus::Failed, error));
+            return Ok((status, error));
         }
 
         let rejection = cdk::error::ErrorResponse::from(error);
-        let db = self.active_mint()?.localstore();
-        let mut tx = db.begin_transaction().await?;
-        tx.reject_federation_operation(operation_id, &rejection)
+        let status = self
+            .persist_operation_apply_failure(operation_id, Some(&rejection))
             .await?;
-        tx.commit().await?;
 
-        if let Some(consensus) = &self.consensus {
-            consensus.lock().await.update_application_state(
-                operation_id,
-                FederationOperationStatus::Rejected,
-                Some(rejection.clone()),
-            )?;
-        }
-
-        Ok((
-            FederationOperationStatus::Rejected,
-            cdk::Error::from(rejection),
-        ))
+        Ok((status, cdk::Error::from(rejection)))
     }
 }

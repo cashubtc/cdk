@@ -1719,7 +1719,7 @@ federation Axum tests (the two loopback cases rerun with network permission),
 
 ## 25. Centralize consensus-application transaction ownership
 
-**Status:** Todo
+**Status:** Complete
 
 ### Problem
 
@@ -1743,6 +1743,40 @@ atomic and which failures leave an operation retryable.
 - `docs/federated-cashu-refactoring-plan.md` section R6.
 - Test injected failure at each write boundary, duplicate apply, lock recovery,
   restart, and catch-up convergence.
+
+### Completion record
+
+Federation mint application now has two narrow transaction finalizers rather
+than a wrapper type or callback framework. Every transaction opened by the
+mint federation appliers passes its body result to an explicit finalizer. A
+successful terminal apply writes `Applied` in the same transaction as its mint
+rows before commit; any handled body or status-write error explicitly rolls
+back before returning. Operation ID, operation kind, and phase are attached to
+commit/rollback failure logs. Mint quote, mint payment observation, issuance,
+swap, melt quote, melt observation evidence/state, quarantine, key rotation,
+and terminal melt status all use this lifecycle. The redundant second
+`Applied` transaction for a `PaymentFailed` melt was removed.
+
+The runtime's post-rollback failure path is consolidated separately because it
+must preserve the existing Cashu error classification. One function now
+persists either retryable `Failed` or canonical `Rejected` plus
+`ErrorResponse`, explicitly rolls back a failed write, and only then updates
+the in-memory consensus view. No federation-specific error classifier was
+introduced.
+
+A database transaction intentionally does not span payment observation
+evidence, an outgoing payment, or the existing melt saga phases. Those are
+external-side-effect and crash-recovery boundaries, so claiming one atomic
+transaction would be incorrect. Each local transaction now has explicit
+finalization, while operation IDs, durable saga state, idempotent quote checks,
+and replay preserve exactly-once payment behavior across the staged lifecycle.
+
+Verification passes all 100 mint federation tests, including late mint/swap
+write failure, failed/paid melt replay, concurrent melt-quote apply, duplicate
+apply, and the new after-write observation rollback regression. The complete
+federation Axum matrix passes all 420 non-ignored tests (418 in the restricted
+sandbox plus two permissioned loopback tests), standalone Axum passes 28/28,
+and mintd federation compilation is clean.
 
 ## 26. Model journal application state as one explicit enum
 

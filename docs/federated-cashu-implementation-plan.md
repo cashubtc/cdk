@@ -121,6 +121,16 @@ Resolved blocking bugs:
 
 ## Recent consensus checkpoint
 
+- Consensus-application transaction ownership is centralized without changing
+  payment semantics. Every mint federation applier transaction now commits or
+  explicitly rolls back through one finalizer; successful domain mutations and
+  `Applied` status commit together. Runtime apply failures use one explicit
+  persistence path for existing retryable `Failed` and canonical
+  `Rejected(ErrorResponse)` outcomes. Outgoing melt payment and saga phases
+  remain intentionally staged and replayable rather than being hidden behind a
+  fictitious cross-payment transaction. All 100 mint federation tests and all
+  420 non-ignored federation Axum tests pass, alongside 28 standalone Axum
+  tests.
 - Materialized-state projection cleanup is complete. Axum delegates snapshot
   construction to the mint domain, which scans operation effects once and uses
   bounded bulk database reads without loading quote payment/issuance histories

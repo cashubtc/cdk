@@ -217,6 +217,64 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
 }
 
 #[tokio::test]
+async fn mint_payment_observation_apply_error_rolls_back_observation_and_status() {
+    let runtime_config = runtime_config_with_payment_policy(
+        FederationPaymentObservationPolicy::development_single_observation_for_testing(),
+    );
+    let (mint, localstore) =
+        federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(4),
+            bolt11_quote_response(&quote, 4),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let observation_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+            FederationMintQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: runtime_config.member_id(),
+                method: PaymentMethod::Known(KnownMethod::Onchain),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(4),
+                amount_issued: Amount::ZERO,
+                payment_id: None,
+                payment_proof: Some("wrong-method".to_string()),
+            },
+        )),
+    );
+    persist_journal_entry(&localstore, &observation_entry).await;
+
+    let error = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&observation_entry))
+        .await
+        .expect_err("payment-method mismatch must reject apply");
+    assert!(matches!(error, Error::InvalidPaymentMethod));
+    assert!(localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            &quote.to_string(),
+        )
+        .await
+        .expect("payment observations")
+        .is_empty());
+    let stored_entry = localstore
+        .get_federation_journal_entry_by_operation_id(observation_entry.operation_id)
+        .await
+        .expect("journal lookup")
+        .expect("journal entry");
+    assert_eq!(stored_entry.status, FederationOperationStatus::Accepted);
+}
+
+#[tokio::test]
 async fn mint_payment_observation_uses_payment_id_and_consensus_logical_time() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
