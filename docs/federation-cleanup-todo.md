@@ -2241,7 +2241,7 @@ catch-up protocol the wallet never uses.
 
 ## 34. Split the cdk-common federation module by domain
 
-**Status:** Deferred until Item 43
+**Status:** Todo (unblocked; Item 43 skipped)
 
 ### Problem
 
@@ -2272,14 +2272,12 @@ direction and make unsafe cross-layer coupling easy.
   identity/configuration, payment policy, keysets, most DKG records, invites,
   snapshots, and wallet-facing validation, while operation, journal, transport,
   consensus, signing, and trusted-dealer code are already separate modules.
-- Do not perform the mechanical split yet. Items 37-43 still remove or rebase
-  config, transcript, diagnostic, and protocol fields in precisely these types;
-  moving them first would add large merge noise without deleting code or
-  establishing a stable boundary.
-- Revisit this item immediately after Item 43. At that point use a few coarse
-  modules, preserve every serialized/hash form, and avoid the fine-grained file
-  hierarchy sketched in R11 unless a compile-time dependency boundary requires
-  it. This is sequencing, not a rejection of the cleanup.
+- Items 37-42 are complete and Item 43 is intentionally skipped, so this split
+  is no longer blocked by nearby config, diagnostic, or protocol-format work.
+- Use a few coarse modules, preserve every serialized/hash form, and avoid the
+  fine-grained file hierarchy sketched in R11 unless a compile-time dependency
+  boundary requires it. This is a mechanical ownership cleanup, not an excuse
+  to alter federation behavior or wire formats.
 
 ## 35. Split federation database traits and centralize row codecs
 
@@ -2733,7 +2731,21 @@ variability, and can conceal missed wakeups or ordering races.
 
 ## 43. Rebase the undeployed federation protocol as version 1
 
-**Status:** Todo
+**Status:** Skipped (2026-07-12)
+
+### Decision
+
+Do not rebase the current federation-only version fields or cryptographic hash
+domains. The existing version-2 labels remain the authoritative development
+format. Renumbering them provides no runtime, safety, or maintainability benefit
+and would invalidate fixtures and experimental state solely for cosmetic
+consistency. Future protocol changes should continue to use explicit versions,
+domain separation, and fail-closed validation from the versions already in the
+code.
+
+No compatibility layer, migration, or alternate decoder is being added. The
+partially implemented renumbering and regenerated golden vectors were discarded
+before commit, so this skip changes documentation only.
 
 ### Problem
 
