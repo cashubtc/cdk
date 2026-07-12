@@ -198,7 +198,13 @@ Resolved blocking bugs:
   replacement, mint application, source-sequence advancement, latency recording,
   and waiter notification. Five finalized-unit tests pass, including duplicate
   replay with unmaterialized entries, durable sequence advancement, and recovery
-  after lost waiters.
+  after lost waiters. Consensus submission now belongs to the runtime as one
+  ordered path covering duplicate joins, waiter bounds, mempool admission,
+  durable pending persistence, activity wake-up, source sequences, timeout
+  reporting, test-local finality, and submission metrics. Seven focused
+  submission tests plus duplicate-pending, notification, cache, duplicate-race,
+  and Prometheus metric regressions pass; public readiness/admission and final
+  Cashu response validation remain thin `MintState` adapters.
 
 ## Recent performance checkpoint
 

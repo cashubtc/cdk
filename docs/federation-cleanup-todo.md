@@ -1266,6 +1266,20 @@ and failure boundaries are unchanged. All five focused finalized-unit tests,
 including duplicate replay with unmaterialized entries, durable sender sequence
 advancement, and recovery after lost waiters, pass.
 
+### Checkpoint 10: consensus submission ownership
+
+The ordered AlephBFT submission path now runs on `FederationNodeRuntime`:
+existing-journal and pending-operation duplicate handling, waiter registration,
+mempool admission and bounds, durable pending-operation persistence, activity
+wake-up, source-sequence retention, test-local finality, timeout reporting, and
+submission metrics. `MintState` keeps public readiness/admission and final
+Cashu response validation as thin HTTP-facing adapters. Seven focused AlephBFT
+submission tests plus duplicate-pending, response-cache, operation-notification,
+duplicate-race, and Prometheus acceptance/rejection tests pass. The metric test
+also restored its intended observation point: an admitted item is counted after
+durable queueing, while a deterministic finalized conflict is counted only when
+its rejected journal response returns.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

@@ -8,15 +8,16 @@ use crate::{
     FederationAlephBftPendingSequenceHandle, FederationConsensusHandle,
     FederationDkgMemberAdmissionHandle, FederationInvalidOperationAlertHandle,
     FederationNotificationHandle, FederationOperationNotificationStats,
-    FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncHandle,
-    FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
+    FederationOperationWaitRegistration, FederationRestAdmissionHandle, FederationSequenceHandle,
+    FederationSyncHandle, FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
 };
 use cdk::federation::{
     FederationAlephBftAdapterStatus, FederationAlephBftFinalizedItem,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationConsensusRuntime, FederationError, FederationJournalAppendOutcome,
-    FederationJournalEntry, FederationOperationId, FederationOperationStatus,
-    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationError,
+    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationSessionOutcome,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 
@@ -84,6 +85,52 @@ impl FederationNodeRuntime {
         self.mint.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation runtime is not active for this mint".to_string())
         })
+    }
+
+    #[cfg(feature = "prometheus")]
+    pub(crate) fn metric_member_label(&self) -> Option<String> {
+        self.mint
+            .as_ref()
+            .and_then(|mint| mint.federation_config())
+            .map(|config| config.member_id().to_string())
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_accepted_operation_metric(&self, operation: &str) {
+        if let Some(member) = self.metric_member_label() {
+            cdk_prometheus::METRICS.record_federation_accepted_operation(&member, operation);
+        }
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_rejected_operation_metric(&self, operation: &str, reason: &str) {
+        if let Some(member) = self.metric_member_label() {
+            cdk_prometheus::METRICS
+                .record_federation_rejected_operation(&member, operation, reason);
+        }
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_consensus_rejection_metric(
+        &self,
+        operation: &str,
+        response: &FederationSubmitOperationResponse,
+    ) {
+        if response.outcome.entry().status == FederationOperationStatus::Rejected {
+            self.record_rejected_operation_metric(operation, "consensus");
+        }
+    }
+
+    #[cfg(feature = "prometheus")]
+    async fn record_pending_mempool_metric(&self) {
+        let Some(member) = self.metric_member_label() else {
+            return;
+        };
+        let pending = self.pending_mempool_len().await;
+        cdk_prometheus::METRICS.set_federation_pending_mempool_items(
+            &member,
+            i64::try_from(pending).unwrap_or(i64::MAX),
+        );
     }
 
     #[cfg(test)]
@@ -458,6 +505,178 @@ impl FederationNodeRuntime {
             })?;
         handle.mark_peer_activity(operation_id);
         Ok(())
+    }
+
+    pub(crate) async fn submit_envelope_with_sequence(
+        &self,
+        envelope: FederationOperationEnvelope,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        #[cfg(feature = "prometheus")]
+        let operation_label = envelope.operation.kind().to_string();
+        let operation_id = envelope.operation_id()?;
+        let broadcast_activity = sequence.is_none();
+        let sync_config = self.peer_sync_config.unwrap_or_default();
+        let notifications = self.notifications.as_ref().ok_or_else(|| {
+            cdk::Error::Custom(
+                "federation operation notifications are unavailable for AlephBFT submit"
+                    .to_string(),
+            )
+        })?;
+        let consensus = self.consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
+            if matches!(
+                entry.status,
+                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
+            ) {
+                notifications.record_duplicate_pending_waiter_join();
+                let wait_registration = notifications
+                    .register_waiter(operation_id, sync_config.response_waiter_limit)?;
+                drop(consensus);
+                self.mark_consensus_activity(operation_id, broadcast_activity)
+                    .await;
+                if let Some((sender, sequence)) = sequence {
+                    self.remember_pending_sequence(operation_id, sender, sequence)
+                        .await;
+                }
+                let response = Self::wait_for_operation_acceptance(
+                    operation_id,
+                    sync_config,
+                    wait_registration,
+                )
+                .await?;
+                #[cfg(feature = "prometheus")]
+                self.record_consensus_rejection_metric(&operation_label, &response);
+                return Ok(response);
+            }
+
+            let response = FederationSubmitOperationResponse::from_outcome(
+                FederationJournalAppendOutcome::Duplicate(entry.clone()),
+            );
+            notifications.record_duplicate_submission();
+            drop(consensus);
+            if let Some(sequence) = sequence {
+                self.persist_journal_entries(&[], &[], Some(sequence))
+                    .await?;
+                self.record_sequence(sequence.0, sequence.1).await;
+            }
+            return Ok(response);
+        }
+
+        let queued_before = consensus.pending_mempool_len();
+        let mut next_consensus = consensus.clone();
+        let admission = match next_consensus.submit_aleph_bft_envelope(envelope.clone()) {
+            Ok(admission) => admission,
+            Err(err) => {
+                #[cfg(feature = "prometheus")]
+                self.record_rejected_operation_metric(&operation_label, "consensus");
+                return Err(cdk::Error::from(err));
+            }
+        };
+        let accepted_admission = matches!(admission, FederationConsensusItemAdmission::Accepted);
+        if accepted_admission {
+            let limit = sync_config.pending_mempool_item_limit;
+            if queued_before >= limit {
+                let err = FederationError::PendingConsensusMempoolFull {
+                    pending: queued_before,
+                    max: limit,
+                };
+                #[cfg(feature = "prometheus")]
+                self.record_rejected_operation_metric(&operation_label, "mempool_full");
+                return Err(cdk::Error::from(err));
+            }
+
+            let session_id = next_consensus.aleph_bft_status()?.session;
+            self.persist_pending_operation(FederationAlephBftPendingOperationRecord {
+                operation_id,
+                session_id,
+                envelope,
+            })
+            .await?;
+        }
+        if matches!(
+            admission,
+            FederationConsensusItemAdmission::DuplicateOperation
+        ) {
+            notifications.record_duplicate_pending_waiter_join();
+            tracing::debug!(
+                operation_id = %operation_id,
+                "Duplicate AlephBFT federation operation is already pending"
+            );
+        }
+        let wait_registration =
+            notifications.register_waiter(operation_id, sync_config.response_waiter_limit)?;
+
+        *consensus = next_consensus;
+        drop(consensus);
+        self.mark_consensus_activity(operation_id, broadcast_activity)
+            .await;
+        if accepted_admission {
+            #[cfg(feature = "prometheus")]
+            self.record_accepted_operation_metric(&operation_label);
+            super::aleph_bft_latency::record(
+                super::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
+                [operation_id],
+            );
+        }
+        if let Some((sender, sequence)) = sequence {
+            self.remember_pending_sequence(operation_id, sender, sequence)
+                .await;
+        }
+        #[cfg(test)]
+        self.finalize_unit_locally_for_test().await?;
+        #[cfg(feature = "prometheus")]
+        self.record_pending_mempool_metric().await;
+
+        let response =
+            Self::wait_for_operation_acceptance(operation_id, sync_config, wait_registration)
+                .await?;
+        #[cfg(feature = "prometheus")]
+        self.record_consensus_rejection_metric(&operation_label, &response);
+        Ok(response)
+    }
+
+    #[cfg(test)]
+    async fn finalize_unit_locally_for_test(&self) -> Result<(), cdk::Error> {
+        if !self.local_finality_test {
+            return Ok(());
+        }
+
+        let unit = {
+            let consensus = self.consensus.as_ref().ok_or_else(|| {
+                cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+            })?;
+            consensus.lock().await.next_aleph_bft_unit_payload()?
+        };
+        if let Some(unit) = unit {
+            self.apply_finalized_unit(unit, None).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn wait_for_operation_acceptance(
+        operation_id: FederationOperationId,
+        sync_config: FederationPeerSyncConfig,
+        wait_registration: FederationOperationWaitRegistration<'_>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        let wait_timeout = sync_config.operation_submission_timeout;
+        let response = tokio::time::timeout(wait_timeout, wait_registration.wait())
+            .await
+            .map_err(|_| {
+                cdk::Error::from(FederationError::OperationPendingFinalization {
+                    operation_id,
+                    timeout_ms: u64::try_from(wait_timeout.as_millis()).unwrap_or(u64::MAX),
+                })
+            })?;
+        super::aleph_bft_latency::record(
+            super::aleph_bft_latency::CdkAlephBftLatencyStage::WaiterReturned,
+            [operation_id],
+        );
+        Ok(response)
     }
 
     pub(crate) async fn persist_journal_entries(
