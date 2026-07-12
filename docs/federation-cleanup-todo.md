@@ -1936,6 +1936,81 @@ variability, and can conceal missed wakeups or ordering races.
 - Compare runtime and flake rate before and after, run each suite repeatedly,
   and retain at least one real partition/heal and restart convergence test.
 
+## 43. Rebase the undeployed federation protocol as version 1
+
+**Status:** Todo
+
+### Problem
+
+Federated CDK has not been deployed, but some current federation formats carry
+version numbers and hash-domain labels inherited from incompatible development
+iterations. In particular, the only supported operation envelope is advertised
+as version 2, and DKG commitment, participant-state, and transcript formats also
+retain version-2 labels. The implementation does not negotiate or decode the
+earlier formats, so these numbers describe discarded development history rather
+than a real deployed compatibility boundary.
+
+Keeping that history makes the initial federation protocol appear to have an
+upgrade and migration burden that does not exist. It also leaves documentation
+inconsistent about whether the first operation encoding is v1 or v2.
+
+### Cleanup
+
+- Treat the complete current federation implementation as the initial version
+  1 protocol. In particular, advertise `protocol_versions.operation` as 1 and
+  rebase the current operation envelope and operation-ID hash domain to v1.
+- Rebase the complete current DKG commitment hash, persisted participant-state
+  format, and signed transcript hash domain to v1. Keep the present ceremony
+  binding, transcript contents, cryptographic verification, and restart-safety
+  requirements unchanged.
+- Audit every federation-only wire version, persisted schema version,
+  cryptographic domain separator, fixture, generated artifact, and compatibility
+  branch. Remove support for superseded development formats instead of adding
+  decoders, adapters, translations, or migrations.
+- Regenerate operation golden vectors, DKG vectors, public/private federation
+  configs, config digests, transcripts, invites, wallet registry fixtures, and
+  other artifacts affected by the rebased versions.
+- Require operators and developers to recreate experimental federation
+  databases, DKG state, configs, and wallet registries. Do not provide migration
+  paths from any pre-release federation format.
+- Retain explicit version fields, domain separation, and exact-version
+  validation. Unsupported or malformed formats must continue to fail closed so
+  a future deployed upgrade has a clear compatibility boundary.
+- Preserve all pre-federation CDK features, standalone database migration
+  history, standalone mint and wallet behavior, and standalone Cashu keyset
+  support. Do not confuse federation protocol versions with Cashu keyset
+  versions; federation mode remains v3/BLS-only.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/operation.rs`: operation envelope version,
+  operation-ID hash domain, exact-version admission, and canonical golden
+  vector.
+- `crates/cdk-common/src/federation.rs`: public protocol advertisement and
+  validation, DKG commitment/transcript hash domains, participant-state and
+  public-ceremony versions, config digests, and DKG tests.
+- `crates/cashu/src/nuts/nut06.rs`, mint-info construction, wallet federation
+  validation, mint admission, CLI federation registry/import, setup tooling,
+  generated configs, and federation documentation.
+- SQLite and PostgreSQL federation schemas and migration registration: retain
+  the single consolidated federation migration per backend and every earlier
+  standalone migration; do not add an experimental-federation upgrade chain.
+- Prove `/v1/info` advertises operation, consensus-item, private-REST, and
+  session-outcome version 1, and that current members and wallets accept that
+  configuration while altered version 0, 2, and future values fail closed at
+  the relevant boundary.
+- Prove the canonical v1 operation vector, operation IDs, DKG commitments,
+  participant-state restart, transcript equality/signatures, config digests,
+  invites, and materialized-state verification are deterministic across all
+  members.
+- Start fresh SQLite and PostgreSQL federations and run DKG, mint, swap, melt,
+  restore, restart, offline-member catch-up, and convergence tests. Confirm old
+  experimental federation artifacts are rejected rather than migrated.
+- Run standalone migration, mint, wallet, and non-federated keyset regressions
+  unchanged, and search the whole workspace for stale v2 labels, obsolete
+  compatibility wording, and unlisted federation version constants before
+  marking this item complete.
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry
