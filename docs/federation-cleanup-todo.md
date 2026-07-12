@@ -14,7 +14,37 @@ safety, deterministic replay, and standalone CDK behavior.
 
 ## 1. Decouple melt payment election from development payment finality
 
-**Status:** Todo
+**Status:** Rejected in the current architecture (2026-07-12)
+
+### Verdict
+
+Do not remove the development-policy branch from
+`should_attempt_melt_payment` as a standalone cleanup. A direct A/B test showed
+that this changes consensus application behavior, not just payment-side-effect
+ownership:
+
+- with the branch removed, the focused mint melt suite passed all 27 tests and
+  the three-member route-level quorum-policy melt test passed;
+- a fresh five-member, threshold-three AlephBFT fakewallet smoke completed mint
+  and swap, then timed out after 300 seconds in `standard.melt-confirm`;
+- signed status during the failure showed the journal stopped before accepting
+  the melt and one member had a different materialized-state digest; the
+  readiness/convergence guards correctly prevented mismatched state from being
+  treated as authoritative;
+- after restoring the branch and rebuilding the same isolated binary, the same
+  live smoke completed mint, swap, melt, and restore successfully, with melt
+  confirmation completing in about one second.
+
+The current development policy relies on every member deterministically
+applying the synchronous fakewallet result during the accepted melt operation.
+Electing only one member makes that operation's local apply result asymmetric.
+A safe future implementation must first move external payment execution out of
+the deterministic melt-apply transition: every member should reserve the same
+pending state, exactly one actor should perform the side effect, and a later
+accepted payment observation should finalize every member identically. That is
+a payment-state-machine redesign and overlaps item 28; adding it here would
+increase rather than remove complexity. Production `MemberQuorum` policy
+already elects one actor and remains unchanged.
 
 ### Problem
 
