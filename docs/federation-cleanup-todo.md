@@ -1983,7 +1983,7 @@ polling and consensus-observation side effects.
 
 ## 29. Build one typed wallet quorum collector
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2006,6 +2006,29 @@ summaries for mint, swap, melt, restore, and state queries.
 - Cover threshold success, matching rejection, mixed responses, timeout,
   invalid share, fallback, cancellation, and below-threshold ambiguity for each
   policy family.
+
+### Resolution
+
+- Kept the existing `collect_member_results` scheduler as the single bounded
+  fanout implementation for mint, swap, melt, restore, quote status, batch
+  quote status, and check-state. It already centralizes member identity,
+  concurrency, retries, per-member timeouts, typed `Error` retention, failure
+  summaries, and cancellation by dropping outstanding futures.
+- Extended its endpoint policy callback to observe typed failures as well as
+  successful responses. Mint/swap and melt now terminate as soon as either a
+  cryptographically valid success threshold or an exact standard
+  `ErrorResponse` rejection threshold is available; one member and mixed
+  rejections remain ambiguous.
+- Left BLS aggregation, matching quote/status views, restore reconstruction,
+  check-state views, and permitted primary fallback explicit in their endpoint
+  collectors. A `QuorumPolicy` trait, parallel outcome hierarchy, and generic
+  impossibility solver were rejected as complexity without a demonstrated
+  behavioral gain.
+- Added a 3-of-5 liveness regression with two 30-second members proving that a
+  matching Cashu rejection returns immediately and cancels outstanding work.
+  The complete 84-test federation wallet module passes, including threshold
+  success, exact/mixed rejection, retry, timeout, invalid-share, fallback,
+  cancellation, restore, check-state, mint, swap, and melt coverage.
 
 ## 30. Separate payment quote coordination from generic wallet primary behavior
 

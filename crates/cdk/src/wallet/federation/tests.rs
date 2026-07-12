@@ -3304,7 +3304,7 @@ async fn federated_mint_connector_tolerates_mixed_final_pending_and_rejected_val
 }
 
 #[tokio::test]
-async fn federated_mint_connector_returns_threshold_matching_cashu_rejection() {
+async fn federated_mint_connector_returns_threshold_rejection_without_waiting_for_slow_members() {
     let bundle = threshold_five_bundle();
     let outputs = blinded_outputs(&bundle);
     let advertised = advertised_keyset(&bundle);
@@ -3328,6 +3328,7 @@ async fn federated_mint_connector_returns_threshold_matching_cashu_rejection() {
         member_id(4),
         advertised.clone(),
     );
+    duplicate_member.set_post_swap_delay(Duration::from_secs(30));
     duplicate_member.set_post_swap_response(Err(crate::Error::DuplicateInputs));
     connectors.insert(
         member_id(4),
@@ -3336,6 +3337,7 @@ async fn federated_mint_connector_returns_threshold_matching_cashu_rejection() {
 
     let unavailable_member = MockMintConnector::new();
     set_member_advertisement_with_keyset(&unavailable_member, &bundle, member_id(5), advertised);
+    unavailable_member.set_post_swap_delay(Duration::from_secs(30));
     unavailable_member.set_post_swap_response(Err(crate::Error::Timeout));
     connectors.insert(
         member_id(5),
@@ -3351,9 +3353,12 @@ async fn federated_mint_connector_returns_threshold_matching_cashu_rejection() {
         },
     )
     .expect("federated mint connector");
-    let result = connector
-        .post_swap(SwapRequest::new(Vec::new(), outputs))
-        .await;
+    let result = tokio::time::timeout(
+        Duration::from_millis(250),
+        connector.post_swap(SwapRequest::new(Vec::new(), outputs)),
+    )
+    .await
+    .expect("matching threshold rejection should cancel slow member requests");
 
     assert!(matches!(result, Err(crate::Error::TokenAlreadySpent)));
 }
@@ -3457,10 +3462,15 @@ async fn federated_mint_connector_round_trips_mint_and_melt_cashu_rejections() {
     let outputs = blinded_outputs(&bundle);
     let advertised = advertised_keyset(&bundle);
     let mut connectors = BTreeMap::new();
+    let slow_member_id = member_id(3);
 
     for member_id in [member_id(1), member_id(2), member_id(3)] {
         let connector = MockMintConnector::new();
         set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        if member_id == slow_member_id {
+            connector.set_post_mint_delay(Duration::from_secs(30));
+            connector.set_post_melt_delay(Duration::from_secs(30));
+        }
         connector.set_post_mint_response(Err(crate::Error::IssuedQuote));
         connector.set_post_melt_response(Err(crate::Error::TokenAlreadySpent));
         connectors.insert(
@@ -3471,24 +3481,30 @@ async fn federated_mint_connector_round_trips_mint_and_melt_cashu_rejections() {
 
     let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
         .expect("federated mint connector");
-    let mint_result = connector
-        .post_mint(
+    let mint_result = tokio::time::timeout(
+        Duration::from_millis(250),
+        connector.post_mint(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MintRequest {
                 quote: "issued-quote".to_string(),
                 outputs,
                 signature: None,
             },
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("matching mint rejection should cancel slow member requests");
     assert!(matches!(mint_result, Err(crate::Error::IssuedQuote)));
 
-    let melt_result = connector
-        .post_melt(
+    let melt_result = tokio::time::timeout(
+        Duration::from_millis(250),
+        connector.post_melt(
             &PaymentMethod::Known(KnownMethod::Bolt11),
             MeltRequest::new("melt-quote".to_string(), Vec::new(), None),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("matching melt rejection should cancel slow member requests");
     assert!(matches!(melt_result, Err(crate::Error::TokenAlreadySpent)));
 }
 

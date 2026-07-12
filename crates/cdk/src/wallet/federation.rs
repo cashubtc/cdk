@@ -220,17 +220,23 @@ impl<R> FederationMemberResults<R> {
     }
 
     fn threshold_rejection(&self, threshold: usize) -> Option<ErrorResponse> {
-        self.failures.iter().find_map(|candidate| {
-            let rejection = candidate.rejection.as_ref()?;
-            (self
-                .failures
-                .iter()
-                .filter(|failure| failure.rejection.as_ref() == Some(rejection))
-                .count()
-                >= threshold)
-                .then(|| rejection.clone())
-        })
+        threshold_rejection(&self.failures, threshold).cloned()
     }
+}
+
+fn threshold_rejection(
+    failures: &[FederationMemberFailure],
+    threshold: usize,
+) -> Option<&ErrorResponse> {
+    failures.iter().find_map(|candidate| {
+        let rejection = candidate.rejection.as_ref()?;
+        (failures
+            .iter()
+            .filter(|failure| failure.rejection.as_ref() == Some(rejection))
+            .count()
+            >= threshold)
+            .then_some(rejection)
+    })
 }
 
 impl fmt::Debug for FederatedMintConnector {
@@ -500,7 +506,7 @@ impl FederatedMintConnector {
     where
         F: FnMut(MemberId, Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<R, Error>>,
-        Stop: FnMut(&[(MemberId, R)]) -> bool,
+        Stop: FnMut(&[(MemberId, R)], &[FederationMemberFailure]) -> bool,
     {
         self.collect_member_results_from(
             &self.member_connectors,
@@ -525,7 +531,7 @@ impl FederatedMintConnector {
     where
         F: FnMut(MemberId, Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<R, Error>>,
-        Stop: FnMut(&[(MemberId, R)]) -> bool,
+        Stop: FnMut(&[(MemberId, R)], &[FederationMemberFailure]) -> bool,
     {
         let mut responses = Vec::new();
         let mut failures = Vec::new();
@@ -582,7 +588,7 @@ impl FederatedMintConnector {
                 }
             }
 
-            if stop_after(&responses) {
+            if stop_after(&responses, &failures) {
                 return FederationMemberResults {
                     responses,
                     failures,
@@ -872,11 +878,12 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "mint request",
-                |responses| {
-                    responses.len() >= threshold
+                |responses, failures| {
+                    (responses.len() >= threshold
                         && self
                             .aggregate_member_responses(outputs, responses, amount_validation)
-                            .is_ok()
+                            .is_ok())
+                        || threshold_rejection(failures, threshold).is_some()
                 },
             )
             .await;
@@ -920,10 +927,10 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "melt request",
-                |responses| {
+                |responses, failures| {
                     let Some(group) = owned_matching_melt_response_group(responses, threshold)
                     else {
-                        return false;
+                        return threshold_rejection(failures, threshold).is_some();
                     };
                     let terminal = group.first().is_some_and(|(_, response)| {
                         !matches!(
@@ -935,8 +942,9 @@ impl FederatedMintConnector {
                         .iter()
                         .any(|(member_id, _)| *member_id == elected_member);
 
-                    (terminal || elected_responded)
-                        && self.aggregate_melt_response(outputs, &group).is_ok()
+                    ((terminal || elected_responded)
+                        && self.aggregate_melt_response(outputs, &group).is_ok())
+                        || threshold_rejection(failures, threshold).is_some()
                 },
             )
             .await;
@@ -981,7 +989,7 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "restore request",
-                |responses| {
+                |responses, _failures| {
                     responses.len() >= threshold
                         && self
                             .aggregate_restore_response(requested_outputs, responses)
@@ -1019,7 +1027,9 @@ impl FederatedMintConnector {
                 Some(self.config.quote_status_member_timeout),
                 self.config.member_request_max_retries,
                 "melt quote status",
-                |responses| has_threshold_matching_melt_quote_status(responses, threshold),
+                |responses, _failures| {
+                    has_threshold_matching_melt_quote_status(responses, threshold)
+                },
             )
             .await;
 
@@ -1061,7 +1071,9 @@ impl FederatedMintConnector {
                 Some(self.config.quote_status_member_timeout),
                 self.config.member_request_max_retries,
                 "mint quote status",
-                |responses| has_threshold_matching_mint_quote_status(responses, threshold),
+                |responses, _failures| {
+                    has_threshold_matching_mint_quote_status(responses, threshold)
+                },
             )
             .await;
 
@@ -1102,7 +1114,7 @@ impl FederatedMintConnector {
                 Some(self.config.quote_status_member_timeout),
                 self.config.member_request_max_retries,
                 "batch mint quote status",
-                |responses| responses.len() >= threshold,
+                |responses, _failures| responses.len() >= threshold,
             )
             .await;
 
@@ -1144,7 +1156,7 @@ impl FederatedMintConnector {
                 Some(self.config.member_request_timeout),
                 self.config.member_request_max_retries,
                 "check-state request",
-                |responses| {
+                |responses, _failures| {
                     responses.len() >= threshold
                         && self
                             .aggregate_check_state_response(request, responses)

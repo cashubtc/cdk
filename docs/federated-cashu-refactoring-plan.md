@@ -671,6 +671,19 @@ logic. The `QuorumPolicy` trait sketch is optional and probably unnecessary:
 prefer concrete policy functions or enums until multiple implementations prove
 a trait useful. Preserve the existing wallet error and saga authority exactly.
 
+### Implementation result: Completed with the existing collector
+
+The low-level collector is now the one scheduler for every threshold wallet
+operation. Its stop policy receives typed successes and failures, so mint/swap
+and melt terminate on either a valid response threshold or an exact standard
+Cashu rejection threshold and cancel outstanding requests. Endpoint-specific
+aggregation and matching-view rules remain concrete functions. The proposed
+`MemberOutcome`, `ThresholdDecision`, and `QuorumPolicy` hierarchy was not added:
+it duplicated types and policy boundaries already present without improving
+safety or testability. The complete 84-test federation wallet module verifies
+the resulting behavior, including a threshold-rejection cancellation test with
+two deliberately slow members.
+
 ### Current duplication
 
 The wallet has one low-level concurrent member collector followed by separate
