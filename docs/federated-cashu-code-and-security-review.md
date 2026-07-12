@@ -9,6 +9,42 @@ remain open until their implementation and focused regression tests have been
 verified. Re-check nearby lifecycle paths while addressing each item so related
 variants are not overlooked.
 
+## Implementation Principles
+
+Address these findings with the smallest change that fully restores the
+required safety or correctness invariant. Prefer narrow fixes over broad
+refactors, and avoid changing adjacent behavior merely because it could be
+cleaned up at the same time.
+
+- Follow the federation's established lifecycle, journal, persistence,
+  transaction, error-handling, and testing patterns. Reuse or extend an
+  existing abstraction when it already owns the responsibility being fixed.
+- Consolidate equivalent behavior into one authoritative path. Do not create a
+  second helper, state machine, retry mechanism, status model, or protocol
+  representation when the existing implementation can be corrected or
+  generalized cleanly. Introduce a new abstraction only when the current one
+  cannot preserve the required boundary without becoming less clear.
+- Keep every change deterministic, replay-safe, idempotent, and explicit about
+  transaction and crash boundaries. Exact retries and restart recovery must
+  converge on the same durable outcome without duplicate side effects.
+- Keep fixes scoped to federation behavior. Do not change or "fix" standalone
+  or non-federated CDK behavior as part of this work. Shared code may be changed
+  only when federation requires it and standalone behavior remains unchanged
+  and covered.
+- Add focused federation regression tests for the exact failure, its replay or
+  restart variant where relevant, and the neighboring success path. Prefer
+  deterministic synchronization and fault injection over timing-dependent
+  tests.
+- Run `cargo fmt --all` and the smallest relevant test/check set while
+  developing, then run the broader affected federation suites before marking a
+  finding complete.
+- Update this security review and
+  `docs/federated-cashu-implementation-plan.md` as fixes land so status,
+  evidence, and remaining risk stay current.
+- Commit coherent milestones separately using conventional commit messages.
+  Each commit should leave the affected behavior internally consistent and
+  include its focused regression coverage.
+
 ## Review Scope
 
 - Compared committed cleanup-branch behavior against `bls-federation`.
@@ -21,22 +57,67 @@ variants are not overlooked.
   except where they illuminated a pre-existing apply-path rollback gap that
   already exists on both branches.
 - Re-evaluated the migration squash against the repository's migration-
-  immutability policy and existing `bls-federation` development databases; it
-  is tracked as a critical database-integrity finding below.
+  immutability policy. Pre-cleanup federation development databases are not a
+  supported upgrade source; the remaining requirement is an explicit
+  fresh-database/reset contract and an immutable boundary beginning with the
+  first supported federation release.
 - No source behavior was changed as part of this review.
+- A 2026-07-13 reassessment then traced every finding against the current
+  working tree and existing focused tests. That reassessment is recorded below
+  separately from the original committed-branch comparison so later fixes can
+  update confidence and disposition without rewriting the original evidence.
 
 ## Critical Priority
 
-The following findings require first attention because they affect whether a
-member may safely become authoritative or whether persisted consensus/database
-state can be interpreted correctly:
+The following finding requires first attention because it affects whether a
+member may safely become authoritative:
 
 - **P12:** restart can clear a confirmed materialized-state mismatch without
   comparing the local state digest with certified quorum evidence.
-- **P14:** incompatible operation and member REST payloads retain their old
-  protocol versions and signature/hash domains.
-- **P15:** deleted historical federation migrations remove the forward upgrade
-  path for databases created from `bls-federation`.
+
+P14 is a pre-release protocol-boundary cleanup rather than a Critical security
+finding under the explicit cut-through policy that pre-cleanup federation
+nodes, wire payloads, registries, configs, backups, and databases are
+unsupported. P15, the related database-schema boundary, is complete under the
+fresh-database policy recorded below.
+
+## Severity Reassessment
+
+Reassessed: 2026-07-13
+
+Severity reflects the highest credible impact on federation safety,
+correctness, availability, compatibility, or assurance. Confidence is the
+reviewer's confidence that the assigned severity is appropriate; it is not an
+exploit probability. "Release blocker" means the invariant should be restored
+or explicitly ruled out with a deterministic regression before production use.
+
+| Finding | Assessment | Severity | Confidence | Recommended disposition |
+| --- | --- | --- | ---: | --- |
+| P1 | Confirmed configuration/startup contradiction | Medium | 98% | Fix before production if one-member configs remain accepted; otherwise reject them at setup/startup. |
+| P2 | Confirmed task-publication and generation race | Medium | 95% | Fix before production with ordered activation and generation-scoped cleanup. |
+| P3 | Confirmed unbounded projection work relative to total mint history | Medium | 99% | Add keyed/batched reads; defer only with explicit realistic history bounds and benchmarks. |
+| P4 | Retry starvation confirmed; restart-loss subclaim not proven | Medium | 82% | Add bounded retry fairness and observability; do not restore durable gossip rows without a failed convergence reproduction. |
+| P5 | Main explicit-rollback claim is resolved; staged melt lifecycle remains | Low residual | 90% | Close or narrow to replay/idempotence of the intentional multi-transaction melt saga. |
+| P6 | Confirmed durable admission before waiter/runtime publication | High | 99% | Release blocker: reserve, persist, and publish as one failure-safe transition. |
+| P7 | Confirmed pending rows are not rebound during session rotation | High | 98% | Release blocker: persist active-session advance and pending rebind atomically. |
+| P8 | Confirmed duplicate recovery omits waiter/cache notification | Medium | 97% | Route normal and duplicate terminal outcomes through one publication helper. |
+| P9 | False-healthy outcome confirmed; original task-exit mechanism was misstated | High | 92% | Release blocker: an essential apply failure must halt/quarantine the session generation. |
+| P10 | Inconsistent Halted teardown confirmed; automatic-rotation scope overstated | Medium | 85% | Use one generation-scoped teardown path for every terminal Halted transition. |
+| P11 | Confirmed latent soft-skip of local certificate production | Medium | 88% | Fix with P12 so local digest/status failure cannot look like an empty successful round. |
+| P12 | Confirmed fail-open restart revalidation gap | Critical | 99% | Release blocker. Preserve certified digest evidence and compare it with recomputed local state before Healthy. |
+| P13 | Readiness bypass confirmed; correct policy remains a design decision | Medium | 75% | Define and test a middle gate at minimum: live current session and not Halted. |
+| P14 | Cut-through policy is incomplete while federation-owned v2 labels remain | Medium | 98% | Make every current federation-owned protocol/artifact boundary the initial v1, remove pre-cut-through compatibility, regenerate all affected artifacts, and freeze v1. |
+| P15 | Fresh-schema migration squash accepted; development databases unsupported | Complete | — | No further upgrade work required; freeze the consolidated migration at the first supported release. |
+| P16 | Confirmed global lock across backend and consensus latency | High | 99% | Release blocker for production liveness: use quote-scoped single-flight or a durable claim. |
+| P17 | Legacy registry migration conflicts with the accepted cut-through policy | Complete | 99% | Superseded by P14: reset the current registry shape to initial v1 and do not add a legacy loader or CLI alias. |
+| P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
+| P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
+
+Production priority is therefore P12 first, followed by P6/P7/P9/P16. P1
+remains a production-startup blocker if the product continues
+to claim one-member federation support even though its general security impact
+is Medium. P5 should not remain an open broad transaction-refactor request in
+its current wording.
 
 ## Open Findings
 
@@ -57,11 +138,12 @@ startup must not produce a permanently halted mint.
 
 Relevant code:
 
-- `crates/cdk-common/src/federation.rs:1467`
+- `crates/cdk-common/src/federation/config.rs:322`
 - `crates/cdk-mintd/src/lib.rs:621`
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:195`
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:229`
-- `crates/cdk-axum/src/federation/node_runtime.rs:574`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:476`
+- `crates/cdk-axum/src/federation/node_runtime.rs:544`
 
 TODO:
 
@@ -199,9 +281,18 @@ Acceptance criteria:
 - Digest contents remain identical to the current projection for the same
   federation journal and durable state.
 
-### P4: Aleph Network Retry Queue Is Restart-Fragile and Can Starve Under Load
+### P4: Aleph Network Retries Can Starve; Restart Recovery Needs an Explicit Contract
 
 **Status:** Open
+
+**Reassessment:** The starvation mechanism is confirmed because retry work is
+attempted only when a pump tick drains no fresh outbound messages. The broader
+claim that removing durable per-send retries necessarily breaks restart
+recovery is not yet demonstrated: Aleph backup recovery, durable pending
+operations, protocol rebroadcast, and existing restart/continuation tests are
+meaningful counter-evidence. The narrow fairness and observability fix remains
+worthwhile; restoring the deleted retry table does not follow without a failed
+convergence reproduction.
 
 Cleanup removed durable AlephBFT network-retry rows and kept only a bounded
 in-memory FIFO (`CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT = 4096`). Failed
@@ -210,10 +301,11 @@ tick drains zero new outbound messages (`messages_drained == 0`), so sustained
 fresh traffic can starve the retry queue until oldest entries are evicted.
 
 The cleanup intentionally followed Aleph backup + protocol rebroadcast rather
-than persisting every failed gossip send. That tradeoff is acceptable only if
-restart and partition-heal paths are proven not to depend on the lost queue.
-Until those proofs and regressions are explicit operator-facing guarantees,
-this remains an open restart-safety and liveness hardening item.
+than persisting every failed gossip send. Existing restart, backup, pending-
+operation, and continuation coverage is evidence that the tradeoff can be
+sound; document that recovery contract and retain a focused outage/restart
+regression. The confirmed bug in this item is retry starvation under sustained
+fresh traffic, not the absence of a durable per-send retry table by itself.
 
 Relevant code:
 
@@ -247,61 +339,71 @@ Acceptance criteria:
 - Failed deliveries are not starved to eviction solely because fresh outbound
   traffic never idles the pump.
 
-### P5: Federation Apply Paths Can Exit Transactions Without Explicit Rollback
+### P5: Staged Federation Apply Transactions Need Replay-Safety Verification
 
-**Status:** Open
+**Status:** Needs narrowing; explicit transaction rollback is implemented
 
-Several federation mint-apply paths begin a DB transaction, mutate durable
-state (quotes, payment observations, signatures), and on error return with `?`
-without an explicit `rollback()`. Success paths mark `Applied` and commit.
-Some melt-payment flows also commit observation evidence in one transaction
-before later quote/saga mutation, so a later failure can leave evidence
-persisted while the journal entry remains non-`Applied`.
+**Reassessment:** Commit `c59be01ce` (`refactor: centralize federation apply
+transactions`) introduced `finish_federation_transaction` and
+`finish_federation_apply_transaction`. Current federation appliers route their
+local database transaction outcomes through those helpers, and the runtime's
+Failed/Rejected persistence path also rolls back a failed write explicitly.
+The original claim that these paths generally rely on transaction Drop
+semantics is therefore stale.
 
-This pattern already existed on `bls-federation`; cleanup did not introduce it.
-It is still a correctness bug: apply failure must leave durable federation
-state unchanged except for deliberate Failed/Rejected status updates. Relying
-on transaction Drop semantics is insufficient, and split-phase melt observation
-commits weaken replay idempotence.
+The remaining question is narrower: melt payment evidence, external payment
+effects, saga transitions, and terminal journal application intentionally span
+multiple crash-recovery boundaries. They cannot honestly be represented by
+one database transaction. Retain this item only as a focused replay and
+idempotence audit of that staged lifecycle; do not reopen the completed broad
+transaction-ownership refactor.
 
-Uncommitted worktree helpers (`finish_federation_transaction`,
-`finish_federation_apply_transaction`) and a payment-observation rollback test
-appear aimed at this gap but are not part of the committed cleanup branch.
+The remaining staged melt path may intentionally commit immutable observation
+evidence before a later quote or saga transition. That is not equivalent to an
+uncommitted partial transaction: external payment side effects and crash-safe
+saga phases require durable boundaries. The residual risk is that a crash or
+late failure between those phases could replay to a different terminal result,
+duplicate an outgoing payment, or leave members with different projected
+evidence/application state. Those are the invariants the remaining work should
+test.
 
 Relevant code:
 
+- `crates/cdk/src/mint/federation.rs:831` transaction finalizer
 - `crates/cdk/src/mint/federation.rs` apply helpers for mint quote, mint quote
   payment, mint, swap, melt, melt quote payment, and related status updates
-- `crates/cdk-axum/src/federation/node_runtime.rs` operation apply-failure
+- `crates/cdk-axum/src/federation/node_runtime.rs:1559` operation apply-failure
   persistence paths
+- `docs/federation-cleanup-todo.md`, item 25
 
 TODO:
 
-- [ ] Introduce a shared apply-transaction finisher that commits on success and
+- [x] Introduce a shared apply-transaction finisher that commits on success and
   always rolls back on error before propagating the apply failure.
-- [ ] Ensure failed payment-observation apply leaves no durable observation row
+- [x] Ensure failed payment-observation apply inside one local transaction
+  leaves no durable observation row
   and leaves journal status at `Accepted` until the runtime records
   Failed/Rejected deliberately.
-- [ ] Revisit melt-payment observation flows that commit evidence before quote
-  finalization; keep evidence and status transitions in one atomic apply
-  transaction where possible.
-- [ ] On definitive validation failure, persist Rejected + `ErrorResponse`
+- [ ] Document and test melt-payment phases that deliberately commit evidence
+  before quote/saga finalization; do not imply one transaction spans external
+  payment I/O.
+- [x] On definitive validation failure, persist Rejected + `ErrorResponse`
   through the same transactional boundary used for status updates, then overlay
   consensus application state.
-- [ ] Add focused tests for mint-payment method mismatch, swap validation
-  failure, and melt-payment apply failure proving observation/status rollback.
-- [ ] Add a replay test proving a previously failed apply can be retried to the
-  same deterministic Applied or Rejected outcome without duplicate side
-  effects.
+- [ ] Add or retain focused crash-point tests after evidence commit and before
+  each later melt saga/quote transition.
+- [ ] Prove a previously interrupted staged apply reaches the same deterministic
+  Applied or Rejected outcome without duplicate payment or state publication.
 - [ ] Re-run payment-observation, melt recovery, catch-up rejection equality,
-  and journal replay suites after the finisher lands.
+  and journal replay suites before closing the narrowed item.
 
 Acceptance criteria:
 
-- Every federation apply error path either fully rolls back its transaction or
-  explicitly persists a Failed/Rejected outcome in one committed transaction.
-- No apply failure leaves orphan payment observations or partial quote
-  mutations while the journal entry remains `Accepted`.
+- Every local federation transaction explicitly commits or rolls back.
+- Persisted evidence at an intentional saga boundary is replay-safe and cannot
+  duplicate an outgoing payment or diverge terminal quote/application state.
+- No failed local transaction leaves partial quote, proof, signature, or
+  notification state.
 
 ## Additional Pre-existing Findings
 
@@ -425,29 +527,44 @@ Acceptance criteria:
 - Every path that makes an operation terminal publishes the same terminal
   response to active waiters and the bounded response cache.
 
-### P9 Candidate: Apply-Task Failure Can Leave a False-Healthy Session
+### P9: A Non-Retryable Apply Failure Can Leave a False-Healthy Session
 
-**Status:** Needs focused reproduction
+**Status:** Open; false-healthy outcome confirmed, deterministic fault injection pending
 
-The finalized-unit apply loop exits on a non-retryable error. The supervisor
-owns that task but monitors completion of only the root AlephBFT session.
-Readiness is derived from the installed supervisor and inbound queue rather
-than the health of every essential task, so the member may remain
-submission-ready after it has stopped applying finalized state.
+**Reassessment:** The original mechanism is slightly inaccurate. A
+non-retryable per-payload apply error returns from
+`apply_federation_aleph_bft_finalized_unit_with_retry`, but the outer receiver
+loop continues rather than the apply task exiting. The safety outcome remains:
+the finalized payload was not applied, no Halted/quarantine transition occurs,
+and the live session can continue reporting ready. Rewrite tests and the fix
+around a silently skipped finalized payload, while still supervising actual
+task termination as a neighboring essential-task invariant.
+
+The finalized-unit receiver calls a per-payload retry helper. A non-retryable
+error makes that helper log and return without propagating failure or marking
+the member Halted; the receiver then waits for the next payload. Readiness is
+derived from the installed supervisor and inbound queue, so the member may
+remain submission-ready after skipping application of finalized state. The
+supervisor also monitors completion of only the root AlephBFT session, leaving
+actual unexpected apply/network task termination as a related unsupervised
+failure mode.
 
 Relevant code:
 
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:258`
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:689`
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:693`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1279`
-- `crates/cdk-axum/src/federation/node_runtime.rs:597`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1239`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1254`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1289`
 
 TODO:
 
-- [ ] Add deterministic fault injection for a non-retryable finalized-unit
-  apply error and verify the current supervisor/readiness behavior.
-- [ ] If confirmed, supervise the apply loop, network pump, and root session as
+- [ ] Add deterministic fault injection for a non-retryable finalized-payload
+  apply error and prove the current member remains falsely ready.
+- [ ] Make the non-retryable payload failure halt/quarantine the exact live
+  session generation and tear down its consensus admissions.
+- [ ] Supervise the apply loop, network pump, and root session as
   essential tasks whose unexpected exit halts the member.
 - [ ] Distinguish expected task cancellation during shutdown or rotation from
   unexpected failure.
@@ -458,10 +575,12 @@ TODO:
 
 Acceptance criteria:
 
+- No finalized payload can be skipped while the member remains healthy or
+  submission-ready.
 - No essential AlephBFT task can terminate unexpectedly while the member still
   reports a healthy, submission-ready session.
 
-### P10: Failed Automatic Session Rotation Marks Halted Without Full Session Teardown
+### P10: Halted Transitions Do Not Consistently Tear Down Live Session Resources
 
 **Status:** Open
 
@@ -470,26 +589,25 @@ fails after natural completion: the completion watcher now calls
 `mark_federation_halted(...)`. Panic and rotation-disabled completion paths
 correctly use `halt_federation_aleph_bft_session`, which marks Halted **and**
 removes the live supervisor plus inbound network queue. The rotation-failure
-path only flips sync status to Halted.
-
-That is incomplete. Completed-session rotation can already have:
+path only flips sync status to Halted. The ordinary rotation flow has already:
 
 1. advanced the in-memory Aleph session and requeued unfinalized local items
    (`begin_aleph_bft_session_requeue_pending_finalization`);
 2. shut down and cleared the previous supervisor / inbound queue;
 3. failed while restarting the next live session.
 
-Leaving Halted without a single teardown helper means leftover or partially
-published resources can remain installed (see also P2), in-process recovery
-cannot cleanly restart the live session, and the durable pending rebind gap in
-P7 becomes harder to reason about after a failed rotation. Public submissions
-are rejected while Halted (`is_ready()` is Healthy-only), so this is primarily
-a restart-safety / resource-lifecycle bug rather than a silent accept path.
+Because the previous resources are normally already absent, rotation failure
+alone does not prove that stale live resources remain. Its remaining concerns
+are partial publication through P2 and the P7 durable pending-rebind gap.
 
-The same incomplete pattern also exists on peer-sync halt sites that only call
-`mark_federation_halted` (equal-height digest mismatch and no catch-up
-progress). Those predate or parallel the cleanup; fix them with the same
-shared teardown helper so Halted always means “no live Aleph resources.”
+The stronger concrete bug is in peer-sync halt sites that call only
+`mark_federation_halted` for equal-height digest mismatch or no catch-up
+progress while the current live session can still be installed. Those sites
+predate or parallel the cleanup. Fix all terminal transitions with the same
+generation-scoped teardown helper so Halted always means “no live Aleph
+resources.” Public submissions are rejected while Halted, so this is primarily
+a restart-safety/resource-lifecycle issue; P13 makes residual observer
+admission the important neighboring policy risk.
 
 Relevant code:
 
@@ -552,7 +670,7 @@ Relevant code:
 - `crates/cdk-axum/src/federation/sync_loop.rs:288`
 - `crates/cdk-axum/src/federation/sync_loop.rs:301`
 - `crates/cdk-axum/src/federation/sync_loop.rs:406`
-- `crates/cdk-axum/src/federation.rs:615`
+- `crates/cdk-axum/src/federation.rs:639`
 
 TODO:
 
@@ -605,15 +723,39 @@ The existing restart-with-certificate test signs the actual local digest. It
 does not cover the critical case where stored certificates bind digest A while
 the restarted local database produces digest B.
 
+Cleanup provenance and useful references:
+
+- commit `567d9c821` (`refactor: separate federation state commitments`)
+  established the distinct materialized-state digest carried by catch-up
+  evidence. This is the evidence startup must preserve and compare, rather than
+  reducing the quorum result to operation coverage;
+- commit `f92990b0d` (`refactor: move federation readiness into runtime`)
+  introduced the startup path that marks Healthy from
+  `quorum.operation_count` coverage. At that point the older persisted status
+  snapshot still provided a separate mismatch latch;
+- commit `28407b92f` (`refactor: derive federation readiness at runtime`) and
+  cleanup item 31 removed `FederationMemberStatusSnapshot`, its database APIs,
+  the `federation_member_status` table, and startup status restoration. This is
+  the cleanup change that turned the existing count-only reconstruction into a
+  fail-open restart path for a previously detected mismatch;
+- the useful part of cleanup item 31 should remain: ordinary Lagging and
+  CatchingUp labels are transient and should be derived. Reopen only its claim
+  that durable certificate evidence is sufficient as currently consumed.
+  `restore_startup_readiness` must compare the recomputed local materialized
+  digest with the digest bound by the fully contiguous certified range, or a
+  minimal durable quarantine must provide an equivalent latch.
+
 Relevant code:
 
-- `crates/cdk-axum/src/federation/node_runtime.rs:309`
-- `crates/cdk-axum/src/federation/node_runtime.rs:350`
-- `crates/cdk-axum/src/federation/node_runtime.rs:361`
-- `crates/cdk-axum/src/federation.rs:375`
-- `crates/cdk-axum/src/federation.rs:406`
-- `crates/cdk-axum/src/federation.rs:433`
+- `crates/cdk-axum/src/federation/node_runtime.rs:376`
+- `crates/cdk-axum/src/federation/node_runtime.rs:417`
+- `crates/cdk-axum/src/federation/node_runtime.rs:428`
+- `crates/cdk-axum/src/federation.rs:376`
+- `crates/cdk-axum/src/federation.rs:384`
+- `crates/cdk-axum/src/federation.rs:407`
+- `crates/cdk-axum/src/federation.rs:434`
 - `crates/cdk-axum/src/federation/sync_loop.rs:846`
+- `docs/federation-cleanup-todo.md`, item 31
 
 TODO:
 
@@ -651,6 +793,13 @@ Acceptance criteria:
 
 **Status:** Open
 
+**Reassessment:** The bypass is confirmed, but it is not automatically a bug
+to let a Lagging or CatchingUp member contribute locally observed payment
+evidence. The minimum defensible contract is narrower than the public Healthy
+gate: require a live current-generation session and reject Halted/tearing-down
+members. Whether other non-Healthy states may submit should be an explicit,
+rate-bounded policy tested against observation quorum and quarantine behavior.
+
 Wallet-facing federation submits go through
 `ensure_federation_ready_for_public_submit` (authoritative-read readiness:
 Healthy + live session + inbound). Payment-observation envelopes submitted by
@@ -680,13 +829,11 @@ is currently an implicit exception without a written policy:
 
 Relevant code:
 
-- `crates/cdk-axum/src/lib.rs:1647`
-- `crates/cdk-axum/src/lib.rs:1679`
-- `crates/cdk-axum/src/lib.rs:1693`
-- `crates/cdk-axum/src/lib.rs:1999`
+- `crates/cdk-axum/src/lib.rs:1510`
+- `crates/cdk-axum/src/lib.rs:1543`
 - `crates/cdk-axum/src/custom_handlers.rs` mint/melt payment observation
   submit helpers
-- `crates/cdk-axum/src/federation/node_runtime.rs` envelope submit / pending
+- `crates/cdk-axum/src/federation/node_runtime.rs:602` envelope submit / pending
   mempool admission
 
 TODO:
@@ -722,124 +869,269 @@ Acceptance criteria:
 
 ## Additional Cleanup Regressions
 
-### P14 [CRITICAL]: Incompatible Operation and REST Shapes Retain Their Old Protocol Versions
+### P14: Cut Through Every Federation-Owned Format to a Single Initial v1
 
 **Status:** Open
 
-**Severity:** Critical — consensus and member-protocol data that are no longer
-mutually decodable still advertise the same versions, weakening upgrade and
-restart safety at the protocol boundary.
+**Severity:** Medium — this is a mandatory pre-release consistency and
+assurance cleanup, not a demonstrated cryptographic or consensus vulnerability
+among nodes running the same build. Confidence is 98% because the remaining v2
+markers and the contradictory legacy-registry recommendation are directly
+observable.
 
-The cleanup made incompatible changes to consensus operations and private REST
-payloads without advancing their protocol versions:
+The implementation plan chose a cut-through approach: federation has no
+supported deployment history, and nodes, payloads, configs, registries,
+journals, backups, DKG state, and databases produced before this cleanup are
+not compatibility inputs. The implementor must therefore treat the complete
+current federation design as its first release and cleanly set every
+federation-owned protocol, wire, persisted-artifact, hash-domain, and local
+registry version to v1. Discarded development iterations must not appear as
+v2, and must not survive through aliases, defaults used as upgrade shims,
+legacy DTOs, alternate decoders, deprecated flags, version ranges, or database
+migrations.
 
-- operation version 2 removed the `Restore` variant and removed or tightened
-  observation fields while retaining `FEDERATION_OPERATION_VERSION = 2` and
-  the `cdk-federation-operation-v2` hash domain;
-- REST version 1 changed catch-up payloads, required current fields, and renamed
-  or removed status/evidence shapes while retaining
-  `FEDERATION_REST_API_VERSION = 1` and the v1 signing domains.
+This is deliberately stronger than renumbering five constants. It establishes
+one coherent initial v1 surface and removes any implication that artifacts from
+`bls-federation`, earlier cleanup commits, or development deployments are
+loadable. Operators and developers recreate them. The only compatibility
+boundary begins after this reset is released.
 
-An old persisted operation-v2 restore envelope cannot be decoded by the new
-operation-v2 enum. Likewise, old and new members can reject one another's
-payloads as malformed even though both advertise REST v1. Config-digest checks
-reduce the chance of an intentionally mixed live cluster, but they do not make
-the version claims accurate and do not provide a clear upgrade/reset boundary
-for existing journal rows, backups, fixtures, or operator diagnostics.
+Reset scope:
 
-This overlaps cleanup TODO item 43. The protocol reset must land together with
-the incompatible cut-through changes rather than remain deferred after them.
+| Component | Current | Reset |
+| --- | --- | --- |
+| Operation envelope | `FEDERATION_OPERATION_VERSION = 2` | `1` |
+| Operation ID hash domain | `cdk-federation-operation-v2` | `cdk-federation-operation-v1` |
+| DKG commitment hash domain | `cdk-federation-dkg-commitment-v2` | `cdk-federation-dkg-commitment-v1` |
+| Persisted DKG participant state | `FEDERATION_DKG_PARTICIPANT_STATE_VERSION = 2` | `1` |
+| DKG transcript hash domain | `cdk-federation-dkg-transcript-v2` | `cdk-federation-dkg-transcript-v1` |
+| CLI federation registry | `FEDERATION_REGISTRY_VERSION = 2` | `1` for the current `quote_coordinator_member_id` shape |
+
+All other federation-owned boundaries found by the audit are already v1:
+wallet protocol, invite, private REST, catch-up certificate, consensus item,
+Aleph unit payload/body domain, public DKG ceremony, transcript signatures,
+activation signatures, roster/config digests, journal/materialized-state
+domains, keyset-rotation proof domain, and federation HTTP routes. Keep their
+current complete shapes and exact-version checks, but audit their decoders for
+hidden acceptance of earlier development shapes.
+
+Do not reset unrelated version spaces:
+
+- `20260712000000_create_federation_schema.sql` is a migration identifier, not
+  a protocol version;
+- Cashu keyset v3/BLS is the cryptographic keyset format and remains unchanged.
+
+The targeted audit found no existing federation multi-version decoder, legacy
+DTO, Serde alias, deprecated CLI alias, or experimental-schema migration
+adapter. Current version admission is generally exact. It did find one stale
+compatibility proposal in this review: P17 recommended loading registry v1,
+mapping `primary_member_id`, and writing registry v2. That proposal is
+incompatible with cut-through and is withdrawn. The current
+`quote_coordinator_member_id` registry shape becomes v1; the earlier
+`primary_member_id` shape remains unsupported.
+
+Several current structs use `#[serde(default)]` on semantically optional v1
+fields, including setup/DKG lifecycle metadata, optional consensus evidence,
+payment proofs, and catch-up request/response options. Do not delete these
+mechanically. For each default or optional field, prove it is required by the
+current v1 state machine or API semantics. Remove it only if its sole purpose
+is accepting an obsolete development payload. Missing required v1 fields,
+unknown fields on strict config/policy types, altered versions, and old enum or
+field names must fail closed.
+
+Cleanup provenance and useful references:
+
+- commit `1685eb760` and cleanup item 9 removed the `Restore` operation kind,
+  payload, enum variant, canonical encoding branches, and fixtures while
+  leaving operation version 2 and the v2 operation-ID domain unchanged;
+- commits `e6136066e` and `f525c33b8` removed melt failure text and wall-clock
+  observation fields from operation payloads without advancing the operation
+  boundary;
+- commit `7ab85c1d1` and cleanup item 15 made previously defaulted operation,
+  status, and catch-up fields mandatory while retaining the surrounding
+  operation-v2 and private-REST-v1 claims;
+- commits `dddc8e82b` and `d6125e7df` compacted and renamed catch-up payloads.
+  The catch-up certificate has its own renamed signature domain, but the signed
+  REST envelope/body domains and REST API version remained v1;
+- commit `606792bb1` and cleanup item 33 correctly separated wallet-facing
+  compatibility from operation, REST, Aleph, and catch-up artifact versions.
+  Reuse that boundary: an operation or REST bump must not force an unrelated
+  wallet protocol/config change;
+- commit `3b595c4e4` skipped cleanup item 43's cosmetic renumbering of the
+  undeployed protocol to v1 and declared the current v2/v1 labels authoritative
+  for development. Reopen that decision now to remove discarded development
+  history before the first supported release;
+- cleanup item 30 renamed `primary_member_id` to
+  `quote_coordinator_member_id`, intentionally omitted a compatibility alias,
+  and bumped the local registry to v2. Preserve the no-alias decision but reset
+  the complete current registry shape to v1; do not add a v1-to-v2 migrator;
+- the current working-tree operation shape further adds required
+  `FederationMeltQuoteTerms` to `FederationMeltQuoteOperation` while still
+  using operation v2. Complete that operation shape first, then compute its
+  final v1 canonical vectors once rather than regenerating twice.
+
+Under cleanup item 33, wallet public configs, invites, and their digests remain
+independent from member-only protocol versions. Preserve that ownership
+boundary while making every boundary's current format v1. Regenerate the
+current operation vectors/IDs, signed member payload fixtures, DKG
+commitment/state/transcript vectors, registry fixtures, generated federation
+configs, and every artifact whose canonical bytes or hashes change. Old
+development registries, journals, Aleph backups, DKG state, configs, and
+databases are recreated rather than migrated.
 
 Relevant code:
 
-- `crates/cdk-common/src/federation/operation.rs:28`
 - `crates/cdk-common/src/federation/operation.rs:31`
-- `crates/cdk-common/src/federation/operation.rs:121`
-- `crates/cdk-common/src/federation/operation.rs:1155`
-- `crates/cdk-common/src/federation/transport.rs:30`
-- `crates/cdk-common/src/federation/transport.rs:34`
-- `crates/cdk-common/src/federation.rs:1493`
-- `docs/federation-cleanup-todo.md` item 43
+- `crates/cdk-common/src/federation/operation.rs:34`
+- `crates/cdk-common/src/federation/operation.rs:330`
+- `crates/cdk-common/src/federation/operation.rs:341`
+- `crates/cdk-common/src/federation/operation.rs:1497`
+- `crates/cdk-common/src/federation/operation.rs:1575`
+- `crates/cdk-common/src/federation/transport.rs:32`
+- `crates/cdk-common/src/federation/transport.rs:36`
+- `crates/cdk-common/src/federation/transport.rs:37`
+- `crates/cdk-common/src/federation.rs:111`
+- `crates/cdk-common/src/federation.rs:112`
+- `crates/cdk-common/src/federation.rs:114`
+- `crates/cdk-common/src/federation/config.rs:1024`
+- `crates/cdk-cli/src/sub_commands/federation.rs:22`
+- `crates/cdk-cli/src/sub_commands/federation.rs:159`
+- `crates/cdk-cli/src/sub_commands/federation.rs:823`
+- `docs/federation-cleanup-todo.md`, items 9, 15, 23, 33, and 43
 
 TODO:
 
-- [ ] Advance the operation protocol version and its hash-domain tag for the
-  current operation enum/canonical shape.
-- [ ] Advance the member-facing REST protocol version and every signature/body
-  domain whose accepted payload shape changed.
-- [ ] Keep wallet-facing public protocol versions separate from member REST
-  versions as planned by cleanup item 33; do not force unrelated wallet API
-  changes to share one version.
-- [ ] Regenerate public-config digests, DKG transcripts, invites, canonical
-  vectors, signed catch-up fixtures, and persisted test records.
-- [ ] Define the startup behavior for old operation-v2 journals and Aleph
-  backups: supported migration or explicit destructive reset. Do not attempt
-  to read them as the new operation-v2 format.
-- [ ] Add mixed-version startup and private-route tests proving failure occurs
-  at an explicit version/config boundary before malformed payload processing.
-- [ ] Add a persisted old `Restore` envelope regression proving it is reported
-  as unsupported old protocol data rather than corrupt current data.
+- [x] Decide that pre-cut-through nodes, payloads, registries, journals,
+  backups, DKG state, configs, and databases are unsupported.
+- [ ] Finish the current operation shape before rebasing its vectors.
+- [ ] Change the operation envelope version and operation-ID domain from v2 to
+  v1.
+- [ ] Change the DKG commitment domain, participant-state version, and
+  transcript-hash domain from v2 to v1.
+- [ ] Reset `FEDERATION_REGISTRY_VERSION` from 2 to 1 without accepting or
+  translating the earlier `primary_member_id` registry shape. Replace the
+  stale-v1 test with exact current-v1 acceptance plus version 0, 2, and future
+  rejection tests.
+- [ ] Keep wallet, REST, consensus item, Aleph unit, catch-up certificate, and
+  every already-v1 domain unchanged.
+- [ ] Search the complete workspace for federation-owned version constants,
+  `-vN` domains, version dispatch/ranges, Serde aliases/defaults, untagged or
+  alternate decoders, deprecated flags, legacy field/enum names, compatibility
+  DTOs, migration adapters, and documentation promising old-format support.
+- [ ] Remove every path whose purpose is compatibility with a pre-cut-through
+  federation artifact. Retain optional/defaulted fields only with a documented
+  current-v1 semantic reason and a current-shape test.
+- [ ] Regenerate operation IDs/golden vectors, DKG vectors and participant
+  state, transcripts/signatures, generated public/private configs, config
+  digests, invites, registry files, and affected fixtures through the existing
+  generators.
+- [ ] Recreate experimental federation databases, Aleph backups, DKG state,
+  configs, registries, and local artifacts; add no compatibility decoder,
+  alias, translator, or migration.
+- [ ] Update cleanup item 43 and protocol documentation to name the resulting
+  format as the initial v1 release boundary.
+- [ ] Add exact v1 golden-vector/current-shape tests and altered-version,
+  removed-field-name, removed-enum, and unknown-field rejection tests at each
+  governing boundary.
+- [ ] Run shared-core, mint, Axum, wallet/CLI, mintd setup/DKG, SQLite,
+  PostgreSQL, and federation smoke suites before closing P14.
 
 Acceptance criteria:
 
-- Every incompatible canonical or signed payload shape has a distinct version
-  and domain from `bls-federation`.
-- Mixed-version nodes and persisted old state fail with an explicit upgrade or
-  reset error, never an ambiguous current-format decode failure.
+- Every federation-owned protocol, artifact, registry version, and hash domain
+  is v1 at its governing boundary; only migration identifiers and Cashu keyset
+  versions remain in their unrelated version spaces.
+- Canonical v1 operation IDs, DKG commitments/state/transcripts, configs, and
+  signatures are deterministic and covered by golden vectors; the current
+  registry shape round-trips as v1.
+- No decoder, alias, deprecated flag, version branch/range, default, or
+  migration exists solely to accept a pre-cut-through federation artifact.
+- Pre-cut-through artifacts are explicitly unsupported, rejected fail-closed,
+  and excluded from deployment/upgrade guarantees.
+- Future incompatible changes advance the relevant local version/domain
+  without changing unrelated wallet compatibility metadata.
 
-### P15 [CRITICAL]: Squashed Federation Migrations Remove the Existing Upgrade Path
+### P15: Squashed Federation Migrations Use the Accepted Fresh-Database Contract
 
-**Status:** Open
+**Status:** Complete (2026-07-13)
 
-**Severity:** Critical — deleting migration versions that may already be
-recorded in a database violates the repository's migration-immutability rule
-and can prevent the database from opening or migrating.
+**Severity:** Accepted pre-release reset — not an open security finding.
+Pre-cleanup federation databases are explicitly unsupported and disposable, so
+the absent forward migration is intentional rather than a data-preservation
+violation.
 
 The cleanup deletes the experimental federation migration chain in both SQLite
 and PostgreSQL and replaces it with one
 `20260712000000_create_federation_schema.sql`. Any database created while
 developing or testing `bls-federation` can contain applied migration versions
-that are now absent from the embedded migrator. Such databases do not gain a
-forward schema transition and can fail migration validation rather than
-starting with the new schema.
+that are now absent from the embedded migrator. CDK's custom migrator does not
+validate that every recorded historical migration still exists. Instead, it
+sees the new consolidated migration name as unapplied and executes it over the
+old federation schema. The consolidated migration begins with a plain
+`ALTER TABLE ... ADD COLUMN` and then plain `CREATE TABLE` statements, so an
+old database fails on duplicate columns/tables before normal startup. The
+concrete failure is reapplying a fresh-schema migration over an existing
+unsupported schema rather than sqlx-style missing-version validation.
 
-The claim that federation is undeployed limits production exposure but does not
-make historical migration files mutable. Existing contributor, CI artifact,
-staging, or operator databases still need either a valid forward migration or
-an explicit destructive reset contract. The squashed migration is also still
-being edited as later cleanups rename tables, demonstrating that it is not yet
-an immutable release boundary.
+Because federation is unreleased and pre-cleanup databases are disposable, the
+squash itself is accepted. Developers and operators must create a fresh
+federation database when moving to this branch; no compatibility migration,
+preflight detector, or reset adapter is required for experimental databases.
+The consolidated migration may continue changing until the first supported
+federation release. From that release onward it becomes immutable and all
+schema changes use appended migrations.
+
+Cleanup provenance and useful references:
+
+- commit `b7c231487` (`refactor: squash federation schema migrations`) and
+  cleanup item 16 deleted the 20-file SQLite and PostgreSQL federation chains
+  and introduced the single `20260712000000_create_federation_schema.sql`
+  migration for each backend;
+- item 16's fresh-database catalog and CRUD tests prove the consolidated schema
+  is valid for a new database. They do not exercise a database whose
+  `migrations` table already records any deleted `20260703*` through
+  `20260711*` names;
+- `crates/cdk-sql-common/src/common.rs::migrate` checks only whether each
+  currently embedded migration name is absent, then runs it. It neither
+  validates missing historical names nor supplies a transition from the old
+  federation schema;
+- later cleanup commits, including `d6125e7df` and `28407b92f`, edited the same
+  consolidated migration as tables and fields were renamed or removed. Those
+  edits are acceptable while this remains an unreleased fresh-schema boundary;
+- after the first supported release, preserve the consolidated migration
+  exactly and append new migrations in accordance with the repository's normal
+  migration-immutability policy.
 
 Relevant code:
 
+- `crates/cdk-sql-common/src/common.rs:74`
+- `crates/cdk-sql-common/src/common.rs:93`
 - `crates/cdk-sql-common/src/mint/migrations/sqlite/20260712000000_create_federation_schema.sql:1`
 - `crates/cdk-sql-common/src/mint/migrations/postgres/20260712000000_create_federation_schema.sql:1`
 - deleted `20260703*` through `20260711*` federation migrations in both
   migration directories
+- `docs/federation-cleanup-todo.md`, item 16
 - `.github/agents/review.md` database migration guidance
 
-TODO:
+Completion record:
 
-- [ ] Restore the deleted migration files once their versions have existed in
-  repository history, and add new forward migrations for removed columns,
-  renamed tables, constraints, and the final schema.
-- [ ] Add upgrade tests that start from the last `bls-federation` SQLite and
-  PostgreSQL schemas and migrate to the cleanup schema without losing
-  standalone or federation state.
-- [ ] Keep fresh-schema catalog parity tests, but do not use them as a
-  substitute for upgrade-path tests.
-- [ ] If the project deliberately chooses destructive reset instead, add an
-  explicit startup error and documented reset command; do not silently present
-  the branch as upgrade-compatible.
-- [ ] Stop editing any migration once it is accepted as historical; add a new
-  migration for subsequent item-32 table renames or constraints.
+- [x] Pre-cleanup experimental federation databases are unsupported and must
+  be recreated.
+- [x] SQLite and PostgreSQL use one consolidated fresh-schema federation
+  migration.
+- [x] Fresh-schema catalog, CRUD, concurrency, restart, and catch-up coverage
+  validate the consolidated schema.
+- [x] Standalone migration history remains unchanged.
+- [x] The first supported federation release will freeze the consolidated
+  migration; every later schema change will append a new migration.
 
 Acceptance criteria:
 
-- Every database that applied a migration present on `bls-federation` either
-  migrates forward deterministically or receives a clear, intentional reset
-  error before normal startup.
-- Released migration files remain immutable after this cleanup.
+- A fresh database reaches the intended federation schema deterministically.
+- Pre-cleanup federation databases and their migration history are outside the
+  supported upgrade contract.
+- The consolidated migration is immutable from the first supported federation
+  release onward.
 
 ### P16: One Global Melt-Observation Lock Serializes Unrelated Payments
 
@@ -900,25 +1192,30 @@ Acceptance criteria:
 - Same-quote concurrency remains idempotent and cannot trigger duplicate
   outgoing payment attempts.
 
-### P17: Wallet Registry v1 Is Rejected for a Losslessly Migratable Rename
+### P17: Legacy Wallet Registry Migration Is Superseded by Cut-Through
 
-**Status:** Open
+**Status:** Complete — closed as not applicable and folded into P14
+(2026-07-13)
 
-**Severity:** Medium — existing federation-aware CLI wallets become unusable
-until their registry is manually recreated, without a security or data-model
-reason requiring destructive rejection.
+**Severity:** Not an open finding. Confidence is 99%.
 
-The wallet cleanup renames `primary_member_id` to
-`quote_coordinator_member_id`, changes the CLI flag, removes Serde defaults,
-bumps `FEDERATION_REGISTRY_VERSION` from 1 to 2, and adds a test that explicitly
-rejects registry v1. The old member preference can be mapped losslessly to the
-new quote-coordinator preference because the cleanup narrowed that setting's
-runtime role rather than changing its type or trust boundary.
+The earlier assessment treated the rename from `primary_member_id` to
+`quote_coordinator_member_id` as a deployed local-state compatibility problem
+and proposed a v1-to-v2 loader plus a deprecated CLI alias. That premise
+conflicts with the project's explicit cut-through policy: no federation
+deployment or development artifact predating the cleanup is supported.
 
-Rejecting the old sidecar therefore converts a terminology/ownership cleanup
-into avoidable local-state breakage. It is stricter than needed even for an
-undeployed federation protocol because wallet registry files are local tooling
-state, not consensus-visible configuration.
+Do not implement the proposed compatibility layer. P14 now requires the
+complete current registry shape to become its initial v1 by resetting
+`FEDERATION_REGISTRY_VERSION` from 2 to 1. The old `primary_member_id` field,
+old CLI flag, omitted policy fields, and any earlier registry shape remain
+unsupported and must not be translated, defaulted, or silently accepted.
+Developers recreate or re-import the registry.
+
+This preserves the useful part of cleanup item 30—the narrower coordinator
+semantics and absence of a compatibility alias—while removing the development-
+history-only v2 label. Exact current-v1 validation and rejection of version 0,
+2, and future versions belong to P14's completion tests.
 
 Relevant code:
 
@@ -928,24 +1225,157 @@ Relevant code:
 - `crates/cdk-cli/src/sub_commands/federation.rs:305`
 - `crates/cdk-cli/src/sub_commands/federation.rs:823`
 
+No independent TODO remains. Registry renumbering, legacy-shape rejection, and
+current-v1 round-trip coverage are part of P14.
+
+### P18: Security-Critical Architecture Tests Were Removed Before Enforceable Boundaries Existed
+
+**Status:** Open
+
+**Severity:** Medium assurance gap — no current signing bypass or
+pre-commit publication bug was demonstrated, but future changes can violate
+security-sensitive architecture rules without a focused regression failing.
+
+Cleanup item 41 removed source scanners that guarded several important
+invariants:
+
+- Public handlers must not call raw blind-signing APIs directly.
+- Federation mint, swap, melt, restore, and quote paths must pass through the
+  intended readiness and consensus boundaries.
+- Pub/sub notifications must occur only after the surrounding database
+  transaction commits.
+- Production federation builds must not expose fake-wallet or development
+  smoke-test surfaces.
+
+The removed tests were formatting-sensitive and were not proofs of runtime
+behavior, so retaining them permanently would not be a strong architecture.
+However, their replacements primarily exercise existing route behavior plus a
+production CLI parser and migrated-schema fixture. Those tests verify the
+reviewed paths today, but they do not prevent a new handler from acquiring a
+raw signatory, a new publication site from moving before commit, or a new
+production feature edge from exposing development-only code.
+
+Existing behavioral coverage reduces the immediate risk: federation public
+routes have fail-closed tests, standalone mint APIs reject federation signing
+paths, and quote lifecycle tests exercise some commit-before-publish behavior.
+The remaining issue is the lack of an enforceable boundary covering future
+call sites, not evidence that current production behavior already violates the
+invariants.
+
+**Reassessment:** The gap is concrete at the capability level even though no
+current bypass was found. `FederationRuntimeConfig::private_config` is public,
+and `MemberConfigPrivate::sign_blinded_messages` is also public, so an Axum
+handler can acquire raw federation signing capability without going through
+`Mint::blind_sign` and its member-mode guard. A useful fix is to expose narrow
+identity/network signing and persisted federation-share response capabilities
+to outer crates while keeping raw blinded-message share construction inside
+the mint federation application boundary.
+
+Relevant changes:
+
+- commit `133412af8` removed the source architecture checks
+- `crates/cdk-axum/src/custom_handlers.rs`
+- `crates/cdk/src/mint/federation.rs:149`
+- `crates/cdk-common/src/federation/signing.rs:147`
+- `crates/cdk/src/mint/mod.rs`
+- `crates/cdk/src/mint/federation/tests/runtime.rs`
+- `crates/cdk-mintd/src/lib.rs`
+- `docs/federation-cleanup-todo.md`, item 41
+
 TODO:
 
-- [ ] Load registry v1 and migrate `primary_member_id` to
-  `quote_coordinator_member_id` in memory, then persist v2 atomically.
-- [ ] Alternatively add a Serde alias for the old field while retaining strict
-  rejection of genuinely unknown fields.
-- [ ] Keep `--primary-member-id` as a deprecated Clap alias for at least one
-  transition period.
-- [ ] Preserve explicit validation that the migrated member exists in the
-  public roster.
-- [ ] Add v1-to-v2 migration tests for `Some(member)`, `None`, missing optional
-  policy fields previously supplied by defaults, and an unknown member.
+- [ ] Restrict raw signing behind module-private or sealed typed capabilities
+  that public HTTP handlers cannot access.
+- [ ] Expose federation handlers only to consensus submission and persisted
+  signature-share response APIs.
+- [ ] Encapsulate commit and notification publication, or add transaction
+  failure tests proving no authoritative event is emitted before commit.
+- [ ] Keep production feature-matrix checks proving fake-wallet and smoke
+  commands are absent from the compiled surface.
+- [ ] Until type-level boundaries exist, retain narrowly scoped enforcement for
+  the direct-signing allowlist and commit-before-publish rule rather than
+  removing all coverage at once.
 
 Acceptance criteria:
 
-- A valid registry produced by `bls-federation` loads under the cleanup branch
-  without manual deletion or re-import.
-- Invalid or unknown-member policies remain fail-closed after migration.
+- Public federation handlers cannot compile against raw signing capabilities.
+- A failed transaction emits no mint, melt, swap, proof-state, or quote
+  notification.
+- Every public signing path has a behavioral test proving no signature or
+  authoritative mutation occurs before consensus finality.
+- Production federation feature builds exclude development-only payment and
+  smoke-test surfaces.
+
+### P19: SubmitOperation Authenticates a Sequence but Does Not Enforce Its Replay Semantics
+
+**Status:** Open
+
+**Severity:** Low — exact operation replay remains idempotent by operation ID
+and does not duplicate consensus mutation. The regression is that the signed
+wire contract promises monotonic replay rejection while `SubmitOperation`
+silently accepts distinct request bodies carrying the same sender sequence.
+
+`FederationSignedRequest` documents `sequence` as a monotonic sender-local value
+used to reject simple replays. The common sequence tracker also has a volatile
+per-kind window for `SubmitOperation`. The private operation route does not use
+that tracker: it verifies the signature and operation admission, discards the
+verified sender/sequence, and submits only the operation envelope.
+
+The route tests deliberately establish the resulting behavior:
+
+- Replaying the exact signed operation returns its durable duplicate outcome.
+- Sending a different operation with the same sender and sequence is accepted
+  as a second operation with a different operation ID.
+
+Operation-ID idempotency is the correct primary defense for an effectful
+operation because it survives restart and permits safe retry after a lost
+response. Enforcing a volatile sequence before checking the operation ID would
+be worse: it would reject a legitimate exact retry. Conversely, leaving the
+sequence entirely unenforced means it provides no same-process nonce-reuse or
+sender-equivocation signal, and its public documentation is false for this
+message kind. This is not strong Byzantine containment—a malicious member can
+always choose a fresh sequence—but the protocol should make the intended
+semantics explicit.
+
+**Reassessment:** Prefer documenting `SubmitOperation` as operation-ID
+idempotent unless the project needs same-process equivocation diagnostics. If
+sequence reuse is enforced, first resolve an exact operation-ID duplicate to
+its durable outcome, then bind a genuinely new `(sender, sequence)` to one
+operation ID. A highest-sequence-only check is insufficient because it would
+break safe exact retry, and a volatile mapping is not a durable Byzantine
+containment mechanism.
+
+Relevant code:
+
+- `crates/cdk-common/src/federation/transport.rs:360`
+- `crates/cdk-common/src/federation/transport.rs:539`
+- `crates/cdk-axum/src/federation.rs:299`
+- `crates/cdk-axum/src/federation.rs:315`
+- `crates/cdk-axum/src/federation/tests/private_operation_route.rs:148`
+- `crates/cdk-axum/src/federation/tests/private_operation_route.rs:177`
+
+TODO:
+
+- [ ] Decide and document whether `SubmitOperation.sequence` is intentionally
+  informational because operation IDs own idempotency, or whether it must
+  detect distinct operations reusing one sender sequence.
+- [ ] If enforcing it, resolve exact operation-ID duplicates first, then apply
+  and record the volatile `SubmitOperation` sequence only for genuinely new
+  operation IDs.
+- [ ] Keep effectful DKG sequences durable and keep status, catch-up, readiness,
+  and Aleph transport windows isolated by message kind.
+- [ ] Add a focused test for the selected same-sequence/different-operation
+  policy while retaining exact-retry behavior across response loss and restart.
+- [ ] Update the `FederationSignedRequest.sequence` documentation if replay
+  semantics intentionally differ by message kind.
+
+Acceptance criteria:
+
+- Exact operation retries remain idempotent and return the durable outcome.
+- Distinct operations reusing one signed sender sequence are either rejected
+  consistently or explicitly documented and tested as allowed.
+- Sequence handling cannot cause duplicate state mutation or block a valid
+  exact retry after response loss.
 
 ## Accepted / Not Tracked as Bugs
 
@@ -975,7 +1405,7 @@ through branch:
   removal/rename of `consensus_backend`,
   `session_outcome_evidence_chunk_size`, and
   `state_digest_checkpoint_retention` are accepted cut-through breaks. Carry
-  forward configs from `bls-federation` must be rewritten.
+  forward configs are unsupported and must be regenerated.
 - **Compact catch-up wire format.** Catch-up responses carry compact operation
   commitments and reconstruct full journal entries from Aleph finalized items.
   No accidental payload-loss bug was found in the committed apply path.
@@ -1008,7 +1438,10 @@ through branch:
   `aleph_bft_finalized_items` as the authoritative history store.
 - **Materialized-state empty-`fields` digest domain.** Rows always serialize
   `fields` (including `{}`). Digests and digests-vector tests bind the new
-  domain; mixed pre-cleanup peers are unsupported for this cut-through.
+  domain; mixed pre-cleanup peers are unsupported for this cut-through. P14
+  records the one-time reset of every remaining federation-owned v2 label,
+  including the local registry, and regeneration of the first supported v1
+  artifacts.
 - **Failed application status intentionally not overlaid on Aleph recovery.**
   Only `Applied` / `Rejected` overlay after rebuild from finalized items so
   durable `Failed` operations re-enter accepted apply for retry. This is
@@ -1016,16 +1449,33 @@ through branch:
 
 ## Review Verdict
 
-The cleanup branch requires the open findings above (P1–P17) to be resolved or
-explicitly ruled out with deterministic tests before it should be treated as
-production ready. P12, P14, and P15 are explicitly **Critical** and should be
-prioritized: they cover fail-open materialized-state readiness after restart,
-incompatible consensus/member payloads retaining old protocol versions, and
-destructive migration-history replacement. No accidental regression was
-demonstrated in compact catch-up reconstruction, commitment separation, or
-unfederated payment handlers. Projection scaling, retry durability,
-apply-transaction rollback, incomplete Halted teardown after failed rotation,
-soft-skip catch-up certificate signing, payment-observation readiness policy,
-global melt-observer serialization, and registry migration remain open
-alongside pending-operation atomicity, rotation recovery, waiter notification,
-and essential-task supervision.
+The cleanup branch is not production ready. The reassessment assigns one
+Critical finding (P12), four High findings (P6, P7, P9, P16), ten Medium
+findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
+findings (P5, P19). P15 is complete under the accepted fresh-database policy;
+P17 is closed as superseded by P14's cut-through registry reset.
+
+P12 requires first attention because it covers fail-open materialized-state
+readiness after restart. P6, P7, P9, and P16 are the next production blockers
+because they affect admission atomicity, pending-operation restart recovery,
+application of finalized state, and federation-wide melt-observer liveness. P1
+must also be resolved before production if one-member configs remain accepted,
+even though its general security severity is Medium.
+
+P14 is a one-time reset of every federation-owned format to its clean initial
+v1, including the current CLI registry shape, followed by removal of legacy
+acceptance paths, regenerated artifacts, and a frozen first-supported boundary.
+P15 accepts the consolidated fresh-schema migration and is closed. Neither item
+permits support for pre-cut-through nodes, payloads, registries, configs,
+backups, or databases.
+
+No accidental regression was demonstrated in compact catch-up reconstruction,
+commitment separation, or unfederated payment handlers. P4 should be narrowed
+to retry fairness/observability unless a restart convergence failure is
+reproduced. P5's broad explicit-rollback work is complete and should remain
+open only for focused staged-melt replay/idempotence verification. P10 is the
+general Halted teardown invariant rather than a proven stale-resource outcome
+of ordinary automatic rotation alone. P13 and P19 require explicit policy
+decisions. P17's former compatibility proposal is withdrawn and folded into
+P14; P18 remains an assurance boundary, not evidence of a current signing
+bypass.

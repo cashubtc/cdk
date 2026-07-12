@@ -2062,8 +2062,10 @@ to substitute for threshold evidence in paths that deserve separate policy.
 
 - Renamed the wallet and CLI preference from `primary_member_id` /
   `--primary-member-id` to `quote_coordinator_member_id` /
-  `--quote-coordinator-member-id`. The CLI registry schema is now version 2;
-  this undeployed federation code intentionally carries no compatibility alias.
+  `--quote-coordinator-member-id`. This undeployed federation code
+  intentionally carries no compatibility alias. Item 43 later supersedes only
+  the development-history version number: the complete current registry shape
+  becomes initial v1 instead of v2, without accepting the old field or flag.
 - Restricted the preference to ordering quote-creation attempts. A failed or
   unavailable coordinator falls back through the validated roster using the
   same assigned quote ID and existing threshold-visibility recovery.
@@ -2272,8 +2274,9 @@ direction and make unsafe cross-layer coupling easy.
   identity/configuration, payment policy, keysets, most DKG records, invites,
   snapshots, and wallet-facing validation, while operation, journal, transport,
   consensus, signing, and trusted-dealer code are already separate modules.
-- Items 37-42 are complete and Item 43 is intentionally skipped, so this split
-  is no longer blocked by nearby config, diagnostic, or protocol-format work.
+- Items 37-42 are complete. Item 43 was later reopened for a narrow v1 constant,
+  domain, and fixture reset; that work uses the completed module boundaries and
+  does not reopen this structural split.
 - Use a few coarse modules, preserve every serialized/hash form, and avoid the
   fine-grained file hierarchy sketched in R11 unless a compile-time dependency
   boundary requires it. This is a mechanical ownership cleanup, not an excuse
@@ -2765,33 +2768,41 @@ variability, and can conceal missed wakeups or ordering races.
   benchmark ignored in 97.24 seconds under normal parallel execution.
 - All 28 standalone Axum tests pass.
 
-## 43. Rebase the undeployed federation protocol as version 1
+## 43. Cut through every federation-owned format to initial version 1
 
-**Status:** Skipped (2026-07-12)
+**Status:** Todo (reopened 2026-07-13)
 
 ### Decision
 
-Do not rebase the current federation-only version fields or cryptographic hash
-domains. The existing version-2 labels remain the authoritative development
-format. Renumbering them provides no runtime, safety, or maintainability benefit
-and would invalidate fixtures and experimental state solely for cosmetic
-consistency. Future protocol changes should continue to use explicit versions,
-domain separation, and fail-closed validation from the versions already in the
-code.
+Apply the project's cut-through policy completely before the first supported
+federation release. Pre-cut-through nodes, payloads, registries, journals,
+Aleph backups, DKG state, configs, and databases are unsupported and will be
+recreated. The complete current implementation—not any discarded development
+iteration—is the initial v1.
 
-No compatibility layer, migration, or alternate decoder is being added. The
-partially implemented renumbering and regenerated golden vectors were discarded
-before commit, so this skip changes documentation only.
+Reset every remaining federation-owned v2 marker: the operation
+envelope/version and operation-ID domain, the DKG commitment domain, persisted
+DKG participant-state version and transcript-hash domain, and the local CLI
+federation registry version. Other federation-owned boundaries are already v1
+and retain their current complete shapes. The consolidated migration timestamp
+and Cashu v3/BLS keyset version are different version spaces and are not reset.
+
+No compatibility decoder, alias, legacy DTO, deprecated flag, version range,
+migration, or alternate format will be added. Remove any such federation path
+found during the workspace audit. Regenerate every affected deterministic
+artifact after the current operation shape stabilizes, then freeze the
+resulting v1 formats. Future incompatible changes advance only the governing
+local version/domain after the first supported release.
 
 ### Problem
 
-Federated CDK has not been deployed, but some current federation formats carry
-version numbers and hash-domain labels inherited from incompatible development
-iterations. In particular, the only supported operation envelope is advertised
-as version 2, and DKG commitment, participant-state, and transcript formats also
-retain version-2 labels. The implementation does not negotiate or decode the
-earlier formats, so these numbers describe discarded development history rather
-than a real deployed compatibility boundary.
+Federated CDK has no supported deployment history, but some current federation
+formats carry version numbers and hash-domain labels inherited from incompatible
+development iterations. The only supported operation envelope is advertised as
+version 2; DKG commitment, participant-state, and transcript formats retain v2
+labels; and the current CLI registry shape is numbered v2 after a pre-release
+field rename. These numbers describe discarded development history rather than
+real compatibility boundaries.
 
 Keeping that history makes the initial federation protocol appear to have an
 upgrade and migration burden that does not exist. It also leaves documentation
@@ -2807,16 +2818,25 @@ inconsistent about whether the first operation encoding is v1 or v2.
   format, and signed transcript hash domain to v1. Keep the present ceremony
   binding, transcript contents, cryptographic verification, and restart-safety
   requirements unchanged.
+- Rebase the complete current CLI federation registry shape to v1. Preserve
+  `quote_coordinator_member_id` and `--quote-coordinator-member-id`; do not load,
+  translate, alias, or default the removed `primary_member_id` shape or flag.
 - Audit every federation-only wire version, persisted schema version,
   cryptographic domain separator, fixture, generated artifact, and compatibility
-  branch. Remove support for superseded development formats instead of adding
-  decoders, adapters, translations, or migrations.
+  branch. Include Serde aliases/defaults, untagged or alternate decoders,
+  version dispatch/ranges, compatibility DTOs, deprecated flags, and migration
+  adapters. Remove anything whose sole purpose is accepting a superseded
+  development format.
+- Retain optional/defaulted fields only when they express a documented current
+  v1 lifecycle or API semantic. Do not mistake legitimate optional DKG setup,
+  payment evidence, consensus evidence, or catch-up request fields for legacy
+  compatibility, but require missing mandatory v1 fields to fail closed.
 - Regenerate operation golden vectors, DKG vectors, public/private federation
-  configs, config digests, transcripts, invites, wallet registry fixtures, and
-  other artifacts affected by the rebased versions.
+  configs, config digests, transcripts, invites, current-v1 registry fixtures,
+  and other artifacts affected by the rebased versions.
 - Require operators and developers to recreate experimental federation
-  databases, DKG state, configs, and wallet registries. Do not provide migration
-  paths from any pre-release federation format.
+  databases, DKG state, configs, and registries. Do not provide migration paths
+  from any pre-cut-through federation format.
 - Retain explicit version fields, domain separation, and exact-version
   validation. Unsupported or malformed formats must continue to fail closed so
   a future deployed upgrade has a clear compatibility boundary.
@@ -2833,6 +2853,9 @@ inconsistent about whether the first operation encoding is v1 or v2.
 - `crates/cdk-common/src/federation.rs`: public protocol advertisement and
   validation, DKG commitment/transcript hash domains, participant-state and
   public-ceremony versions, config digests, and DKG tests.
+- `crates/cdk-cli/src/sub_commands/federation.rs`: registry version, strict
+  current-shape validation, and stale-version tests. Reset the current shape to
+  v1 and retain the absence of a `primary_member_id` compatibility alias.
 - `crates/cashu/src/nuts/nut06.rs`, mint-info construction, wallet federation
   validation, mint admission, CLI federation registry/import, setup tooling,
   generated configs, and federation documentation.
@@ -2845,15 +2868,16 @@ inconsistent about whether the first operation encoding is v1 or v2.
   must fail closed only at the relevant wallet or member boundary.
 - Prove the canonical v1 operation vector, operation IDs, DKG commitments,
   participant-state restart, transcript equality/signatures, config digests,
-  invites, and materialized-state verification are deterministic across all
-  members.
+  invites, registry round trips, and materialized-state verification are
+  deterministic across all members.
 - Start fresh SQLite and PostgreSQL federations and run DKG, mint, swap, melt,
   restore, restart, offline-member catch-up, and convergence tests. Confirm old
-  experimental federation artifacts are rejected rather than migrated.
+  experimental federation artifacts and registry shapes are rejected rather
+  than migrated.
 - Run standalone migration, mint, wallet, and non-federated keyset regressions
   unchanged, and search the whole workspace for stale v2 labels, obsolete
-  compatibility wording, and unlisted federation version constants before
-  marking this item complete.
+  aliases/defaults/DTOs/version branches, compatibility wording, and unlisted
+  federation version constants before marking this item complete.
 
 ## Cleanup safety guardrails
 

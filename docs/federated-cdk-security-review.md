@@ -1,6 +1,20 @@
 # Federated CDK Security Review
 
+## Implementation Guardrails
+
+Keep remediation changes lean and reuse established code paths, abstractions,
+and functions wherever possible. Follow the existing federation, journal,
+transaction, error-handling, and testing patterns. Every fix must be clean,
+minimal, deterministic, replay-safe, and idempotent, and must not change or
+repair standalone/non-federated CDK behavior.
+
+Add focused federation regression coverage for each fix, run formatting and
+the relevant tests, and update this security review and the implementation plan
+with verified progress. Commit coherent milestones separately using
+conventional commit messages.
+
 Date: 2026-07-09
+Current-branch assessment updated: 2026-07-13
 
 This note records timing-sensitive issues found during a read-only review of
 federation-mode minting, wallet behavior, swap handling, and melt handling. It
@@ -31,9 +45,32 @@ member independently marks a quote paid before the federation has accepted a
 payment-observation quorum can cause divergent signing decisions or rejected
 operations that are artifacts of timing.
 
+Findings that have since been fixed on the cleanup branch are collected under
+`Resolved Findings` rather than mixed into the active work queue.
+
+## Assessment Scale
+
+Each active finding includes a current-branch assessment. `High` findings are
+release blockers for real-funds deployment, `Medium` findings are worthwhile
+correctness or availability work, `Low` findings are defense-in-depth or UX
+hardening, and `Informational` findings are policy choices rather than defects.
+The confidence percentage measures confidence that the assigned current
+severity is correct; it is not the probability that an exploit will occur.
+The current active tally is four High, six Medium, three Low, and one
+Informational finding.
+
 ## Findings
 
 ### P1: Mint Signing Can Depend on Local Backend Timing
+
+Assessment:
+
+- **Status:** Confirmed, with substantial route-level mitigation already in
+  place.
+- **Current severity:** High (94% confidence).
+- **Decision:** Worth addressing before production. Consensus apply itself must
+  enforce the observation-at-or-before-index invariant rather than relying on
+  how current callers caused the quote to become `Paid`.
 
 The federated mint apply path loads local mint quotes and signs when those quote
 states are `Paid`.
@@ -82,120 +119,72 @@ Tests to add:
 - Members with different local backend timing converge to the same journal
   apply result.
 
-### P1: Apply-Time Rejection Can Leave Conflict-Key State Inconsistent
+### P2: Architecture Tests Were Removed Before Enforceable Boundaries Existed
 
-The Axum replay path maps definitive apply errors to `Rejected`.
+Assessment:
 
-Relevant code:
+- **Status:** Partially valid defense-in-depth concern; no current signing
+  bypass was found.
+- **Current severity:** Low (86% confidence), downgraded from P2.
+- **Decision:** Worth addressing as pre-production hardening, but not ahead of
+  confirmed state-machine defects. Existing behavioral, runtime-guard, and
+  production-feature tests already cover much of the former source checks.
 
-- `crates/cdk-common/src/error.rs:714`
-- `crates/cdk-axum/src/lib.rs:3388`
-- `crates/cdk-axum/src/lib.rs:3691`
+Cleanup item 41 removed source-based architecture tests that guarded several
+security-sensitive invariants:
 
-`UnpaidQuote` is classified as definitive, so a mint operation that applies
-before payment-observation quorum can be marked `Rejected`.
+- Public federation handlers must not call raw signing functions directly.
+- Mint, swap, melt, restore, and quote paths must pass through federation
+  readiness and consensus admission before returning signatures or mutating
+  authoritative state.
+- Pub/sub notifications must occur only after the surrounding transaction
+  commits.
+- Production federation builds must not acquire fake-wallet or development
+  smoke-test dependencies.
 
-The in-memory federation journal status update only changes the entry status:
+Relevant removals:
 
-- `crates/cdk-common/src/federation/journal.rs:1209`
+- `crates/cdk-axum/src/custom_handlers.rs` previously checked public-handler
+  signing and consensus-gating call order.
+- `crates/cdk/src/mint/mod.rs` previously maintained a direct-signing call-site
+  allowlist and checked commit-before-publish ordering.
+- `crates/cdk/src/mint/federation/tests/runtime.rs` previously checked that
+  federation payment handling remained backend-agnostic.
+- `docs/federation-cleanup-todo.md:2619` requires source inspection to be
+  replaced by module visibility, feature-compilation checks, typed APIs, or
+  behavioral integration tests.
 
-It does not rebuild or release the conflict-key map. Rejected entries are
-modeled specially when they are append-time conflict rejections:
-
-- `crates/cdk-common/src/federation/journal.rs:922`
-- `crates/cdk-common/src/federation/journal.rs:1244`
-
-Apply-time rejection is a different case: the operation was accepted first and
-its conflict keys were already reserved. Changing its status to `Rejected` after
-the fact can leave the conflict-key map inconsistent in memory and may restore
-badly after restart.
-
-Recommended fix:
-
-- Separate consensus acceptance status from local materialization/apply status.
-- Avoid converting timing-dependent `UnpaidQuote` into a terminal journal
-  rejection for accepted operations.
-- If status changes are allowed to affect conflict-key reservation, make
-  `update_status` update the conflict-key map consistently and add restore tests.
-
-Tests to add:
-
-- Accepted mint op applies before payment quorum and is not turned into a
-  conflict-key-leaking rejected state.
-- Status update from accepted to rejected does not leave the same quote
-  permanently conflict-reserved.
-- Restart/rebuild from persisted journal with apply-time rejected entries
-  preserves the intended conflict semantics.
-
-### P2: Replayed Mint Quotes May Not Carry a Usable Backend Lookup ID
-
-Federated quote replay reconstructs the quote with:
-
-- `PaymentIdentifier::QuoteId(quote_id)` in `crates/cdk/src/mint/federation.rs:2256`
-
-The proposer-created local quote uses the backend-provided lookup ID:
-
-- `crates/cdk/src/mint/issue/mod.rs:337`
-
-Payment polling then checks the backend using:
-
-- `crates/cdk/src/mint/ln.rs:46`
-
-Fake wallet testing may hide this because it can accept simplified identifiers.
-Production Lightning backends may not be able to independently verify an invoice
-created by another member using only the Cashu quote ID.
+The removed checks were formatting-sensitive and were not strong proofs of
+runtime behavior, so deleting them is a reasonable end state. However, the
+replacement primarily relies on existing route behavior tests plus focused CLI
+and schema tests. Those tests show that reviewed paths behave correctly today,
+but they do not prevent a future handler from gaining access to a raw signatory,
+a new notification from being published before commit, or a new production
+feature edge from exposing development-only code.
 
 Recommended fix:
 
-- Decide the production payment-verification model explicitly.
-- If every member independently checks the same backend-visible invoice, the
-  consensus quote operation must carry the stable backend lookup data needed for
-  all members to check it.
-- If only the proposer can check the invoice, then the federation needs an
-  explicit trust/quorum policy for proposer observations rather than pretending
-  every member independently verifies the backend.
+- Restrict raw signing capabilities behind module-private or sealed typed APIs
+  that public handlers cannot call; expose only the federation consensus-submit
+  and persisted-share response interfaces they require.
+- Encapsulate transaction commit and notification publication so callers cannot
+  publish an authoritative event before a successful commit.
+- Add production feature-matrix compilation checks that exclude fake-wallet and
+  smoke-test surfaces.
+- Until those boundaries exist, retain narrowly scoped checks for the
+  direct-signing allowlist and commit-before-publish invariant rather than
+  removing all enforcement at once.
 
 Tests to add:
 
-- Non-proposer member can validate a replayed quote payment using only data from
-  the accepted quote operation.
-- If lookup data is missing or unusable, payment observation fails safely and
-  does not make the quote mintable.
-- Fake wallet tests model both success and lookup failure.
-
-### P2: Local Quote Is Persisted Before Quote Consensus Finality
-
-The public quote route creates and persists a local quote before submitting the
-quote operation to federation consensus.
-
-Relevant code:
-
-- `crates/cdk-axum/src/custom_handlers.rs:681`
-- `crates/cdk/src/mint/issue/mod.rs:363`
-- `crates/cdk-axum/src/custom_handlers.rs:687`
-
-Existing tests cover fail-closed behavior before quote creation when AlephBFT is
-not ready, but the route can still fail or time out after local invoice creation
-and before the quote operation is finalized.
-
-This can leave a local-only quote/invoice that is not in the accepted federation
-order.
-
-Recommended fix:
-
-- Treat quotes created before consensus finality as provisional.
-- Do not let provisional/local-only quotes become mintable or emit payment
-  observations that can authorize signing.
-- Prefer materializing durable federation quote state only from the accepted
-  quote operation, or explicitly track local quote provenance and finality.
-
-Tests to add:
-
-- Quote creation succeeds locally, but consensus submission times out. The quote
-  must not become mintable.
-- A local-only quote paid by the backend must not authorize a mint operation.
-- Retrying quote creation/submission either finalizes the same quote cleanly or
-  produces a clearly rejected/provisional state without leaking mintable value.
+- A compile-fail or visibility test proving public handlers cannot access raw
+  signing APIs.
+- A transaction failure test proving no mint, melt, swap, proof-state, or quote
+  notification is published when commit fails.
+- A production federation feature build proving fake-wallet and smoke commands
+  are absent from the compiled surface.
+- Behavioral route tests for every public signing path proving no signature or
+  authoritative mutation occurs before consensus finality.
 
 ## Wallet Perspective Findings
 
@@ -203,64 +192,15 @@ These findings focus on whether malicious, stale, offline, or slow federation
 members can cause incorrect wallet state, failed recovery, or avoidable race
 conditions.
 
-### P1: Single-Member Quote Status Fallback Can Corrupt Melt Recovery - Resolved
-
-The federated wallet connector can fall back to a single primary member for melt
-quote status:
-
-- `crates/cdk/src/wallet/federation.rs:718`
-- `crates/cdk/src/wallet/federation.rs:1274`
-- `crates/cdk/src/wallet/federation.rs:1704`
-
-Melt recovery and execution paths treat that status as authoritative:
-
-- `crates/cdk/src/wallet/melt/saga/resume.rs:95`
-- `crates/cdk/src/wallet/melt/saga/resume.rs:344`
-- `crates/cdk/src/wallet/melt/saga/mod.rs:955`
-- `crates/cdk/src/wallet/melt/saga/mod.rs:1204`
-
-This can create incorrect wallet state during a partition or malicious-primary
-scenario:
-
-1. The wallet submits a melt.
-2. Threshold federation members may have accepted the melt or marked inputs
-   pending/spent.
-3. Status quorum is unavailable because members are offline or slow.
-4. The primary member returns `Unpaid` or `Failed`.
-5. The wallet releases proof reservations and deletes the saga.
-6. The wallet now believes proofs are spendable even though the federation may
-   still consider them pending or spent.
-
-Recommended fix:
-
-- Quote statuses that mutate wallet state or drive saga recovery must require
-  threshold agreement from validated federation members.
-- Single-member status fallback may only be used for non-authoritative display
-  state and must not release proofs, delete sagas, mark melts failed, or mark
-  quotes final.
-- If threshold status is unavailable, leave the local melt pending and retry
-  later.
-
-Tests to add:
-
-- Primary returns `Failed`, quorum is unavailable, and the wallet keeps melt
-  proofs reserved/pending.
-- Primary returns `Unpaid`, threshold members later return `Paid`, and wallet
-  recovery completes without losing the saga.
-- A malicious primary cannot cause `compensate_melt` to run without threshold
-  status agreement.
-- Threshold `Pending` or unavailable status never mutates proofs to `Unspent`.
-
-Resolution: the wallet no longer has a single-member mint, batch-mint, or melt
-quote-status fallback. All authoritative quote-status reads require a matching
-threshold view from validated federation members, so unavailable quorum remains
-an ambiguous wallet error and the existing saga keeps recoverable state. The
-wallet preference is now named `quote_coordinator_member_id` and affects only
-the first quote-creation attempt. Focused regressions prove one member cannot
-decide any of the three status families, while threshold status, quote creation,
-ambiguous creation recovery, and the full federation wallet suite still pass.
-
 ### P1: Federation Member Validation Needs Explicit Timeouts
+
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** Medium (98% confidence), downgraded from P1 because the
+  demonstrated impact is bounded availability rather than signature safety.
+- **Decision:** Worth addressing. Apply an explicit per-member timeout to every
+  metadata and keyset validation call.
 
 Federation keyset/config validation fetches member metadata without an explicit
 wallet-level timeout:
@@ -293,6 +233,13 @@ Tests to add:
 
 ### P1: Valid-Member Cache Can Pin Wallet to a Dead Threshold Set
 
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** Medium (97% confidence), downgraded from P1.
+- **Decision:** Worth addressing. Refresh from the full roster after an
+  insufficient cached response set and add an invalidation or TTL policy.
+
 The wallet caches the first threshold-valid member set:
 
 - `crates/cdk/src/wallet/federation.rs:498`
@@ -324,36 +271,14 @@ Tests to add:
   signing.
 - Cache refresh failure does not release reservations or delete sagas.
 
-### P2: Melt Quote Creation Does Not Require Threshold Visibility
-
-Mint quote creation verifies that the quote is visible to threshold members, but
-melt quote creation currently uses first-healthy-member behavior:
-
-- `crates/cdk/src/wallet/federation.rs:1578`
-- `crates/cdk/src/wallet/federation.rs:868`
-- `crates/cdk/src/wallet/federation.rs:1674`
-
-A malicious or stale member can return a melt quote that is not known by the
-federation quorum. Later melt execution may fail, and status fallback can make
-recovery worse.
-
-Recommended fix:
-
-- Add a threshold visibility check for melt quotes before the wallet stores or
-  uses them.
-- Ensure the quote was accepted by the federation consensus path before a wallet
-  reserves proofs against it.
-- Validate the selected member against the federation config before quote
-  creation.
-
-Tests to add:
-
-- Primary creates a melt quote but fewer than threshold members can see it; the
-  wallet rejects the quote.
-- Threshold members see the quote; the wallet accepts and can melt with it.
-- Timeout during melt quote visibility does not reserve proofs.
-
 ### P2: Quote Status Aggregation Should Use Validated Members
+
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** Medium (88% confidence).
+- **Decision:** Worth addressing before production because quote status can
+  drive wallet state transitions even though it does not produce signatures.
 
 Status collection currently uses all configured connectors, while signing paths
 first validate member config and aggregate keysets.
@@ -386,6 +311,15 @@ Tests to add:
 
 ### P2: Insecure Threshold Configurations Are Accepted Structurally
 
+Assessment:
+
+- **Status:** Configuration-policy concern, not a protocol implementation
+  defect.
+- **Current severity:** Informational (94% confidence), downgraded from P2.
+- **Decision:** Do not reject these configurations in the core structural type.
+  Add a CLI warning or explicit production safety profile while preserving
+  intentional development and specialist configurations.
+
 The public config validation checks threshold bounds, but does not enforce a
 production safety profile:
 
@@ -412,6 +346,14 @@ Tests to add:
 - Wallet connector refuses to silently downgrade threshold assumptions.
 
 ### P3: Single-Member Mint Info Can Mislead Wallet Feature Decisions
+
+Assessment:
+
+- **Status:** Confirmed low-impact metadata weakness.
+- **Current severity:** Low (91% confidence).
+- **Decision:** Worth backlog hardening. Consensus-critical behavior must not
+  depend on a single response; display-only and advisory fields may remain
+  best-effort.
 
 After validation, `get_mint_info` still returns a single member's mint info:
 
@@ -443,17 +385,14 @@ The signing path is substantially stronger than the status path:
   aggregation.
 - Aggregation only succeeds with threshold-compatible shares for the same output
   metadata.
-- Swap recovery uses threshold check-state responses, which is safer than the
-  current melt status fallback.
+- Swap recovery uses threshold check-state responses, and mint, batch-mint, and
+  melt quote status decisions now require matching threshold views.
 - Local wallet sagas reserve proofs or quotes before network calls and store
   enough information to replay or recover exact mint/swap requests after a
   crash.
 
-Remaining reliability requirement:
-
-- Wallet state transitions that release proofs, delete sagas, or mark quotes
-  final must be based on threshold-authoritative federation evidence, not on a
-  single member's observation.
+Remaining reliability requirement: threshold-authoritative status responses
+should also come only from currently validated federation members.
 
 ## Federated Swap Findings
 
@@ -461,6 +400,13 @@ These findings focus on dead ends, deadlocks, race conditions, and Byzantine
 behavior around federation-mode swap operations.
 
 ### P1: Already-Signed Swap Outputs Can Burn Fresh Inputs
+
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** High (99% confidence).
+- **Decision:** Release blocker. Reject cross-operation reuse of already-signed
+  blinded outputs before any fresh input proof is marked spent.
 
 `apply_federation_swap` checks whether blind signatures already exist for the
 requested output blinded messages:
@@ -515,6 +461,14 @@ Tests to add:
 
 ### P2: Swap Operations Have No Consensus Conflict Keys
 
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** Medium (94% confidence).
+- **Decision:** Worth addressing as consensus/replay DoS hardening. Database
+  proof state currently protects monetary safety, but only after finalization
+  and apply work has already been accepted.
+
 Swap operations currently do not declare conflict keys:
 
 - `crates/cdk-common/src/federation/operation.rs:1418`
@@ -554,51 +508,16 @@ Tests to add:
 - A malicious member cannot include many same-input swaps that all reach
   expensive signing or materialization work.
 
-### P2: Wallet Swap Fanout Stops Before Share Validation
-
-The wallet federation collector stops once it has threshold successful HTTP
-responses:
-
-- `crates/cdk/src/wallet/federation.rs:611`
-- `crates/cdk/src/wallet/federation.rs:628`
-- `crates/cdk/src/wallet/federation.rs:632`
-
-Share metadata and BLS share correctness are validated later:
-
-- `crates/cdk/src/wallet/federation.rs:922`
-- `crates/cdk/src/wallet/federation.rs:1012`
-
-A fast malicious or stale member can return a syntactically successful but
-invalid swap response. If the wallet stops after threshold raw responses before
-a slower honest member replies, aggregation can fail even though enough honest
-members are online. That is a liveness vulnerability under Byzantine members or
-misbehaving networks.
-
-Recommended fix:
-
-- For signing operations, collect until threshold valid compatible shares are
-  available, not merely threshold successful HTTP responses.
-- Validate member responses incrementally during collection where practical.
-- Alternatively, continue collecting beyond threshold raw responses until
-  aggregation succeeds, all members fail, or the bounded timeout budget is
-  exhausted.
-- Treat invalid shares as Byzantine failures that do not count toward the
-  threshold.
-
-Tests to add:
-
-- In a 3-of-5 federation, two honest members respond quickly, one malicious
-  member responds quickly with an invalid share, one honest member responds
-  slowly, and one member is offline. Swap must still succeed with the three
-  honest shares.
-- Same scenario with no third honest response must fail with a bounded
-  insufficient-valid-shares error.
-- Invalid but syntactically successful responses must not prevent waiting for
-  slower honest responses while timeout budget remains.
-- The same valid-share collection rule is applied to mint, swap, melt-change,
-  and restore signing responses.
-
 ### P2: Apply-Time Swap Failures Can Leave Callers Waiting for Timeout
+
+Assessment:
+
+- **Status:** Partially resolved. Definitive business failures are persisted and
+  wake waiters; non-definitive apply failures can still return before
+  notification.
+- **Current severity:** Low (90% confidence), downgraded from P2.
+- **Decision:** Worth backlog improvement for deterministic retry UX. The outer
+  operation timeout already bounds the wait, so this is not a safety blocker.
 
 In the AlephBFT path, finalization applies an entry before notifying HTTP
 waiters:
@@ -653,6 +572,14 @@ signing, and wallet recovery behavior.
 
 ### P1: Melt Quote Consensus Does Not Fix the Quote Terms
 
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** High (99% confidence).
+- **Decision:** Release blocker. Consensus must carry canonical quote terms and
+  members must materialize those exact terms without independently regenerating
+  them from local backends during apply.
+
 `FederationMeltQuoteOperation` carries only the quote ID and wallet request:
 
 - `crates/cdk-common/src/federation/operation.rs:468`
@@ -699,44 +626,14 @@ Tests to add:
 - Payment observations using the accepted consensus amount and fee reserve
   finalize consistently on all members.
 
-### P1: Consensus Apply Can Block on Outgoing Payment Execution
-
-`apply_federation_melt` calls the full federation melt execution path:
-
-- `crates/cdk/src/mint/federation.rs:1979`
-- `crates/cdk/src/mint/melt/mod.rs:1242`
-
-That path can call the elected member's payment backend synchronously during
-consensus materialization:
-
-- `crates/cdk/src/mint/melt/melt_saga/mod.rs:761`
-- `crates/cdk/src/mint/melt/melt_saga/mod.rs:804`
-
-This means a slow or hanging backend can stall apply, route waiters, replay, and
-catch-up. Consensus apply should be deterministic and bounded; external payment
-execution is nondeterministic IO and should not sit directly in the finalizer's
-critical path.
-
-Recommended fix:
-
-- Split accepted melt apply into a deterministic reservation phase and an async
-  payment-worker phase.
-- During apply, reserve inputs, persist the melt saga, record the elected payer,
-  and mark the operation applied without waiting on external payment IO.
-- Let the elected payment worker attempt payment with explicit timeouts and
-  submit `MeltQuotePayment` observations.
-- Let non-elected members only reserve and wait for observations.
-
-Tests to add:
-
-- Elected backend hangs; consensus apply still completes with quote/proofs
-  pending and no finalizer deadlock.
-- Payment worker later reports `Paid`; quorum observation finalizes the melt.
-- Payment worker later reports `Failed`; quorum observation rolls the melt back.
-- Restart while payment worker is in flight resumes from durable saga state
-  without repeating an unsafe payment attempt.
-
 ### P1: Melt Can Rely on a Local-Only Quote
+
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** High (97% confidence).
+- **Decision:** Release blocker. A melt must prove that its quote was accepted
+  earlier in the ordered journal before reserving proofs or initiating payment.
 
 The public melt quote route creates and persists a local quote before submitting
 the melt quote operation to federation consensus:
@@ -773,46 +670,14 @@ Tests to add:
 - Quote creation times out after local persistence; paying/melting that quote
   remains impossible until quote consensus finalizes.
 
-### P2: Successful Melt Does Not Immediately Submit a Payment Observation
-
-The public melt flow submits the melt operation and then returns the stored
-local response:
-
-- `crates/cdk-axum/src/custom_handlers.rs:1056`
-- `crates/cdk-axum/src/custom_handlers.rs:1073`
-
-Terminal melt payment observations are submitted from quote-status checks:
-
-- `crates/cdk-axum/src/custom_handlers.rs:1049`
-- `crates/cdk-axum/src/custom_handlers.rs:347`
-
-This can leave the elected member locally finalized while the rest of the
-federation remains pending until the wallet or an operator later checks quote
-status. In a real quorum policy, a single elected `Paid` member is not enough to
-finalize the federation, so convergence can depend on a follow-up route call
-rather than the payment attempt itself.
-
-Recommended fix:
-
-- When a federated melt reaches a terminal local state during `post_melt`,
-  submit the corresponding `MeltQuotePayment` observation immediately.
-- Also add a periodic melt payment observer loop for pending local melt sagas,
-  analogous to the mint payment observer loop.
-- Ensure observation submission is idempotent and skips when a matching
-  observation or satisfied quorum already exists.
-
-Tests to add:
-
-- Successful `post_melt` records a `MeltQuotePayment(Paid)` observation without
-  requiring a subsequent quote-status check.
-- Failed `post_melt` records a `MeltQuotePayment(Failed)` observation when a
-  payment attempt was accepted and terminally failed.
-- Pending `post_melt` does not submit terminal evidence until backend status
-  becomes terminal.
-- Duplicate observation submission from route plus observer loop stores only
-  one local observer/state record.
-
 ### P2: Melt Conflict Keys Are Quote-Scoped Only
+
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** Medium (94% confidence).
+- **Decision:** Worth addressing as consensus and payment-path DoS hardening.
+  Keep the quote key and add keys derived from every input proof `Y`.
 
 Federation `Melt` operations conflict by quote ID:
 
@@ -843,6 +708,14 @@ Tests to add:
   reach backend payment attempts.
 
 ### P2: Wallet Melt Status Change Aggregation Does Not Verify Shares
+
+Assessment:
+
+- **Status:** Confirmed.
+- **Current severity:** Medium (99% confidence).
+- **Decision:** Worth addressing before production. Verify each change share
+  against the original blinded output and member public share, and continue
+  collection until a valid compatible threshold is available.
 
 Normal mint/swap/melt-change aggregation validates each member's BLS share
 against the member public share before aggregation:
@@ -880,19 +753,6 @@ Tests to add:
 - A member returning a valid-looking amount/keyset but invalid BLS share cannot
   corrupt stored wallet change proofs.
 
-### P2 Resolved: Free-form melt failure text removed
-
-`FederationMeltQuotePaymentObservation` no longer carries or matches on a
-`failure_reason`. The production observation path never populated the field,
-mint application never consumed it, and retaining arbitrary backend prose in
-consensus evidence could split an otherwise valid failed-payment quorum.
-
-Failed observations now match only on the backend-neutral structured evidence
-that drives behavior: quote, method, state, amount, fee reserve, payment ID, and
-payment proof. Different terminal states remain conflicting and
-quarantinable. A typed failure class can be introduced later only with an
-actual producer and deterministic state-transition semantics.
-
 ### Melt Non-Issues Observed
 
 The reviewed code and existing tests already cover several important melt
@@ -907,6 +767,81 @@ properties:
 - Duplicate same-quote melts are conflict-keyed by quote ID.
 - Pending AlephBFT melts do not appear to reserve inputs, mutate quote state, or
   sign change before finality.
+
+## Resolved Findings
+
+These findings were valid when recorded but are resolved on the current cleanup
+branch. They remain here as an audit trail and are no longer part of the active
+work queue or suggested fix order.
+
+### Resolved: Apply-Time Rejection Conflict-Key State
+
+Consensus rejection and post-consensus business rejection are now represented
+separately as `FederationApplicationState::ConsensusRejected` and
+`FederationApplicationState::Rejected`. Business rejections retain their
+accepted operation's conflict-key reservation, while append-time consensus
+conflicts do not acquire one. Restart reconstruction applies the same rule, and
+`business_rejection_keeps_consensus_conflict_reservation_after_replay` covers
+the invariant.
+
+### Resolved: Mint Quote Backend Lookup ID Replay
+
+`FederationMintQuoteOperation` now carries the backend-provided
+`request_lookup_id`. Accepted quote replay materializes that exact identifier
+instead of synthesizing `PaymentIdentifier::QuoteId`, so non-proposer members
+probe the backend using the consensus-carried lookup data.
+
+### Resolved: Mint Quote Persistence Before Consensus Finality
+
+`prepare_federation_mint_quote` creates the payment request without persisting
+or publishing the quote. Durable quote materialization now occurs from the
+accepted `MintQuote` operation. Pending AlephBFT quote tests verify that quote
+state is absent before finality.
+
+### Resolved: Single-Member Quote Status Fallback
+
+The wallet no longer has a single-member mint, batch-mint, or melt quote-status
+fallback. All authoritative quote-status reads require a matching threshold
+view, unavailable quorum remains ambiguous, and the local saga stays
+recoverable. `quote_coordinator_member_id` affects only the first quote-creation
+attempt.
+
+### Resolved: Melt Quote Threshold Visibility
+
+Melt quote creation now calls `verify_melt_quote_visible_to_threshold` before
+returning a usable quote. Ambiguous creation recovery also requires a matching
+threshold-visible response, and visibility timeout occurs before wallet proofs
+are reserved.
+
+### Resolved: Signing Fanout Stopping Before Share Validation
+
+Mint, swap, melt-change, and restore collectors now continue until aggregation
+finds a cryptographically valid compatible threshold, a threshold business
+rejection is reached, or the bounded member set is exhausted. Invalid shares no
+longer count merely because their HTTP responses succeeded.
+
+### Resolved: Outgoing Payment Execution in Consensus Apply
+
+Accepted melt apply now performs deterministic reservation only: it persists
+the quote/proof/saga state as pending without calling the external payment
+backend. The elected member initiates payment through the federation payment
+observer after apply, and terminal observations drive quorum finalization or
+rollback.
+
+### Resolved: Delayed Melt Payment Observation Submission
+
+The public federation melt path immediately asks the payment observer to probe
+and submit a terminal observation after accepted melt processing. The periodic
+observer also scans pending melt sagas, providing repair when the immediate
+probe is pending or fails. Duplicate observation suppression keeps both paths
+idempotent.
+
+### Resolved: Free-Form Melt Failure Evidence
+
+`FederationMeltQuotePaymentObservation` no longer carries or matches on
+`failure_reason`. Failed observations match only backend-neutral structured
+evidence: quote, method, state, amount, fee reserve, payment ID, and payment
+proof. Different terminal states remain conflicting and quarantinable.
 
 ## Non-Issues Observed
 
@@ -938,26 +873,25 @@ in backend-dependent row order for SQL backends.
    before the mint operation index.
 2. Prevent non-consensus local payment state from making federation quotes
    mintable.
-3. Clarify and fix accepted-operation apply failure status semantics.
-4. Add restart/rebuild tests for apply-time rejection and conflict keys.
-5. Decide and encode the production backend lookup model for replayed quotes.
-6. Add provisional quote handling for quote creation before consensus finality.
-7. Reject federated swaps that reuse already-signed outputs under a different
+3. Reject federated swaps that reuse already-signed outputs under a different
    operation before spending inputs.
-8. Add swap input conflict keys so conflicting spends are rejected before
+4. Put full melt quote terms into consensus and materialize those exact terms
+   on every member.
+5. Require an accepted prior `MeltQuote` operation before any federated melt can
+   reserve inputs or attempt payment.
+6. Verify BLS change shares during melt status recovery before aggregation.
+7. Add explicit timeouts to member metadata and keyset validation.
+8. Refresh the valid-member cache after insufficient responses, and add a TTL or
+   invalidation policy.
+9. Restrict state-changing quote-status aggregation to validated members.
+10. Add swap input conflict keys so conflicting spends are rejected before
    expensive apply/signing work.
-9. Change wallet signing fanout to wait for threshold valid compatible shares,
-   not threshold raw successful HTTP responses.
-10. Ensure swap apply failures wake waiters and persist terminal retry status.
-11. Put full melt quote terms into consensus and materialize those exact terms
-    on every member.
-12. Split federated melt apply from outgoing payment execution so consensus
-    apply cannot block on external payment IO.
-13. Require an accepted prior `MeltQuote` operation before any federated melt can
-    reserve inputs or attempt payment.
-14. Submit terminal melt payment observations directly from terminal melt
-    outcomes, and add a periodic pending-melt observer loop.
-15. Add melt input conflict keys in addition to quote-scoped conflict keys.
-16. Verify BLS change shares during melt status recovery before aggregation.
-17. Normalize failed melt payment evidence so free-form failure text does not
-    prevent honest rollback quorum.
+11. Add melt input conflict keys in addition to quote-scoped conflict keys.
+12. Ensure non-definitive swap apply failures wake waiters with persisted retry
+    status instead of relying on the outer timeout.
+13. Add a production threshold-profile warning or explicit safe-profile opt-in
+    without treating intentionally weak structural configs as invalid.
+14. Synthesize consensus-critical mint info or require a matching threshold view
+    for fields that affect wallet behavior.
+15. Replace the removed signing, consensus-gating, commit-order, and production
+    feature architecture checks with enforceable typed or behavioral boundaries.
