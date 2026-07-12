@@ -470,6 +470,12 @@ melt, and restore without a local-backend setup phase. The remaining work is
 the internal enum/local engine and its Axum test callers, plus status fields and
 dispatch branches that become constant once that engine is gone.
 
+Mint-library conflict tests no longer construct the local consensus engine.
+They now append directly to `InMemoryFederationJournal`, which is the actual
+boundary responsible for idempotent duplicates, conflict-key reservation, and
+sliding-window rejection. All 99 focused federation mint tests pass after this
+test-only dependency removal.
+
 ### Problem
 
 Federation mode still exposes two selectable consensus backends even though

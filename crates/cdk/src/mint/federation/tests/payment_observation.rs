@@ -41,11 +41,8 @@ fn runtime_config_builds_mint_payment_observation_operations() {
         FederationOperation::MintQuotePayment(_)
     ));
 
-    let mut consensus = InMemoryFederationConsensus::new(
-        runtime_config.federation_id(),
-        runtime_config.member_id(),
-    );
-    consensus.submit_envelope(paid).expect("submit paid");
+    let mut journal = InMemoryFederationJournal::new();
+    journal.append(paid).expect("append paid");
     let conflicting_paid = runtime_config.mint_quote_payment_observation(
         quote,
         PaymentMethod::Known(KnownMethod::Bolt11),
@@ -56,7 +53,7 @@ fn runtime_config_builds_mint_payment_observation_operations() {
     );
 
     assert!(matches!(
-        consensus.submit_envelope(conflicting_paid),
+        journal.append(conflicting_paid),
         Err(FederationError::ConflictingOperation { .. })
     ));
 }

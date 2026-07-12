@@ -39,11 +39,8 @@ fn runtime_config_builds_single_and_batch_mint_operations() {
         .expect("batch mint operation");
 
     assert_eq!(batch.operation.conflict_keys().len(), 2);
-    let mut consensus = InMemoryFederationConsensus::new(
-        runtime_config.federation_id(),
-        runtime_config.member_id(),
-    );
-    consensus.submit_envelope(batch).expect("submit batch mint");
+    let mut journal = InMemoryFederationJournal::new();
+    journal.append(batch).expect("append batch mint");
 
     let overlapping_batch = runtime_config
         .mint_operation(super::MintInput::Batch(BatchMintRequest {
@@ -58,7 +55,7 @@ fn runtime_config_builds_single_and_batch_mint_operations() {
         .expect("overlapping batch mint operation");
 
     assert!(matches!(
-        consensus.submit_envelope(overlapping_batch),
+        journal.append(overlapping_batch),
         Err(FederationError::ConflictingOperation { .. })
     ));
 }
@@ -105,28 +102,25 @@ fn runtime_config_rejects_sliding_window_mint_output_attack() {
         assert_ne!(first_operation_id, attempted_operation_id);
     }
 
-    let mut consensus = InMemoryFederationConsensus::new(
-        runtime_config.federation_id(),
-        runtime_config.member_id(),
-    );
-    let first_response = consensus
-        .submit_envelope(first.clone())
-        .expect("submit first sliding-window mint");
-    let duplicate_response = consensus
-        .submit_envelope(first)
-        .expect("duplicate sliding-window mint");
+    let mut journal = InMemoryFederationJournal::new();
+    let first_response = journal
+        .append(first.clone())
+        .expect("append first sliding-window mint");
+    let duplicate_response = journal
+        .append(first)
+        .expect("append duplicate sliding-window mint");
 
-    assert_eq!(first_response.operation_id, first_operation_id);
-    assert_eq!(duplicate_response.operation_id, first_operation_id);
+    assert_eq!(first_response.entry().operation_id, first_operation_id);
+    assert_eq!(duplicate_response.entry().operation_id, first_operation_id);
 
     for envelope in [overlapping_one, overlapping_two, overlapping_three] {
         assert!(matches!(
-            consensus.submit_envelope(envelope),
+            journal.append(envelope),
             Err(FederationError::ConflictingOperation { .. })
         ));
     }
 
-    let entries = consensus.journal().entries();
+    let entries = journal.entries();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].operation_id, first_operation_id);
     assert_eq!(entries[0].envelope.operation.conflict_keys().len(), 1);

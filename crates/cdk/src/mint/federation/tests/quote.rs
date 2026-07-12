@@ -18,25 +18,21 @@ fn runtime_config_builds_mint_quote_consensus_operations() {
         FederationOperation::MintQuote(_)
     ));
 
-    let mut consensus = InMemoryFederationConsensus::new(
-        runtime_config.federation_id(),
-        runtime_config.member_id(),
-    );
-    let first_response = consensus
-        .submit_envelope(envelope.clone())
-        .expect("submit quote");
-    let duplicate_response = consensus
-        .submit_envelope(envelope)
-        .expect("duplicate quote");
+    let mut journal = InMemoryFederationJournal::new();
+    let first_response = journal.append(envelope.clone()).expect("append quote");
+    let duplicate_response = journal.append(envelope).expect("append duplicate quote");
     let conflict = runtime_config.mint_quote_operation(
         quote.clone(),
         bolt11_quote_request(11),
         bolt11_quote_response(&quote, 11),
     );
 
-    assert_eq!(first_response.operation_id, duplicate_response.operation_id);
+    assert_eq!(
+        first_response.entry().operation_id,
+        duplicate_response.entry().operation_id
+    );
     assert!(matches!(
-        consensus.submit_envelope(conflict),
+        journal.append(conflict),
         Err(FederationError::ConflictingOperation { .. })
     ));
 }
