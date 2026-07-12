@@ -2863,7 +2863,6 @@ fn melt_payment_observation_envelope(
         Amount::from(1),
         Amount::from(1),
         payment_proof,
-        None,
     )
 }
 
@@ -13461,7 +13460,6 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             Amount::from(1),
             Amount::from(1),
             Some(String::new()),
-            None,
         );
         let operation_id =
             submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;
@@ -13992,7 +13990,6 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             Amount::from(1),
             Amount::from(1),
             Some(String::new()),
-            None,
         );
         let operation_id =
             submit_live_operation_allowing_pending_timeout(&session.states[0], observation).await;

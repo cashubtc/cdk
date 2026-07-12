@@ -556,7 +556,6 @@ async fn submit_federation_melt_quote_payment_observation(
         fee_reserve: response.fee_reserve(),
         payment_id: None,
         payment_proof: response.payment_proof().map(str::to_string),
-        failure_reason: None,
         observed_time: None,
     };
     let recorded_observations = state
@@ -591,7 +590,6 @@ async fn submit_federation_melt_quote_payment_observation(
         observation.amount,
         observation.fee_reserve,
         observation.payment_proof.clone(),
-        observation.failure_reason.clone(),
         observation.payment_id.clone(),
         observation.observed_time,
     );
@@ -1923,7 +1921,6 @@ mod tests {
             fee_reserve: Amount::ZERO,
             payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
             payment_proof: Some("preimage-a".to_string()),
-            failure_reason: None,
             observed_time: Some(100),
         };
         let matching_record = payment_observation_record(
@@ -3717,7 +3714,6 @@ mod tests {
                         fee_reserve,
                         payment_id: None,
                         payment_proof: Some(String::new()),
-                        failure_reason: None,
                         observed_time: None,
                     }),
                 );

@@ -1010,10 +1010,6 @@ async fn submit_terminal_melt_payment_observation(
             MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{}", quote.id)),
             _ => None,
         },
-        match terminal_state {
-            MeltQuoteState::Failed => Some("federation smoke terminal failure".to_string()),
-            _ => None,
-        },
     );
     let sequence = initial_smoke_sequence().saturating_add(1);
     submit_smoke_operation(

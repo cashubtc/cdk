@@ -871,32 +871,18 @@ Tests to add:
 - A member returning a valid-looking amount/keyset but invalid BLS share cannot
   corrupt stored wallet change proofs.
 
-### P2: Failed Payment Quorum Matching Includes Free-Form Failure Text
+### P2 Resolved: Free-form melt failure text removed
 
-Melt payment evidence matching includes `failure_reason`:
+`FederationMeltQuotePaymentObservation` no longer carries or matches on a
+`failure_reason`. The production observation path never populated the field,
+mint application never consumed it, and retaining arbitrary backend prose in
+consensus evidence could split an otherwise valid failed-payment quorum.
 
-- `crates/cdk-common/src/federation/operation.rs:507`
-
-Honest members can agree that a payment failed while returning different
-backend error text. Under a quorum policy, those observations will be treated as
-conflicting instead of matching, leaving the melt pending and proofs locked
-until manual intervention or quarantine.
-
-Recommended fix:
-
-- Treat failure text as audit metadata rather than quorum identity.
-- Match failed observations on quote, method, state, amount, fee reserve, stable
-  payment ID where available, and a normalized failure class if needed.
-- Preserve raw backend failure text in observation records for operator review.
-
-Tests to add:
-
-- Two members observe `Failed` with different raw failure text; quorum still
-  rolls back the melt.
-- Two members observe different terminal states (`Paid` vs `Failed`); the report
-  remains conflicting/quarantinable.
-- Failure text is preserved for diagnostics but does not block matching
-  rollback evidence.
+Failed observations now match only on the backend-neutral structured evidence
+that drives behavior: quote, method, state, amount, fee reserve, payment ID, and
+payment proof. Different terminal states remain conflicting and
+quarantinable. A typed failure class can be introduced later only with an
+actual producer and deterministic state-transition semantics.
 
 ### Melt Non-Issues Observed
 

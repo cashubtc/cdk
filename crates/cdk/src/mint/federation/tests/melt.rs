@@ -1084,7 +1084,6 @@ async fn apply_federation_melt_payment_observation_keeps_unknown_transient() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: None,
             },
         ),
     );
@@ -1428,7 +1427,6 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: Some("route failed"),
             },
         ),
     );
@@ -1782,7 +1780,6 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("paid-preimage"),
-                failure_reason: None,
             },
         ),
     );
@@ -1832,7 +1829,6 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("paid-preimage"),
-                failure_reason: None,
             },
         ),
     );
@@ -1876,7 +1872,6 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("different-preimage"),
-                failure_reason: None,
             },
         ),
     );
@@ -1996,7 +1991,6 @@ async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment()
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("catch-up-paid-preimage"),
-                failure_reason: None,
             },
         ),
     );
@@ -2025,7 +2019,6 @@ async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment()
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("catch-up-paid-preimage"),
-                failure_reason: None,
             },
         ),
     );
@@ -2115,7 +2108,6 @@ async fn stale_pending_melt_observation_after_paid_settlement_is_idempotent() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("paid-preimage"),
-                failure_reason: None,
             },
         ),
     );
@@ -2144,7 +2136,6 @@ async fn stale_pending_melt_observation_after_paid_settlement_is_idempotent() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: None,
             },
         ),
     );
@@ -2197,7 +2188,6 @@ async fn stale_pending_melt_observation_after_failed_rollback_is_idempotent() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: Some("route failed"),
             },
         ),
     );
@@ -2230,7 +2220,6 @@ async fn stale_pending_melt_observation_after_failed_rollback_is_idempotent() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: None,
             },
         ),
     );
@@ -2281,7 +2270,6 @@ async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: Some("route failed"),
             },
         ),
     );
@@ -2321,7 +2309,6 @@ async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: Some("route failed"),
             },
         ),
     );
@@ -2361,7 +2348,6 @@ async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("late-preimage"),
-                failure_reason: None,
             },
         ),
     );

@@ -360,7 +360,39 @@ only by tests and exposes another API for reasoning about the same policy.
 
 ## 5. Remove unpopulated free-form melt failure evidence
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed `failure_reason` from `FederationMeltQuotePaymentObservation`, quorum
+matching, runtime-config builders, Axum submission, smoke tooling, fuzz input,
+and all fixtures. The full audit found no payment backend, mint application,
+database, recovery path, status route, catch-up path, or operator workflow that
+used the value. Production Axum always supplied `None`; only tests and the
+federation smoke helper supplied static text, without reading it later.
+
+This is a direct schema deletion because federation mode is undeployed. It does
+not change canonical bytes or operation IDs for real observations: the removed
+field was optional, `None` was omitted during serialization, and every
+production producer used `None`. Payment IDs, proofs, observation times, and
+all paid/failed/unpaid/pending/unknown transitions remain intact. The adjacent
+federation fuzz target was repaired to enable its required `cdk-common/mint`
+feature and initialize the current journal/observation fields.
+
+Verification:
+
+- 30 canonical federation-operation tests and 17 journal/digest/replay tests
+  passed;
+- all 99 mint federation tests passed, including failed-payment quorum rollback,
+  paid settlement, unknown status, replay, restart, and catch-up paths;
+- 11 focused Axum observer, quote-check, terminal observation, and catch-up
+  tests passed;
+- the federation request-conversion fuzz target compiled successfully;
+- standalone `cdk` and `cdk-mintd` with SQLite compiled without federation;
+- a fresh five-member, threshold-three AlephBFT smoke completed mint, swap,
+  melt, and restore with the simplified observation schema;
+- workspace search found no remaining federation-code producer or consumer of
+  `failure_reason`; unrelated LND protobuf/backend fields were left untouched.
 
 ### Problem
 

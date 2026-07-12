@@ -20,7 +20,7 @@ path = "../crates/cashu"
 [dependencies.cdk-common]
 path = "../crates/cdk-common"
 default-features = false
-features = ["federation"]
+features = ["federation", "mint"]
 
 [lib]
 name = "cdk_fuzz"

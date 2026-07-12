@@ -495,9 +495,6 @@ pub struct FederationMeltQuotePaymentObservation {
     /// Optional method-specific proof, preimage, outpoint, or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_proof: Option<String>,
-    /// Optional failure reason when the observation records a failed payment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_reason: Option<String>,
     /// Optional observer-local Unix time when this payment state was observed.
     ///
     /// This is audit metadata only; quorum matching intentionally ignores it
@@ -517,7 +514,6 @@ impl FederationMeltQuotePaymentObservation {
             && self.fee_reserve == other.fee_reserve
             && self.payment_id == other.payment_id
             && self.payment_proof == other.payment_proof
-            && self.failure_reason == other.failure_reason
     }
 
     /// Count matching and conflicting observations from distinct members.
@@ -2594,7 +2590,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: None,
                 observed_time: None,
             },
         ));
@@ -2608,7 +2603,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
-                failure_reason: None,
                 observed_time: None,
             },
         ));
@@ -2622,7 +2616,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("different-preimage".to_string()),
-                failure_reason: None,
                 observed_time: None,
             },
         ));
@@ -2789,7 +2782,6 @@ mod tests {
             fee_reserve: Amount::from(1),
             payment_id: Some(PaymentIdentifier::CustomId("payment-b".to_string())),
             payment_proof: Some("preimage".to_string()),
-            failure_reason: None,
             observed_time: Some(44),
         };
         let delayed_melt = FederationMeltQuotePaymentObservation {
@@ -3049,7 +3041,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: None,
                 observed_time: None,
             }),
         );
@@ -3064,7 +3055,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
-                failure_reason: None,
                 observed_time: None,
             }),
         );
@@ -3079,7 +3069,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                failure_reason: Some("route failed".to_string()),
                 observed_time: None,
             }),
         );
@@ -3293,7 +3282,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
-                failure_reason: None,
                 observed_time: None,
             });
         let audit = melt_payment.balance_audit().expect("melt payment audit");

@@ -5,19 +5,20 @@ use cdk_common::federation::{
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationQuarantine,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationQuarantineRecord,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationRestoreOperation, FederationSwapOperation, MemberId,
-};
-use cdk_common::nuts::{
-    BatchMintRequest, BlindedMessage, CurrencyUnit, MeltQuoteCustomRequest,
-    MeltQuoteState, MeltRequest, MintQuoteCustomRequest, MintQuoteCustomResponse, MintQuoteState,
-    MintRequest, PaymentMethod, Proof, RestoreRequest, SwapRequest,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationRestoreOperation, FederationSwapOperation,
+    MemberId,
 };
 use cdk_common::nuts::nut00::KnownMethod;
 use cdk_common::nuts::nut23::QuoteState;
+use cdk_common::nuts::{
+    BatchMintRequest, BlindedMessage, CurrencyUnit, MeltQuoteCustomRequest, MeltQuoteState,
+    MeltRequest, MintQuoteCustomRequest, MintQuoteCustomResponse, MintQuoteState, MintRequest,
+    PaymentMethod, Proof, RestoreRequest, SwapRequest,
+};
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{MeltQuoteRequest, MintQuoteRequest, MintQuoteResponse};
 use cdk_fuzz::arbitrary_ext::{AmountArb, BlindedMessageArb, CurrencyUnitArb, ProofArb};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
@@ -66,6 +67,10 @@ fn exercise_conversion_surfaces(envelope: &FederationOperationEnvelope) {
         conflict_keys: envelope.operation.conflict_keys(),
         previous_order_digest: FederationJournalDigest::genesis(),
         order_digest: FederationJournalDigest::genesis(),
+        operation_outcome_hash: None,
+        state_digest: None,
+        consensus_evidence: None,
+        rejection: None,
         status: FederationOperationStatus::Accepted,
     };
     let observation = FederationPaymentObservationRecord::from_journal_entry(&entry);
@@ -77,7 +82,9 @@ fn exercise_conversion_surfaces(envelope: &FederationOperationEnvelope) {
         let _ = record.observation.observer();
         let _ = record.observation.state_label();
         let _ = record.observation.is_terminal_state();
-        let _ = record.observation.matches_payment_evidence(&record.observation);
+        let _ = record
+            .observation
+            .matches_payment_evidence(&record.observation);
         let _ = record.observation.quorum([&record.observation], 1);
         let report = FederationPaymentObservationReport::from_records(
             record.observation.context(),
@@ -106,6 +113,7 @@ fn arbitrary_operation(
     Ok(match u.int_in_range(0..=8)? {
         0 => FederationOperation::MintQuote(FederationMintQuoteOperation {
             quote: bounded_string(u, 24)?,
+            request_lookup_id: PaymentIdentifier::CustomId(bounded_string(u, 24)?),
             request: mint_quote_request(u)?,
             response: mint_quote_response(u)?,
         }),
@@ -116,7 +124,9 @@ fn arbitrary_operation(
             state: mint_quote_state(u)?,
             amount_paid: AmountArb::arbitrary(u)?.into_inner(),
             amount_issued: AmountArb::arbitrary(u)?.into_inner(),
+            payment_id: None,
             payment_proof: optional_bounded_string(u, 24)?,
+            observed_time: None,
         }),
         2 => FederationOperation::Mint(FederationMintOperation {
             request: mint_request(u)?,
@@ -132,8 +142,9 @@ fn arbitrary_operation(
             state: melt_quote_state(u)?,
             amount: AmountArb::arbitrary(u)?.into_inner(),
             fee_reserve: AmountArb::arbitrary(u)?.into_inner(),
+            payment_id: None,
             payment_proof: optional_bounded_string(u, 24)?,
-            failure_reason: optional_bounded_string(u, 24)?,
+            observed_time: None,
         }),
         5 => FederationOperation::PaymentObservationQuarantine(
             FederationPaymentObservationQuarantine {

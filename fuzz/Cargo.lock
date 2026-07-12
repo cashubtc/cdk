@@ -269,6 +269,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",

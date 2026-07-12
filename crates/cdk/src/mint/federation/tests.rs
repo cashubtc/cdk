@@ -751,7 +751,6 @@ struct MeltPaymentObservationFixture<'a> {
     fee_reserve: Amount,
     payment_id: Option<PaymentIdentifier>,
     payment_proof: Option<&'a str>,
-    failure_reason: Option<&'a str>,
 }
 
 fn melt_payment_observation_envelope(
@@ -769,7 +768,6 @@ fn melt_payment_observation_envelope(
             fee_reserve: fixture.fee_reserve,
             payment_id: fixture.payment_id,
             payment_proof: fixture.payment_proof.map(str::to_string),
-            failure_reason: fixture.failure_reason.map(str::to_string),
             observed_time: None,
         },
     ))
@@ -883,7 +881,6 @@ async fn apply_paid_melt_observation_quorum(
                     fee_reserve: Amount::from(1),
                     payment_id: None,
                     payment_proof: Some(payment_proof),
-                    failure_reason: None,
                 },
             ),
         );

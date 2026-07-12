@@ -419,7 +419,6 @@ impl FederationRuntimeConfig {
         amount: Amount,
         fee_reserve: Amount,
         payment_proof: Option<String>,
-        failure_reason: Option<String>,
     ) -> FederationOperationEnvelope
     where
         Q: ToString,
@@ -431,7 +430,6 @@ impl FederationRuntimeConfig {
             amount,
             fee_reserve,
             payment_proof,
-            failure_reason,
             None,
             None,
         )
@@ -449,7 +447,6 @@ impl FederationRuntimeConfig {
         amount: Amount,
         fee_reserve: Amount,
         payment_proof: Option<String>,
-        failure_reason: Option<String>,
         payment_id: Option<PaymentIdentifier>,
         observed_time: Option<u64>,
     ) -> FederationOperationEnvelope
@@ -466,7 +463,6 @@ impl FederationRuntimeConfig {
                 fee_reserve,
                 payment_id,
                 payment_proof,
-                failure_reason,
                 observed_time,
             },
         ))
