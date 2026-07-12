@@ -5,17 +5,17 @@ use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTra
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftPendingOperationRecord, FederationConfigDigest, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationAlephBftPendingOperationRecord, FederationCatchUpCertificate, FederationConfigDigest,
+    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, FederationSignatureShareRecord, MemberId,
+    FederationSignatureShareRecord, MemberId,
 };
 use cdk_common::PublicKey;
 
@@ -991,28 +991,24 @@ where
         Ok(())
     }
 
-    async fn add_federation_session_outcome(
+    async fn add_federation_catch_up_certificate(
         &mut self,
-        outcome: &FederationSessionOutcome,
+        certificate: &FederationCatchUpCertificate,
     ) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT INTO federation_session_outcomes
-            (from_index, signer_member_id, latest_index, operation_count, outcome_json)
+            INSERT INTO federation_catch_up_certificates
+            (from_index, signer_member_id, certificate_json)
             VALUES
-            (:from_index, :signer_member_id, :latest_index, :operation_count, :outcome_json)
+            (:from_index, :signer_member_id, :certificate_json)
             ON CONFLICT (from_index, signer_member_id)
             DO UPDATE SET
-                latest_index = EXCLUDED.latest_index,
-                operation_count = EXCLUDED.operation_count,
-                outcome_json = EXCLUDED.outcome_json
+                certificate_json = EXCLUDED.certificate_json
             "#,
         )?
-        .bind("from_index", outcome.from_index as i64)
-        .bind("signer_member_id", i64::from(outcome.signer.get()))
-        .bind("latest_index", outcome.latest_index as i64)
-        .bind("operation_count", outcome.operation_count as i64)
-        .bind("outcome_json", serde_json::to_string(outcome)?)
+        .bind("from_index", certificate.from_index as i64)
+        .bind("signer_member_id", i64::from(certificate.signer.get()))
+        .bind("certificate_json", serde_json::to_string(certificate)?)
         .execute(&self.inner)
         .await?;
 
@@ -1730,9 +1726,9 @@ where
         }
     }
 
-    async fn get_federation_session_outcomes(
+    async fn get_federation_catch_up_certificates(
         &self,
-    ) -> Result<Vec<FederationSessionOutcome>, Self::Err> {
+    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -1740,22 +1736,22 @@ where
             .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
-            SELECT outcome_json
-            FROM federation_session_outcomes
+            SELECT certificate_json
+            FROM federation_catch_up_certificates
             ORDER BY from_index ASC, signer_member_id ASC
             "#,
         )?
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .map(sql_row_to_federation_session_outcome)
+        .map(sql_row_to_federation_catch_up_certificate)
         .collect()
     }
 
-    async fn get_federation_session_outcomes_from(
+    async fn get_federation_catch_up_certificates_from(
         &self,
         from_index: u64,
-    ) -> Result<Vec<FederationSessionOutcome>, Self::Err> {
+    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -1763,8 +1759,8 @@ where
             .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
-            SELECT outcome_json
-            FROM federation_session_outcomes
+            SELECT certificate_json
+            FROM federation_catch_up_certificates
             WHERE from_index >= :from_index
             ORDER BY from_index ASC, signer_member_id ASC
             "#,
@@ -1773,7 +1769,7 @@ where
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .map(sql_row_to_federation_session_outcome)
+        .map(sql_row_to_federation_catch_up_certificate)
         .collect()
     }
 
@@ -2183,10 +2179,10 @@ where
     }
 }
 
-fn sql_row_to_federation_session_outcome(
+fn sql_row_to_federation_catch_up_certificate(
     row: Vec<Column>,
-) -> Result<FederationSessionOutcome, Error> {
-    unpack_into!(let (outcome_json) = row);
-    serde_json::from_str(&column_as_string!(&outcome_json))
-        .map_err(|e| Error::Internal(format!("Invalid federation session outcome JSON: {e}")))
+) -> Result<FederationCatchUpCertificate, Error> {
+    unpack_into!(let (certificate_json) = row);
+    serde_json::from_str(&column_as_string!(&certificate_json))
+        .map_err(|e| Error::Internal(format!("Invalid federation catch-up certificate JSON: {e}")))
 }

@@ -785,7 +785,7 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
         catch_up_limit: peer_sync.catch_up_limit,
         digest_recheck_attempts: peer_sync.digest_recheck_attempts,
         digest_recheck_delay: std::time::Duration::from_millis(peer_sync.digest_recheck_delay_ms),
-        session_outcome_evidence_chunk_size: peer_sync.session_outcome_evidence_chunk_size,
+        catch_up_certificate_chunk_size: peer_sync.catch_up_certificate_chunk_size,
         reconnect_initial_backoff: std::time::Duration::from_secs(
             peer_sync.reconnect_initial_backoff_secs,
         ),
@@ -2747,7 +2747,7 @@ mod tests {
                     catch_up_limit: 17,
                     digest_recheck_attempts: 19,
                     digest_recheck_delay_ms: 23,
-                    session_outcome_evidence_chunk_size: 29,
+                    catch_up_certificate_chunk_size: 29,
                     reconnect_initial_backoff_secs: 31,
                     reconnect_max_backoff_secs: 37,
                     private_rest_inbound_concurrency_limit: 41,
@@ -2783,7 +2783,7 @@ mod tests {
             sync_config.digest_recheck_delay,
             std::time::Duration::from_millis(23)
         );
-        assert_eq!(sync_config.session_outcome_evidence_chunk_size, 29);
+        assert_eq!(sync_config.catch_up_certificate_chunk_size, 29);
         assert_eq!(
             sync_config.reconnect_initial_backoff,
             std::time::Duration::from_secs(31)

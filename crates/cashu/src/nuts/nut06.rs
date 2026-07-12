@@ -322,18 +322,23 @@ pub struct FederationProtocolInfo {
     pub consensus_item: u16,
     /// Private federation REST API version.
     pub rest_api: u16,
-    /// Signed session-outcome payload version.
-    pub session_outcome: u16,
+    /// Signed catch-up certificate payload version.
+    pub catch_up_certificate: u16,
 }
 
 impl FederationProtocolInfo {
     /// Create new federation protocol metadata.
-    pub fn new(operation: u16, consensus_item: u16, rest_api: u16, session_outcome: u16) -> Self {
+    pub fn new(
+        operation: u16,
+        consensus_item: u16,
+        rest_api: u16,
+        catch_up_certificate: u16,
+    ) -> Self {
         Self {
             operation,
             consensus_item,
             rest_api,
-            session_outcome,
+            catch_up_certificate,
         }
     }
 }

@@ -20,17 +20,15 @@ CREATE TABLE federation_member_sequences (
     last_sequence BIGINT NOT NULL
 );
 
-CREATE TABLE federation_session_outcomes (
+CREATE TABLE federation_catch_up_certificates (
     from_index BIGINT NOT NULL,
     signer_member_id INTEGER NOT NULL,
-    latest_index BIGINT NOT NULL,
-    operation_count BIGINT NOT NULL,
-    outcome_json TEXT NOT NULL,
+    certificate_json TEXT NOT NULL,
     PRIMARY KEY (from_index, signer_member_id)
 );
 
-CREATE INDEX idx_federation_session_outcomes_from_index
-ON federation_session_outcomes (from_index);
+CREATE INDEX idx_federation_catch_up_certificates_from_index
+ON federation_catch_up_certificates (from_index);
 
 CREATE TABLE federation_payment_observations (
     operation_id TEXT PRIMARY KEY NOT NULL,

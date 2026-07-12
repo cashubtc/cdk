@@ -949,7 +949,7 @@ materialized-state digest verification.
 Each finalized or replayed batch now avoids one extra full materialized-state
 snapshot plus a separate transaction containing checkpoint insert and retention
 delete statements. At this checkpoint, the then-current journal hashes, signed
-session outcomes, redacted row fingerprints, mismatch metrics, and catch-up
+catch-up certificates, redacted row fingerprints, mismatch metrics, and catch-up
 digest comparison were unchanged; sections 20 and 21 later removed the
 redundant journal hashes without changing the materialized commitment.
 
@@ -1286,7 +1286,7 @@ its rejected journal response returns.
 
 ### Checkpoint 11: catch-up reconstruction ownership
 
-Signed session-outcome quorum verification, local-suffix selection,
+Signed catch-up certificate quorum verification, local-suffix selection,
 finalized-item evidence validation, AlephBFT runtime reconstruction, local
 application-state overlay, overlap verification, atomic catch-up persistence,
 mint replay, and post-replay rejection equality checks now execute on
@@ -1301,7 +1301,7 @@ materialization.
 Every readiness transition now persists its member-status snapshot inside
 `FederationNodeRuntime`, including lagging, catching up, quorum verification,
 materialized-state mismatch, healthy, and halted states. Startup restoration and
-the replayed-journal quorum gate also run there. The session-outcome helper now
+the replayed-journal quorum gate also run there. The catch-up certificate helper now
 accepts only `&Mint`, the dependency it actually reads, instead of all of Axum
 `MintState`. Sixteen startup, two status-persistence, four quorum-prefix, two
 lagging-readiness, and one materialized-state-mismatch tests pass, including the
@@ -1476,7 +1476,7 @@ The database commitment is now the distinct
 `FederationMaterializedStateDigest`. It hashes sorted deterministic rows for
 consensus-relevant quote, proof, signature, completed-operation, payment,
 keyset, and rejection state. It excludes private shares, local transport state,
-logs, caches, and transient apply progress. Signed session outcomes and
+logs, caches, and transient apply progress. Signed catch-up certificates and
 catch-up responses bind both commitments. Fast peer status carries no
 materialized digest; operator/convergence status carries the computed digest,
 and mintd rejects its absence.
@@ -1612,16 +1612,44 @@ and multiple mismatch modes.
 - Test truncation, duplication, reordered items, altered application metadata,
   stale evidence, partial ranges, restart, and partition recovery.
 
-## 23. Rename session outcome evidence to catch-up range certificates
+## 23. Use catch-up certificate terminology consistently
 
-**Status:** Todo
+**Status:** Complete
+
+### Review and result
+
+The range proof is now `FederationCatchUpCertificate` everywhere. The same
+vocabulary is used by public protocol-version metadata, private REST responses,
+signature-domain separation, error variants, consensus items, database traits,
+fresh SQLite/PostgreSQL schemas, peer sync, readiness states, status JSON,
+metrics, mintd config and CLI guards, generated smoke scripts, tests, and
+documentation. Logs now say "catch-up certificate" while Aleph session logs
+continue to describe actual session lifecycle and finalization.
+
+This is a clean undeployed format change. There are no compatibility aliases,
+dual JSON fields, legacy status labels, old federation tables, or schema-copy
+migrations. Obsolete certificate JSON is rejected through strict unknown-field
+handling, and the signed domain is explicitly
+`cdk-federation-catch-up-certificate-signature-v1`.
+
+The field audit removed three derivable certificate fields:
+`operation_count`, `latest_index`, and `range_order_digest`. They are computed
+from `from_index`, `previous_order_digest`, and the ordered operation IDs, while
+the signed transcript continues to bind the same derived values. Their unused
+SQL columns were also removed; only indexed range identity and canonical
+certificate JSON remain. Tests prove the derived values match the returned
+operation range and reject obsolete redundant JSON fields.
+
+Verification passes all 327 `cdk-common` tests, all 420 federation-enabled Axum
+tests, all 155 SQLite tests, 42 mintd federation-status tests, 15 mintd setup
+tests, 8 Prometheus tests, all 546 Cashu tests, and all 28 standalone Axum
+tests. PostgreSQL and mintd federation compile gates are clean.
 
 ### Problem
 
-`FederationSessionOutcome` signs arbitrary contiguous journal ranges rather
-than describing the output of one Aleph session. The current name collides with
-actual Aleph session lifecycle terminology and makes catch-up diagnostics hard
-to interpret.
+The range proof signs arbitrary contiguous journal ranges rather than
+describing the output of one Aleph session. Reusing lifecycle terminology for
+it made catch-up diagnostics hard to interpret.
 
 ### Cleanup
 
@@ -2202,7 +2230,7 @@ inconsistent about whether the first operation encoding is v1 or v2.
   the single consolidated federation migration per backend and every earlier
   standalone migration; do not add an experimental-federation upgrade chain.
 - Prove `/v1/info` advertises operation, consensus-item, private-REST, and
-  session-outcome version 1, and that current members and wallets accept that
+  catch-up certificate version 1, and that current members and wallets accept that
   configuration while altered version 0, 2, and future values fail closed at
   the relevant boundary.
 - Prove the canonical v1 operation vector, operation IDs, DKG commitments,

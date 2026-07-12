@@ -10,14 +10,14 @@ use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::{
-    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationConfig,
+    FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationProtocolVersions, FederationRestMessageKind, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationProtocolVersions, FederationRestMessageKind, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, InMemoryFederationJournal,
+    MemberId, Result, ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -375,8 +375,8 @@ pub enum FederationConsensusItem {
     Operation(FederationOperationEnvelope),
     /// A module-defined fact that must be ordered with operations.
     ModuleFact(FederationConsensusModuleFact),
-    /// A member-signed session outcome.
-    SessionSignature(FederationSessionOutcome),
+    /// A member-signed catch-up certificate.
+    CatchUpCertificate(FederationCatchUpCertificate),
     /// A generic consensus item for future compatibility tests.
     Default(FederationConsensusDefaultItem),
 }
@@ -426,7 +426,7 @@ impl FederationConsensusItem {
     pub fn operation_id(&self) -> Result<Option<FederationOperationId>> {
         match self {
             Self::Operation(envelope) => Ok(Some(envelope.operation_id()?)),
-            Self::ModuleFact(_) | Self::SessionSignature(_) | Self::Default(_) => Ok(None),
+            Self::ModuleFact(_) | Self::CatchUpCertificate(_) | Self::Default(_) => Ok(None),
         }
     }
 
@@ -435,11 +435,11 @@ impl FederationConsensusItem {
         match self {
             Self::Operation(envelope) => envelope.ensure_supported_version(),
             Self::ModuleFact(item) => item.ensure_supported_version(),
-            Self::SessionSignature(outcome) => {
-                if outcome.version != super::FEDERATION_SESSION_OUTCOME_VERSION {
-                    return Err(FederationError::SessionOutcomeVersionMismatch {
-                        expected: super::FEDERATION_SESSION_OUTCOME_VERSION,
-                        found: outcome.version,
+            Self::CatchUpCertificate(certificate) => {
+                if certificate.version != super::FEDERATION_CATCH_UP_CERTIFICATE_VERSION {
+                    return Err(FederationError::CatchUpCertificateVersionMismatch {
+                        expected: super::FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
+                        found: certificate.version,
                     });
                 }
 
@@ -497,7 +497,7 @@ impl FederationVerifiedOperationAdmission {
         match &self.item {
             FederationConsensusItem::Operation(envelope) => envelope,
             FederationConsensusItem::ModuleFact(_)
-            | FederationConsensusItem::SessionSignature(_)
+            | FederationConsensusItem::CatchUpCertificate(_)
             | FederationConsensusItem::Default(_) => {
                 unreachable!("verified operation admissions always carry operation items")
             }
@@ -794,7 +794,7 @@ fn pending_consensus_item_operation_metadata(
             Ok(Some(pending_operation_metadata_from_envelope(envelope)?))
         }
         FederationConsensusItem::ModuleFact(_)
-        | FederationConsensusItem::SessionSignature(_)
+        | FederationConsensusItem::CatchUpCertificate(_)
         | FederationConsensusItem::Default(_) => Ok(None),
     }
 }
@@ -1874,13 +1874,13 @@ fn ensure_non_zero_consensus_limit(field: &'static str, value: usize) -> Result<
     Ok(())
 }
 
-/// Catch-up entries applied after verifying quorum-signed session outcome evidence.
+/// Catch-up entries applied after verifying quorum-signed catch-up certificates.
 #[derive(Debug, Clone)]
 pub struct FederationQuorumVerifiedCatchUp {
     /// Entries appended to the local accepted-operation journal.
     pub applied_entries: Vec<FederationJournalEntry>,
     /// Verified signer quorum over the exact catch-up response range.
-    pub session_outcome_quorum: FederationSessionOutcomeQuorum,
+    pub catch_up_certificate_quorum: FederationCatchUpCertificateQuorum,
 }
 
 impl FederationConsensusRuntime {

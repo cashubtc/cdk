@@ -22,7 +22,7 @@ For every federation write transaction:
 4. Acquire locks or perform lock-equivalent writes in that exact order.
 5. Re-check duplicate operation IDs and conflicting conflict keys while holding
    the locks.
-6. Insert or update journal rows, sequence watermarks, session outcomes,
+6. Insert or update journal rows, sequence watermarks, catch-up certificates,
    payment-observation rows, materialized mint rows, and signature-share rows.
 7. Commit only after all rows for the accepted operation are durable.
 

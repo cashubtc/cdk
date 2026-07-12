@@ -369,7 +369,7 @@ where
     );
 
     let second_private = private_member(2);
-    let first_session_outcome = FederationJournalCatchUpResponse::from_journal(
+    let first_catch_up_certificate = FederationJournalCatchUpResponse::from_journal(
         federation_id(),
         &journal,
         FederationMaterializedStateDigest::genesis(),
@@ -377,11 +377,11 @@ where
         50,
         100,
     )
-    .with_signed_session_outcome(&second_private)
-    .expect("first session outcome")
-    .session_outcome
-    .expect("first session outcome");
-    let second_session_outcome = FederationJournalCatchUpResponse::from_journal(
+    .with_signed_catch_up_certificate(&second_private)
+    .expect("first catch-up certificate")
+    .catch_up_certificate
+    .expect("first catch-up certificate");
+    let second_catch_up_certificate = FederationJournalCatchUpResponse::from_journal(
         federation_id(),
         &journal,
         FederationMaterializedStateDigest::genesis(),
@@ -389,10 +389,10 @@ where
         50,
         100,
     )
-    .with_signed_session_outcome(&second_private)
-    .expect("second session outcome")
-    .session_outcome
-    .expect("second session outcome");
+    .with_signed_catch_up_certificate(&second_private)
+    .expect("second catch-up certificate")
+    .catch_up_certificate
+    .expect("second catch-up certificate");
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
     tx.add_federation_journal_entry(&first)
@@ -420,12 +420,12 @@ where
     tx.set_federation_member_sequence(member_one, 5)
         .await
         .expect("sequence one stale update");
-    tx.add_federation_session_outcome(&first_session_outcome)
+    tx.add_federation_catch_up_certificate(&first_catch_up_certificate)
         .await
-        .expect("persist first session outcome");
-    tx.add_federation_session_outcome(&second_session_outcome)
+        .expect("persist first catch-up certificate");
+    tx.add_federation_catch_up_certificate(&second_catch_up_certificate)
         .await
-        .expect("persist second session outcome");
+        .expect("persist second catch-up certificate");
     tx.commit().await.expect("commit");
 
     let entries = db
@@ -500,29 +500,29 @@ where
     assert_eq!(sequences.get(&member_one), Some(&9));
     assert_eq!(sequences.get(&member_two), Some(&11));
 
-    let session_outcomes = db
-        .get_federation_session_outcomes()
+    let catch_up_certificates = db
+        .get_federation_catch_up_certificates()
         .await
-        .expect("session outcomes");
-    assert_eq!(session_outcomes.len(), 2);
-    assert_eq!(session_outcomes[0].from_index, 0);
-    assert_eq!(session_outcomes[0].signer, member_two);
+        .expect("catch-up certificates");
+    assert_eq!(catch_up_certificates.len(), 2);
+    assert_eq!(catch_up_certificates[0].from_index, 0);
+    assert_eq!(catch_up_certificates[0].signer, member_two);
     assert_eq!(
-        session_outcomes[0].operation_ids,
-        first_session_outcome.operation_ids
+        catch_up_certificates[0].operation_ids,
+        first_catch_up_certificate.operation_ids
     );
-    assert_eq!(session_outcomes[1].from_index, 1);
+    assert_eq!(catch_up_certificates[1].from_index, 1);
     assert_eq!(
-        session_outcomes[1].signature,
-        second_session_outcome.signature
+        catch_up_certificates[1].signature,
+        second_catch_up_certificate.signature
     );
 
-    let session_outcomes_from = db
-        .get_federation_session_outcomes_from(1)
+    let catch_up_certificates_from = db
+        .get_federation_catch_up_certificates_from(1)
         .await
-        .expect("session outcomes from");
-    assert_eq!(session_outcomes_from.len(), 1);
-    assert_eq!(session_outcomes_from[0].from_index, 1);
+        .expect("catch-up certificates from");
+    assert_eq!(catch_up_certificates_from.len(), 1);
+    assert_eq!(catch_up_certificates_from[0].from_index, 1);
 }
 
 /// Assert AlephBFT finalized items are durable and can recover adapter state.
@@ -1796,7 +1796,7 @@ where
     assert_eq!(catch_up_entries[0].index, catch_up_from);
 }
 
-/// Assert concurrent federation metadata updates preserve monotonic watermarks and outcomes.
+/// Assert concurrent federation metadata updates preserve monotonic watermarks and certificates.
 pub async fn federation_journal_concurrent_metadata_updates<DB>(db: DB)
 where
     DB: Database<crate::database::Error>
@@ -1865,7 +1865,7 @@ where
 
     let member_two_private = private_member(2);
     let member_three_private = private_member(3);
-    let session_outcomes = [
+    let catch_up_certificates = [
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
@@ -1874,10 +1874,10 @@ where
             50,
             100,
         )
-        .with_signed_session_outcome(&member_two_private)
-        .expect("member two outcome from zero")
-        .session_outcome
-        .expect("member two outcome from zero"),
+        .with_signed_catch_up_certificate(&member_two_private)
+        .expect("member two certificate from zero")
+        .catch_up_certificate
+        .expect("member two certificate from zero"),
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
@@ -1886,10 +1886,10 @@ where
             50,
             100,
         )
-        .with_signed_session_outcome(&member_three_private)
-        .expect("member three outcome from zero")
-        .session_outcome
-        .expect("member three outcome from zero"),
+        .with_signed_catch_up_certificate(&member_three_private)
+        .expect("member three certificate from zero")
+        .catch_up_certificate
+        .expect("member three certificate from zero"),
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
@@ -1898,10 +1898,10 @@ where
             50,
             100,
         )
-        .with_signed_session_outcome(&member_two_private)
-        .expect("member two outcome from one")
-        .session_outcome
-        .expect("member two outcome from one"),
+        .with_signed_catch_up_certificate(&member_two_private)
+        .expect("member two certificate from one")
+        .catch_up_certificate
+        .expect("member two certificate from one"),
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
@@ -1910,28 +1910,28 @@ where
             50,
             100,
         )
-        .with_signed_session_outcome(&member_three_private)
-        .expect("member three outcome from two")
-        .session_outcome
-        .expect("member three outcome from two"),
+        .with_signed_catch_up_certificate(&member_three_private)
+        .expect("member three certificate from two")
+        .catch_up_certificate
+        .expect("member three certificate from two"),
     ];
 
-    let mut outcome_tasks = Vec::new();
-    for outcome in session_outcomes.clone() {
+    let mut certificate_tasks = Vec::new();
+    for certificate in catch_up_certificates.clone() {
         let db = Arc::clone(&db);
-        outcome_tasks.push(tokio::spawn(async move {
+        certificate_tasks.push(tokio::spawn(async move {
             let mut tx = Database::begin_transaction(db.as_ref())
                 .await
-                .expect("begin outcome transaction");
-            tx.add_federation_session_outcome(&outcome)
+                .expect("begin certificate transaction");
+            tx.add_federation_catch_up_certificate(&certificate)
                 .await
-                .expect("persist session outcome");
-            tx.commit().await.expect("commit outcome transaction");
+                .expect("persist catch-up certificate");
+            tx.commit().await.expect("commit certificate transaction");
         }));
     }
 
-    for task in outcome_tasks {
-        task.await.expect("outcome writer task");
+    for task in certificate_tasks {
+        task.await.expect("certificate writer task");
     }
 
     let sequences = db
@@ -1943,27 +1943,27 @@ where
     assert_eq!(sequences.get(&member_two), Some(&7));
     assert_eq!(sequences.get(&member_three), Some(&4));
 
-    let stored_outcomes = db
+    let stored_certificates = db
         .as_ref()
-        .get_federation_session_outcomes()
+        .get_federation_catch_up_certificates()
         .await
-        .expect("metadata session outcomes");
-    assert_eq!(stored_outcomes.len(), session_outcomes.len());
-    assert_eq!(stored_outcomes[0].from_index, 0);
-    assert_eq!(stored_outcomes[0].signer, member_two);
-    assert_eq!(stored_outcomes[1].from_index, 0);
-    assert_eq!(stored_outcomes[1].signer, member_three);
-    assert_eq!(stored_outcomes[2].from_index, 1);
-    assert_eq!(stored_outcomes[2].signer, member_two);
-    assert_eq!(stored_outcomes[3].from_index, 2);
-    assert_eq!(stored_outcomes[3].signer, member_three);
+        .expect("metadata catch-up certificates");
+    assert_eq!(stored_certificates.len(), catch_up_certificates.len());
+    assert_eq!(stored_certificates[0].from_index, 0);
+    assert_eq!(stored_certificates[0].signer, member_two);
+    assert_eq!(stored_certificates[1].from_index, 0);
+    assert_eq!(stored_certificates[1].signer, member_three);
+    assert_eq!(stored_certificates[2].from_index, 1);
+    assert_eq!(stored_certificates[2].signer, member_two);
+    assert_eq!(stored_certificates[3].from_index, 2);
+    assert_eq!(stored_certificates[3].signer, member_three);
 
-    let ranged_outcomes = db
+    let ranged_certificates = db
         .as_ref()
-        .get_federation_session_outcomes_from(1)
+        .get_federation_catch_up_certificates_from(1)
         .await
-        .expect("metadata ranged outcomes");
-    assert_eq!(ranged_outcomes.len(), 2);
-    assert_eq!(ranged_outcomes[0].from_index, 1);
-    assert_eq!(ranged_outcomes[1].from_index, 2);
+        .expect("metadata ranged certificates");
+    assert_eq!(ranged_certificates.len(), 2);
+    assert_eq!(ranged_certificates[0].from_index, 1);
+    assert_eq!(ranged_certificates[1].from_index, 2);
 }

@@ -36,7 +36,7 @@ pub(super) async fn post_journal(
     );
     let response = durable_catch_up_response(&state, &payload.payload).await?;
     let response = response
-        .with_signed_session_outcome(&private_config)
+        .with_signed_catch_up_certificate(&private_config)
         .map_err(federation_error_response)?;
     Ok(Json(response))
 }

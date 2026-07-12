@@ -29,13 +29,13 @@ use crate::Amount;
 
 /// Version of the private federation REST payload format.
 pub const FEDERATION_REST_API_VERSION: u16 = 1;
-/// Version of signed federation session outcome payloads.
-pub const FEDERATION_SESSION_OUTCOME_VERSION: u16 = 1;
+/// Version of signed federation catch-up certificate payloads.
+pub const FEDERATION_CATCH_UP_CERTIFICATE_VERSION: u16 = 1;
 
 const FEDERATION_REST_BODY_HASH_VERSION: &[u8] = b"cdk-federation-rest-body-v1";
 const FEDERATION_REST_SIGNATURE_VERSION: &[u8] = b"cdk-federation-rest-signature-v1";
-const FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION: &[u8] =
-    b"cdk-federation-session-outcome-signature-v1";
+const FEDERATION_CATCH_UP_CERTIFICATE_SIGNATURE_VERSION: &[u8] =
+    b"cdk-federation-catch-up-certificate-signature-v1";
 const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-activation-signature-v1";
 
@@ -1659,30 +1659,25 @@ impl FederationJournalCatchUpRequest {
 
 /// Signed summary of a contiguous accepted-operation range served during catch-up.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FederationSessionOutcome {
-    /// Session outcome payload version.
+#[serde(deny_unknown_fields)]
+pub struct FederationCatchUpCertificate {
+    /// Catch-up certificate payload version.
     pub version: u16,
     /// Federation whose accepted range is summarized.
     pub federation_id: FederationId,
-    /// Member that signed this outcome.
+    /// Member that signed this certificate.
     pub signer: MemberId,
     /// First returned journal index.
     pub from_index: u64,
-    /// Number of returned entries.
-    pub operation_count: u64,
-    /// Last returned journal index.
-    pub latest_index: u64,
     /// Digest before the first returned entry.
     pub previous_order_digest: FederationJournalDigest,
-    /// Digest after the returned range.
-    pub range_order_digest: FederationJournalDigest,
     /// Latest accepted-order digest known to the signer.
     pub latest_order_digest: FederationJournalDigest,
     /// Latest materialized-state digest known to the signer.
     pub materialized_state_digest: FederationMaterializedStateDigest,
     /// Operation IDs covered by this range, in order.
     pub operation_ids: Vec<FederationOperationId>,
-    /// Member identity signature over the session outcome transcript.
+    /// Member identity signature over the catch-up certificate transcript.
     pub signature: FederationRestSignature,
 }
 
@@ -1723,9 +1718,9 @@ impl From<&FederationJournalEntry> for FederationCatchUpOperation {
     }
 }
 
-/// Verified quorum of signed session outcomes over one catch-up range.
+/// Verified quorum of signed catch-up certificates over one catch-up range.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FederationSessionOutcomeQuorum {
+pub struct FederationCatchUpCertificateQuorum {
     /// Distinct valid member signatures required by federation consensus params.
     pub required: u16,
     /// Distinct federation members whose signatures verified for the range.
@@ -1740,7 +1735,31 @@ pub struct FederationSessionOutcomeQuorum {
     pub range_order_digest: FederationJournalDigest,
 }
 
-impl FederationSessionOutcome {
+impl FederationCatchUpCertificate {
+    /// Return the number of operations committed by this certificate.
+    #[must_use]
+    pub fn operation_count(&self) -> u64 {
+        self.operation_ids.len() as u64
+    }
+
+    /// Return the last journal index committed by this certificate.
+    #[must_use]
+    pub fn latest_index(&self) -> u64 {
+        self.from_index
+            .saturating_add(self.operation_count().saturating_sub(1))
+    }
+
+    /// Derive the accepted-order digest after this certificate's range.
+    #[must_use]
+    pub fn range_order_digest(&self) -> FederationJournalDigest {
+        self.operation_ids.iter().enumerate().fold(
+            self.previous_order_digest,
+            |digest, (offset, operation_id)| {
+                digest.append(self.from_index.saturating_add(offset as u64), *operation_id)
+            },
+        )
+    }
+
     /// Sign a contiguous range of accepted operation commitments.
     pub fn new_signed(
         federation_id: FederationId,
@@ -1751,15 +1770,15 @@ impl FederationSessionOutcome {
     ) -> Result<Self> {
         let first = entries
             .first()
-            .ok_or_else(|| session_outcome_mismatch("cannot sign an empty entry range"))?;
+            .ok_or_else(|| catch_up_certificate_mismatch("cannot sign an empty entry range"))?;
         let last = entries
             .last()
-            .ok_or_else(|| session_outcome_mismatch("cannot sign an empty entry range"))?;
+            .ok_or_else(|| catch_up_certificate_mismatch("cannot sign an empty entry range"))?;
         let operation_ids = entries
             .iter()
             .map(|entry| entry.operation_id)
             .collect::<Vec<_>>();
-        let transcript = session_outcome_transcript(
+        let transcript = catch_up_certificate_transcript(
             federation_id,
             private_config.member_id,
             first.index,
@@ -1774,14 +1793,11 @@ impl FederationSessionOutcome {
         let signature = FederationRestSignature::sign(&transcript, private_config)?;
 
         Ok(Self {
-            version: FEDERATION_SESSION_OUTCOME_VERSION,
+            version: FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
             federation_id,
             signer: private_config.member_id,
             from_index: first.index,
-            operation_count: entries.len() as u64,
-            latest_index: last.index,
             previous_order_digest: first.previous_order_digest,
-            range_order_digest: last.order_digest,
             latest_order_digest,
             materialized_state_digest,
             operation_ids,
@@ -1789,7 +1805,7 @@ impl FederationSessionOutcome {
         })
     }
 
-    /// Verify this outcome against returned operation commitments and a roster member.
+    /// Verify this certificate against returned operation commitments and a roster member.
     pub fn verify(
         &self,
         member: &MemberConfigPublic,
@@ -1799,55 +1815,55 @@ impl FederationSessionOutcome {
         latest_order_digest: FederationJournalDigest,
         materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Result<()> {
-        if self.version != FEDERATION_SESSION_OUTCOME_VERSION {
-            return Err(FederationError::SessionOutcomeVersionMismatch {
-                expected: FEDERATION_SESSION_OUTCOME_VERSION,
+        if self.version != FEDERATION_CATCH_UP_CERTIFICATE_VERSION {
+            return Err(FederationError::CatchUpCertificateVersionMismatch {
+                expected: FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
                 found: self.version,
             });
         }
 
         if self.federation_id != federation_id {
-            return Err(session_outcome_mismatch("federation id mismatch"));
+            return Err(catch_up_certificate_mismatch("federation id mismatch"));
         }
 
         if self.signer != member.member_id {
-            return Err(session_outcome_mismatch("signer member mismatch"));
+            return Err(catch_up_certificate_mismatch("signer member mismatch"));
         }
 
         let first = entries
             .first()
-            .ok_or_else(|| session_outcome_mismatch("missing entries for signed outcome"))?;
+            .ok_or_else(|| catch_up_certificate_mismatch("missing entries for certificate"))?;
         let last = entries
             .last()
-            .ok_or_else(|| session_outcome_mismatch("missing entries for signed outcome"))?;
+            .ok_or_else(|| catch_up_certificate_mismatch("missing entries for certificate"))?;
         let operation_ids = entries
             .iter()
             .map(|entry| entry.operation_id)
             .collect::<Vec<_>>();
 
         if self.from_index != from_index || first.index != from_index {
-            return Err(session_outcome_mismatch("range start mismatch"));
+            return Err(catch_up_certificate_mismatch("range start mismatch"));
         }
 
-        if self.operation_count != entries.len() as u64
-            || self.latest_index != last.index
+        if self.operation_count() != entries.len() as u64
+            || self.latest_index() != last.index
             || self.previous_order_digest != first.previous_order_digest
-            || self.range_order_digest != last.order_digest
+            || self.range_order_digest() != last.order_digest
             || self.latest_order_digest != latest_order_digest
             || self.materialized_state_digest != materialized_state_digest
             || self.operation_ids != operation_ids
         {
-            return Err(session_outcome_mismatch("range content mismatch"));
+            return Err(catch_up_certificate_mismatch("range content mismatch"));
         }
 
-        let transcript = session_outcome_transcript(
+        let transcript = catch_up_certificate_transcript(
             self.federation_id,
             self.signer,
             self.from_index,
-            self.operation_count,
-            self.latest_index,
+            self.operation_count(),
+            self.latest_index(),
             self.previous_order_digest,
-            self.range_order_digest,
+            self.range_order_digest(),
             self.latest_order_digest,
             self.materialized_state_digest,
             &self.operation_ids,
@@ -1857,7 +1873,7 @@ impl FederationSessionOutcome {
             .identity_public_key
             .verify(&transcript, &signature)
             .map_err(
-                |_| FederationError::SessionOutcomeSignatureVerificationFailed {
+                |_| FederationError::CatchUpCertificateSignatureVerificationFailed {
                     member_id: self.signer,
                 },
             )?;
@@ -1886,7 +1902,7 @@ pub struct FederationJournalCatchUpResponse {
     pub materialized_state_digest: FederationMaterializedStateDigest,
     /// Signed summary of the returned accepted-operation range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_outcome: Option<FederationSessionOutcome>,
+    pub catch_up_certificate: Option<FederationCatchUpCertificate>,
     /// AlephBFT finalized items returned for exact adapter replay.
     pub aleph_bft_finalized_items: Vec<FederationAlephBftFinalizedItem>,
     /// Whether all requested AlephBFT finalized items were returned.
@@ -1963,7 +1979,7 @@ impl FederationJournalCatchUpResponse {
             latest_index: journal.entries().last().map(|entry| entry.index),
             latest_order_digest: journal.latest_order_digest(),
             materialized_state_digest,
-            session_outcome: None,
+            catch_up_certificate: None,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
             complete,
@@ -1982,13 +1998,13 @@ impl FederationJournalCatchUpResponse {
         self
     }
 
-    /// Attach a member-signed session outcome for the returned entry range.
-    pub fn with_signed_session_outcome(
+    /// Attach a member-signed catch-up certificate for the returned entry range.
+    pub fn with_signed_catch_up_certificate(
         mut self,
         private_config: &MemberConfigPrivate,
     ) -> Result<Self> {
         if !self.entries.is_empty() {
-            self.session_outcome = Some(FederationSessionOutcome::new_signed(
+            self.catch_up_certificate = Some(FederationCatchUpCertificate::new_signed(
                 self.federation_id,
                 &self.entries,
                 self.latest_order_digest,
@@ -2000,18 +2016,18 @@ impl FederationJournalCatchUpResponse {
         Ok(self)
     }
 
-    /// Verify the signed session outcome for this response.
-    pub fn verify_session_outcome(&self, member: &MemberConfigPublic) -> Result<()> {
+    /// Verify the signed catch-up certificate for this response.
+    pub fn verify_catch_up_certificate(&self, member: &MemberConfigPublic) -> Result<()> {
         self.validate_entries()?;
-        match (self.entries.is_empty(), &self.session_outcome) {
+        match (self.entries.is_empty(), &self.catch_up_certificate) {
             (true, None) => Ok(()),
-            (true, Some(_)) => Err(session_outcome_mismatch(
-                "empty catch-up response carried an outcome",
+            (true, Some(_)) => Err(catch_up_certificate_mismatch(
+                "empty catch-up response carried a certificate",
             )),
-            (false, None) => Err(session_outcome_mismatch(
-                "non-empty catch-up response missing outcome",
+            (false, None) => Err(catch_up_certificate_mismatch(
+                "non-empty catch-up response missing certificate",
             )),
-            (false, Some(outcome)) => outcome.verify(
+            (false, Some(certificate)) => certificate.verify(
                 member,
                 self.federation_id,
                 self.from_index,
@@ -2023,15 +2039,15 @@ impl FederationJournalCatchUpResponse {
     }
 
     /// Verify distinct member signatures over this exact catch-up range.
-    pub fn verify_session_outcome_quorum(
+    pub fn verify_catch_up_certificate_quorum(
         &self,
         config: &FederationConfig,
-        additional_outcomes: &[FederationSessionOutcome],
-    ) -> Result<FederationSessionOutcomeQuorum> {
+        additional_certificates: &[FederationCatchUpCertificate],
+    ) -> Result<FederationCatchUpCertificateQuorum> {
         self.validate_entries()?;
         let required = config.threshold_params.consensus_threshold;
         if self.entries.is_empty() {
-            return Ok(FederationSessionOutcomeQuorum {
+            return Ok(FederationCatchUpCertificateQuorum {
                 required,
                 signers: BTreeSet::new(),
                 from_index: self.from_index,
@@ -2042,17 +2058,18 @@ impl FederationJournalCatchUpResponse {
         }
 
         let mut signers = BTreeSet::new();
-        for outcome in self
-            .session_outcome
+        for certificate in self
+            .catch_up_certificate
             .iter()
-            .chain(additional_outcomes.iter())
+            .chain(additional_certificates.iter())
         {
-            let member = config
-                .member(outcome.signer)
-                .ok_or(FederationError::UnknownMember {
-                    member_id: outcome.signer,
-                })?;
-            outcome.verify(
+            let member =
+                config
+                    .member(certificate.signer)
+                    .ok_or(FederationError::UnknownMember {
+                        member_id: certificate.signer,
+                    })?;
+            certificate.verify(
                 member,
                 self.federation_id,
                 self.from_index,
@@ -2060,11 +2077,11 @@ impl FederationJournalCatchUpResponse {
                 self.latest_order_digest,
                 self.materialized_state_digest,
             )?;
-            signers.insert(outcome.signer);
+            signers.insert(certificate.signer);
         }
 
         if signers.len() < usize::from(required) {
-            return Err(FederationError::SessionOutcomeQuorumNotReached {
+            return Err(FederationError::CatchUpCertificateQuorumNotReached {
                 required,
                 found: signers.len() as u16,
             });
@@ -2073,8 +2090,8 @@ impl FederationJournalCatchUpResponse {
         let latest_entry = self
             .entries
             .last()
-            .ok_or_else(|| session_outcome_mismatch("missing entries for quorum"))?;
-        Ok(FederationSessionOutcomeQuorum {
+            .ok_or_else(|| catch_up_certificate_mismatch("missing entries for quorum"))?;
+        Ok(FederationCatchUpCertificateQuorum {
             required,
             signers,
             from_index: self.from_index,
@@ -2085,7 +2102,7 @@ impl FederationJournalCatchUpResponse {
     }
 }
 
-fn session_outcome_transcript(
+fn catch_up_certificate_transcript(
     federation_id: FederationId,
     signer: MemberId,
     from_index: u64,
@@ -2100,9 +2117,9 @@ fn session_outcome_transcript(
     let mut transcript = Vec::new();
     append_hash_bytes(
         &mut transcript,
-        FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION,
+        FEDERATION_CATCH_UP_CERTIFICATE_SIGNATURE_VERSION,
     );
-    transcript.extend_from_slice(&FEDERATION_SESSION_OUTCOME_VERSION.to_be_bytes());
+    transcript.extend_from_slice(&FEDERATION_CATCH_UP_CERTIFICATE_VERSION.to_be_bytes());
     append_hash_bytes(&mut transcript, &federation_id.to_bytes());
     transcript.extend_from_slice(&signer.get().to_be_bytes());
     transcript.extend_from_slice(&from_index.to_be_bytes());
@@ -2119,8 +2136,8 @@ fn session_outcome_transcript(
     transcript
 }
 
-fn session_outcome_mismatch(reason: &str) -> FederationError {
-    FederationError::SessionOutcomeMismatch {
+fn catch_up_certificate_mismatch(reason: &str) -> FederationError {
+    FederationError::CatchUpCertificateMismatch {
         reason: reason.to_string(),
     }
 }
@@ -2600,7 +2617,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_response_signs_and_verifies_session_outcome() {
+    fn catch_up_response_signs_and_verifies_catch_up_certificate() {
         let (config, _, second_private) = transport_config();
         let member = config
             .member(second_private.member_id)
@@ -2622,16 +2639,33 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&second_private)
+        .with_signed_catch_up_certificate(&second_private)
         .expect("signed response");
 
-        let outcome = response.session_outcome.as_ref().expect("session outcome");
-        assert_eq!(outcome.signer, second_private.member_id);
-        assert_eq!(outcome.operation_count, 2);
-        assert_eq!(outcome.operation_ids.len(), 2);
+        let certificate = response
+            .catch_up_certificate
+            .as_ref()
+            .expect("catch-up certificate");
+        assert_eq!(certificate.signer, second_private.member_id);
+        assert_eq!(certificate.operation_count(), 2);
+        assert_eq!(certificate.latest_index(), 1);
+        assert_eq!(
+            certificate.range_order_digest(),
+            response.entries[1].order_digest
+        );
+        assert_eq!(certificate.operation_ids.len(), 2);
+        let encoded_certificate = serde_json::to_value(certificate).expect("certificate json");
+        assert!(encoded_certificate.get("operation_count").is_none());
+        assert!(encoded_certificate.get("latest_index").is_none());
+        assert!(encoded_certificate.get("range_order_digest").is_none());
+        let mut obsolete_certificate = encoded_certificate;
+        obsolete_certificate["operation_count"] = serde_json::json!(2);
+        assert!(
+            serde_json::from_value::<FederationCatchUpCertificate>(obsolete_certificate).is_err()
+        );
         response
-            .verify_session_outcome(member)
-            .expect("verified outcome");
+            .verify_catch_up_certificate(member)
+            .expect("verified certificate");
     }
 
     #[test]
@@ -2651,18 +2685,18 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&second_private)
+        .with_signed_catch_up_certificate(&second_private)
         .expect("signed response");
         response.entries[0].operation_id = FederationOperationId::from_bytes([42; 32]);
 
         assert!(matches!(
-            response.verify_session_outcome(member),
+            response.verify_catch_up_certificate(member),
             Err(FederationError::CatchUpDigestMismatch { .. })
         ));
     }
 
     #[test]
-    fn catch_up_response_rejects_truncated_signed_session_outcome_range() {
+    fn catch_up_response_rejects_truncated_signed_catch_up_certificate_range() {
         let (config, _, second_private) = transport_config();
         let member = config
             .member(second_private.member_id)
@@ -2684,18 +2718,18 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&second_private)
+        .with_signed_catch_up_certificate(&second_private)
         .expect("signed response");
         response.entries.pop();
 
         assert!(matches!(
-            response.verify_session_outcome(member),
-            Err(FederationError::SessionOutcomeMismatch { .. })
+            response.verify_catch_up_certificate(member),
+            Err(FederationError::CatchUpCertificateMismatch { .. })
         ));
     }
 
     #[test]
-    fn catch_up_response_rejects_bad_session_outcome_signature() {
+    fn catch_up_response_rejects_bad_catch_up_certificate_signature() {
         let (config, _, second_private) = transport_config();
         let member = config
             .member(second_private.member_id)
@@ -2711,23 +2745,26 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&second_private)
+        .with_signed_catch_up_certificate(&second_private)
         .expect("signed response");
-        let outcome = response.session_outcome.as_mut().expect("session outcome");
-        let mut signature_bytes = outcome.signature.to_bytes();
+        let certificate = response
+            .catch_up_certificate
+            .as_mut()
+            .expect("catch-up certificate");
+        let mut signature_bytes = certificate.signature.to_bytes();
         signature_bytes[0] ^= 0x01;
-        outcome.signature =
+        certificate.signature =
             FederationRestSignature::from_slice(&signature_bytes).expect("signature bytes");
 
         assert!(matches!(
-            response.verify_session_outcome(member),
-            Err(FederationError::SessionOutcomeSignatureVerificationFailed { member_id })
+            response.verify_catch_up_certificate(member),
+            Err(FederationError::CatchUpCertificateSignatureVerificationFailed { member_id })
                 if member_id == second_private.member_id
         ));
     }
 
     #[test]
-    fn catch_up_response_verifies_session_outcome_quorum() {
+    fn catch_up_response_verifies_catch_up_certificate_quorum() {
         let (config, private_members) = transport_config_three();
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -2746,9 +2783,9 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&private_members[0])
+        .with_signed_catch_up_certificate(&private_members[0])
         .expect("signed response");
-        let second_outcome = FederationJournalCatchUpResponse::from_journal(
+        let second_certificate = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
             FederationMaterializedStateDigest::genesis(),
@@ -2756,13 +2793,13 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&private_members[1])
+        .with_signed_catch_up_certificate(&private_members[1])
         .expect("second signed response")
-        .session_outcome
-        .expect("second session outcome");
+        .catch_up_certificate
+        .expect("second catch-up certificate");
 
         let quorum = response
-            .verify_session_outcome_quorum(&config, &[second_outcome])
+            .verify_catch_up_certificate_quorum(&config, &[second_certificate])
             .expect("quorum");
 
         assert_eq!(quorum.required, 2);
@@ -2774,7 +2811,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_response_rejects_insufficient_session_outcome_quorum() {
+    fn catch_up_response_rejects_insufficient_catch_up_certificate_quorum() {
         let (config, private_members) = transport_config_three();
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -2787,12 +2824,12 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&private_members[0])
+        .with_signed_catch_up_certificate(&private_members[0])
         .expect("signed response");
 
         assert!(matches!(
-            response.verify_session_outcome_quorum(&config, &[]),
-            Err(FederationError::SessionOutcomeQuorumNotReached {
+            response.verify_catch_up_certificate_quorum(&config, &[]),
+            Err(FederationError::CatchUpCertificateQuorumNotReached {
                 required: 2,
                 found: 1
             })
@@ -2800,7 +2837,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_response_does_not_count_duplicate_session_outcome_signers() {
+    fn catch_up_response_does_not_count_duplicate_catch_up_certificate_signers() {
         let (config, private_members) = transport_config_three();
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -2813,17 +2850,17 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&private_members[0])
+        .with_signed_catch_up_certificate(&private_members[0])
         .expect("signed response");
-        let duplicate_outcome = response
-            .session_outcome
+        let duplicate_certificate = response
+            .catch_up_certificate
             .as_ref()
-            .expect("session outcome")
+            .expect("catch-up certificate")
             .clone();
 
         assert!(matches!(
-            response.verify_session_outcome_quorum(&config, &[duplicate_outcome]),
-            Err(FederationError::SessionOutcomeQuorumNotReached {
+            response.verify_catch_up_certificate_quorum(&config, &[duplicate_certificate]),
+            Err(FederationError::CatchUpCertificateQuorumNotReached {
                 required: 2,
                 found: 1
             })
@@ -2831,7 +2868,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_response_rejects_mismatched_session_outcome_quorum_member() {
+    fn catch_up_response_rejects_mismatched_catch_up_certificate_quorum_member() {
         let (config, private_members) = transport_config_three();
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -2849,9 +2886,9 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&private_members[0])
+        .with_signed_catch_up_certificate(&private_members[0])
         .expect("signed response");
-        let mismatched_outcome = FederationJournalCatchUpResponse::from_journal(
+        let mismatched_certificate = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
             FederationMaterializedStateDigest::genesis(),
@@ -2859,14 +2896,14 @@ mod tests {
             50,
             100,
         )
-        .with_signed_session_outcome(&private_members[1])
+        .with_signed_catch_up_certificate(&private_members[1])
         .expect("mismatched signed response")
-        .session_outcome
-        .expect("mismatched session outcome");
+        .catch_up_certificate
+        .expect("mismatched catch-up certificate");
 
         assert!(matches!(
-            response.verify_session_outcome_quorum(&config, &[mismatched_outcome]),
-            Err(FederationError::SessionOutcomeMismatch { .. })
+            response.verify_catch_up_certificate_quorum(&config, &[mismatched_certificate]),
+            Err(FederationError::CatchUpCertificateMismatch { .. })
         ));
     }
 

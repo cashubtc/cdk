@@ -85,7 +85,7 @@ pub struct CdkMetrics {
     federation_consensus_operation_count: IntGaugeVec,
     federation_sync_ready: IntGaugeVec,
     federation_sync_state: IntGaugeVec,
-    federation_session_outcome_quorum_operation_count: IntGaugeVec,
+    federation_catch_up_certificate_quorum_operation_count: IntGaugeVec,
     federation_payment_observation_reports: IntGaugeVec,
     federation_peer_connected: IntGaugeVec,
     federation_peer_operation_count: IntGaugeVec,
@@ -102,7 +102,7 @@ struct FederationMetricCollectors {
     consensus_operation_count: IntGaugeVec,
     sync_ready: IntGaugeVec,
     sync_state: IntGaugeVec,
-    session_outcome_quorum_operation_count: IntGaugeVec,
+    catch_up_certificate_quorum_operation_count: IntGaugeVec,
     payment_observation_reports: IntGaugeVec,
     peer_connected: IntGaugeVec,
     peer_operation_count: IntGaugeVec,
@@ -165,8 +165,8 @@ impl CdkMetrics {
             federation_consensus_operation_count: federation_metrics.consensus_operation_count,
             federation_sync_ready: federation_metrics.sync_ready,
             federation_sync_state: federation_metrics.sync_state,
-            federation_session_outcome_quorum_operation_count: federation_metrics
-                .session_outcome_quorum_operation_count,
+            federation_catch_up_certificate_quorum_operation_count: federation_metrics
+                .catch_up_certificate_quorum_operation_count,
             federation_payment_observation_reports: federation_metrics.payment_observation_reports,
             federation_peer_connected: federation_metrics.peer_connected,
             federation_peer_operation_count: federation_metrics.peer_operation_count,
@@ -392,15 +392,15 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_sync_state.clone()))?;
 
-        let federation_session_outcome_quorum_operation_count = IntGaugeVec::new(
+        let federation_catch_up_certificate_quorum_operation_count = IntGaugeVec::new(
             prometheus::Opts::new(
-                "cdk_federation_session_outcome_quorum_operation_count",
-                "Highest federation operation count covered by quorum session-outcome evidence",
+                "cdk_federation_catch_up_certificate_quorum_operation_count",
+                "Highest federation operation count covered by quorum catch-up certificates",
             ),
             &["member"],
         )?;
         registry.register(Box::new(
-            federation_session_outcome_quorum_operation_count.clone(),
+            federation_catch_up_certificate_quorum_operation_count.clone(),
         ))?;
 
         let federation_payment_observation_reports = IntGaugeVec::new(
@@ -491,8 +491,8 @@ impl CdkMetrics {
             consensus_operation_count: federation_consensus_operation_count,
             sync_ready: federation_sync_ready,
             sync_state: federation_sync_state,
-            session_outcome_quorum_operation_count:
-                federation_session_outcome_quorum_operation_count,
+            catch_up_certificate_quorum_operation_count:
+                federation_catch_up_certificate_quorum_operation_count,
             payment_observation_reports: federation_payment_observation_reports,
             peer_connected: federation_peer_connected,
             peer_operation_count: federation_peer_operation_count,
@@ -639,9 +639,13 @@ impl CdkMetrics {
             .set(if active { 1 } else { 0 });
     }
 
-    /// Set the operation count covered by quorum session-outcome evidence.
-    pub fn set_federation_session_outcome_quorum_operation_count(&self, member: &str, count: i64) {
-        self.federation_session_outcome_quorum_operation_count
+    /// Set the operation count covered by quorum catch-up certificates.
+    pub fn set_federation_catch_up_certificate_quorum_operation_count(
+        &self,
+        member: &str,
+        count: i64,
+    ) {
+        self.federation_catch_up_certificate_quorum_operation_count
             .with_label_values(&[member])
             .set(count);
     }
@@ -882,7 +886,7 @@ mod tests {
         metrics.set_federation_sync_ready(member, false);
         metrics.set_federation_sync_state(member, "healthy", false);
         metrics.set_federation_sync_state(member, "lagging", true);
-        metrics.set_federation_session_outcome_quorum_operation_count(member, 5);
+        metrics.set_federation_catch_up_certificate_quorum_operation_count(member, 5);
         metrics.set_federation_peer_connected(member, peer, true);
         metrics.set_federation_peer_operation_count(member, peer, 9);
         metrics.set_federation_pending_mempool_items(member, 2);
@@ -918,7 +922,7 @@ mod tests {
         );
         assert_eq!(
             metrics
-                .federation_session_outcome_quorum_operation_count
+                .federation_catch_up_certificate_quorum_operation_count
                 .with_label_values(&[member])
                 .get(),
             5

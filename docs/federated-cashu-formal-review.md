@@ -90,7 +90,7 @@ current development implementation and a production federation:
 - Ensure the BFT backend produces one total order for operation envelopes and
   consensus module facts under partitions, equivocation, duplicate delivery, and
   member restarts.
-- Keep signed session outcomes and materialized state digests as recovery and
+- Keep signed catch-up certificates and materialized state digests as recovery and
   operator evidence, but do not use them as a substitute for the actual BFT
   agreement protocol.
 - Run multi-process tests for at least 4-node and 5-node federations once the

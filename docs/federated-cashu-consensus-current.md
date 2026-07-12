@@ -15,7 +15,7 @@ For current architecture and verified status, use
 
 Federated Cashu support in CDK introduces a consensus boundary around mint state transitions before threshold BLS blind signature shares can be returned. The current code establishes that boundary with versioned federation operation envelopes, canonical operation IDs, quote-scoped conflict keys, an accepted-operation journal, signed private REST payloads, durable journal replay, lag-aware public-route guards, and a local deterministic consensus driver. Accepted entries now apply into member mint state for mint quotes, mint payment observations, mint issuance, swaps, melt quotes, melts, melt payment observations, restore lookup support, and check-state aggregation.
 
-The present implementation is intentionally not a distributed BFT consensus algorithm. It is a testable in-memory scaffold whose API and data objects are designed to be reused by a future AlephBFT engine, quorum-signed session outcomes, state digests, real payment-observation policy, and dealer-free DKG.
+The present implementation is intentionally not a distributed BFT consensus algorithm. It is a testable in-memory scaffold whose API and data objects are designed to be reused by a future AlephBFT engine, quorum-signed catch-up certificates, state digests, real payment-observation policy, and dealer-free DKG.
 
 ## 1. What Is Implemented Today
 
@@ -218,7 +218,7 @@ As this extraction matures, the local dummy consensus and the future distributed
 > [!CAUTION]
 > ### Current limitation
 >
-> The present public federation flow records and applies consensus-facing operations, but it still uses a local deterministic append log rather than a distributed quorum. The remaining consensus limitation is not the absence of mint/swap/melt apply paths; it is the absence of a real replicated BFT ordering engine, quorum-signed session outcomes, and materialized state digests.
+> The present public federation flow records and applies consensus-facing operations, but it still uses a local deterministic append log rather than a distributed quorum. The remaining consensus limitation is not the absence of mint/swap/melt apply paths; it is the absence of a real replicated BFT ordering engine, quorum-signed catch-up certificates, and materialized state digests.
 
 ## 8. Operation Flows
 
@@ -254,7 +254,7 @@ Fourth, mint quote mix-and-match prevention has its first real mechanism. A wall
 
 Fifth, the signing objects are shaped for auditability. A `FederationBlindSignatureShare` carries the `operation_id` that authorized it, plus the member ID, keyset ID, amount, blinded secret, and share. Public mint, swap, melt-change, and restore paths now use those member shares rather than returning standalone final signatures in federation mode, and the wallet verifies shares against configured public shares before aggregating them. Federation aggregate keysets are v3/BLS-only, and non-v3 federation outputs are rejected before signing.
 
-Finally, status and catch-up expose the local journal height and order digest, durable storage can replay accepted entries and sequence watermarks on restart, and public federation submit routes fail closed when the local sync guard is lagging, catching up, or halted. The remaining security caveat is that catch-up entries are not yet backed by quorum-signed consensus session outcomes, and order digests are not yet paired with materialized state digests.
+Finally, status and catch-up expose the local journal height and order digest, durable storage can replay accepted entries and sequence watermarks on restart, and public federation submit routes fail closed when the local sync guard is lagging, catching up, or halted. The remaining security caveat is that catch-up entries are not yet backed by quorum-signed consensus catch-up certificates, and order digests are not yet paired with materialized state digests.
 
 ## 10. Future Outlook: Precise Next Steps
 
@@ -274,7 +274,7 @@ AlephBFT remains a good candidate and Fedimint remains the best design reference
 
 The current order digest proves that two members accepted the same operation IDs in the same order. It does not prove that their materialized mint tables are identical. The next storage layer should compute state digests over consensus-visible quote, proof, operation, and signature-share tables, excluding local private config, connection state, logs, and caches.
 
-Catch-up currently verifies digest-chain continuity from a peer, but real production catch-up should include signed session outcomes or another quorum-verifiable proof. A lagging member should not have to trust whichever peer answered first. It should verify that the returned entries are decisions already accepted by the federation, replay them deterministically, then compare both order digest and state digest at session boundaries.
+Catch-up currently verifies digest-chain continuity from a peer, but real production catch-up should include signed catch-up certificates or another quorum-verifiable proof. A lagging member should not have to trust whichever peer answered first. It should verify that the returned entries are decisions already accepted by the federation, replay them deterministically, then compare both order digest and state digest at session boundaries.
 
 ### 10.4 Run and Harden the Live Multi-Process Harness
 

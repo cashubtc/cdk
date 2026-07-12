@@ -13,14 +13,14 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyRecord,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalEntry, FederationJournalTip, FederationMemberStatusSnapshot,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
-    MemberId,
+    FederationCatchUpCertificate, FederationConfigSnapshot, FederationDkgActivationRequest,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
+    FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -664,10 +664,10 @@ pub trait FederationJournalTransaction {
         status: &FederationMemberStatusSnapshot,
     ) -> Result<(), Self::Err>;
 
-    /// Persist one signed federation session outcome.
-    async fn add_federation_session_outcome(
+    /// Persist one signed federation catch-up certificate.
+    async fn add_federation_catch_up_certificate(
         &mut self,
-        outcome: &FederationSessionOutcome,
+        outcome: &FederationCatchUpCertificate,
     ) -> Result<(), Self::Err>;
 
     /// Persist one finalized AlephBFT consensus item.
@@ -842,16 +842,16 @@ pub trait FederationJournalDatabase {
         member_id: MemberId,
     ) -> Result<Option<FederationMemberStatusSnapshot>, Self::Err>;
 
-    /// Get all persisted signed federation session outcomes.
-    async fn get_federation_session_outcomes(
+    /// Get all persisted signed federation catch-up certificates.
+    async fn get_federation_catch_up_certificates(
         &self,
-    ) -> Result<Vec<FederationSessionOutcome>, Self::Err>;
+    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
 
-    /// Get persisted signed federation session outcomes starting at `from_index`.
-    async fn get_federation_session_outcomes_from(
+    /// Get persisted signed federation catch-up certificates starting at `from_index`.
+    async fn get_federation_catch_up_certificates_from(
         &self,
         from_index: u64,
-    ) -> Result<Vec<FederationSessionOutcome>, Self::Err>;
+    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
 
     /// Get all persisted AlephBFT finalized items in accepted item order.
     async fn get_federation_aleph_bft_finalized_items(

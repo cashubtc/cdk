@@ -187,7 +187,7 @@ Resolved blocking bugs:
   Axum, while inert standalone runtimes hold none; this avoids a one-use trait
   and enables intact submission/replay moves. Effective-keyset admission is the
   first mint-dependent method moved and passes rotated-keyset plus all 28
-  standalone Axum regressions. Atomic journal/session-outcome, pending-operation,
+  standalone Axum regressions. Atomic journal/catch-up certificate, pending-operation,
   finalization, source-sequence, and catch-up transactions now belong to the
   runtime; five finalized-unit and all 29 focused catch-up tests pass. Replay,
   lock retry/backoff, durable application/rejection state, standard
@@ -216,7 +216,13 @@ Resolved blocking bugs:
   conflict keys, and consensus evidence are reconstructed from finalized
   items. Compact ranges validate every index and digest link before quorum
   evidence is accepted, and response construction requires the actual
-  materialized-state digest before signing. Readiness transitions now
+  materialized-state digest before signing. The range proof is now named
+  `FederationCatchUpCertificate` throughout protocol metadata, private REST,
+  storage, readiness, metrics, CLI output, and operator tooling, so it cannot
+  be confused with an AlephBFT session result. Certificate JSON derives its
+  operation count, last index, and range digest from the first index, previous
+  digest, and ordered operation IDs; the unused duplicate SQL columns are gone.
+  Readiness transitions now
   persist directly from the runtime, and startup sync restoration plus the
   replayed-journal quorum gate no longer depend on Axum state. Sixteen startup,
   two status-persistence, four quorum-prefix, two lagging-readiness, and one
@@ -329,7 +335,7 @@ Recommended new components:
 
 - `cashu` threshold BLS module: key shares, public shares, share verification, interpolation, and aggregate public key derivation.
 - `cdk-common` federation types: `FederationId`, `MemberId`, `ThresholdParams`, canonical operation types, operation hashes, accepted outcomes, state digests, and errors.
-- `cdk-federation` crate: consensus engine, in-memory test transport, signed private REST transport, optional later NAT-traversing transports, operation mempool, session outcomes, DB journal abstractions, and test harness.
+- `cdk-federation` crate: consensus engine, in-memory test transport, signed private REST transport, optional later NAT-traversing transports, operation mempool, catch-up certificates, DB journal abstractions, and test harness.
 - `cdk` mint federation mode: wraps mint operations with consensus submit/apply/await and uses a key-share signatory.
 - `cdk` wallet federation connector: fans out requests, validates partial responses against public shares, aggregates threshold shares, and returns ordinary wallet responses.
 - `cdk-mintd` federation config and commands: create local trusted-dealer configs, run member nodes, expose status, and start fakewallet-backed development federation tests.
@@ -567,7 +573,7 @@ Tests and success criteria:
 - [x] Generated 5-member configs have identical roster hashes and complete partner identity public-key allowlists.
 - [x] Generated 4-member/threshold-3 local smoke artifacts cover the same
   member-generic convergence, long-partition, pending-melt, quarantine,
-  key-rotation, Prometheus, and session-outcome checks as the larger matrix.
+  key-rotation, Prometheus, and catch-up certificate checks as the larger matrix.
   Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`.
   Standard and long-partition operation windows now use the smoke command's
   first-class `--operation-batches` option instead of relying on shell-only
@@ -633,7 +639,7 @@ Implementation checklist:
   than adding a separate crate. The runtime submit API, durable journal,
   response-waiter registry, finalized-item stream, and catch-up interface supply
   the exact boundaries used by Axum without introducing another workspace crate.
-- [x] Add `ConsensusItem::{Operation(FederatedMintOperation), ModuleFact(...), SessionSignature(...), Default(...)}`.
+- [x] Add `ConsensusItem::{Operation(FederatedMintOperation), ModuleFact(...), CatchUpCertificate(...), Default(...)}`.
 - [x] Retire the early in-memory single-node engine after replacing its useful
   coverage with direct journal tests and the AlephBFT runtime.
 - [x] Retire the early in-memory multi-node simulator and its unused parallel
@@ -649,8 +655,8 @@ Implementation checklist:
   simulation.
 - [x] Add a `DataProvider` equivalent that batches pending items, deduplicates operation hashes, and enforces max item size.
 - [x] Add a `FinalizationHandler` equivalent that applies ordered items to the DB transactionally.
-- [x] Add session outcomes signed by member identity keys.
-- [x] Store accepted items and signed session outcomes in the DB.
+- [x] Add catch-up certificates signed by member identity keys.
+- [x] Store accepted items and signed catch-up certificates in the DB.
 - [x] Add operation outcome notification so public HTTP handlers can await acceptance.
 - [x] Add bounded mempool and admission checks to avoid DoS by large invalid operations.
 
@@ -695,7 +701,7 @@ Fedimint lessons to adopt:
   fresh local signing decisions.
 - Waiting APIs must handle both races: the operation may already be accepted, or
   it may be accepted after the HTTP request starts waiting.
-- Signed session outcomes, accepted item logs, and state digests are catch-up
+- Signed catch-up certificates, accepted item logs, and state digests are catch-up
   and replay evidence. A lagging member must not serve signing shares or
   authoritative state until replay has certified convergence.
 
@@ -703,7 +709,7 @@ Architecture checklist:
 
 - [x] Add one production `FederationConsensusRuntime`, using Fedimint's AlephBFT
   integration as the reference
-  for data provider, finalization handler, keychain, network, session outcome,
+  for data provider, finalization handler, keychain, network, catch-up certificate,
   crash recovery, and catch-up design. The runtime directly owns proposal,
   finalized-item, journal, and catch-up state; there is no backend selector or
   parallel adapter type. Axum owns the upstream live-session tasks and durable
@@ -734,9 +740,9 @@ Architecture checklist:
   transport and the future AlephBFT proposal path share one operation admission
   boundary.
 - [x] Add peer identity allowlist validation before any AlephBFT message,
-  private REST submit, catch-up response, or signed session outcome is accepted.
+  private REST submit, catch-up response, or signed catch-up certificate is accepted.
   The existing signed private REST envelope verifies sender membership against
-  `FederationConfig`, and signed session-outcome quorum verification rejects
+  `FederationConfig`, and signed catch-up certificate quorum verification rejects
   unknown signers. The AlephBFT adapter runtime now constructs a roster-bound
   finalization handler from the configured members and rejects finalized units
   whose `submitting_member` is not in the roster before advancing unit indexes,
@@ -810,22 +816,22 @@ Architecture checklist:
   but still returns retryable pending-finalization and does not persist quote or
   journal state until the exact finalized unit is delivered.
 - [x] Store accepted session number, item index, canonical operation/order
-  commitment, and signed session outcome before considering an item durable.
+  commitment, and signed catch-up certificate before considering an item durable.
   `FederationJournalEntry` stores the immutable order chain and optional
   accepted-item consensus evidence with session, accepted item index, finalized
   unit position, submitting member, and member unit index. SQLite/Postgres
   journal persistence round-trips those fields. A later audit removed the
   duplicate journal state chain and derivable `operation_outcome_hash`; the
   distinct materialized-state commitment remains on signed status and catch-up
-  evidence. Full signed session-outcome
-  quorum linkage remains in the existing session-outcome table; core consensus
-  now exposes `apply_catch_up_response_with_session_outcome_quorum` so replay can
+  evidence. Full signed catch-up certificate
+  quorum linkage remains in the existing catch-up certificate table; core consensus
+  now exposes `apply_catch_up_response_with_catch_up_certificate_quorum` so replay can
   require quorum-signed evidence before appending peer entries. Axum REST peer
-  sync now collects matching session outcomes from other peers for the exact
+  sync now collects matching catch-up certificates from other peers for the exact
   catch-up range, applies through the quorum-verified replay primitive, and
   persists the accepted range plus evidence in one database transaction before
   reopening readiness. Startup replay now checks persisted contiguous
-  session-outcome quorum height after materializing durable entries, blocks
+  catch-up certificate quorum height after materializing durable entries, blocks
   public value-changing routes when evidence is missing, and restores healthy
   status when quorum evidence already covers the replayed height. Production
   startup now owns durable finalized-item recovery and validates the recovered
@@ -875,7 +881,7 @@ Architecture checklist:
   starts the session before restoring sync status and before the old
   private-REST finalized-unit driver, keeps stale persisted healthy status
   ignored until live finality exists, clears the startup halt for empty verified
-  histories, and keeps replayed histories in session-outcome verification until
+  histories, and keeps replayed histories in catch-up certificate verification until
   catch-up/recovery evidence explicitly opens public routes. A focused
   two-member in-process live-session test now injects the private REST transport
   into both router-owned upstream AlephBFT tasks, queues a real mint-quote
@@ -924,7 +930,7 @@ Architecture checklist:
   wallet operation batches. Longer repeated external partition runs remain an
   optional deployment-hardening exercise rather than an unchecked milestone.
 - [x] On startup, rebuild the consensus runtime from durable state, fetch missing
-  signed session outcomes or journal ranges from peers, replay unapplied items,
+  signed catch-up certificates or journal ranges from peers, replay unapplied items,
   and only then enable public federation mint/swap/melt/restore/check-state
   routes. The in-memory path already restores persisted journal/session evidence
   and readiness; the AlephBFT path now restores local finalized-item state and
@@ -932,7 +938,7 @@ Architecture checklist:
   live AlephBFT session before sync restore, keeps stale persisted healthy sync
   snapshots ignored until live finality is available, clears the startup halt
   for empty histories once live finality exists, and sends replayed histories to
-  session-outcome verification rather than opening public routes immediately.
+  catch-up certificate verification rather than opening public routes immediately.
   Public
   authoritative wallet routes also check the adapter finality mode directly, so
   a same-process healthy sync marker cannot bypass the
@@ -974,7 +980,7 @@ Architecture checklist:
   the oldest failed delivery is dropped from bounded runtime memory and counted
   when the queue exceeds its cap.
 - [x] Expose status for AlephBFT session, pending item
-  count, finalized item count, signed session outcome height, catch-up state,
+  count, finalized item count, signed catch-up certificate height, catch-up state,
   member lag, response-cache hit rate, and duplicate submissions. The
   `FederationConsensusRuntimeStatus` snapshot now exposes the runtime-visible
   subset through signed local status and `cdk-mintd federation status`: backend,
@@ -994,9 +1000,9 @@ Architecture checklist:
   now also expose response-cache lookup/hit counters,
   response-cache hit rate in basis points, duplicate-submission plus duplicate
   pending-waiter join counters, structured sync peer/operation-count fields for
-  lagging, catch-up, session-outcome verification, and materialized-state
+  lagging, catch-up, catch-up certificate verification, and materialized-state
   mismatch states, and signed
-  session-outcome quorum range fields (`from_index`, `latest_index`, operation
+  catch-up certificate quorum range fields (`from_index`, `latest_index`, operation
   count, and signer set). The status surface intentionally reports durable
   finalization indexes rather than fabricating unstable upstream round or
   consensus-height values.
@@ -1481,7 +1487,7 @@ AlephBFT and consensus unit tests:
   accepted mint shares into ordinary proofs, restore the accepted swap share,
   and elect exactly one fakewallet outgoing payment actor. The lagging member
   refuses authoritative reads, then replays whole finalized AlephBFT units and
-  obtains signed session-outcome certification. All five members converge on
+  obtains quorum-signed catch-up certification. All five members converge on
   journal order, finalized cursor, materialized state digest, proof states,
   payment observations, completed-operation rows, and exactly one provenance
   row per mint, swap, and melt-change share. Catch-up leaves the total outgoing
@@ -1553,13 +1559,13 @@ AlephBFT and consensus unit tests:
   five-member/threshold-three live sessions. Generated process smoke now also
   restarts a configurable member immediately after repeated all-member
   operation batches return and before the explicit convergence wait, then
-  requires status, convergence, and quorum-backed session-outcome evidence from
+  requires status, convergence, and quorum-backed catch-up certificates from
   the restarted member. The same generated process smoke now also runs fresh
   all-member wallet-operation batches through the recovered member before the
   later named long-partition window. That window now has explicit generated
   controls for the partitioned member, deterministic seed range, and operation
   batch count, then requires member status, convergence, and quorum-backed
-  session-outcome evidence after restart. A focused upstream-backup-only crash
+  catch-up certificates after restart. A focused upstream-backup-only crash
   window regression now copies real AlephBFT backup bytes into a fresh member
   database with no CDK finalized-item, journal, or quote rows, proves the live
   session replays and applies the backed-up finalized operation, advances the
@@ -1588,12 +1594,12 @@ AlephBFT and consensus unit tests:
   fed-regtest-aleph-rotation`. The generated rotation process gate now proves
   target session 2 before wallet batches and continues through the standard
   convergence checks.
-- [x] Catch-up from signed session outcomes and journal ranges rejects bad
+- [x] Catch-up from signed catch-up certificates and journal ranges rejects bad
   signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
   and state-digest mismatches. Covered by
-  `catch_up_response_rejects_bad_session_outcome_signature`,
-  `catch_up_response_rejects_truncated_signed_session_outcome_range`,
-  `catch_up_response_rejects_tampered_session_outcome`,
+  `catch_up_response_rejects_bad_catch_up_certificate_signature`,
+  `catch_up_response_rejects_truncated_signed_catch_up_certificate_range`,
+  `catch_up_response_rejects_tampered_catch_up_certificate`,
   `dummy_consensus_rejects_wrong_federation_catch_up_response`,
   `dummy_consensus_rejects_future_catch_up_response_version`,
   `dummy_consensus_rejects_future_operation_version_catch_up_response`,
@@ -1646,7 +1652,7 @@ AlephBFT and consensus unit tests:
 - [x] Session-outcome `range content mismatch` remains fail-closed. Mismatched
   or stale evidence is rejected before persistence, quorum certification,
   readiness changes, journal mutation, or materialized-state mutation. Focused
-  tests prove rejected evidence does not enter the session-outcome table.
+  tests prove rejected evidence does not enter the catch-up certificate table.
 - [x] AlephBFT backup persistence treats transient locked/busy database writes
   as retryable. Process benchmarking exposed a backup-saver termination after
   SQLite storage contention; the runtime now retries backup-byte persistence
@@ -1759,7 +1765,7 @@ AlephBFT and consensus unit tests:
   including exact idempotent duplicate delivery. The five-member equivocation
   test likewise requires no durable gossip watermark, and empty-session
   rotation is stimulated by bounded activity instead of periodic idle units.
-  The live partition/catch-up matrix uses actual threshold session-outcome
+  The live partition/catch-up matrix uses actual threshold catch-up certificate
   evidence, production activity pacing, and production-style runtime replay
   for restarted members. The new below-finality value/conflict regression uses
   genuine threshold-minted proofs and verifies zero pre-finality signature or
@@ -2069,7 +2075,7 @@ Success criteria:
   journal envelopes before accepted responses can be used for share-returning
   public paths, plus startup readiness coverage proving restore/check-state
   reads fail closed while replayed journal history is still awaiting quorum
-  session-outcome verification and reopen only after that quorum evidence is
+  catch-up certificate verification and reopen only after that quorum evidence is
   present. The final route audit also verifies that public mint, swap, melt, and
   restore paths return only persisted responses and that every returned share is
   reconstructed from accepted-journal provenance; orphan signature rows remain
@@ -2110,7 +2116,7 @@ Implementation checklist:
 - [x] Add DB traits for federation journal/database transactions, implemented as `FederationJournalDatabase` and `FederationJournalTransaction`.
 - [x] Add SQL migrations for SQLite and Postgres:
   - [x] `federation_config`, storing a durable public config digest snapshot and rejecting conflicting database reuse at federation startup.
-  - [x] `federation_session_outcomes`.
+  - [x] `federation_catch_up_certificates`.
   - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
   - [x] `federation_signature_share`, implemented as `federation_signature_shares`.
   - [x] `federation_payment_observations`.
@@ -2121,7 +2127,7 @@ Implementation checklist:
 - [x] Add state digest calculation over consensus-visible tables only.
 - [x] Exclude local private config, local connection status, logs, and caches from the digest.
 - [x] Add an audit summary similar to Fedimint's balance audit after each accepted operation.
-- [x] Persist accepted order digests and signed session outcomes as lightweight replay/catch-up evidence.
+- [x] Persist accepted order digests and signed catch-up certificates as lightweight replay/catch-up evidence.
 - [x] Keep the materialized-state digest in convergence status, signed session
   outcomes, and catch-up verification without storing it redundantly on every
   journal row or in a write-only digest-history table.
@@ -2453,7 +2459,7 @@ Implementation checklist:
 - [x] Refuse private REST requests whose signing key does not match the configured public key for the claimed sender member ID.
 - [x] Do not support dynamic peer admission in MVP; member add/remove must be an explicit later governance operation.
 - [x] Make REST messages idempotent so retries after timeouts cannot duplicate consensus proposals, payment observations, or configured development-backend outgoing attempts.
-- [x] Add REST endpoints for peer status, proposal submission, consensus messages, signed session outcomes, catch-up ranges, and state-digest comparison.
+- [x] Add REST endpoints for peer status, proposal submission, consensus messages, signed catch-up certificates, catch-up ranges, and state-digest comparison.
 - [x] Treat private signed REST as the default federation transport. It is sufficient for all mint-to-mint consensus, catch-up, DKG/setup, status, and AlephBFT message traffic when members have mutually reachable endpoints.
 - [x] Document that private REST requires reachable member endpoints or an
   external connectivity solution such as VPN, reverse tunnel, relay, or Tor.
@@ -2497,8 +2503,8 @@ Implementation checklist:
 - [x] Replay accepted items since last checkpoint if needed.
 - [x] Persist finalized consensus evidence and the immutable operation/order
   commitment; recompute the materialized-state digest from durable mint rows.
-- [x] Persist signed session outcomes so lagging members can verify catch-up data without trusting one peer.
-- [x] On reconnect, request missing signed session outcomes and accepted items from peers starting at the last durable local height.
+- [x] Persist signed catch-up certificates so lagging members can verify catch-up data without trusting one peer.
+- [x] On reconnect, request missing signed catch-up certificates and accepted items from peers starting at the last durable local height.
 - [x] Verify quorum or threshold signatures on catch-up data before replaying it locally.
 - [x] Replay accepted operations deterministically and recompute state digests after every session boundary.
 - [x] Regenerate deterministic signature shares from accepted operations when local share rows are missing.
@@ -2536,7 +2542,7 @@ Implementation checklist:
 - [x] Define the exact local-only database surface: private config, peer connection state, sequence trackers, logs, caches, local metrics, process metadata, and other fields excluded from equality.
 - [x] Implement a canonical state snapshot/export over consensus-visible rows.
 - [x] Implement a state digest over the canonical snapshot.
-- [x] Include state digests in signed session outcomes and admin status reporting.
+- [x] Include state digests in signed catch-up certificates and admin status reporting.
 - [x] Include materialized-state digests in signed status/session evidence and
   compare them after catch-up; the write-only digest-history table and retention
   policy were removed.
@@ -2544,7 +2550,7 @@ Implementation checklist:
   commitment; compute the distinct materialized-state digest from canonical rows.
 - [x] Implement an admin command to compare state digests across members.
 - [x] Implement an optional admin command to diff consensus-visible rows when digests differ.
-- [x] Require catch-up data to include quorum-signed session outcomes or equivalent authenticated evidence.
+- [x] Require catch-up data to include quorum-signed catch-up certificates or equivalent authenticated evidence.
 - [x] Reject catch-up ranges with missing, duplicated, reordered, tampered, or conflicting entries.
 - [x] Replay accepted operations deterministically from the last durable local height.
 - [x] Recompute state digest after replay and compare it to quorum-reported digest.
@@ -2566,7 +2572,7 @@ Tests and success criteria:
   all-members and offline-member windows. It also restarts a configurable
   member immediately after the repeated all-member operation batches return and
   before the explicit convergence wait, then requires the restarted member to
-  recover status, convergence, quorum-backed session-outcome evidence, and a
+  recover status, convergence, quorum-backed catch-up certificates, and a
   post-restart all-member wallet-operation batch. Post-crash batches now use a
   generated seed-offset range that defaults after the initial standard range and
   is validated to avoid deterministic smoke-wallet seed reuse. The AlephBFT
@@ -2607,7 +2613,7 @@ Tests and success criteria:
 - [x] Add AlephBFT live private-REST catch-up certification tests for
   self-partitioned proposers, below-quorum-offline operation windows, and
   above-quorum-offline stall windows. These tests must verify reconnect
-  catch-up through finalized-item cursors and signed session-outcome evidence,
+  catch-up through finalized-item cursors and signed catch-up certificates,
   state-digest equality across all honest members, lagging-member fail-closed
   behavior before certification, no duplicate signing, no duplicate outgoing
   payment attempts, and deterministic handling of any queued operations that
@@ -2616,7 +2622,7 @@ Tests and success criteria:
   window, basic two-member-offline stall/recovery window, and above-quorum
   queued swap-conflict plus melt window are now covered by the five-member live
   matrix. Coverage includes autonomous pending finality, fail-closed
-  pre-certification reads, finalized-item replay, signed session-outcome
+  pre-certification reads, finalized-item replay, signed catch-up certificate
   certification, cursor/journal/state-digest convergence, mint/swap/melt share
   provenance, payment-observation replay, deterministic conflict rejection and
   duplicate retry, one elected outgoing payment attempt, and zero post-finality
@@ -2730,7 +2736,7 @@ Tests and success criteria:
 - [x] `just fed-regtest` target and generated smoke scripts exist for development-backend federation runs.
 - [x] Generated local smoke scripts have explicit 4-member/threshold-3 matrix
   coverage and exercise member-generic convergence, offline operation, pending
-  paid/failed melt, quarantine, key-rotation, Prometheus, and session-outcome
+  paid/failed melt, quarantine, key-rotation, Prometheus, and catch-up certificate
   gates. Covered by `trusted_dealer_smoke_script_supports_four_member_bft_matrix`;
   repeated standard/long-partition operation batches are now generated-script knobs
   backed by the validated smoke command option and covered by the
@@ -3863,7 +3869,7 @@ Verified setup-transcript rotation-lineage checkpoint:
 
 Operation encoding migration plan:
 
-- Treat `FederationProtocolVersions.operation`, `consensus_item`, `rest_api`, and `session_outcome` as hard compatibility gates. A member must reject startup config, wallet metadata, private REST payloads, consensus items, session outcomes, operation admission, runtime replay, and catch-up material when any advertised or embedded major version differs from the current build.
+- Treat `FederationProtocolVersions.operation`, `consensus_item`, `rest_api`, and `catch_up_certificate` as hard compatibility gates. A member must reject startup config, wallet metadata, private REST payloads, consensus items, catch-up certificates, operation admission, runtime replay, and catch-up material when any advertised or embedded major version differs from the current build.
 - Because federation has not been deployed, federation JSON must be strict: do
   not silently default missing protocol-version metadata, missing
   payment-observation policy, partial payment-observation contexts, implicit
@@ -3874,7 +3880,7 @@ Operation encoding migration plan:
 - For a future operation encoding change, introduce the new decoder and encoder behind a new `FEDERATION_OPERATION_VERSION` plus golden vectors before any federation advertises it. The operation hash transcript must remain domain-separated by the versioned envelope bytes so old and new encodings cannot collide.
 - For a future consensus item encoding change, bump `FEDERATION_CONSENSUS_ITEM_VERSION`, add item-level admission tests for `Operation`, `ModuleFact`, `Default`, and any production BFT items, and require stale members to reject queue admission before dispatch.
 - Rollout must be all-or-nothing for a federation roster until dynamic upgrade governance exists: generate a new public config advertising the new versions, require all members to load the same config, refuse mixed-version rosters at startup, and keep old members halted rather than participating in consensus.
-- Catch-up/replay is the last safety gate. Persisted journal entries and peer catch-up responses must be revalidated through the embedded operation envelope version and session-outcome version before updating local journal state or materialized mint state.
+- Catch-up/replay is the last safety gate. Persisted journal entries and peer catch-up responses must be revalidated through the embedded operation envelope version and catch-up certificate version before updating local journal state or materialized mint state.
 - Every encoding migration needs checked-in canonical vectors, stale-config startup tests, consensus item admission rejection tests, catch-up/replay rejection tests, and wallet metadata rejection tests before release.
 
 ## Milestone 22: observability and operator safety
@@ -3972,9 +3978,9 @@ Implementation checklist:
 - [x] Split trusted-dealer federation key/config generation from local fakewallet regtest config generation.
 - [x] Allow `cdk-mintd federation trusted-dealer` or its successor setup command to generate member identities, public federation config, private member configs, BLS shares, and aggregate keysets without enabling the `fakewallet` feature.
 - [x] Keep fakewallet-specific member config generation in a dev/regtest wrapper command, generated smoke harness, or `just` target rather than in the key generation path.
-- [x] Add federation config for peer sync interval, peer request timeout, operation submission timeout, catch-up limits, digest recheck attempts, digest recheck delay, session outcome evidence chunk size, and related retry policy.
+- [x] Add federation config for peer sync interval, peer request timeout, operation submission timeout, catch-up limits, digest recheck attempts, digest recheck delay, catch-up certificates chunk size, and related retry policy.
 - [x] Add wallet federation connector configuration for per-member fallback timeout, member request timeout, member request retries, quote-status polling timeout, and fanout concurrency.
-- [x] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and session outcomes.
+- [x] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and catch-up certificates.
 - [x] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
 - [x] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.
 - [x] Extract federation code and tests into logical submodules where it improves
@@ -4010,7 +4016,7 @@ Tests and success criteria:
 - [x] A production-mode federation config with a dev/test single-observation policy fails startup unless an explicit development override is set.
 - [x] Custom peer sync, catch-up, digest recheck, operation submission, and wallet fallback timeouts are honored in unit tests.
 - [x] Restart tests prove accepted-but-unapplied federation operations are replayed from the database and converge to the same state digest.
-- [x] Private REST status, catch-up, digest, and session outcome tests read from durable database state rather than an in-memory journal scaffold.
+- [x] Private REST status, catch-up, digest, and catch-up certificate tests read from durable database state rather than an in-memory journal scaffold.
 - [x] Fake-wallet regtest still passes through the normal CDK payment backend interface.
 - [x] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
 - [x] Module split/refactor keeps focused federation tests passing without behavioral changes. `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed 33 tests after extracting the consensus test module, `cargo test -p cdk --features federation runtime_config_ -- --test-threads 1` passed 23 tests after extracting the mint federation runtime/admission test module, `cargo test -p cdk --features federation mint::federation::tests::melt -- --test-threads 1` passed 22 tests after extracting the stateful melt test module, and `cargo test -p cdk --features federation mint::federation::tests::swap -- --test-threads 1` passed 12 tests after extracting the stateful swap test module.
@@ -4524,7 +4530,7 @@ milestones.
 - [x] Run a separate release CLI wallet against the restarted DKG federation.
   Federation import, mint-info, mint, send/receive swap, melt, restore, and
   balances succeed. An immediate post-operation readiness check correctly
-  fails closed while session-outcome evidence is behind; after process restart,
+  fails closed while catch-up certificate coverage is behind; after process restart,
   signed catch-up and full digest convergence complete in 7 seconds with no
   digest or invalid-operation alerts.
 - [x] Keep the generated live-DKG harness valid when optional metrics are

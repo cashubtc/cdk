@@ -48,12 +48,12 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) duplicate_submissions: u64,
     pub(crate) duplicate_pending_waiter_joins: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) session_outcome_quorum_operation_count: Option<u64>,
+    pub(crate) catch_up_certificate_quorum_operation_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) session_outcome_quorum_from_index: Option<u64>,
+    pub(crate) catch_up_certificate_quorum_from_index: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) session_outcome_quorum_latest_index: Option<u64>,
-    pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
+    pub(crate) catch_up_certificate_quorum_latest_index: Option<u64>,
+    pub(crate) catch_up_certificate_quorum_signers: Vec<MemberId>,
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
@@ -98,8 +98,8 @@ pub(crate) async fn run_status_command(
     if let Some(max_operation_lag) = args.max_operation_lag {
         ensure_statuses_operation_lag(&statuses, max_operation_lag)?;
     }
-    if args.require_session_outcome_quorum {
-        ensure_statuses_session_outcome_quorum(&public_config, &statuses)?;
+    if args.require_catch_up_certificate_quorum {
+        ensure_statuses_catch_up_certificate_quorum(&public_config, &statuses)?;
     }
     if args.require_no_payment_observation_alerts {
         ensure_statuses_no_payment_observation_alerts(&statuses)?;
@@ -296,13 +296,16 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .latest_index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let session_outcome_quorum_operations = status
-        .session_outcome_quorum_operation_count
+    let catch_up_certificate_quorum_operations = status
+        .catch_up_certificate_quorum_operation_count
         .map(|count| count.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let session_outcome_quorum_from = option_u64(status.session_outcome_quorum_from_index);
-    let session_outcome_quorum_latest = option_u64(status.session_outcome_quorum_latest_index);
-    let session_outcome_quorum_signers = member_list(&status.session_outcome_quorum_signers);
+    let catch_up_certificate_quorum_from =
+        option_u64(status.catch_up_certificate_quorum_from_index);
+    let catch_up_certificate_quorum_latest =
+        option_u64(status.catch_up_certificate_quorum_latest_index);
+    let catch_up_certificate_quorum_signers =
+        member_list(&status.catch_up_certificate_quorum_signers);
     let sync_peer = status
         .sync_peer
         .map(|peer| peer.to_string())
@@ -319,7 +322,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .map(|digest| digest.to_string())
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} materialized_state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
+        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} materialized_state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} catch_up_certificate_quorum_operations={} catch_up_certificate_quorum_from={} catch_up_certificate_quorum_latest={} catch_up_certificate_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -340,10 +343,10 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         status.response_cache_hit_rate_bps,
         status.duplicate_submissions,
         status.duplicate_pending_waiter_joins,
-        session_outcome_quorum_operations,
-        session_outcome_quorum_from,
-        session_outcome_quorum_latest,
-        session_outcome_quorum_signers,
+        catch_up_certificate_quorum_operations,
+        catch_up_certificate_quorum_from,
+        catch_up_certificate_quorum_latest,
+        catch_up_certificate_quorum_signers,
         payment_reports,
         payment_conflicts,
         payment_unresolved,
@@ -659,7 +662,7 @@ fn ensure_statuses_have_materialized_state_digest(
     Ok(())
 }
 
-fn ensure_statuses_session_outcome_quorum(
+fn ensure_statuses_catch_up_certificate_quorum(
     public_config: &FederationConfig,
     statuses: &[FederationLocalStatusResponse],
 ) -> Result<()> {
@@ -669,16 +672,17 @@ fn ensure_statuses_session_outcome_quorum(
         if operation_count == 0 {
             continue;
         }
-        let Some(quorum_operation_count) = status.session_outcome_quorum_operation_count else {
+        let Some(quorum_operation_count) = status.catch_up_certificate_quorum_operation_count
+        else {
             bail!(
-                "federation member {} has {} operations but no session outcome quorum evidence",
+                "federation member {} has {} operations but no catch-up certificate quorum evidence",
                 status.peer_status.member_id,
                 operation_count
             );
         };
         if quorum_operation_count < operation_count {
             bail!(
-                "federation member {} has session outcome quorum evidence for {} operations, below current operation count {}",
+                "federation member {} has catch-up certificate quorum evidence for {} operations, below current operation count {}",
                 status.peer_status.member_id,
                 quorum_operation_count,
                 operation_count
@@ -686,10 +690,10 @@ fn ensure_statuses_session_outcome_quorum(
         }
 
         let mut distinct_signers = BTreeSet::new();
-        for signer in &status.session_outcome_quorum_signers {
+        for signer in &status.catch_up_certificate_quorum_signers {
             if public_config.member(*signer).is_none() {
                 bail!(
-                    "federation member {} reports unknown session outcome quorum signer {}",
+                    "federation member {} reports unknown catch-up certificate quorum signer {}",
                     status.peer_status.member_id,
                     signer
                 );
@@ -698,7 +702,7 @@ fn ensure_statuses_session_outcome_quorum(
         }
         if distinct_signers.len() < required {
             bail!(
-                "federation member {} has {} distinct session outcome quorum signers, required {}",
+                "federation member {} has {} distinct catch-up certificate quorum signers, required {}",
                 status.peer_status.member_id,
                 distinct_signers.len(),
                 required

@@ -589,7 +589,7 @@
               The present implementation is intentionally not a distributed BFT
               consensus algorithm. It is a testable in-memory scaffold whose API
               and data objects are designed to be reused by a future AlephBFT
-              engine, quorum-signed session outcomes, state digests, real
+              engine, quorum-signed catch-up certificates, state digests, real
               payment-observation policy, and dealer-free DKG.
             </p>
           </section>
@@ -718,7 +718,7 @@
                 At this historical checkpoint, the code recorded operations
                 into <code>InMemoryFederationConsensus</code>. It persisted and
                 replayed the accepted operation journal, but did not yet run
-                AlephBFT, attach quorum-signed session outcomes, or compute
+                AlephBFT, attach quorum-signed catch-up certificates, or compute
                 materialized-state digests. That scaffold has since been
                 removed.
               </p>
@@ -1208,7 +1208,7 @@ order_digest_i = sha256(
                 deterministic append log rather than a distributed quorum. The
                 remaining consensus limitation is not the absence of mint/swap/
                 melt apply paths; it is the absence of a real replicated BFT
-                ordering engine, quorum-signed session outcomes, and
+                ordering engine, quorum-signed catch-up certificates, and
                 materialized state digests.
               </p>
             </div>
@@ -1354,7 +1354,7 @@ order_digest_i = sha256(
               routes fail closed when the local sync guard is lagging,
               catching up, or halted. The remaining security caveat is that
               catch-up entries are not yet backed by quorum-signed consensus
-              session outcomes, and order digests are not yet paired with
+              catch-up certificates, and order digests are not yet paired with
               materialized state digests.
             </p>
           </section>

@@ -80,15 +80,15 @@ pub use self::signing::{
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationCatchUpOperation, FederationDkgActivationRequest, FederationDkgCommitmentRequest,
-    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FEDERATION_REST_API_VERSION,
-    FEDERATION_SESSION_OUTCOME_VERSION,
+    FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
+    FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationRestSignature, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
+    FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
@@ -1095,29 +1095,35 @@ pub enum FederationError {
         /// Sender whose signature was checked.
         member_id: MemberId,
     },
-    /// Signed session outcome used an unsupported payload version.
-    #[error("Federation session outcome version mismatch: expected={expected}, found={found}")]
-    SessionOutcomeVersionMismatch {
-        /// Expected session outcome version.
+    /// Signed catch-up certificate used an unsupported payload version.
+    #[error(
+        "Federation catch-up certificate version mismatch: expected={expected}, found={found}"
+    )]
+    CatchUpCertificateVersionMismatch {
+        /// Expected catch-up certificate version.
         expected: u16,
-        /// Found session outcome version.
+        /// Found catch-up certificate version.
         found: u16,
     },
-    /// Signed session outcome did not match the catch-up response it accompanied.
-    #[error("Federation session outcome mismatch: {reason}")]
-    SessionOutcomeMismatch {
+    /// Signed catch-up certificate did not match the catch-up response it accompanied.
+    #[error("Federation catch-up certificate mismatch: {reason}")]
+    CatchUpCertificateMismatch {
         /// Human-readable mismatch reason.
         reason: String,
     },
-    /// Signed session outcome had an invalid member identity signature.
-    #[error("Federation session outcome signature verification failed for member {member_id}")]
-    SessionOutcomeSignatureVerificationFailed {
+    /// Signed catch-up certificate had an invalid member identity signature.
+    #[error(
+        "Federation catch-up certificate signature verification failed for member {member_id}"
+    )]
+    CatchUpCertificateSignatureVerificationFailed {
         /// Member whose signature was checked.
         member_id: MemberId,
     },
-    /// Not enough distinct members signed matching session outcomes.
-    #[error("Federation session outcome quorum not reached: required={required}, found={found}")]
-    SessionOutcomeQuorumNotReached {
+    /// Not enough distinct members signed matching catch-up certificates.
+    #[error(
+        "Federation catch-up certificate quorum not reached: required={required}, found={found}"
+    )]
+    CatchUpCertificateQuorumNotReached {
         /// Required distinct member signatures.
         required: u16,
         /// Valid distinct member signatures found.
@@ -1481,7 +1487,7 @@ impl ThresholdParams {
 /// Federation protocol component versions advertised in public metadata.
 ///
 /// These versions let members and federation-aware wallets fail closed when a
-/// config requires operation, consensus, private REST, or session-outcome
+/// config requires operation, consensus, private REST, or catch-up certificate
 /// semantics they do not understand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationProtocolVersions {
@@ -1491,8 +1497,8 @@ pub struct FederationProtocolVersions {
     pub consensus_item: u16,
     /// Private federation REST API version.
     pub rest_api: u16,
-    /// Signed session-outcome payload version.
-    pub session_outcome: u16,
+    /// Signed catch-up certificate payload version.
+    pub catch_up_certificate: u16,
 }
 
 impl FederationProtocolVersions {
@@ -1503,7 +1509,7 @@ impl FederationProtocolVersions {
             operation: FEDERATION_OPERATION_VERSION,
             consensus_item: FEDERATION_CONSENSUS_ITEM_VERSION,
             rest_api: FEDERATION_REST_API_VERSION,
-            session_outcome: FEDERATION_SESSION_OUTCOME_VERSION,
+            catch_up_certificate: FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
         }
     }
 
@@ -1518,9 +1524,9 @@ impl FederationProtocolVersions {
         )?;
         validate_protocol_component("rest_api", current.rest_api, self.rest_api)?;
         validate_protocol_component(
-            "session_outcome",
-            current.session_outcome,
-            self.session_outcome,
+            "catch_up_certificate",
+            current.catch_up_certificate,
+            self.catch_up_certificate,
         )?;
         Ok(())
     }
@@ -1530,7 +1536,7 @@ impl FederationProtocolVersions {
             self.operation,
             self.consensus_item,
             self.rest_api,
-            self.session_outcome,
+            self.catch_up_certificate,
         )
     }
 
@@ -1539,7 +1545,7 @@ impl FederationProtocolVersions {
             operation: info.operation,
             consensus_item: info.consensus_item,
             rest_api: info.rest_api,
-            session_outcome: info.session_outcome,
+            catch_up_certificate: info.catch_up_certificate,
         }
     }
 }
@@ -4757,9 +4763,9 @@ impl FederationConfig {
             advertised_versions.rest_api,
         )?;
         validate_protocol_component(
-            "session_outcome",
-            self.protocol_versions.session_outcome,
-            advertised_versions.session_outcome,
+            "catch_up_certificate",
+            self.protocol_versions.catch_up_certificate,
+            advertised_versions.catch_up_certificate,
         )?;
 
         Ok(())
@@ -5828,9 +5834,9 @@ mod tests {
         );
         assert_eq!(
             versions
-                .get("session_outcome")
+                .get("catch_up_certificate")
                 .and_then(serde_json::Value::as_u64),
-            Some(u64::from(FEDERATION_SESSION_OUTCOME_VERSION))
+            Some(u64::from(FEDERATION_CATCH_UP_CERTIFICATE_VERSION))
         );
     }
 
@@ -5883,11 +5889,16 @@ mod tests {
         rest_api.protocol_versions.rest_api = found;
         assert_protocol_version_mismatch(rest_api, "rest_api", expected, found);
 
-        let mut session_outcome = config;
-        let expected = session_outcome.protocol_versions.session_outcome;
+        let mut catch_up_certificate = config;
+        let expected = catch_up_certificate.protocol_versions.catch_up_certificate;
         let found = expected.saturating_add(1);
-        session_outcome.protocol_versions.session_outcome = found;
-        assert_protocol_version_mismatch(session_outcome, "session_outcome", expected, found);
+        catch_up_certificate.protocol_versions.catch_up_certificate = found;
+        assert_protocol_version_mismatch(
+            catch_up_certificate,
+            "catch_up_certificate",
+            expected,
+            found,
+        );
     }
 
     #[test]

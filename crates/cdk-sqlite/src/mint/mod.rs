@@ -445,7 +445,7 @@ mod test {
             "completed_operations",
             "federation_journal_entries",
             "federation_member_sequences",
-            "federation_session_outcomes",
+            "federation_catch_up_certificates",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
             "federation_aleph_bft_pending_operations",
@@ -560,7 +560,7 @@ mod test {
             WHERE type = 'index'
               AND tbl_name IN (
                   'federation_journal_entries',
-                  'federation_session_outcomes',
+                  'federation_catch_up_certificates',
                   'federation_aleph_bft_finalized_items',
                   'federation_aleph_bft_pending_operations',
                   'federation_payment_observations',
@@ -588,8 +588,8 @@ mod test {
             "missing federation operation-id index"
         );
         assert!(
-            index_names.contains("idx_federation_session_outcomes_from_index"),
-            "missing federation session-outcome range index"
+            index_names.contains("idx_federation_catch_up_certificates_from_index"),
+            "missing federation catch-up certificate range index"
         );
         assert!(
             index_names.contains("idx_federation_aleph_bft_finalized_items_session_unit"),
@@ -702,22 +702,25 @@ mod test {
         );
         assert_uses_indexed_search(&operation_lookup_plan, "federation_journal_entries");
 
-        let session_outcome_plan = explain_details(
+        let catch_up_certificate_plan = explain_details(
             query(
                 r#"
                 EXPLAIN QUERY PLAN
-                SELECT outcome_json
-                FROM federation_session_outcomes
+                SELECT certificate_json
+                FROM federation_catch_up_certificates
                 WHERE from_index >= 1
                 ORDER BY from_index ASC, signer_member_id ASC
                 "#,
             )
-            .expect("session-outcome plan query")
+            .expect("catch-up certificate plan query")
             .fetch_all(&*conn)
             .await
-            .expect("session-outcome query plan"),
+            .expect("catch-up certificate query plan"),
         );
-        assert_uses_indexed_search(&session_outcome_plan, "federation_session_outcomes");
+        assert_uses_indexed_search(
+            &catch_up_certificate_plan,
+            "federation_catch_up_certificates",
+        );
 
         let payment_observation_plan = explain_details(
             query(

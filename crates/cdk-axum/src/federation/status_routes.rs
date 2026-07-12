@@ -14,10 +14,10 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, cdk_error_response, local_peer_order_status,
-    local_peer_status, local_peer_status_with_materialized_rows,
-    payment_observation_report_summaries, session_outcome_quorum_status, verify_federation_request,
-    SessionOutcomeQuorumStatus,
+    acquire_private_rest_admission, anyhow_response, catch_up_certificate_quorum_status,
+    cdk_error_response, local_peer_order_status, local_peer_status,
+    local_peer_status_with_materialized_rows, payment_observation_report_summaries,
+    verify_federation_request, CatchUpCertificateQuorumStatus,
 };
 
 #[instrument(skip_all)]
@@ -59,7 +59,7 @@ pub(super) async fn post_local_status(
         )
     };
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
-    let session_outcome_quorum = session_outcome_quorum_status(&state.mint)
+    let catch_up_certificate_quorum = catch_up_certificate_quorum_status(&state.mint)
         .await
         .map_err(cdk_error_response)?;
     let payment_observation_reports = payment_observation_report_summaries(&state)
@@ -75,7 +75,7 @@ pub(super) async fn post_local_status(
     let response = FederationLocalStatusResponse::new(
         peer_status,
         sync_status,
-        session_outcome_quorum,
+        catch_up_certificate_quorum,
         payment_observation_reports,
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
@@ -119,12 +119,12 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) duplicate_submissions: u64,
     pub(crate) duplicate_pending_waiter_joins: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) session_outcome_quorum_operation_count: Option<u64>,
+    pub(crate) catch_up_certificate_quorum_operation_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) session_outcome_quorum_from_index: Option<u64>,
+    pub(crate) catch_up_certificate_quorum_from_index: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) session_outcome_quorum_latest_index: Option<u64>,
-    pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
+    pub(crate) catch_up_certificate_quorum_latest_index: Option<u64>,
+    pub(crate) catch_up_certificate_quorum_signers: Vec<cdk::federation::MemberId>,
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
@@ -138,7 +138,7 @@ impl FederationLocalStatusResponse {
     fn new(
         peer_status: FederationPeerStatus,
         sync_status: crate::FederationSyncStatus,
-        session_outcome_quorum: Option<SessionOutcomeQuorumStatus>,
+        catch_up_certificate_quorum: Option<CatchUpCertificateQuorumStatus>,
         payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
         materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
         pending_mempool_items: u64,
@@ -154,11 +154,11 @@ impl FederationLocalStatusResponse {
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
         let (
-            session_outcome_quorum_operation_count,
-            session_outcome_quorum_from_index,
-            session_outcome_quorum_latest_index,
-            session_outcome_quorum_signers,
-        ) = match session_outcome_quorum {
+            catch_up_certificate_quorum_operation_count,
+            catch_up_certificate_quorum_from_index,
+            catch_up_certificate_quorum_latest_index,
+            catch_up_certificate_quorum_signers,
+        ) = match catch_up_certificate_quorum {
             Some(quorum) => (
                 Some(quorum.operation_count),
                 Some(quorum.from_index),
@@ -188,10 +188,10 @@ impl FederationLocalStatusResponse {
             ),
             duplicate_submissions,
             duplicate_pending_waiter_joins,
-            session_outcome_quorum_operation_count,
-            session_outcome_quorum_from_index,
-            session_outcome_quorum_latest_index,
-            session_outcome_quorum_signers,
+            catch_up_certificate_quorum_operation_count,
+            catch_up_certificate_quorum_from_index,
+            catch_up_certificate_quorum_latest_index,
+            catch_up_certificate_quorum_signers,
             payment_observation_reports,
             aleph_bft_status,
             aleph_bft_live_session_active,
@@ -221,7 +221,7 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
         "healthy",
         "lagging",
         "catching_up",
-        "verifying_session_outcome",
+        "verifying_catch_up_certificate",
         "materialized_state_mismatch",
         "halted",
     ];
@@ -246,10 +246,10 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
             *state == response.sync_state,
         );
     }
-    cdk_prometheus::METRICS.set_federation_session_outcome_quorum_operation_count(
+    cdk_prometheus::METRICS.set_federation_catch_up_certificate_quorum_operation_count(
         &member,
         response
-            .session_outcome_quorum_operation_count
+            .catch_up_certificate_quorum_operation_count
             .map(super::u64_to_i64_saturating)
             .unwrap_or(0),
     );

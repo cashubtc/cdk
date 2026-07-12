@@ -85,7 +85,7 @@ Implement the system in the order defined by `docs/federated-cashu-implementatio
 6. Implement in-memory transport and private REST federation transport behind a common trait.
 7. Implement signed member-to-member envelopes and reject all traffic from unknown or mismatched federation partners.
 8. Implement a consensus abstraction and an in-memory consensus engine for deterministic tests.
-9. Add the federation database journal, session outcomes, state digests, replay, and catch-up primitives.
+9. Add the federation database journal, catch-up certificates, state digests, replay, and catch-up primitives.
 10. Refactor CDK mint business logic into deterministic state-machine apply steps.
 11. Implement federated mint quote creation, fake-wallet paid observations, issuance consensus, signature shares, response caching, and wallet aggregation.
 12. Implement sliding-window and conflicting-output mint attack regressions.

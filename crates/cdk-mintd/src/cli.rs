@@ -481,9 +481,9 @@ pub struct FederationStatusArgs {
     /// Fail if any queried member is more than this many accepted operations behind the highest queried member.
     #[arg(long)]
     pub max_operation_lag: Option<u64>,
-    /// Fail if queried members with accepted operations lack quorum-backed session outcome evidence.
+    /// Fail if queried members with accepted operations lack quorum-backed catch-up certificates.
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub require_session_outcome_quorum: bool,
+    pub require_catch_up_certificate_quorum: bool,
     /// Fail if queried members report or reveal equal-height digest mismatches.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_digest_alerts: bool,
@@ -1179,7 +1179,7 @@ mod tests {
             "--require-converged",
             "--max-operation-lag",
             "2",
-            "--require-session-outcome-quorum",
+            "--require-catch-up-certificate-quorum",
             "--require-no-digest-alerts",
             "--require-no-payment-observation-alerts",
             "--require-no-invalid-operation-alerts",
@@ -1204,7 +1204,7 @@ mod tests {
         assert!(status.require_ready);
         assert!(status.require_converged);
         assert_eq!(status.max_operation_lag, Some(2));
-        assert!(status.require_session_outcome_quorum);
+        assert!(status.require_catch_up_certificate_quorum);
         assert!(status.require_no_digest_alerts);
         assert!(status.require_no_payment_observation_alerts);
         assert!(status.require_no_invalid_operation_alerts);

@@ -48,7 +48,7 @@ The split is:
 - Fedimint receives ordered units and processes their contents.
 - Fedimint modules decide whether each ordered item is valid against current
   state.
-- Fedimint stores a signed `SessionOutcome` after the session is complete.
+- Fedimint stores a signed `CatchUpCertificate` after the session is complete.
 
 This means one guardian can propose a valid transaction. If AlephBFT finalizes
 the unit containing that transaction, all honest guardians will process the
@@ -62,7 +62,7 @@ rules before accepting any state transition.
 Threshold counting still exists, but at different layers:
 
 - AlephBFT uses threshold assumptions internally to finalize order.
-- Fedimint validates threshold signatures on completed session outcomes.
+- Fedimint validates threshold signatures on completed catch-up certificates.
 - Clients wait for threshold API responses.
 - Mint clients collect threshold blind-signature shares.
 
@@ -91,13 +91,13 @@ AlephBFT handles offline or faulty guardians up to this fault threshold. If too
 many guardians are offline, safety should still hold, but new consensus progress
 stalls until enough guardians return. Fedimint adds operational handling around
 this, such as session timeouts, persisted AlephBFT units for crash recovery, and
-signed session outcomes for catching up, but it does not bypass the BFT
+signed catch-up certificates for catching up, but it does not bypass the BFT
 threshold requirement.
 
 ## Sessions and Rounds
 
 Fedimint consensus is organized into sessions. A session collects and orders
-items, produces a `SessionOutcome`, gathers a threshold of guardian signatures
+items, produces a `CatchUpCertificate`, gathers a threshold of guardian signatures
 over that outcome, stores it, and then moves to the next session.
 
 There is not a simple "block every N seconds" rule.
@@ -112,7 +112,7 @@ delay. Later rounds use the configured delay with jitter. A session also has:
 - `broadcast_rounds_per_session`
 
 After that many rounds, Fedimint stops collecting more transaction batches for
-the session and finishes the session outcome.
+the session and finishes the catch-up certificate.
 
 So transaction processing is closer to continuous BFT ordering with round
 pacing than fixed-interval block production.

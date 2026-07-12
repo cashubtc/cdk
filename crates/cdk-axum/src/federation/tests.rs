@@ -122,13 +122,13 @@ fn federation_peer_sync_disable_value_accepts_truthy_values() {
 }
 
 #[test]
-fn session_outcome_quorum_prefix_stops_when_next_index_would_overflow() {
+fn catch_up_certificate_quorum_prefix_stops_when_next_index_would_overflow() {
     let mut signers = BTreeSet::new();
     signers.insert(member_id(1));
     let mut quorums = BTreeMap::new();
     quorums.insert(
         0,
-        vec![cdk::federation::FederationSessionOutcomeQuorum {
+        vec![cdk::federation::FederationCatchUpCertificateQuorum {
             required: 1,
             signers,
             from_index: 0,
@@ -138,7 +138,8 @@ fn session_outcome_quorum_prefix_stops_when_next_index_would_overflow() {
         }],
     );
 
-    let status = contiguous_session_outcome_quorum_prefix(&quorums).expect("quorum prefix status");
+    let status =
+        contiguous_catch_up_certificate_quorum_prefix(&quorums).expect("quorum prefix status");
 
     assert_eq!(status.from_index, 0);
     assert_eq!(status.latest_index, u64::MAX);
@@ -146,9 +147,9 @@ fn session_outcome_quorum_prefix_stops_when_next_index_would_overflow() {
 }
 
 #[test]
-fn session_outcome_range_rejects_span_larger_than_available_entries() {
+fn catch_up_certificate_range_rejects_span_larger_than_available_entries() {
     let order_digest = cdk::federation::FederationJournalDigest::genesis();
-    let range = SessionOutcomeRangeKey {
+    let range = CatchUpCertificateRangeKey {
         from_index: 0,
         operation_count: u64::MAX,
         latest_index: u64::MAX - 1,
@@ -159,7 +160,7 @@ fn session_outcome_range_rejects_span_larger_than_available_entries() {
         operation_ids: Vec::new(),
     };
 
-    assert!(entries_for_session_outcome_range(&BTreeMap::new(), &range).is_none());
+    assert!(entries_for_catch_up_certificate_range(&BTreeMap::new(), &range).is_none());
 }
 
 #[test]
@@ -191,11 +192,11 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             ..valid
         },
         FederationPeerSyncConfig {
-            session_outcome_evidence_chunk_size: 0,
+            catch_up_certificate_chunk_size: 0,
             ..valid
         },
         FederationPeerSyncConfig {
-            session_outcome_evidence_chunk_size: usize::from(u16::MAX) + 1,
+            catch_up_certificate_chunk_size: usize::from(u16::MAX) + 1,
             ..valid
         },
         FederationPeerSyncConfig {
@@ -2082,7 +2083,7 @@ fn signed_catch_up_response(
     private_config: &MemberConfigPrivate,
 ) -> FederationJournalCatchUpResponse {
     response
-        .with_signed_session_outcome(private_config)
+        .with_signed_catch_up_certificate(private_config)
         .expect("signed catch-up response")
 }
 
@@ -3831,9 +3832,9 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
     let persisted_outcomes = state
         .mint
         .localstore()
-        .get_federation_session_outcomes()
+        .get_federation_catch_up_certificates()
         .await
-        .expect("persisted session outcomes");
+        .expect("persisted catch-up certificates");
     assert_eq!(persisted_outcomes.len(), 2);
     assert_eq!(persisted_outcomes[0].from_index, 1);
     assert_eq!(persisted_outcomes[1].from_index, 1);
@@ -3920,9 +3921,9 @@ async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
     let persisted_outcomes = state
         .mint
         .localstore()
-        .get_federation_session_outcomes()
+        .get_federation_catch_up_certificates()
         .await
-        .expect("persisted session outcomes");
+        .expect("persisted catch-up certificates");
     assert_eq!(persisted_outcomes.len(), 2);
     assert!(persisted_outcomes
         .iter()
@@ -3964,7 +3965,7 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         &local_consensus.lock().await.catch_up_request(),
     )
     .expect("peer catch-up response");
-    assert!(catch_up_response.session_outcome.is_none());
+    assert!(catch_up_response.catch_up_certificate.is_none());
     let transport = MockFederationTransport::default().with_catch_up_response(catch_up_response);
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
@@ -3977,7 +3978,7 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
     let err = err.to_string();
     assert!(
         err.contains(
-            "Federation session outcome mismatch: non-empty catch-up response missing outcome"
+            "Federation catch-up certificate mismatch: non-empty catch-up response missing certificate"
         ),
         "unexpected unsigned catch-up error: {err}"
     );
@@ -4151,7 +4152,7 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
     assert_eq!(synced_status.operation_count, 1);
     assert!(matches!(
         state.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::VerifyingSessionOutcome {
+        Some(crate::FederationSyncStatus::VerifyingCatchUpCertificate {
             operation_count: 1,
             ..
         })
@@ -4422,7 +4423,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
         finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     }
     state
-        .mark_federation_verifying_session_outcome(peer_member.member_id, operation_count)
+        .mark_federation_verifying_catch_up_certificate(peer_member.member_id, operation_count)
         .await;
 
     let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
@@ -4432,7 +4433,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
         &public_config,
         local_private.clone(),
         FederationPeerSyncConfig {
-            session_outcome_evidence_chunk_size: 1,
+            catch_up_certificate_chunk_size: 1,
             reconnect_initial_backoff: Duration::from_secs(2),
             reconnect_max_backoff: Duration::from_secs(8),
             ..FederationPeerSyncConfig::default()
@@ -4477,7 +4478,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
 }
 
 #[tokio::test]
-async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
+async fn peer_sync_round_collects_catch_up_certificate_from_equal_peer() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
@@ -4493,7 +4494,7 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
     let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
 
-    assert!(session_outcome_quorum_status(&state.mint)
+    assert!(catch_up_certificate_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .is_none());
@@ -4517,7 +4518,7 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
 
     assert_eq!(synced, 1);
     assert_eq!(transport.catch_up_requests().len(), 1);
-    let quorum = session_outcome_quorum_status(&state.mint)
+    let quorum = catch_up_certificate_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .expect("quorum evidence");
@@ -4528,7 +4529,7 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
 }
 
 #[tokio::test]
-async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
+async fn peer_sync_rejects_mismatched_catch_up_certificate_without_persisting_it() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
@@ -4544,7 +4545,7 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
     let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     state
-        .mark_federation_verifying_session_outcome(peer_member.member_id, 1)
+        .mark_federation_verifying_catch_up_certificate(peer_member.member_id, 1)
         .await;
 
     let catch_up_request = FederationJournalCatchUpRequest::new(0)
@@ -4561,9 +4562,9 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
     .operation_id()
     .expect("mismatched operation id");
     catch_up_response
-        .session_outcome
+        .catch_up_certificate
         .as_mut()
-        .expect("signed session outcome")
+        .expect("signed catch-up certificate")
         .operation_ids[0] = mismatched_operation_id;
 
     let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
@@ -4582,7 +4583,7 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_session_outcomes()
+        .get_federation_catch_up_certificates()
         .await
         .expect("persisted outcomes");
     assert!(
@@ -4591,18 +4592,18 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
             .all(|outcome| outcome.signer != peer_private.member_id),
         "mismatched peer evidence must never be persisted"
     );
-    assert!(session_outcome_quorum_status(&state.mint)
+    assert!(catch_up_certificate_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .is_none());
     assert!(matches!(
         state.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::VerifyingSessionOutcome { .. })
+        Some(crate::FederationSyncStatus::VerifyingCatchUpCertificate { .. })
     ));
 }
 
 #[tokio::test]
-async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() {
+async fn peer_sync_round_collects_configured_chunked_catch_up_certificate() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
@@ -4619,7 +4620,10 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
         finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     }
     state
-        .mark_federation_verifying_session_outcome(peer_member.member_id, operation_count as u64)
+        .mark_federation_verifying_catch_up_certificate(
+            peer_member.member_id,
+            operation_count as u64,
+        )
         .await;
 
     let entries = state
@@ -4649,7 +4653,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
         &public_config,
         local_private.clone(),
         FederationPeerSyncConfig {
-            session_outcome_evidence_chunk_size: chunk_size,
+            catch_up_certificate_chunk_size: chunk_size,
             ..FederationPeerSyncConfig::default()
         },
     )
@@ -4665,7 +4669,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
     assert_eq!(requests[0].payload.limit, Some(chunk_size as u16));
     assert_eq!(requests[1].payload.next_index, chunk_size as u64);
     assert_eq!(requests[1].payload.limit, Some(1));
-    let quorum = session_outcome_quorum_status(&state.mint)
+    let quorum = catch_up_certificate_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .expect("chunked quorum evidence");
@@ -4681,7 +4685,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
 }
 
 #[tokio::test]
-async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
+async fn peer_sync_round_collects_only_unverified_catch_up_certificate_suffix() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
@@ -4706,7 +4710,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
         .expect("journal entries");
     let local_status = local_peer_status(&state).await.expect("local status");
     let runtime_config = state.mint.federation_config().expect("federation config");
-    let local_chunks = persist_local_session_outcome_evidence_chunks(
+    let local_chunks = persist_local_catch_up_certificate_chunks(
         &state,
         runtime_config,
         &entries[..chunk_size],
@@ -4726,16 +4730,16 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
         catch_up_response_with_materialized_digest(&state, &peer_consensus, &first_request).await;
     let first_response = signed_catch_up_response(first_response, &peer_private);
     state
-        .persist_federation_session_outcome(
+        .persist_federation_catch_up_certificate(
             first_response
-                .session_outcome
+                .catch_up_certificate
                 .as_ref()
-                .expect("first peer session outcome"),
+                .expect("first peer catch-up certificate"),
         )
         .await
-        .expect("persist first peer session outcome");
+        .expect("persist first peer catch-up certificate");
 
-    let prefix = session_outcome_quorum_status(&state.mint)
+    let prefix = catch_up_certificate_quorum_status(&state.mint)
         .await
         .expect("prefix quorum status")
         .expect("prefix quorum evidence");
@@ -4756,7 +4760,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
         &public_config,
         local_private,
         FederationPeerSyncConfig {
-            session_outcome_evidence_chunk_size: chunk_size,
+            catch_up_certificate_chunk_size: chunk_size,
             ..FederationPeerSyncConfig::default()
         },
     )
@@ -4770,7 +4774,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].payload.next_index, chunk_size as u64);
     assert_eq!(requests[0].payload.limit, Some(1));
-    let quorum = session_outcome_quorum_status(&state.mint)
+    let quorum = catch_up_certificate_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .expect("complete quorum evidence");
@@ -7446,11 +7450,11 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
 
     assert_eq!(local_status.peer_status.operation_count, 1);
     assert!(!local_status.sync_ready);
-    assert_eq!(local_status.sync_state, "verifying_session_outcome");
+    assert_eq!(local_status.sync_state, "verifying_catch_up_certificate");
     assert!(
         local_status
             .sync_message
-            .contains("verifying quorum session outcome evidence"),
+            .contains("verifying quorum catch-up certificates"),
         "unexpected sync message: {}",
         local_status.sync_message
     );
@@ -7542,14 +7546,14 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     )
     .with_aleph_bft_finalized_items(peer_adapter.finalized_items().to_vec(), true);
     let response = signed_catch_up_response(base_response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(base_response, &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(base_response, &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let applied = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect("apply AlephBFT catch-up");
@@ -7581,13 +7585,13 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     assert_eq!(stored_entries.len(), 1);
     assert_eq!(stored_entries[0].operation_id, operation_id);
     assert_eq!(stored_entries[0].status, FederationOperationStatus::Applied);
-    let stored_outcomes = state
+    let stored_certificates = state
         .mint
         .localstore()
-        .get_federation_session_outcomes()
+        .get_federation_catch_up_certificates()
         .await
-        .expect("stored session outcomes");
-    assert_eq!(stored_outcomes.len(), 2);
+        .expect("stored catch-up certificates");
+    assert_eq!(stored_certificates.len(), 2);
 
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
@@ -7715,14 +7719,14 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
     );
     assert_eq!(base_response.entries[0].operation_id, suffix_operation_id);
     let response = signed_catch_up_response(base_response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(base_response, &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(base_response, &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let applied_suffix = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect("retry failed local overlap");
@@ -7845,14 +7849,14 @@ async fn aleph_bft_catch_up_advances_recovered_active_session() {
     )
     .with_aleph_bft_finalized_items(peer_adapter.finalized_items().to_vec(), true);
     let response = signed_catch_up_response(base_response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(base_response, &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(base_response, &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let applied = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect("apply AlephBFT catch-up");
@@ -7955,14 +7959,14 @@ async fn aleph_bft_catch_up_applies_rejected_trailing_entry() {
     )
     .with_aleph_bft_finalized_items(peer_adapter.finalized_items().to_vec(), true);
     let response = signed_catch_up_response(base_response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(base_response, &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(base_response, &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let applied = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect("apply AlephBFT catch-up");
@@ -8153,14 +8157,14 @@ async fn aleph_bft_catch_up_rejects_journal_entries_without_finalized_item_evide
         100,
     );
     let response = signed_catch_up_response(base_response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(base_response, &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(base_response, &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let err = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect_err("journal-only AlephBFT catch-up should fail");
@@ -8250,14 +8254,14 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
             .expect("materialized state digest");
     response = response.with_aleph_bft_finalized_items(Vec::new(), false);
     let response = signed_catch_up_response(response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(response.clone(), &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(response.clone(), &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let err = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect_err("incomplete finalized unit page should fail");
@@ -8356,14 +8360,14 @@ async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation()
             .expect("materialized state digest");
     response = response.with_aleph_bft_finalized_items(reordered_finalized_items, true);
     let response = signed_catch_up_response(response.clone(), &peer_private);
-    let witness_outcome = signed_catch_up_response(response.clone(), &local_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let witness_certificate = signed_catch_up_response(response.clone(), &local_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
 
     let err = state
-        .apply_federation_catch_up_response_with_session_outcome_quorum(
+        .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
             &response,
-            &[witness_outcome],
+            &[witness_certificate],
         )
         .await
         .expect_err("reordered finalized items should fail");
@@ -12790,9 +12794,9 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
     let certified_outcomes = session.states[4]
         .mint
         .localstore()
-        .get_federation_session_outcomes()
+        .get_federation_catch_up_certificates()
         .await
-        .expect("certified session outcomes");
+        .expect("certified catch-up certificates");
     let certified_signers = certified_outcomes
         .iter()
         .map(|outcome| outcome.signer)
@@ -15630,7 +15634,7 @@ async fn sync_and_certify_partitioned_member(
         let synced = run_federation_peer_sync_round(state, client, &peers).await;
         assert!(
             synced >= usize::from(public_config.threshold_params.consensus_threshold) - 1,
-            "session-outcome certification must reach a remote BFT quorum"
+            "catch-up certification must reach a remote BFT quorum"
         );
     }
     state
@@ -18639,7 +18643,7 @@ async fn catch_up_verification_rejects_mismatched_application_rejection() {
 
     assert!(matches!(
         error,
-        cdk::Error::Federation(FederationError::SessionOutcomeMismatch { .. })
+        cdk::Error::Federation(FederationError::CatchUpCertificateMismatch { .. })
     ));
 }
 
@@ -20030,10 +20034,10 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
     assert_eq!(response.sync_state, "healthy");
     assert!(response.sync_ready);
     assert_eq!(response.sync_message, "federation member is healthy");
-    assert_eq!(response.session_outcome_quorum_operation_count, None);
-    assert_eq!(response.session_outcome_quorum_from_index, None);
-    assert_eq!(response.session_outcome_quorum_latest_index, None);
-    assert!(response.session_outcome_quorum_signers.is_empty());
+    assert_eq!(response.catch_up_certificate_quorum_operation_count, None);
+    assert_eq!(response.catch_up_certificate_quorum_from_index, None);
+    assert_eq!(response.catch_up_certificate_quorum_latest_index, None);
+    assert!(response.catch_up_certificate_quorum_signers.is_empty());
     assert!(response.payment_observation_reports.is_empty());
     assert!(response.materialized_state_rows.is_empty());
     assert!(response.invalid_operation_alerts.is_empty());
@@ -20353,7 +20357,7 @@ async fn private_local_status_route_reports_stale_payment_observations() {
 }
 
 #[tokio::test]
-async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
+async fn private_local_status_route_reports_catch_up_certificate_quorum_evidence() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
     let local_member = local_private.member_id;
@@ -20375,32 +20379,32 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
         .iter()
         .map(FederationCatchUpOperation::from)
         .collect::<Vec<_>>();
-    let local_outcome = FederationSessionOutcome::new_signed(
+    let local_certificate = FederationCatchUpCertificate::new_signed(
         public_config.federation_id,
         &operations,
         peer_status.latest_order_digest,
         materialized_state_digest,
         &local_private,
     )
-    .expect("local session outcome");
-    let peer_outcome = FederationSessionOutcome::new_signed(
+    .expect("local catch-up certificate");
+    let peer_certificate = FederationCatchUpCertificate::new_signed(
         public_config.federation_id,
         &operations,
         peer_status.latest_order_digest,
         materialized_state_digest,
         &peer_private,
     )
-    .expect("peer session outcome");
+    .expect("peer catch-up certificate");
     let mut tx = state
         .mint
         .localstore()
         .begin_transaction()
         .await
         .expect("begin transaction");
-    tx.add_federation_session_outcome(&local_outcome)
+    tx.add_federation_catch_up_certificate(&local_certificate)
         .await
         .expect("persist local outcome");
-    tx.add_federation_session_outcome(&peer_outcome)
+    tx.add_federation_catch_up_certificate(&peer_certificate)
         .await
         .expect("persist peer outcome");
     tx.commit().await.expect("commit outcomes");
@@ -20412,15 +20416,18 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
         .0;
 
     assert_eq!(response.peer_status.operation_count, 1);
-    assert_eq!(response.session_outcome_quorum_operation_count, Some(1));
-    assert_eq!(response.session_outcome_quorum_from_index, Some(0));
-    assert_eq!(response.session_outcome_quorum_latest_index, Some(0));
-    assert_eq!(response.session_outcome_quorum_signers.len(), 2);
+    assert_eq!(
+        response.catch_up_certificate_quorum_operation_count,
+        Some(1)
+    );
+    assert_eq!(response.catch_up_certificate_quorum_from_index, Some(0));
+    assert_eq!(response.catch_up_certificate_quorum_latest_index, Some(0));
+    assert_eq!(response.catch_up_certificate_quorum_signers.len(), 2);
     assert!(response
-        .session_outcome_quorum_signers
+        .catch_up_certificate_quorum_signers
         .contains(&local_private.member_id));
     assert!(response
-        .session_outcome_quorum_signers
+        .catch_up_certificate_quorum_signers
         .contains(&peer_private.member_id));
 }
 
@@ -20663,7 +20670,7 @@ async fn startup_restores_persisted_federation_sync_status() {
 }
 
 #[tokio::test]
-async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
+async fn startup_requires_catch_up_certificate_quorum_for_replayed_journal() {
     let (state, public_config, _, peer_private, _) =
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
@@ -20683,7 +20690,7 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
 
     assert_eq!(
         restarted.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::VerifyingSessionOutcome {
+        Some(crate::FederationSyncStatus::VerifyingCatchUpCertificate {
             peer: peer_member,
             operation_count: 1,
         })
@@ -20699,7 +20706,7 @@ async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
 }
 
 #[tokio::test]
-async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads() {
+async fn startup_verifying_catch_up_certificate_blocks_restore_and_checkstate_reads() {
     let (state, public_config, _, peer_private, _) =
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
@@ -20718,7 +20725,7 @@ async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads()
     restarted.restore_federation_startup_readiness().await;
     assert_eq!(
         restarted.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::VerifyingSessionOutcome {
+        Some(crate::FederationSyncStatus::VerifyingCatchUpCertificate {
             peer: peer_member,
             operation_count: 1,
         })
@@ -20736,8 +20743,8 @@ async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads()
     .expect_err("startup verification must not serve authoritative check-state");
     let check_body = response_error_detail(check_error).await;
     assert!(
-        check_body.contains("verifying quorum session outcome evidence"),
-        "check-state should fail closed while startup verifies session outcome: {check_body}"
+        check_body.contains("verifying quorum catch-up certificates"),
+        "check-state should fail closed while startup verifies catch-up certificate: {check_body}"
     );
 
     let restore_request = restore_request_for_config(
@@ -20753,13 +20760,13 @@ async fn startup_verifying_session_outcome_blocks_restore_and_checkstate_reads()
     .expect_err("startup verification must not serve authoritative restore");
     let restore_body = response_error_detail(restore_error).await;
     assert!(
-        restore_body.contains("verifying quorum session outcome evidence"),
-        "restore should fail closed while startup verifies session outcome: {restore_body}"
+        restore_body.contains("verifying quorum catch-up certificates"),
+        "restore should fail closed while startup verifies catch-up certificate: {restore_body}"
     );
 }
 
 #[tokio::test]
-async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quorum() {
+async fn startup_returns_healthy_when_replayed_journal_has_catch_up_certificate_quorum() {
     let (state, public_config, _, peer_private, witness_private) =
         federation_route_state_three_with_local_private().await;
     let peer_member = peer_private.member_id;
@@ -20793,22 +20800,22 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
         .expect("local status")
         .materialized_state_digest
         .expect("local status has materialized-state digest");
-    let peer_outcome = signed_catch_up_response(response.clone(), &peer_private)
-        .session_outcome
-        .expect("peer session outcome");
-    let witness_outcome = signed_catch_up_response(response, &witness_private)
-        .session_outcome
-        .expect("witness session outcome");
+    let peer_certificate = signed_catch_up_response(response.clone(), &peer_private)
+        .catch_up_certificate
+        .expect("peer catch-up certificate");
+    let witness_certificate = signed_catch_up_response(response, &witness_private)
+        .catch_up_certificate
+        .expect("witness catch-up certificate");
     let mut tx = state
         .mint
         .localstore()
         .begin_transaction()
         .await
         .expect("begin evidence transaction");
-    tx.add_federation_session_outcome(&peer_outcome)
+    tx.add_federation_catch_up_certificate(&peer_certificate)
         .await
         .expect("persist peer outcome");
-    tx.add_federation_session_outcome(&witness_outcome)
+    tx.add_federation_catch_up_certificate(&witness_certificate)
         .await
         .expect("persist witness outcome");
     tx.commit().await.expect("commit evidence");
@@ -20818,7 +20825,7 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
         crate::FederationSyncState::default(),
     )));
     restarted
-        .mark_federation_verifying_session_outcome(peer_member, 1)
+        .mark_federation_verifying_catch_up_certificate(peer_member, 1)
         .await;
     restarted.restore_federation_startup_readiness().await;
 
@@ -20848,7 +20855,7 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
 }
 
 #[tokio::test]
-async fn private_local_status_route_reports_verifying_session_outcome_state() {
+async fn private_local_status_route_reports_verifying_catch_up_certificate_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
         .mint
@@ -20857,7 +20864,7 @@ async fn private_local_status_route_reports_verifying_session_outcome_state() {
         .member_id();
     let peer_member = peer_private.member_id;
     state
-        .mark_federation_verifying_session_outcome(peer_member, 3)
+        .mark_federation_verifying_catch_up_certificate(peer_member, 3)
         .await;
 
     let request = signed_status_request(&public_config, &peer_private, local_member, 1);
@@ -20867,15 +20874,15 @@ async fn private_local_status_route_reports_verifying_session_outcome_state() {
         .0;
 
     assert_eq!(response.peer_status.operation_count, 0);
-    assert_eq!(response.sync_state, "verifying_session_outcome");
+    assert_eq!(response.sync_state, "verifying_catch_up_certificate");
     assert!(!response.sync_ready);
     assert!(response
         .sync_message
-        .contains("verifying quorum session outcome evidence"));
+        .contains("verifying quorum catch-up certificates"));
 }
 
 #[tokio::test]
-async fn private_journal_route_returns_signed_session_outcome() {
+async fn private_journal_route_returns_signed_catch_up_certificate() {
     let (mut state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
         .mint
@@ -20903,10 +20910,10 @@ async fn private_journal_route_returns_signed_session_outcome() {
         .0;
 
     assert_eq!(response.entries.len(), 1);
-    assert!(response.session_outcome.is_some());
+    assert!(response.catch_up_certificate.is_some());
     response
-        .verify_session_outcome(public_config.member(local_member).expect("local member"))
-        .expect("session outcome verifies");
+        .verify_catch_up_certificate(public_config.member(local_member).expect("local member"))
+        .expect("catch-up certificate verifies");
     let sequences = state
         .mint
         .localstore()

@@ -738,7 +738,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
         "${status_args[@]}" \
         --require-ready \
         --require-converged \
-        --require-session-outcome-quorum \
+        --require-catch-up-certificate-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts >/dev/null 2>&1; then
         return 0
@@ -762,7 +762,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
         --private-config "{{dir}}/member-1/federation-private.json" \
         --require-ready \
         --require-converged \
-        --require-session-outcome-quorum \
+        --require-catch-up-certificate-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts 2>/dev/null)"; then
         expected_lines="$(grep -Ec 'operations=10 latest_index=9 ' <<<"$status_output" || true)"
@@ -977,7 +977,7 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
         --member 5 \
         --require-ready \
         --require-converged \
-        --require-session-outcome-quorum \
+        --require-catch-up-certificate-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts >/dev/null 2>&1; then
         return 0
@@ -1452,7 +1452,7 @@ fed-regtest-postgres-status dir="target/cdk-fed-regtest-postgres" signer="1":
     --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
     --require-ready \
     --require-converged \
-    --require-session-outcome-quorum \
+    --require-catch-up-certificate-quorum \
     --require-no-digest-alerts \
     --require-no-invalid-operation-alerts
 
@@ -1602,7 +1602,7 @@ fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
     --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
     --require-ready \
     --require-converged \
-    --require-session-outcome-quorum \
+    --require-catch-up-certificate-quorum \
     --require-no-digest-alerts \
     --require-no-invalid-operation-alerts
 

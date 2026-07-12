@@ -1831,7 +1831,7 @@ member_quorum_status_line() {{
   local member="$1"
   local private_config
   private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready --require-session-outcome-quorum --require-no-digest-alerts --require-no-invalid-operation-alerts | awk '/^member / {{ print; exit }}'
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready --require-catch-up-certificate-quorum --require-no-digest-alerts --require-no-invalid-operation-alerts | awk '/^member / {{ print; exit }}'
 }}
 
 member_payment_report_lines() {{
@@ -1882,7 +1882,7 @@ prometheus_metrics_are_ready() {{
     cdk_federation_pending_mempool_items \
     cdk_federation_sync_ready \
     cdk_federation_sync_state \
-    cdk_federation_session_outcome_quorum_operation_count \
+    cdk_federation_catch_up_certificate_quorum_operation_count \
     cdk_federation_payment_observation_reports; do
     if ! grep -q "^$metric" <<<"$metrics"; then
       return 1
@@ -2155,7 +2155,7 @@ wait_for_runtime_keysets() {{
   return 1
 }}
 
-wait_for_session_outcome_quorum() {{
+wait_for_catch_up_certificate_quorum() {{
   local member="$1"
   local work_dir
   work_dir="$(member_work_dir "$member")"
@@ -2165,7 +2165,7 @@ wait_for_session_outcome_quorum() {{
     fi
     sleep "$STATUS_SLEEP_SECONDS"
   done
-  printf 'member %s did not report quorum-backed session outcome evidence\n' "$member" >&2
+  printf 'member %s did not report quorum-backed catch-up certificates\n' "$member" >&2
   member_quorum_status_line "$member" >&2 || true
   tail -n 80 "$work_dir/mintd.log" >&2 || true
   return 1
@@ -2371,7 +2371,7 @@ if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
   start_member "$CRASH_WINDOW_MEMBER"
   wait_for_status "$CRASH_WINDOW_MEMBER"
   wait_for_converged
-  wait_for_session_outcome_quorum "$CRASH_WINDOW_MEMBER"
+  wait_for_catch_up_certificate_quorum "$CRASH_WINDOW_MEMBER"
   run_smoke_operations \
     --scenario standard \
     --seed-offset "$POST_CRASH_SEED_OFFSET" \
@@ -2389,7 +2389,7 @@ run_smoke_operations \
 start_member "$LONG_PARTITION_MEMBER"
 wait_for_status "$LONG_PARTITION_MEMBER"
 wait_for_converged
-wait_for_session_outcome_quorum "$LONG_PARTITION_MEMBER"
+wait_for_catch_up_certificate_quorum "$LONG_PARTITION_MEMBER"
 
 run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
 wait_for_converged
@@ -2399,7 +2399,7 @@ run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 wait_for_converged
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
+wait_for_catch_up_certificate_quorum "$RESTART_MEMBER"
 
 run_smoke_operations --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
@@ -2409,7 +2409,7 @@ run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 wait_for_converged
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
+wait_for_catch_up_certificate_quorum "$RESTART_MEMBER"
 
 stop_member "$QUARANTINE_OFFLINE_MEMBER"
 run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
@@ -2419,7 +2419,7 @@ start_member "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_status "$QUARANTINE_OFFLINE_MEMBER"
 
 wait_for_converged
-wait_for_session_outcome_quorum "$QUARANTINE_OFFLINE_MEMBER"
+wait_for_catch_up_certificate_quorum "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
 
 stop_member "$RESTART_MEMBER"
@@ -2427,7 +2427,7 @@ run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 wait_for_converged
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
+wait_for_catch_up_certificate_quorum "$RESTART_MEMBER"
 wait_for_prometheus_metrics
 
 printf 'local federation smoke test passed\n'

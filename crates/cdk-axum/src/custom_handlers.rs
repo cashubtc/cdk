@@ -5092,7 +5092,7 @@ mod tests {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
         state
-            .mark_federation_verifying_session_outcome(MemberId::new(2).unwrap(), 1)
+            .mark_federation_verifying_catch_up_certificate(MemberId::new(2).unwrap(), 1)
             .await;
 
         let result = post_batch_check_mint_quote(
@@ -5155,7 +5155,7 @@ mod tests {
         )
         .await;
         state
-            .mark_federation_verifying_session_outcome(MemberId::new(2).expect("member id"), 1)
+            .mark_federation_verifying_catch_up_certificate(MemberId::new(2).expect("member id"), 1)
             .await;
 
         let result = get_check_melt_custom_quote(

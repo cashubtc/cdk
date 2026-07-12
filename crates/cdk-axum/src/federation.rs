@@ -9,15 +9,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationCatchUpOperation, FederationError, FederationJournalCatchUpResponse,
+    FederatedKeyset, FederationCatchUpCertificate, FederationCatchUpCertificateQuorum,
+    FederationCatchUpOperation, FederationError, FederationJournalCatchUpResponse,
     FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateDigest,
     FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
     FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservationRecord, FederationPeerStatus,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
-    InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
+    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use serde::Serialize;
@@ -91,7 +92,7 @@ use self::sync_config::{
 pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;
 #[cfg(test)]
 use self::sync_loop::{
-    persist_local_session_outcome_evidence_chunks, run_federation_peer_sync_round,
+    persist_local_catch_up_certificate_chunks, run_federation_peer_sync_round,
     run_federation_peer_sync_round_with_backoff,
 };
 #[cfg(test)]
@@ -383,15 +384,15 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionOutcomeQuorumStatus {
+struct CatchUpCertificateQuorumStatus {
     signers: BTreeSet<cdk::federation::MemberId>,
     from_index: u64,
     latest_index: u64,
     operation_count: u64,
 }
 
-impl From<FederationSessionOutcomeQuorum> for SessionOutcomeQuorumStatus {
-    fn from(quorum: FederationSessionOutcomeQuorum) -> Self {
+impl From<FederationCatchUpCertificateQuorum> for CatchUpCertificateQuorumStatus {
+    fn from(quorum: FederationCatchUpCertificateQuorum) -> Self {
         Self {
             signers: quorum.signers,
             from_index: quorum.from_index,
@@ -401,8 +402,8 @@ impl From<FederationSessionOutcomeQuorum> for SessionOutcomeQuorumStatus {
     }
 }
 
-impl SessionOutcomeQuorumStatus {
-    fn append(&mut self, quorum: &FederationSessionOutcomeQuorum) {
+impl CatchUpCertificateQuorumStatus {
+    fn append(&mut self, quorum: &FederationCatchUpCertificateQuorum) {
         self.signers.extend(quorum.signers.iter().copied());
         self.latest_index = quorum.latest_index;
         self.operation_count = self
@@ -414,7 +415,7 @@ impl SessionOutcomeQuorumStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct SessionOutcomeRangeKey {
+struct CatchUpCertificateRangeKey {
     from_index: u64,
     operation_count: u64,
     latest_index: u64,
@@ -425,31 +426,31 @@ struct SessionOutcomeRangeKey {
     operation_ids: Vec<FederationOperationId>,
 }
 
-impl From<&FederationSessionOutcome> for SessionOutcomeRangeKey {
-    fn from(outcome: &FederationSessionOutcome) -> Self {
+impl From<&FederationCatchUpCertificate> for CatchUpCertificateRangeKey {
+    fn from(certificate: &FederationCatchUpCertificate) -> Self {
         Self {
-            from_index: outcome.from_index,
-            operation_count: outcome.operation_count,
-            latest_index: outcome.latest_index,
-            previous_order_digest: outcome.previous_order_digest,
-            range_order_digest: outcome.range_order_digest,
-            latest_order_digest: outcome.latest_order_digest,
-            materialized_state_digest: outcome.materialized_state_digest,
-            operation_ids: outcome.operation_ids.clone(),
+            from_index: certificate.from_index,
+            operation_count: certificate.operation_count(),
+            latest_index: certificate.latest_index(),
+            previous_order_digest: certificate.previous_order_digest,
+            range_order_digest: certificate.range_order_digest(),
+            latest_order_digest: certificate.latest_order_digest,
+            materialized_state_digest: certificate.materialized_state_digest,
+            operation_ids: certificate.operation_ids.clone(),
         }
     }
 }
 
-async fn session_outcome_quorum_status(
+async fn catch_up_certificate_quorum_status(
     mint: &Mint,
-) -> Result<Option<SessionOutcomeQuorumStatus>, cdk::Error> {
+) -> Result<Option<CatchUpCertificateQuorumStatus>, cdk::Error> {
     let Some(runtime_config) = mint.federation_config() else {
         return Ok(None);
     };
     let db = mint.localstore();
     let entries = db.get_federation_journal_entries().await?;
-    let outcomes = db.get_federation_session_outcomes().await?;
-    if entries.is_empty() || outcomes.is_empty() {
+    let certificates = db.get_federation_catch_up_certificates().await?;
+    if entries.is_empty() || certificates.is_empty() {
         return Ok(None);
     }
 
@@ -457,18 +458,22 @@ async fn session_outcome_quorum_status(
         .into_iter()
         .map(|entry| (entry.index, entry))
         .collect::<BTreeMap<_, _>>();
-    let mut grouped_outcomes: BTreeMap<SessionOutcomeRangeKey, Vec<FederationSessionOutcome>> =
-        BTreeMap::new();
-    for outcome in outcomes {
+    let mut grouped_outcomes: BTreeMap<
+        CatchUpCertificateRangeKey,
+        Vec<FederationCatchUpCertificate>,
+    > = BTreeMap::new();
+    for certificate in certificates {
         grouped_outcomes
-            .entry(SessionOutcomeRangeKey::from(&outcome))
+            .entry(CatchUpCertificateRangeKey::from(&certificate))
             .or_default()
-            .push(outcome);
+            .push(certificate);
     }
 
-    let mut quorums_by_start: BTreeMap<u64, Vec<FederationSessionOutcomeQuorum>> = BTreeMap::new();
-    for (range, outcomes) in grouped_outcomes {
-        let Some(entries) = entries_for_session_outcome_range(&entries_by_index, &range) else {
+    let mut quorums_by_start: BTreeMap<u64, Vec<FederationCatchUpCertificateQuorum>> =
+        BTreeMap::new();
+    for (range, certificates) in grouped_outcomes {
+        let Some(entries) = entries_for_catch_up_certificate_range(&entries_by_index, &range)
+        else {
             continue;
         };
         let response = FederationJournalCatchUpResponse {
@@ -482,17 +487,17 @@ async fn session_outcome_quorum_status(
             latest_index: Some(range.latest_index),
             latest_order_digest: range.latest_order_digest,
             materialized_state_digest: range.materialized_state_digest,
-            session_outcome: None,
+            catch_up_certificate: None,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
             complete: true,
         };
 
         let quorum = match response
-            .verify_session_outcome_quorum(runtime_config.public_config(), &outcomes)
+            .verify_catch_up_certificate_quorum(runtime_config.public_config(), &certificates)
         {
             Ok(quorum) => quorum,
-            Err(FederationError::SessionOutcomeQuorumNotReached { .. }) => continue,
+            Err(FederationError::CatchUpCertificateQuorumNotReached { .. }) => continue,
             Err(_) => continue,
         };
         quorums_by_start
@@ -501,14 +506,16 @@ async fn session_outcome_quorum_status(
             .push(quorum);
     }
 
-    Ok(contiguous_session_outcome_quorum_prefix(&quorums_by_start))
+    Ok(contiguous_catch_up_certificate_quorum_prefix(
+        &quorums_by_start,
+    ))
 }
 
-fn contiguous_session_outcome_quorum_prefix(
-    quorums_by_start: &BTreeMap<u64, Vec<FederationSessionOutcomeQuorum>>,
-) -> Option<SessionOutcomeQuorumStatus> {
+fn contiguous_catch_up_certificate_quorum_prefix(
+    quorums_by_start: &BTreeMap<u64, Vec<FederationCatchUpCertificateQuorum>>,
+) -> Option<CatchUpCertificateQuorumStatus> {
     let mut next_index = 0;
-    let mut status: Option<SessionOutcomeQuorumStatus> = None;
+    let mut status: Option<CatchUpCertificateQuorumStatus> = None;
     while let Some(quorums) = quorums_by_start.get(&next_index) {
         let Some(best) = quorums.iter().max_by_key(|quorum| quorum.latest_index) else {
             break;
@@ -529,9 +536,9 @@ fn contiguous_session_outcome_quorum_prefix(
     status
 }
 
-fn entries_for_session_outcome_range(
+fn entries_for_catch_up_certificate_range(
     entries_by_index: &BTreeMap<u64, FederationJournalEntry>,
-    range: &SessionOutcomeRangeKey,
+    range: &CatchUpCertificateRangeKey,
 ) -> Option<Vec<FederationJournalEntry>> {
     let range_span = range
         .latest_index
@@ -1068,7 +1075,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
-fn verify_session_outcome_evidence_entries(
+fn verify_catch_up_certificate_entries(
     local_entries: &[FederationJournalEntry],
     response: &FederationJournalCatchUpResponse,
 ) -> anyhow::Result<()> {

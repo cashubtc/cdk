@@ -444,7 +444,7 @@ where
                 self.federation_id
             );
         }
-        response.verify_session_outcome(member)?;
+        response.verify_catch_up_certificate(member)?;
         Ok(response)
     }
 

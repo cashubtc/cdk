@@ -3,7 +3,7 @@
 This note records the current storage-backend scope for federated mint work.
 Federation mint storage is in scope for backends that implement mint database
 traits and can persist consensus-visible mint state, accepted journal entries,
-private REST sequence watermarks, session outcomes, payment observations, and
+private REST sequence watermarks, catch-up certificates, payment observations, and
 future signature-share rows.
 
 ## Current Decision
@@ -19,7 +19,7 @@ Evidence in the current crate:
 - `crates/cdk-redb/src/wallet/mod.rs` implements `WalletDatabase` for
   `WalletRedbDatabase`.
 - The crate does not implement `MintDatabase` or the federation journal,
-  session-outcome, payment-observation, DKG, or setup storage APIs needed by a
+  catch-up certificate, payment-observation, DKG, or setup storage APIs needed by a
   federated mint member.
 - `crates/cdk-redb/README.md` describes the crate as a Redb storage backend for
   wallet functionality.

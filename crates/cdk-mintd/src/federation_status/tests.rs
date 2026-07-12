@@ -170,10 +170,10 @@ fn local_status(
         response_cache_hit_rate_bps: 0,
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
-        session_outcome_quorum_operation_count: None,
-        session_outcome_quorum_from_index: None,
-        session_outcome_quorum_latest_index: None,
-        session_outcome_quorum_signers: Vec::new(),
+        catch_up_certificate_quorum_operation_count: None,
+        catch_up_certificate_quorum_from_index: None,
+        catch_up_certificate_quorum_latest_index: None,
+        catch_up_certificate_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
         aleph_bft_live_session_active: false,
@@ -549,10 +549,10 @@ fn status_lines_include_payment_observation_report_counts() {
 
     let member_line = member_status_line(&status);
     assert!(member_line.contains("materialized_rows=0"));
-    assert!(member_line.contains("session_outcome_quorum_operations=none"));
-    assert!(member_line.contains("session_outcome_quorum_from=none"));
-    assert!(member_line.contains("session_outcome_quorum_latest=none"));
-    assert!(member_line.contains("session_outcome_quorum_signers=none"));
+    assert!(member_line.contains("catch_up_certificate_quorum_operations=none"));
+    assert!(member_line.contains("catch_up_certificate_quorum_from=none"));
+    assert!(member_line.contains("catch_up_certificate_quorum_latest=none"));
+    assert!(member_line.contains("catch_up_certificate_quorum_signers=none"));
     assert!(member_line.contains("payment_reports=1"));
     assert!(member_line.contains("payment_conflicts=1"));
     assert!(member_line.contains("payment_unresolved=1"));
@@ -664,23 +664,23 @@ fn status_payment_observation_alert_guard_rejects_quarantine() {
 }
 
 #[test]
-fn status_line_includes_session_outcome_quorum_evidence() {
+fn status_line_includes_catch_up_certificate_quorum_evidence() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.session_outcome_quorum_operation_count = Some(3);
-    status.session_outcome_quorum_from_index = Some(0);
-    status.session_outcome_quorum_latest_index = Some(2);
-    status.session_outcome_quorum_signers = vec![
+    status.catch_up_certificate_quorum_operation_count = Some(3);
+    status.catch_up_certificate_quorum_from_index = Some(0);
+    status.catch_up_certificate_quorum_latest_index = Some(2);
+    status.catch_up_certificate_quorum_signers = vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
     ];
 
     let member_line = member_status_line(&status);
 
-    assert!(member_line.contains("session_outcome_quorum_operations=3"));
-    assert!(member_line.contains("session_outcome_quorum_from=0"));
-    assert!(member_line.contains("session_outcome_quorum_latest=2"));
-    assert!(member_line.contains("session_outcome_quorum_signers=1,2"));
+    assert!(member_line.contains("catch_up_certificate_quorum_operations=3"));
+    assert!(member_line.contains("catch_up_certificate_quorum_from=0"));
+    assert!(member_line.contains("catch_up_certificate_quorum_latest=2"));
+    assert!(member_line.contains("catch_up_certificate_quorum_signers=1,2"));
 }
 
 #[test]
@@ -908,26 +908,26 @@ fn status_operation_lag_guard_rejects_member_beyond_limit() {
 }
 
 #[test]
-fn status_session_outcome_quorum_guard_accepts_zero_operation_member_without_evidence() {
+fn status_catch_up_certificate_quorum_guard_accepts_zero_operation_member_without_evidence() {
     let (public_config, _) = status_fixture();
     let statuses = vec![local_status(&public_config, 1, 0)];
 
-    ensure_statuses_session_outcome_quorum(&public_config, &statuses)
+    ensure_statuses_catch_up_certificate_quorum(&public_config, &statuses)
         .expect("zero operation member needs no session evidence");
 }
 
 #[test]
-fn status_session_outcome_quorum_guard_accepts_covered_current_height() {
+fn status_catch_up_certificate_quorum_guard_accepts_covered_current_height() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.session_outcome_quorum_operation_count = Some(3);
-    status.session_outcome_quorum_signers = vec![
+    status.catch_up_certificate_quorum_operation_count = Some(3);
+    status.catch_up_certificate_quorum_signers = vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
         MemberId::new(3).expect("member three"),
     ];
 
-    ensure_statuses_session_outcome_quorum(&public_config, &[status])
+    ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
         .expect("current height has quorum evidence");
 }
 
@@ -938,7 +938,7 @@ fn status_json_rejects_missing_current_fields() {
 
     for field in [
         "pending_mempool_items",
-        "session_outcome_quorum_signers",
+        "catch_up_certificate_quorum_signers",
         "materialized_state_rows",
     ] {
         let mut value = serde_json::to_value(&status).expect("status json");
@@ -948,71 +948,71 @@ fn status_json_rejects_missing_current_fields() {
 }
 
 #[test]
-fn status_session_outcome_quorum_guard_rejects_missing_evidence() {
+fn status_catch_up_certificate_quorum_guard_rejects_missing_evidence() {
     let (public_config, _) = status_fixture();
     let status = local_status(&public_config, 1, 3);
 
-    let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
         .expect_err("non-empty operation history needs quorum evidence");
 
     assert!(err
         .to_string()
-        .contains("no session outcome quorum evidence"));
+        .contains("no catch-up certificate quorum evidence"));
 }
 
 #[test]
-fn status_session_outcome_quorum_guard_rejects_short_coverage() {
+fn status_catch_up_certificate_quorum_guard_rejects_short_coverage() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.session_outcome_quorum_operation_count = Some(2);
-    status.session_outcome_quorum_signers = vec![
+    status.catch_up_certificate_quorum_operation_count = Some(2);
+    status.catch_up_certificate_quorum_signers = vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
         MemberId::new(3).expect("member three"),
     ];
 
-    let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
         .expect_err("short quorum coverage should fail");
 
     assert!(err.to_string().contains("below current operation count"));
 }
 
 #[test]
-fn status_session_outcome_quorum_guard_rejects_insufficient_distinct_signers() {
+fn status_catch_up_certificate_quorum_guard_rejects_insufficient_distinct_signers() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.session_outcome_quorum_operation_count = Some(3);
-    status.session_outcome_quorum_signers = vec![
+    status.catch_up_certificate_quorum_operation_count = Some(3);
+    status.catch_up_certificate_quorum_signers = vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(1).expect("member one duplicate"),
         MemberId::new(2).expect("member two"),
     ];
 
-    let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
         .expect_err("duplicate signers should not satisfy quorum");
 
     assert!(err
         .to_string()
-        .contains("distinct session outcome quorum signers"));
+        .contains("distinct catch-up certificate quorum signers"));
 }
 
 #[test]
-fn status_session_outcome_quorum_guard_rejects_unknown_signer() {
+fn status_catch_up_certificate_quorum_guard_rejects_unknown_signer() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.session_outcome_quorum_operation_count = Some(3);
-    status.session_outcome_quorum_signers = vec![
+    status.catch_up_certificate_quorum_operation_count = Some(3);
+    status.catch_up_certificate_quorum_signers = vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
         MemberId::new(9).expect("unknown member"),
     ];
 
-    let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
         .expect_err("unknown signer should fail");
 
     assert!(err
         .to_string()
-        .contains("unknown session outcome quorum signer"));
+        .contains("unknown catch-up certificate quorum signer"));
 }
 
 #[test]

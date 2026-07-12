@@ -39,7 +39,7 @@ The implementation has a strong protocol foundation:
   threshold reads and should not be ordered merely for symmetry.
 - The wallet validates member advertisements and aggregates threshold BLS shares.
 - Private member REST requests are authenticated and sequence checked.
-- Catch-up verifies accepted ranges and quorum session-outcome evidence.
+- Catch-up verifies accepted ranges and quorum catch-up certificates.
 - The test suite covers many real multi-member, partition, restart, and
   convergence scenarios.
 
@@ -471,7 +471,7 @@ crates/cdk-axum/src/federation/runtime/
 - synchronization and readiness state;
 - pending response waiters and bounded response cache;
 - serialized finalized-unit application;
-- catch-up coordination and session-outcome verification;
+- catch-up coordination and catch-up certificate verification;
 - pending gossip sequence metadata;
 - operation notifications and federation metrics;
 - startup replay and recovery;
@@ -509,7 +509,7 @@ pub(crate) trait FederationRuntime {
     async fn apply_catch_up(
         &self,
         response: FederationJournalCatchUpResponse,
-        evidence: FederationSessionOutcomeQuorum,
+        evidence: FederationCatchUpCertificateQuorum,
     ) -> Result<FederationCatchUpResult, FederationRuntimeError>;
 
     fn readiness(&self) -> FederationReadiness;

@@ -504,8 +504,8 @@ pub enum FederationMemberStatusKind {
     Lagging,
     /// The member is actively applying journal entries from a peer.
     CatchingUp,
-    /// The member is waiting for signed session-outcome evidence after catch-up.
-    VerifyingSessionOutcome,
+    /// The member is waiting for signed catch-up certificates after catch-up.
+    VerifyingCatchUpCertificate,
     /// The member is waiting for materialized state digests to converge.
     MaterializedStateMismatch,
     /// The member halted federation public request handling.
@@ -520,7 +520,7 @@ impl FederationMemberStatusKind {
             Self::Healthy => "healthy",
             Self::Lagging => "lagging",
             Self::CatchingUp => "catching_up",
-            Self::VerifyingSessionOutcome => "verifying_session_outcome",
+            Self::VerifyingCatchUpCertificate => "verifying_catch_up_certificate",
             Self::MaterializedStateMismatch => "materialized_state_mismatch",
             Self::Halted => "halted",
         }
@@ -533,7 +533,7 @@ impl FederationMemberStatusKind {
             "healthy" => Some(Self::Healthy),
             "lagging" => Some(Self::Lagging),
             "catching_up" => Some(Self::CatchingUp),
-            "verifying_session_outcome" => Some(Self::VerifyingSessionOutcome),
+            "verifying_catch_up_certificate" => Some(Self::VerifyingCatchUpCertificate),
             "materialized_state_mismatch" => Some(Self::MaterializedStateMismatch),
             "halted" => Some(Self::Halted),
             _ => None,

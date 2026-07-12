@@ -20,15 +20,15 @@ use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationAlephBftFinalizedItem,
-    FederationAlephBftUnitPayload, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
-    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationKind, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
+    FederationAlephBftUnitPayload, FederationCatchUpCertificate, FederationConfig,
+    FederationConfigSnapshot, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
+    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -810,7 +810,7 @@ fn ensure_catch_up_overlap_matches(
             || local_entry.rejection != peer_entry.rejection)
     {
         return Err(cdk::Error::Federation(
-            FederationError::SessionOutcomeMismatch {
+            FederationError::CatchUpCertificateMismatch {
                 reason: format!(
                     "catch-up application outcome mismatch at operation {}",
                     peer_entry.operation_id
@@ -942,7 +942,7 @@ pub(crate) enum FederationSyncStatus {
     CatchingUp {
         peer: MemberId,
     },
-    VerifyingSessionOutcome {
+    VerifyingCatchUpCertificate {
         peer: MemberId,
         operation_count: u64,
     },
@@ -980,7 +980,7 @@ impl FederationSyncStatus {
             Self::Healthy => "healthy",
             Self::Lagging { .. } => "lagging",
             Self::CatchingUp { .. } => "catching_up",
-            Self::VerifyingSessionOutcome { .. } => "verifying_session_outcome",
+            Self::VerifyingCatchUpCertificate { .. } => "verifying_catch_up_certificate",
             Self::MaterializedStateMismatch { .. } => "materialized_state_mismatch",
             Self::Halted { .. } => "halted",
         }
@@ -990,7 +990,7 @@ impl FederationSyncStatus {
         match self {
             Self::Lagging { peer, .. }
             | Self::CatchingUp { peer }
-            | Self::VerifyingSessionOutcome { peer, .. }
+            | Self::VerifyingCatchUpCertificate { peer, .. }
             | Self::MaterializedStateMismatch { peer, .. } => Some(*peer),
             Self::Healthy | Self::Halted { .. } => None,
         }
@@ -1004,7 +1004,7 @@ impl FederationSyncStatus {
             } => Some(*local_operation_count),
             Self::Healthy
             | Self::CatchingUp { .. }
-            | Self::VerifyingSessionOutcome { .. }
+            | Self::VerifyingCatchUpCertificate { .. }
             | Self::MaterializedStateMismatch { .. }
             | Self::Halted { .. } => None,
         }
@@ -1018,7 +1018,7 @@ impl FederationSyncStatus {
             } => Some(*peer_operation_count),
             Self::Healthy
             | Self::CatchingUp { .. }
-            | Self::VerifyingSessionOutcome { .. }
+            | Self::VerifyingCatchUpCertificate { .. }
             | Self::MaterializedStateMismatch { .. }
             | Self::Halted { .. } => None,
         }
@@ -1026,7 +1026,7 @@ impl FederationSyncStatus {
 
     pub(crate) fn operation_count(&self) -> Option<u64> {
         match self {
-            Self::VerifyingSessionOutcome {
+            Self::VerifyingCatchUpCertificate {
                 operation_count, ..
             }
             | Self::MaterializedStateMismatch {
@@ -1052,11 +1052,11 @@ impl FederationSyncStatus {
             Self::CatchingUp { peer } => {
                 format!("federation member is catching up from peer {peer}")
             }
-            Self::VerifyingSessionOutcome {
+            Self::VerifyingCatchUpCertificate {
                 peer,
                 operation_count,
             } => format!(
-                "federation member is verifying quorum session outcome evidence after catch-up from peer {peer}: operation_count={operation_count}"
+                "federation member is verifying quorum catch-up certificates after catch-up from peer {peer}: operation_count={operation_count}"
             ),
             Self::MaterializedStateMismatch {
                 peer,
@@ -1113,12 +1113,12 @@ impl FederationSyncStatus {
                 message: Some(self.not_ready_message()),
                 updated_time,
             },
-            Self::VerifyingSessionOutcome {
+            Self::VerifyingCatchUpCertificate {
                 peer,
                 operation_count,
             } => FederationMemberStatusSnapshot {
                 member_id,
-                status: FederationMemberStatusKind::VerifyingSessionOutcome,
+                status: FederationMemberStatusKind::VerifyingCatchUpCertificate,
                 peer: Some(*peer),
                 local_operation_count: None,
                 peer_operation_count: None,
@@ -1186,8 +1186,8 @@ impl FederationSyncStatus {
                 })?,
             }),
             FederationMemberStatusKind::CatchingUp => Ok(Self::CatchingUp { peer: peer()? }),
-            FederationMemberStatusKind::VerifyingSessionOutcome => {
-                Ok(Self::VerifyingSessionOutcome {
+            FederationMemberStatusKind::VerifyingCatchUpCertificate => {
+                Ok(Self::VerifyingCatchUpCertificate {
                     peer: peer()?,
                     operation_count: operation_count()?,
                 })
@@ -1256,7 +1256,7 @@ impl FederationSyncState {
         self.status = FederationSyncStatus::CatchingUp { peer };
     }
 
-    fn mark_verifying_session_outcome(&mut self, peer: MemberId, operation_count: u64) {
+    fn mark_verifying_catch_up_certificate(&mut self, peer: MemberId, operation_count: u64) {
         match self.status {
             FederationSyncStatus::Halted { .. } => {}
             FederationSyncStatus::Lagging {
@@ -1264,7 +1264,7 @@ impl FederationSyncState {
                 ..
             } if peer_operation_count > operation_count => {}
             _ => {
-                self.status = FederationSyncStatus::VerifyingSessionOutcome {
+                self.status = FederationSyncStatus::VerifyingCatchUpCertificate {
                     peer,
                     operation_count,
                 };
@@ -1279,7 +1279,7 @@ impl FederationSyncState {
                 peer_operation_count,
                 ..
             } if peer_operation_count > operation_count => {}
-            FederationSyncStatus::VerifyingSessionOutcome {
+            FederationSyncStatus::VerifyingCatchUpCertificate {
                 operation_count: pending_operation_count,
                 ..
             } if pending_operation_count > operation_count => {}
@@ -1292,14 +1292,14 @@ impl FederationSyncState {
         }
     }
 
-    fn mark_healthy_if_session_outcome_verified(&mut self, verified_operation_count: u64) {
+    fn mark_healthy_if_catch_up_certificate_verified(&mut self, verified_operation_count: u64) {
         match self.status {
             FederationSyncStatus::Halted { .. } => {}
             FederationSyncStatus::Lagging {
                 peer_operation_count,
                 ..
             } if peer_operation_count > verified_operation_count => {}
-            FederationSyncStatus::VerifyingSessionOutcome {
+            FederationSyncStatus::VerifyingCatchUpCertificate {
                 operation_count, ..
             } if operation_count > verified_operation_count => {}
             _ => self.mark_healthy(),
@@ -1778,13 +1778,16 @@ impl MintState {
         self.federation.apply_test_catch_up_response(response).await
     }
 
-    pub(crate) async fn apply_federation_catch_up_response_with_session_outcome_quorum(
+    pub(crate) async fn apply_federation_catch_up_response_with_catch_up_certificate_quorum(
         &self,
         response: &FederationJournalCatchUpResponse,
-        additional_outcomes: &[FederationSessionOutcome],
+        additional_certificates: &[FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         self.federation
-            .apply_catch_up_response_with_session_outcome_quorum(response, additional_outcomes)
+            .apply_catch_up_response_with_catch_up_certificate_quorum(
+                response,
+                additional_certificates,
+            )
             .await
     }
 
@@ -1867,9 +1870,9 @@ impl MintState {
             .await
     }
 
-    pub(crate) async fn persist_federation_session_outcome(
+    pub(crate) async fn persist_federation_catch_up_certificate(
         &self,
-        outcome: &FederationSessionOutcome,
+        outcome: &FederationCatchUpCertificate,
     ) -> Result<(), cdk::Error> {
         self.persist_federation_journal_entries(&[], Some(outcome), None)
             .await
@@ -1878,26 +1881,26 @@ impl MintState {
     async fn persist_federation_journal_entries(
         &self,
         entries: &[FederationJournalEntry],
-        session_outcome: Option<&FederationSessionOutcome>,
+        catch_up_certificate: Option<&FederationCatchUpCertificate>,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
-        let session_outcomes = session_outcome.into_iter().collect::<Vec<_>>();
-        self.persist_federation_journal_entries_with_session_outcomes(
+        let catch_up_certificates = catch_up_certificate.into_iter().collect::<Vec<_>>();
+        self.persist_federation_journal_entries_with_catch_up_certificates(
             entries,
-            &session_outcomes,
+            &catch_up_certificates,
             sequence,
         )
         .await
     }
 
-    async fn persist_federation_journal_entries_with_session_outcomes(
+    async fn persist_federation_journal_entries_with_catch_up_certificates(
         &self,
         entries: &[FederationJournalEntry],
-        session_outcomes: &[&FederationSessionOutcome],
+        catch_up_certificates: &[&FederationCatchUpCertificate],
         sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         self.federation
-            .persist_journal_entries(entries, session_outcomes, sequence)
+            .persist_journal_entries(entries, catch_up_certificates, sequence)
             .await
     }
 
@@ -1946,13 +1949,13 @@ impl MintState {
         self.federation.mark_catching_up(peer).await;
     }
 
-    pub(crate) async fn mark_federation_verifying_session_outcome(
+    pub(crate) async fn mark_federation_verifying_catch_up_certificate(
         &self,
         peer: MemberId,
         operation_count: u64,
     ) {
         self.federation
-            .mark_verifying_session_outcome(peer, operation_count)
+            .mark_verifying_catch_up_certificate(peer, operation_count)
             .await;
     }
 
@@ -1966,12 +1969,12 @@ impl MintState {
             .await;
     }
 
-    pub(crate) async fn mark_federation_healthy_if_session_outcome_verified(
+    pub(crate) async fn mark_federation_healthy_if_catch_up_certificate_verified(
         &self,
         verified_operation_count: u64,
     ) {
         self.federation
-            .mark_healthy_if_session_outcome_verified(verified_operation_count)
+            .mark_healthy_if_catch_up_certificate_verified(verified_operation_count)
             .await;
     }
 

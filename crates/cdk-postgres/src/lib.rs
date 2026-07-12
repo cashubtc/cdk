@@ -706,7 +706,7 @@ mod test {
             "completed_operations",
             "federation_journal_entries",
             "federation_member_sequences",
-            "federation_session_outcomes",
+            "federation_catch_up_certificates",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
             "federation_aleph_bft_pending_operations",
@@ -751,7 +751,7 @@ mod test {
 
         for index in [
             "idx_federation_journal_operation_id",
-            "idx_federation_session_outcomes_from_index",
+            "idx_federation_catch_up_certificates_from_index",
             "idx_federation_aleph_bft_finalized_items_session_unit",
             "idx_federation_aleph_bft_finalized_items_operation_id",
             "idx_federation_aleph_bft_pending_operations_session",

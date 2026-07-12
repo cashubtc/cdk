@@ -13,16 +13,16 @@ use crate::{
 };
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationCatchUpOperation, FederationConfig,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupState, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
-    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationSessionOutcome, FederationSubmitOperationResponse,
-    MemberId, FEDERATION_REST_API_VERSION,
+    FederationAlephBftUnitPayload, FederationCatchUpCertificate, FederationCatchUpOperation,
+    FederationConfig, FederationConsensusItemAdmission, FederationConsensusRuntime,
+    FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationSubmitOperationResponse, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 
@@ -443,7 +443,7 @@ impl FederationNodeRuntime {
         };
         match sync.lock().await.status() {
             FederationSyncStatus::Healthy
-            | FederationSyncStatus::VerifyingSessionOutcome { .. } => {}
+            | FederationSyncStatus::VerifyingCatchUpCertificate { .. } => {}
             FederationSyncStatus::Lagging { .. }
             | FederationSyncStatus::CatchingUp { .. }
             | FederationSyncStatus::MaterializedStateMismatch { .. }
@@ -465,19 +465,19 @@ impl FederationNodeRuntime {
             return;
         }
 
-        let verified_operation_count = match super::session_outcome_quorum_status(mint).await {
+        let verified_operation_count = match super::catch_up_certificate_quorum_status(mint).await {
             Ok(Some(quorum)) => quorum.operation_count,
             Ok(None) => 0,
             Err(err) => {
                 self.mark_halted(format!(
-                    "could not inspect federation startup session outcome quorum: {err}"
+                    "could not inspect federation startup catch-up certificate quorum: {err}"
                 ))
                 .await;
                 return;
             }
         };
         if verified_operation_count >= operation_count {
-            self.mark_healthy_if_session_outcome_verified(verified_operation_count)
+            self.mark_healthy_if_catch_up_certificate_verified(verified_operation_count)
                 .await;
             return;
         }
@@ -489,7 +489,7 @@ impl FederationNodeRuntime {
             .find(|member| member.member_id != config.member_id())
             .map(|member| member.member_id)
             .unwrap_or_else(|| config.member_id());
-        self.mark_verifying_session_outcome(peer, operation_count)
+        self.mark_verifying_catch_up_certificate(peer, operation_count)
             .await;
     }
 
@@ -510,13 +510,13 @@ impl FederationNodeRuntime {
             .await
     }
 
-    pub(crate) async fn mark_verifying_session_outcome(
+    pub(crate) async fn mark_verifying_catch_up_certificate(
         &self,
         peer: MemberId,
         operation_count: u64,
     ) {
         self.update_sync_status(|sync| {
-            sync.mark_verifying_session_outcome(peer, operation_count);
+            sync.mark_verifying_catch_up_certificate(peer, operation_count);
         })
         .await
     }
@@ -537,12 +537,12 @@ impl FederationNodeRuntime {
         .await
     }
 
-    pub(crate) async fn mark_healthy_if_session_outcome_verified(
+    pub(crate) async fn mark_healthy_if_catch_up_certificate_verified(
         &self,
         verified_operation_count: u64,
     ) {
         self.update_sync_status(|sync| {
-            sync.mark_healthy_if_session_outcome_verified(verified_operation_count);
+            sync.mark_healthy_if_catch_up_certificate_verified(verified_operation_count);
         })
         .await
     }
@@ -559,7 +559,7 @@ impl FederationNodeRuntime {
                 peer_operation_count,
                 ..
             } if peer_operation_count > local_operation_count => {}
-            FederationSyncStatus::VerifyingSessionOutcome { .. }
+            FederationSyncStatus::VerifyingCatchUpCertificate { .. }
             | FederationSyncStatus::Halted { .. } => {}
             _ => sync.mark_healthy(),
         })
@@ -833,10 +833,10 @@ impl FederationNodeRuntime {
         self.apply_verified_catch_up_response(response, &[]).await
     }
 
-    pub(crate) async fn apply_catch_up_response_with_session_outcome_quorum(
+    pub(crate) async fn apply_catch_up_response_with_catch_up_certificate_quorum(
         &self,
         response: &FederationJournalCatchUpResponse,
-        additional_outcomes: &[FederationSessionOutcome],
+        additional_certificates: &[FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let runtime_config = self
             .active_mint()?
@@ -862,21 +862,21 @@ impl FederationNodeRuntime {
                 },
             ));
         }
-        response.verify_session_outcome_quorum(&public_config, additional_outcomes)?;
+        response.verify_catch_up_certificate_quorum(&public_config, additional_certificates)?;
 
-        let mut session_outcomes = Vec::new();
-        if let Some(session_outcome) = response.session_outcome.as_ref() {
-            session_outcomes.push(session_outcome);
+        let mut catch_up_certificates = Vec::new();
+        if let Some(catch_up_certificate) = response.catch_up_certificate.as_ref() {
+            catch_up_certificates.push(catch_up_certificate);
         }
-        session_outcomes.extend(additional_outcomes.iter());
-        for session_outcome in &session_outcomes {
+        catch_up_certificates.extend(additional_certificates.iter());
+        for catch_up_certificate in &catch_up_certificates {
             let member =
                 public_config
-                    .member(session_outcome.signer)
+                    .member(catch_up_certificate.signer)
                     .ok_or(cdk::Error::Federation(FederationError::UnknownMember {
-                        member_id: session_outcome.signer,
+                        member_id: catch_up_certificate.signer,
                     }))?;
-            session_outcome.verify(
+            catch_up_certificate.verify(
                 member,
                 response.federation_id,
                 response.from_index,
@@ -886,14 +886,14 @@ impl FederationNodeRuntime {
             )?;
         }
 
-        self.apply_verified_catch_up_response(response, &session_outcomes)
+        self.apply_verified_catch_up_response(response, &catch_up_certificates)
             .await
     }
 
     async fn apply_verified_catch_up_response(
         &self,
         response: &FederationJournalCatchUpResponse,
-        session_outcomes: &[&FederationSessionOutcome],
+        catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let runtime_config = self
             .active_mint()?
@@ -916,7 +916,7 @@ impl FederationNodeRuntime {
                 || response_to_apply.entries.len() != response.entries.len()
             {
                 return Err(cdk::Error::Federation(
-                    FederationError::SessionOutcomeMismatch {
+                    FederationError::CatchUpCertificateMismatch {
                         reason: "signed catch-up evidence does not cover the local suffix"
                             .to_string(),
                     },
@@ -1000,7 +1000,7 @@ impl FederationNodeRuntime {
             target_session,
             &new_finalized_items,
             &applied,
-            session_outcomes,
+            catch_up_certificates,
         )
         .await?;
         *consensus = next_consensus;
@@ -1368,7 +1368,7 @@ impl FederationNodeRuntime {
     pub(crate) async fn persist_journal_entries(
         &self,
         entries: &[FederationJournalEntry],
-        session_outcomes: &[&FederationSessionOutcome],
+        catch_up_certificates: &[&FederationCatchUpCertificate],
         sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
@@ -1376,8 +1376,9 @@ impl FederationNodeRuntime {
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
-        for session_outcome in session_outcomes {
-            tx.add_federation_session_outcome(session_outcome).await?;
+        for catch_up_certificate in catch_up_certificates {
+            tx.add_federation_catch_up_certificate(catch_up_certificate)
+                .await?;
         }
         if let Some((sender, sequence)) = sequence {
             tx.set_federation_member_sequence(sender, sequence).await?;
@@ -1428,7 +1429,7 @@ impl FederationNodeRuntime {
         active_session: u64,
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
-        session_outcomes: &[&FederationSessionOutcome],
+        catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1443,8 +1444,9 @@ impl FederationNodeRuntime {
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
-        for session_outcome in session_outcomes {
-            tx.add_federation_session_outcome(session_outcome).await?;
+        for catch_up_certificate in catch_up_certificates {
+            tx.add_federation_catch_up_certificate(catch_up_certificate)
+                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -1562,7 +1564,7 @@ impl FederationNodeRuntime {
                 || local_entry.rejection != peer_entry.rejection
             {
                 return Err(cdk::Error::Federation(
-                    FederationError::SessionOutcomeMismatch {
+                    FederationError::CatchUpCertificateMismatch {
                         reason: format!(
                             "catch-up rejection mismatch at operation {}",
                             peer_entry.operation_id
