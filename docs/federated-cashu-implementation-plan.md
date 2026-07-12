@@ -181,6 +181,8 @@ Resolved blocking bugs:
   regressions pass. The complete readiness state machine and live-session
   admission check now run on the runtime while `MintState` persists returned
   transitions; status restoration/persistence and public-submit gating tests
+  pass. Aleph status/mempool reads and local/peer activity signaling now run on
+  the runtime as well; all 11 activity-wake tests and status-counter coverage
   pass.
 
 ## Recent performance checkpoint

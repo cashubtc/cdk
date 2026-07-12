@@ -1219,6 +1219,15 @@ the changed status returned by the runtime and retains digest-mismatch metrics.
 Status persistence, startup restoration, readiness, and five public-submit
 gating regressions pass.
 
+### Checkpoint 5: live-session control
+
+AlephBFT status and pending-mempool reads plus local and authenticated peer
+activity signaling now execute on `FederationNodeRuntime`. Session mismatch and
+missing-receiver failures remain unchanged. All 11 focused activity-wake tests
+and the local status adapter-counter regression pass. Startup recovery remains
+at the mint/database boundary by design; live task ownership moves with the
+session supervisor in Item 18.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

@@ -1622,17 +1622,13 @@ impl MintState {
     }
 
     pub(crate) async fn federation_pending_mempool_len(&self) -> usize {
-        match &self.federation.consensus {
-            Some(consensus) => consensus.lock().await.pending_mempool_len(),
-            None => 0,
-        }
+        self.federation.pending_mempool_len().await
     }
 
     pub(crate) async fn federation_aleph_bft_status(
         &self,
     ) -> Option<FederationAlephBftAdapterStatus> {
-        let consensus = self.federation.consensus.as_ref()?;
-        consensus.lock().await.aleph_bft_status().ok()
+        self.federation.aleph_bft_status().await
     }
 
     pub(crate) async fn federation_aleph_bft_live_session_active(&self) -> bool {
@@ -1648,10 +1644,9 @@ impl MintState {
         operation_id: FederationOperationId,
         broadcast: bool,
     ) {
-        let Some(handle) = self.federation.aleph_bft_live_session.read().await.clone() else {
-            return;
-        };
-        handle.mark_activity(operation_id, broadcast);
+        self.federation
+            .mark_consensus_activity(operation_id, broadcast)
+            .await;
     }
 
     pub(crate) async fn mark_aleph_bft_peer_activity(
@@ -1659,28 +1654,9 @@ impl MintState {
         session_id: u64,
         operation_id: FederationOperationId,
     ) -> Result<(), cdk::Error> {
-        let status = self.federation_aleph_bft_status().await.ok_or_else(|| {
-            cdk::Error::Custom("AlephBFT activity requires an active consensus runtime".to_string())
-        })?;
-        if status.session != session_id {
-            return Err(cdk::Error::from(
-                cdk::federation::FederationError::AlephBftUnitSessionMismatch {
-                    expected: status.session,
-                    found: session_id,
-                },
-            ));
-        }
-        let handle = self
-            .federation
-            .aleph_bft_live_session
-            .read()
+        self.federation
+            .mark_peer_activity(session_id, operation_id)
             .await
-            .clone()
-            .ok_or_else(|| {
-                cdk::Error::Custom("AlephBFT activity receiver is not available".to_string())
-            })?;
-        handle.mark_peer_activity(operation_id);
-        Ok(())
     }
 
     pub(crate) async fn federation_invalid_operation_alert_summaries(
