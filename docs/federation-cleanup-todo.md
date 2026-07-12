@@ -1280,6 +1280,18 @@ also restored its intended observation point: an admitted item is counted after
 durable queueing, while a deterministic finalized conflict is counted only when
 its rejected journal response returns.
 
+### Checkpoint 11: catch-up reconstruction ownership
+
+Signed session-outcome quorum verification, local-suffix selection,
+finalized-item evidence validation, AlephBFT runtime reconstruction, local
+application-state overlay, overlap verification, atomic catch-up persistence,
+mint replay, and post-replay rejection equality checks now execute on
+`FederationNodeRuntime`. Private REST and test helpers retain only thin adapters.
+All 29 focused catch-up tests pass, covering malformed, incomplete, and
+reordered evidence; digest divergence; rejected-entry continuation; stale local
+overlap retries; and mint, swap, melt, payment-observation, and quarantine
+materialization.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

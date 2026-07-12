@@ -17,8 +17,6 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
-#[cfg(all(test, feature = "federation"))]
-use cdk::federation::FederationAlephBftConsensusAdapter;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationAlephBftAdapterStatus,
@@ -32,7 +30,6 @@ use cdk::federation::{
     FederationMemberStatusSnapshot, FederationOperationEnvelope, FederationOperationId,
     FederationOperationKind, FederationOperationStatus, FederationRestSequenceTracker,
     FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
-    FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -1785,106 +1782,7 @@ impl MintState {
         &self,
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
-        let runtime_config = self.mint.federation_config().cloned().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?;
-        let consensus = self.federation.consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
-        let consensus = consensus.lock().await;
-        let local_entries = consensus.journal().entries().to_vec();
-        let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
-        let response_to_apply =
-            catch_up_response_suffix_for_local_journal(&local_entries, response)?;
-        let Some(response_to_apply) = response_to_apply else {
-            return Ok(Vec::new());
-        };
-        if response_to_apply.entries.is_empty() {
-            let local_order_digest = local_entries
-                .last()
-                .map_or_else(cdk::federation::FederationJournalDigest::genesis, |entry| {
-                    entry.order_digest
-                });
-            if response.complete && response.latest_order_digest != local_order_digest {
-                return Err(cdk::Error::Federation(
-                    FederationError::CatchUpDigestMismatch {
-                        index: local_entries.len() as u64,
-                        expected: local_order_digest,
-                        found: response.latest_order_digest,
-                    },
-                ));
-            }
-            return Ok(Vec::new());
-        }
-        let status = consensus.aleph_bft_status()?;
-        drop(consensus);
-
-        let public_config = runtime_config.public_config();
-        let submitting_member = public_config
-            .members
-            .keys()
-            .copied()
-            .find(|member_id| *member_id != runtime_config.member_id())
-            .unwrap_or(runtime_config.member_id());
-        let target_session =
-            latest_aleph_bft_finalized_session(&local_finalized_items).max(status.session);
-        let mut adapter =
-            FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
-                public_config.federation_id,
-                runtime_config.member_id(),
-                target_session,
-                public_config.members.keys().copied(),
-                local_finalized_items.clone(),
-            )?;
-        let next_unit_index = local_finalized_items
-            .iter()
-            .filter(|item| {
-                item.session == target_session && item.unit_submitting_member == submitting_member
-            })
-            .map(|item| item.unit_index)
-            .max()
-            .map_or(0, |index| index.saturating_add(1));
-        let unit = FederationAlephBftUnitPayload::new(
-            public_config.federation_id,
-            submitting_member,
-            target_session,
-            next_unit_index,
-            response_to_apply
-                .entries
-                .iter()
-                .map(|entry| {
-                    cdk::federation::FederationConsensusItem::operation(entry.envelope.clone())
-                })
-                .collect(),
-        )?;
-        adapter.finalize_unit(unit)?;
-        let request =
-            cdk::federation::FederationJournalCatchUpRequest::new(local_entries.len() as u64)
-                .with_known_order_digest(
-                    local_entries
-                        .last()
-                        .map_or_else(cdk::federation::FederationJournalDigest::genesis, |entry| {
-                            entry.order_digest
-                        }),
-                )
-                .with_aleph_bft_next_item_index(local_finalized_items.len() as u64);
-        let mut aleph_response = FederationJournalCatchUpResponse::from_journal(
-            public_config.federation_id,
-            adapter.journal(),
-            &request,
-            u16::MAX,
-            u16::MAX,
-        )
-        .with_aleph_bft_finalized_items(
-            adapter.finalized_items()[local_finalized_items.len()..].to_vec(),
-            true,
-        );
-        aleph_response.complete = response.complete;
-        aleph_response.latest_order_digest = response.latest_order_digest;
-        aleph_response.state_digest = response.state_digest;
-
-        self.apply_verified_federation_aleph_bft_catch_up_response(&aleph_response, &[])
-            .await
+        self.federation.apply_test_catch_up_response(response).await
     }
 
     pub(crate) async fn apply_federation_catch_up_response_with_session_outcome_quorum(
@@ -1892,178 +1790,9 @@ impl MintState {
         response: &FederationJournalCatchUpResponse,
         additional_outcomes: &[FederationSessionOutcome],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
-        self.apply_federation_aleph_bft_catch_up_response_with_session_outcome_quorum(
-            response,
-            additional_outcomes,
-        )
-        .await
-    }
-
-    async fn apply_federation_aleph_bft_catch_up_response_with_session_outcome_quorum(
-        &self,
-        response: &FederationJournalCatchUpResponse,
-        additional_outcomes: &[FederationSessionOutcome],
-    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
-        let runtime_config = self.mint.federation_config().cloned().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?;
-        let public_config = runtime_config.public_config().clone();
-        if response.version != FEDERATION_REST_API_VERSION {
-            return Err(cdk::Error::Federation(
-                FederationError::RestVersionMismatch {
-                    expected: FEDERATION_REST_API_VERSION,
-                    found: response.version,
-                },
-            ));
-        }
-        if response.federation_id != public_config.federation_id {
-            return Err(cdk::Error::Federation(
-                FederationError::CatchUpFederationMismatch {
-                    expected: public_config.federation_id,
-                    found: response.federation_id,
-                },
-            ));
-        }
-        response.verify_session_outcome_quorum(&public_config, additional_outcomes)?;
-
-        let mut session_outcomes = Vec::new();
-        if let Some(session_outcome) = response.session_outcome.as_ref() {
-            session_outcomes.push(session_outcome);
-        }
-        session_outcomes.extend(additional_outcomes.iter());
-        for session_outcome in &session_outcomes {
-            let member =
-                public_config
-                    .member(session_outcome.signer)
-                    .ok_or(cdk::Error::Federation(FederationError::UnknownMember {
-                        member_id: session_outcome.signer,
-                    }))?;
-            session_outcome.verify(
-                member,
-                response.federation_id,
-                response.from_index,
-                &response.entries,
-                response.latest_order_digest,
-                response.state_digest,
-            )?;
-        }
-
-        self.apply_verified_federation_aleph_bft_catch_up_response(response, &session_outcomes)
+        self.federation
+            .apply_catch_up_response_with_session_outcome_quorum(response, additional_outcomes)
             .await
-    }
-
-    async fn apply_verified_federation_aleph_bft_catch_up_response(
-        &self,
-        response: &FederationJournalCatchUpResponse,
-        session_outcomes: &[&FederationSessionOutcome],
-    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
-        let runtime_config = self.mint.federation_config().cloned().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?;
-        let public_config = runtime_config.public_config().clone();
-        let consensus = self.federation.consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
-        let mut consensus = consensus.lock().await;
-        let local_entries = consensus.journal().entries().to_vec();
-        let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
-        let response_to_apply =
-            catch_up_response_suffix_for_local_journal(&local_entries, response)?;
-        if let Some(response_to_apply) = response_to_apply.as_ref() {
-            if response_to_apply.from_index != response.from_index
-                || response_to_apply.entries.len() != response.entries.len()
-            {
-                return Err(cdk::Error::Federation(
-                    FederationError::SessionOutcomeMismatch {
-                        reason: "signed catch-up evidence does not cover the local suffix"
-                            .to_string(),
-                    },
-                ));
-            }
-        }
-        let new_finalized_items =
-            aleph_bft_finalized_item_suffix_for_local(&local_finalized_items, response)?;
-        if new_finalized_items.is_empty()
-            && response_to_apply
-                .as_ref()
-                .is_some_and(|response_to_apply| !response_to_apply.entries.is_empty())
-        {
-            return Err(aleph_bft_catch_up_recovery_mismatch(
-                "non-empty AlephBFT catch-up entries missing finalized-item evidence".to_string(),
-            ));
-        }
-
-        let status = consensus.aleph_bft_status()?;
-        let mut retained_items = local_finalized_items;
-        retained_items.extend(new_finalized_items.iter().cloned());
-        let target_session =
-            latest_aleph_bft_finalized_session(&retained_items).max(status.session);
-        let member_ids = public_config.members.keys().copied();
-        let mut next_consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
-            public_config.federation_id,
-            runtime_config.member_id(),
-            target_session,
-            member_ids,
-            public_config.threshold_params.consensus_threshold,
-            retained_items,
-        )?;
-        let recovered_entries_before_status_overlay = next_consensus.journal().entries().to_vec();
-        let entries_to_retry_from_local_overlap = stale_local_aleph_bft_entries_to_retry(
-            &local_entries,
-            &recovered_entries_before_status_overlay,
-        );
-        for local_entry in &local_entries {
-            if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status) {
-                next_consensus.update_application_state(
-                    local_entry.operation_id,
-                    local_entry.status,
-                    local_entry.rejection.clone(),
-                )?;
-            }
-        }
-        let recovered_entries = next_consensus.journal().entries();
-        if recovered_entries.len() < local_entries.len() {
-            return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-                "finalized-item catch-up recovered {} journal entries but local journal has {}",
-                recovered_entries.len(),
-                local_entries.len()
-            )));
-        }
-        for (local_entry, recovered_entry) in local_entries.iter().zip(recovered_entries.iter()) {
-            ensure_catch_up_overlap_matches(local_entry, recovered_entry)?;
-        }
-        let applied = recovered_entries[local_entries.len()..].to_vec();
-        ensure_catch_up_entries_match_recovered_journal(&applied, response_to_apply.as_ref())?;
-        if response.complete
-            && response.latest_order_digest != next_consensus.journal().latest_order_digest()
-        {
-            return Err(cdk::Error::Federation(
-                FederationError::CatchUpDigestMismatch {
-                    index: next_consensus.journal().next_index(),
-                    expected: next_consensus.journal().latest_order_digest(),
-                    found: response.latest_order_digest,
-                },
-            ));
-        }
-
-        let mut entries_to_apply = entries_to_retry_from_local_overlap;
-        entries_to_apply.extend(accepted_federation_journal_entries(&applied));
-        self.persist_federation_aleph_bft_catch_up(
-            target_session,
-            &new_finalized_items,
-            &applied,
-            session_outcomes,
-        )
-        .await?;
-        *consensus = next_consensus;
-        drop(consensus);
-        self.apply_federation_journal_entries(&entries_to_apply)
-            .await?;
-        if let Some(response_to_apply) = response_to_apply.as_ref() {
-            self.verify_federation_catch_up_rejections(&response_to_apply.entries)
-                .await?;
-        }
-        Ok(applied)
     }
 
     pub(crate) async fn persist_federation_sequence(
@@ -2454,18 +2183,6 @@ impl MintState {
             .await
     }
 
-    async fn persist_federation_aleph_bft_catch_up(
-        &self,
-        active_session: u64,
-        finalized_items: &[FederationAlephBftFinalizedItem],
-        entries: &[FederationJournalEntry],
-        session_outcomes: &[&FederationSessionOutcome],
-    ) -> Result<(), cdk::Error> {
-        self.federation
-            .persist_catch_up(active_session, finalized_items, entries, session_outcomes)
-            .await
-    }
-
     async fn record_federation_sequence(&self, sender: MemberId, sequence: u64) {
         self.federation.record_sequence(sender, sequence).await;
     }
@@ -2608,13 +2325,7 @@ impl MintState {
         }
     }
 
-    async fn apply_federation_journal_entries(
-        &self,
-        entries: &[FederationJournalEntry],
-    ) -> Result<Vec<FederationOperationId>, cdk::Error> {
-        self.federation.apply_journal_entries(entries).await
-    }
-
+    #[cfg(test)]
     async fn verify_federation_catch_up_rejections(
         &self,
         peer_entries: &[FederationJournalEntry],

@@ -204,7 +204,12 @@ Resolved blocking bugs:
   reporting, test-local finality, and submission metrics. Seven focused
   submission tests plus duplicate-pending, notification, cache, duplicate-race,
   and Prometheus metric regressions pass; public readiness/admission and final
-  Cashu response validation remain thin `MintState` adapters.
+  Cashu response validation remain thin `MintState` adapters. Signed catch-up
+  quorum verification and finalized-item reconstruction now also run entirely
+  on the runtime through atomic persistence, mint replay, and post-replay
+  rejection verification. All 29 focused catch-up regressions pass, including
+  malformed evidence, digest divergence, stale-overlap retry, rejected-entry
+  continuation, and mint/swap/melt materialization.
 
 ## Recent performance checkpoint
 
