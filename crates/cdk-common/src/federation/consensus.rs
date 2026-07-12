@@ -7,17 +7,17 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::{
     FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPeerStatus, FederationProtocolVersions, FederationRestMessageKind,
-    FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
-    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPeerStatus, FederationProtocolVersions,
+    FederationRestMessageKind, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -644,7 +644,7 @@ pub struct FederationConsensusItemQueue {
     max_item_bytes: usize,
     pending: VecDeque<FederationConsensusItem>,
     pending_operation_ids: BTreeSet<FederationOperationId>,
-    pending_conflict_keys: BTreeMap<String, FederationOperationId>,
+    pending_conflict_keys: HashMap<FederationOperationConflictKey, FederationOperationId>,
 }
 
 impl Default for FederationConsensusItemQueue {
@@ -667,7 +667,7 @@ impl FederationConsensusItemQueue {
             max_item_bytes,
             pending: VecDeque::new(),
             pending_operation_ids: BTreeSet::new(),
-            pending_conflict_keys: BTreeMap::new(),
+            pending_conflict_keys: HashMap::new(),
         }
     }
 
@@ -697,7 +697,7 @@ impl FederationConsensusItemQueue {
             for conflict_key in conflict_keys {
                 if let Some(existing_operation_id) = self.pending_conflict_keys.get(conflict_key) {
                     return Err(FederationError::ConflictingOperation {
-                        conflict_key: conflict_key.clone(),
+                        conflict_key: serde_json::to_string(conflict_key)?,
                         existing_operation_id: existing_operation_id.to_string(),
                         attempted_operation_id: operation_id.to_string(),
                     });
@@ -786,7 +786,7 @@ impl FederationConsensusItemQueue {
 
 fn pending_consensus_item_operation_metadata(
     item: &FederationConsensusItem,
-) -> Result<Option<(FederationOperationId, Vec<String>)>> {
+) -> Result<Option<(FederationOperationId, Vec<FederationOperationConflictKey>)>> {
     match item {
         FederationConsensusItem::Operation(envelope) => {
             Ok(Some(pending_operation_metadata_from_envelope(envelope)?))
@@ -799,14 +799,9 @@ fn pending_consensus_item_operation_metadata(
 
 fn pending_operation_metadata_from_envelope(
     envelope: &FederationOperationEnvelope,
-) -> Result<(FederationOperationId, Vec<String>)> {
+) -> Result<(FederationOperationId, Vec<FederationOperationConflictKey>)> {
     let operation_id = envelope.operation_id()?;
-    let conflict_keys = envelope
-        .operation
-        .conflict_keys()
-        .iter()
-        .map(canonical_json_string)
-        .collect::<Result<Vec<_>>>()?;
+    let conflict_keys = envelope.operation.conflict_keys();
     Ok((operation_id, conflict_keys))
 }
 
@@ -1363,7 +1358,8 @@ pub struct FederationAlephBftConsensusAdapter {
     pending_finalization_units:
         BTreeMap<FederationAlephBftPendingUnitKey, Vec<FederationConsensusItem>>,
     pending_finalization_operation_ids: BTreeSet<FederationOperationId>,
-    pending_finalization_conflict_keys: BTreeMap<String, FederationOperationId>,
+    pending_finalization_conflict_keys:
+        HashMap<FederationOperationConflictKey, FederationOperationId>,
 }
 
 type FederationAlephBftPendingUnitKey = (u64, MemberId, u64, FederationAlephBftUnitBodyHash);
@@ -1389,7 +1385,7 @@ impl FederationAlephBftConsensusAdapter {
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
-            pending_finalization_conflict_keys: BTreeMap::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
         }
     }
 
@@ -1420,7 +1416,7 @@ impl FederationAlephBftConsensusAdapter {
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
-            pending_finalization_conflict_keys: BTreeMap::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
         })
     }
 
@@ -1453,7 +1449,7 @@ impl FederationAlephBftConsensusAdapter {
             finalized_items: Vec::new(),
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
-            pending_finalization_conflict_keys: BTreeMap::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
         })
     }
 
@@ -1528,7 +1524,7 @@ impl FederationAlephBftConsensusAdapter {
             finalized_items,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
-            pending_finalization_conflict_keys: BTreeMap::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
         })
     }
 
@@ -1664,7 +1660,7 @@ impl FederationAlephBftConsensusAdapter {
                 self.pending_finalization_conflict_keys.get(conflict_key)
             {
                 return Err(FederationError::ConflictingOperation {
-                    conflict_key: conflict_key.clone(),
+                    conflict_key: serde_json::to_string(conflict_key)?,
                     existing_operation_id: existing_operation_id.to_string(),
                     attempted_operation_id: operation_id.to_string(),
                 });
@@ -1717,7 +1713,7 @@ impl FederationAlephBftConsensusAdapter {
         payload: &FederationAlephBftUnitPayload,
     ) -> Result<()> {
         let mut operation_ids = BTreeSet::new();
-        let mut conflict_keys = BTreeMap::new();
+        let mut conflict_keys = HashMap::new();
         for item in &payload.items {
             let Some((operation_id, item_conflict_keys)) =
                 pending_consensus_item_operation_metadata(item)?
@@ -1732,7 +1728,7 @@ impl FederationAlephBftConsensusAdapter {
                     .or_else(|| conflict_keys.get(&conflict_key))
                 {
                     return Err(FederationError::ConflictingOperation {
-                        conflict_key,
+                        conflict_key: serde_json::to_string(&conflict_key)?,
                         existing_operation_id: existing_operation_id.to_string(),
                         attempted_operation_id: operation_id.to_string(),
                     });
@@ -1768,7 +1764,7 @@ impl FederationAlephBftConsensusAdapter {
 
     fn release_pending_finalization_decisions(&mut self, items: &[FederationConsensusItem]) {
         let mut operation_ids = BTreeSet::new();
-        let mut conflict_keys = BTreeSet::new();
+        let mut conflict_keys = HashSet::new();
         for item in items {
             let Ok(Some((operation_id, item_conflict_keys))) =
                 pending_consensus_item_operation_metadata(item)
@@ -1840,7 +1836,7 @@ fn next_local_unit_index_after_recovery(
 fn pending_finalization_item_matches_decision(
     item: &FederationConsensusItem,
     operation_ids: &BTreeSet<FederationOperationId>,
-    conflict_keys: &BTreeSet<String>,
+    conflict_keys: &HashSet<FederationOperationConflictKey>,
 ) -> bool {
     let Ok(Some((operation_id, item_conflict_keys))) =
         pending_consensus_item_operation_metadata(item)
@@ -2125,15 +2121,6 @@ where
     let mut value = serde_json::to_value(value)?;
     sort_json_value(&mut value);
     Ok(serde_json::to_vec(&value)?)
-}
-
-fn canonical_json_string<T>(value: &T) -> Result<String>
-where
-    T: Serialize + ?Sized,
-{
-    let mut value = serde_json::to_value(value)?;
-    sort_json_value(&mut value);
-    Ok(serde_json::to_string(&value)?)
 }
 
 fn sort_json_value(value: &mut serde_json::Value) {

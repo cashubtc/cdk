@@ -605,7 +605,6 @@ mod federation_migration_tests {
                     "operation_index",
                     "operation_id",
                     "envelope_json",
-                    "conflict_key_json",
                     "conflict_keys_json",
                     "previous_order_digest",
                     "order_digest",

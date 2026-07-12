@@ -6,7 +6,7 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -569,9 +569,6 @@ pub struct FederationJournalEntry {
     pub operation_id: FederationOperationId,
     /// Versioned operation envelope.
     pub envelope: FederationOperationEnvelope,
-    /// Quote-scoped conflict key when the operation has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conflict_key: Option<FederationOperationConflictKey>,
     /// All quote-scoped conflict keys touched by the operation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflict_keys: Vec<FederationOperationConflictKey>,
@@ -791,7 +788,7 @@ impl FederationJournalAppendOutcome {
 pub struct InMemoryFederationJournal {
     entries: Vec<FederationJournalEntry>,
     operation_indices: BTreeMap<FederationOperationId, usize>,
-    conflict_keys: BTreeMap<String, FederationOperationId>,
+    conflict_keys: HashMap<FederationOperationConflictKey, FederationOperationId>,
     latest_order_digest: FederationJournalDigest,
 }
 
@@ -808,7 +805,7 @@ impl InMemoryFederationJournal {
         Self {
             entries: Vec::new(),
             operation_indices: BTreeMap::new(),
-            conflict_keys: BTreeMap::new(),
+            conflict_keys: HashMap::new(),
             latest_order_digest: FederationJournalDigest::genesis(),
         }
     }
@@ -924,8 +921,7 @@ impl InMemoryFederationJournal {
             entry.validate_outcome_metadata(expected_state_digest)?;
 
             let conflict_keys = entry.envelope.operation.conflict_keys();
-            let conflict_key = conflict_keys.first().cloned();
-            if entry.conflict_key != conflict_key || entry.conflict_keys != conflict_keys {
+            if entry.conflict_keys != conflict_keys {
                 return Err(FederationError::JournalConflictKeysMismatch { index: entry.index });
             }
 
@@ -937,28 +933,22 @@ impl InMemoryFederationJournal {
                 });
             }
 
-            let conflict_key_labels = conflict_keys
-                .iter()
-                .map(canonical_json_string)
-                .collect::<Result<Vec<_>>>()?;
-            for conflict_key_label in &conflict_key_labels {
+            for conflict_key in &conflict_keys {
                 if should_reserve_conflict_keys(entry.status) {
-                    if let Some(existing_operation_id) =
-                        journal.conflict_keys.get(conflict_key_label)
-                    {
+                    if let Some(existing_operation_id) = journal.conflict_keys.get(conflict_key) {
                         let finalized_mint_conflict = entry.consensus_evidence.is_some()
                             && matches!(&entry.envelope.operation, FederationOperation::Mint(_));
                         if !finalized_mint_conflict {
                             return Err(FederationError::ConflictingOperation {
-                                conflict_key: conflict_key_label.clone(),
+                                conflict_key: serde_json::to_string(conflict_key)?,
                                 existing_operation_id: existing_operation_id.to_string(),
                                 attempted_operation_id: entry.operation_id.to_string(),
                             });
                         }
                     }
-                } else if !journal.conflict_keys.contains_key(conflict_key_label) {
+                } else if !journal.conflict_keys.contains_key(conflict_key) {
                     return Err(FederationError::ConflictingOperation {
-                        conflict_key: conflict_key_label.clone(),
+                        conflict_key: serde_json::to_string(conflict_key)?,
                         existing_operation_id: "none".to_string(),
                         attempted_operation_id: entry.operation_id.to_string(),
                     });
@@ -969,10 +959,10 @@ impl InMemoryFederationJournal {
                 .operation_indices
                 .insert(entry.operation_id, entry.index as usize);
             if should_reserve_conflict_keys(entry.status) {
-                for conflict_key_label in conflict_key_labels {
+                for conflict_key in conflict_keys {
                     journal
                         .conflict_keys
-                        .entry(conflict_key_label)
+                        .entry(conflict_key)
                         .or_insert(entry.operation_id);
                 }
             }
@@ -1041,13 +1031,12 @@ impl InMemoryFederationJournal {
         }
 
         envelope.operation.balance_audit()?;
-        let (conflict_key, conflict_keys, conflict_key_labels) =
-            operation_conflict_metadata(&envelope)?;
+        let conflict_keys = envelope.operation.conflict_keys();
 
-        for conflict_key_label in &conflict_key_labels {
-            if let Some(existing_operation_id) = self.conflict_keys.get(conflict_key_label) {
+        for conflict_key in &conflict_keys {
+            if let Some(existing_operation_id) = self.conflict_keys.get(conflict_key) {
                 return Err(FederationError::ConflictingOperation {
-                    conflict_key: conflict_key_label.clone(),
+                    conflict_key: serde_json::to_string(conflict_key)?,
                     existing_operation_id: existing_operation_id.to_string(),
                     attempted_operation_id: operation_id.to_string(),
                 });
@@ -1057,9 +1046,7 @@ impl InMemoryFederationJournal {
         let entry = self.push_entry(
             envelope,
             operation_id,
-            conflict_key,
             conflict_keys,
-            conflict_key_labels,
             consensus_evidence,
             FederationOperationStatus::Accepted,
         );
@@ -1083,11 +1070,10 @@ impl InMemoryFederationJournal {
         }
 
         envelope.operation.balance_audit()?;
-        let (conflict_key, conflict_keys, conflict_key_labels) =
-            operation_conflict_metadata(&envelope)?;
-        let has_conflict = conflict_key_labels
+        let conflict_keys = envelope.operation.conflict_keys();
+        let has_conflict = conflict_keys
             .iter()
-            .any(|conflict_key_label| self.conflict_keys.contains_key(conflict_key_label));
+            .any(|conflict_key| self.conflict_keys.contains_key(conflict_key));
         let mint_operation = matches!(&envelope.operation, FederationOperation::Mint(_));
         let status = if has_conflict && !mint_operation {
             FederationOperationStatus::Rejected
@@ -1098,9 +1084,7 @@ impl InMemoryFederationJournal {
         let entry = self.push_entry(
             envelope,
             operation_id,
-            conflict_key,
             conflict_keys,
-            conflict_key_labels,
             Some(consensus_evidence),
             status,
         );
@@ -1112,9 +1096,7 @@ impl InMemoryFederationJournal {
         &mut self,
         envelope: FederationOperationEnvelope,
         operation_id: FederationOperationId,
-        conflict_key: Option<FederationOperationConflictKey>,
         conflict_keys: Vec<FederationOperationConflictKey>,
-        conflict_key_labels: Vec<String>,
         consensus_evidence: Option<FederationJournalConsensusEvidence>,
         status: FederationOperationStatus,
     ) -> FederationJournalEntry {
@@ -1133,8 +1115,7 @@ impl InMemoryFederationJournal {
             index,
             operation_id,
             envelope,
-            conflict_key,
-            conflict_keys,
+            conflict_keys: conflict_keys.clone(),
             previous_order_digest,
             order_digest,
             operation_outcome_hash: Some(operation_outcome_hash),
@@ -1147,9 +1128,9 @@ impl InMemoryFederationJournal {
         self.entries.push(entry.clone());
         self.operation_indices.insert(operation_id, index as usize);
         if should_reserve_conflict_keys(status) {
-            for conflict_key_label in conflict_key_labels {
+            for conflict_key in conflict_keys {
                 self.conflict_keys
-                    .entry(conflict_key_label)
+                    .entry(conflict_key)
                     .or_insert(operation_id);
             }
         }
@@ -1270,33 +1251,8 @@ impl InMemoryFederationJournal {
     }
 }
 
-fn operation_conflict_metadata(
-    envelope: &FederationOperationEnvelope,
-) -> Result<(
-    Option<FederationOperationConflictKey>,
-    Vec<FederationOperationConflictKey>,
-    Vec<String>,
-)> {
-    let conflict_keys = envelope.operation.conflict_keys();
-    let conflict_key = conflict_keys.first().cloned();
-    let conflict_key_labels = conflict_keys
-        .iter()
-        .map(canonical_json_string)
-        .collect::<Result<Vec<_>>>()?;
-    Ok((conflict_key, conflict_keys, conflict_key_labels))
-}
-
 fn should_reserve_conflict_keys(status: FederationOperationStatus) -> bool {
     !matches!(status, FederationOperationStatus::Rejected)
-}
-
-fn canonical_json_string<T>(value: &T) -> Result<String>
-where
-    T: Serialize + ?Sized,
-{
-    let mut value = serde_json::to_value(value)?;
-    value.sort_all_objects();
-    Ok(serde_json::to_string(&value)?)
 }
 
 fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {

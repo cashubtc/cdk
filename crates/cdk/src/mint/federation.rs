@@ -2207,7 +2207,6 @@ fn ensure_same_federation_journal_entry_for_retry(
     if persisted.index != accepted.index
         || persisted.operation_id != accepted.operation_id
         || persisted.envelope.canonical_bytes()? != accepted.envelope.canonical_bytes()?
-        || persisted.conflict_key != accepted.conflict_key
         || persisted.conflict_keys != accepted.conflict_keys
         || persisted.previous_order_digest != accepted.previous_order_digest
         || persisted.order_digest != accepted.order_digest

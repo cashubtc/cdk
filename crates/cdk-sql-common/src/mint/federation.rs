@@ -12,9 +12,9 @@ use cdk_common::federation::{
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationConflictKey,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationOutcomeHash,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationOutcomeHash, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
     FederationStateDigest, FederationStateDigestCheckpoint, MemberId,
 };
@@ -123,7 +123,6 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
             operation_index,
             operation_id,
             envelope_json,
-            conflict_key_json,
             conflict_keys_json,
             previous_order_digest,
             order_digest,
@@ -140,8 +139,6 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         .map_err(|e| Error::Internal(format!("Invalid federation operation id: {e}")))?;
     let envelope = serde_json::from_str(&column_as_string!(&envelope_json))
         .map_err(|e| Error::Internal(format!("Invalid federation envelope JSON: {e}")))?;
-    let conflict_key =
-        optional_json::<FederationOperationConflictKey>(&conflict_key_json, "conflict key")?;
     let conflict_keys = serde_json::from_str(&column_as_string!(&conflict_keys_json))
         .map_err(|e| Error::Internal(format!("Invalid federation conflict keys JSON: {e}")))?;
     let previous_order_digest = cdk_common::federation::FederationJournalDigest::from_hex(
@@ -180,7 +177,6 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         index,
         operation_id,
         envelope,
-        conflict_key,
         conflict_keys,
         previous_order_digest,
         order_digest,
@@ -911,22 +907,14 @@ where
         query(
             r#"
             INSERT INTO federation_journal_entries
-            (operation_index, operation_id, envelope_json, conflict_key_json, conflict_keys_json, previous_order_digest, order_digest, operation_outcome_hash, state_digest, consensus_evidence_json, rejection_json, status)
+            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, operation_outcome_hash, state_digest, consensus_evidence_json, rejection_json, status)
             VALUES
-            (:operation_index, :operation_id, :envelope_json, :conflict_key_json, :conflict_keys_json, :previous_order_digest, :order_digest, :operation_outcome_hash, :state_digest, :consensus_evidence_json, :rejection_json, :status)
+            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :operation_outcome_hash, :state_digest, :consensus_evidence_json, :rejection_json, :status)
             "#,
         )?
         .bind("operation_index", entry.index as i64)
         .bind("operation_id", entry.operation_id.to_string())
         .bind("envelope_json", serde_json::to_string(&entry.envelope)?)
-        .bind(
-            "conflict_key_json",
-            entry
-                .conflict_key
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?,
-        )
         .bind(
             "conflict_keys_json",
             serde_json::to_string(&entry.conflict_keys)?,
@@ -1728,7 +1716,6 @@ where
                 operation_index,
                 operation_id,
                 envelope_json,
-                conflict_key_json,
                 conflict_keys_json,
                 previous_order_digest,
                 order_digest,
@@ -1783,7 +1770,6 @@ where
                 operation_index,
                 operation_id,
                 envelope_json,
-                conflict_key_json,
                 conflict_keys_json,
                 previous_order_digest,
                 order_digest,
@@ -1818,7 +1804,6 @@ where
                 operation_index,
                 operation_id,
                 envelope_json,
-                conflict_key_json,
                 conflict_keys_json,
                 previous_order_digest,
                 order_digest,

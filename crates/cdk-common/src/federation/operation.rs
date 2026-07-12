@@ -1210,12 +1210,6 @@ impl FederationOperation {
         }
     }
 
-    /// Return the conflict key that must be unique for this operation.
-    #[must_use]
-    pub fn conflict_key(&self) -> Option<FederationOperationConflictKey> {
-        self.conflict_keys().into_iter().next()
-    }
-
     /// Return all conflict keys that must be unique for this operation.
     #[must_use]
     pub fn conflict_keys(&self) -> Vec<FederationOperationConflictKey> {
@@ -1973,8 +1967,8 @@ mod tests {
         ));
 
         assert_eq!(
-            first.operation.conflict_key(),
-            duplicate.operation.conflict_key()
+            first.operation.conflict_keys(),
+            duplicate.operation.conflict_keys()
         );
         assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
         assert!(first
@@ -2064,8 +2058,8 @@ mod tests {
         let changed = envelope(FederationOperation::KeysetRotation(changed));
 
         assert_eq!(
-            first.operation.conflict_key(),
-            duplicate.operation.conflict_key()
+            first.operation.conflict_keys(),
+            duplicate.operation.conflict_keys()
         );
         assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
         assert!(first.conflicts_with(&changed).expect("conflict check"));

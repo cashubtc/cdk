@@ -820,7 +820,38 @@ not in production admission, ordering, application, or catch-up.
 
 ## 11. Remove the singular journal conflict key
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed the singular `FederationJournalEntry::conflict_key`, the
+`FederationOperation::conflict_key()` helper, `conflict_key_json` SQL column,
+row codec and bindings, migration definitions, retry comparison, fixtures, and
+assertions. Journal entries now have one authoritative representation: the
+complete typed `conflict_keys` vector.
+
+The in-memory journal, pending item queue, and Aleph pending-finalization set
+now index `FederationOperationConflictKey` directly in hash maps/sets. They no
+longer serialize every key into canonical JSON during ordinary admission,
+replay, insertion, and release. JSON conversion happens only when constructing
+the existing diagnostic conflict error string. The undeployed initial SQLite
+and Postgres federation journal migrations were edited in place; no compatibility
+migration was added.
+
+Verification:
+
+- source and migration searches find no singular journal field, operation
+  helper, or `conflict_key_json` column;
+- all 216 `cdk-common` federation tests pass, covering zero-key swaps,
+  one-key quote/rotation operations, multi-key batch mint conflicts, pending
+  queue conflicts, finalized losers, and deterministic replay;
+- both SQL migration tests and all four SQLite journal persistence,
+  concurrency, metadata-update, and index-plan tests pass;
+- all 99 mint federation tests and all 423 Axum federation tests pass,
+  including SQLite restart, catch-up, conflicting finalized operations,
+  private REST, live AlephBFT, and DKG cases;
+- federation-enabled SQLite, Postgres, and mintd checks pass.
+- standalone `cdk-common`, `cdk-sql-common`, and `cdk` checks remain clean.
 
 ### Problem
 

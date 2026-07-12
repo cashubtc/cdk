@@ -33,14 +33,14 @@ transactions.
 ## Consensus Lock Labels
 
 Use these logical labels when SQL needs to lock accepted-operation resources.
-The `conflict_key_json` value is the canonical JSON string of the
-`FederationOperationConflictKey`, using the same sorted JSON encoding used by
-the in-memory federation journal.
+The `conflict_key_label` value is a canonical JSON rendering of one typed
+`FederationOperationConflictKey`. It is a transient lock label, not a singular
+journal column; journal rows persist only the complete `conflict_keys` vector.
 
 | Resource | Label |
 | --- | --- |
 | Exact operation ID | `operation_id:{operation_id}` |
-| Conflict key | `conflict_key:{conflict_key_json}` |
+| Conflict key | `conflict_key:{conflict_key_label}` |
 
 If a transaction checks both exact duplicates and conflict keys, include the
 operation ID label and every conflict-key label in one sorted list. Do not lock

@@ -31,8 +31,7 @@ The implementation has a strong protocol foundation:
 - Federation operations have canonical, versioned envelopes.
 - Operation IDs, canonical envelopes, complete conflict-key sets, and balance
   audits are explicit and deterministic. The redundant request-transcript
-  layer has been removed; the singular conflict key remains a cleanup
-  candidate rather than a foundation to preserve automatically.
+  layer and singular journal conflict key have been removed.
 - Accepted order, application status, consensus evidence, and materialized-state
   digests are modeled and persisted.
 - State-mutating mint, swap, melt, quote payment-observation, and keyset-rotation
@@ -1222,11 +1221,11 @@ Prevent query column lists, row decoding, and migrations from drifting apart.
 ### Review verdict: Worthwhile after schema cleanup
 
 A single typed journal row codec and grouped storage families will reduce real
-column-order and nullable-field risk. Perform this after deciding whether to
-remove singular conflict keys, digest checkpoints, durable gossip retries, and
-other experimental columns, then squash undeployed federation migrations. Do
-not build a dynamic SQL abstraction; retain static parameterized statements and
-shared explicit decoding.
+column-order and nullable-field risk. The singular conflict key is already
+removed; perform this after deciding the remaining digest-checkpoint, durable
+gossip-retry, and experimental columns, then squash undeployed federation
+migrations. Do not build a dynamic SQL abstraction; retain static parameterized
+statements and shared explicit decoding.
 
 ### Work
 
@@ -1494,9 +1493,9 @@ The safest sequence is:
 3. R4: remove the in-memory backend, legacy primary forwarding, external-
    finalization driver and route, duplicate consensus abstractions, and tests
    whose behavior was deliberately removed.
-4. Complete the related cleanup decisions for consensus restore, request
-   transcripts, singular conflict keys, observation wall-clock fields, and hash
-   semantics before reorganizing their types.
+4. Complete the remaining cleanup decisions for observation wall-clock fields
+   and hash semantics before reorganizing their types. Consensus restore,
+   request transcripts, and singular conflict keys are already removed.
 5. R1 phase B: split the surviving Axum federation suites without preserving a
    framework for deleted behavior.
 6. R9: introduce validated setup and active configuration types early so later

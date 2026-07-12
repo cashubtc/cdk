@@ -473,7 +473,6 @@ async fn apply_federation_melt_rejects_pending_quote_reuse_before_payment_attemp
     let conflicting_entry = FederationJournalEntry {
         index: 42,
         operation_id: conflicting_operation_id,
-        conflict_key: conflicting_envelope.operation.conflict_key(),
         conflict_keys: conflicting_envelope.operation.conflict_keys(),
         envelope: conflicting_envelope,
         previous_order_digest: FederationJournalDigest::from_bytes([1; 32]),

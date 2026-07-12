@@ -700,12 +700,10 @@ fn accepted_entry_without_journal(
     envelope: FederationOperationEnvelope,
 ) -> FederationJournalEntry {
     let operation_id = envelope.operation_id().expect("operation id");
-    let conflict_key = envelope.operation.conflict_key();
     let conflict_keys = envelope.operation.conflict_keys();
     FederationJournalEntry {
         index,
         operation_id,
-        conflict_key,
         conflict_keys,
         envelope,
         previous_order_digest: FederationJournalDigest::from_bytes([index as u8; 32]),
