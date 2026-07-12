@@ -3,10 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationAlephBftFinalityMode,
-    FederationConsensusBackendKind, FederationJournalDigest, FederationPaymentObservationContext,
-    FederationPaymentObservationEvidenceGroupSummary, FederationStateDigest, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederationAlephBftFinalityMode, FederationJournalDigest,
+    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
+    FederationStateDigest, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
@@ -392,13 +391,12 @@ fn status_line_redacts_sensitive_sync_message() {
 }
 
 #[test]
-fn status_line_prints_consensus_backend() {
+fn status_line_prints_federation_runtime_counters() {
     let (public_config, _) = status_fixture();
     let status = local_status(&public_config, 1, 2);
 
     let line = member_status_line(&status);
 
-    assert!(line.contains("consensus_backend=in_memory"));
     assert!(line.contains("sync_peer=none"));
     assert!(line.contains("sync_local_operations=none"));
     assert!(line.contains("sync_peer_operations=none"));
@@ -452,7 +450,6 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
     status.aleph_bft_live_session_active = true;
     status.aleph_bft_network_inbound_active = true;
     status.aleph_bft_status = Some(FederationAlephBftAdapterStatus {
-        consensus_backend: cdk_common::federation::FederationConsensusBackendKind::AlephBft,
         finality: FederationAlephBftFinalityMode::ExternalFinalizationRequired,
         federation_id: public_config.federation_id,
         local_member: MemberId::new(1).expect("member one"),
@@ -473,7 +470,7 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
     assert!(line.contains("aleph_bft_live_session=true"));
     assert!(line.contains("aleph_bft_network_inbound=true"));
     assert!(line.contains(
-        "aleph_bft=backend:aleph_bft finality:external_finalization_required local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
+        "aleph_bft=finality:external_finalization_required local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
     ));
 }
 
@@ -768,20 +765,6 @@ fn status_convergence_guard_rejects_state_digest_mismatch() {
 }
 
 #[test]
-fn status_convergence_guard_rejects_consensus_backend_mismatch() {
-    let (public_config, _) = status_fixture();
-    let first = local_status(&public_config, 1, 0);
-    let mut second = local_status(&public_config, 2, 0);
-    second.peer_status.consensus_backend = FederationConsensusBackendKind::AlephBft;
-    let statuses = vec![first, second];
-
-    let err =
-        ensure_statuses_converged(&statuses).expect_err("consensus backend mismatch should fail");
-
-    assert!(err.to_string().contains("consensus backend"));
-}
-
-#[test]
 fn status_digest_alert_guard_accepts_height_mismatch() {
     let (public_config, _) = status_fixture();
     let statuses = vec![
@@ -805,19 +788,6 @@ fn status_digest_alert_guard_rejects_state_digest_mismatch() {
 
     assert!(err.to_string().contains("digest alert"));
     assert!(err.to_string().contains("state digest"));
-}
-
-#[test]
-fn status_alert_guard_rejects_consensus_backend_mismatch() {
-    let (public_config, _) = status_fixture();
-    let first = local_status(&public_config, 1, 2);
-    let mut second = local_status(&public_config, 2, 2);
-    second.peer_status.consensus_backend = FederationConsensusBackendKind::AlephBft;
-    let statuses = vec![first, second];
-
-    let err = ensure_statuses_no_digest_alerts(&statuses).expect_err("backend mismatch fails");
-
-    assert!(err.to_string().contains("consensus backend"));
 }
 
 #[test]

@@ -4929,38 +4929,6 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
 }
 
 #[tokio::test]
-async fn rest_peer_client_halts_on_consensus_backend_mismatch() {
-    let (state, public_config, local_private, _) =
-        federation_route_state_with_local_private().await;
-    let federation_id = public_config.federation_id;
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let mut status = FederationPeerStatus::new_with_state_digest(
-        federation_id,
-        peer_member.member_id,
-        0,
-        None,
-        cdk::federation::FederationJournalDigest::genesis(),
-        cdk::federation::FederationStateDigest::genesis(),
-    );
-    status.consensus_backend = cdk::federation::FederationConsensusBackendKind::AlephBft;
-    status.aleph_bft_next_item_index = Some(0);
-    let transport = MockFederationTransport::default().with_status_response(status);
-    let client =
-        FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
-
-    let sync = client.sync_once_from_member(&state, peer_member).await;
-
-    assert!(sync
-        .expect_err("backend mismatch should fail")
-        .to_string()
-        .contains("consensus backend mismatch"));
-    assert!(matches!(
-        state.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::Halted { .. })
-    ));
-}
-
-#[tokio::test]
 async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -4974,15 +4942,15 @@ async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
     )
     .await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let status = FederationPeerStatus::new_with_state_digest(
+    let mut status = FederationPeerStatus::new_with_state_digest(
         public_config.federation_id,
         peer_member.member_id,
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
         cdk::federation::FederationStateDigest::genesis(),
-    )
-    .with_consensus_backend(FederationConsensusBackendKind::AlephBft);
+    );
+    status.aleph_bft_next_item_index = None;
     let transport = MockFederationTransport::default().with_status_response(status);
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");

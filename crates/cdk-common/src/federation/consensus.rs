@@ -352,8 +352,6 @@ impl fmt::Display for FederationAlephBftFinalityMode {
 /// Operator-facing status for the AlephBFT adapter boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationAlephBftAdapterStatus {
-    /// Consensus backend represented by this status snapshot.
-    pub consensus_backend: FederationConsensusBackendKind,
     /// Finality source currently feeding the adapter.
     #[serde(default)]
     pub finality: FederationAlephBftFinalityMode,
@@ -1665,7 +1663,6 @@ impl FederationAlephBftConsensusAdapter {
     #[must_use]
     pub fn status(&self) -> FederationAlephBftAdapterStatus {
         FederationAlephBftAdapterStatus {
-            consensus_backend: self.backend_kind(),
             finality: self.finality,
             federation_id: self.data_provider.federation_id,
             local_member: self.data_provider.submitting_member,
@@ -1702,13 +1699,8 @@ impl FederationAlephBftConsensusAdapter {
         federation_id: FederationId,
         member_id: MemberId,
     ) -> FederationPeerStatus {
-        FederationPeerStatus::from_journal_with_backend(
-            federation_id,
-            member_id,
-            &self.journal,
-            FederationConsensusBackendKind::AlephBft,
-        )
-        .with_aleph_bft_next_item_index(self.next_item_index())
+        FederationPeerStatus::from_journal(federation_id, member_id, &self.journal)
+            .with_aleph_bft_next_item_index(self.next_item_index())
     }
 
     /// Begin a later AlephBFT session for both data-provider and finalizer.
@@ -2521,9 +2513,7 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
 
     fn peer_status(&self) -> FederationPeerStatus {
         match &self.backend {
-            FederationConsensusRuntimeBackend::InMemory(engine) => engine
-                .peer_status()
-                .with_consensus_backend(self.backend_kind()),
+            FederationConsensusRuntimeBackend::InMemory(engine) => engine.peer_status(),
             FederationConsensusRuntimeBackend::AlephBft(adapter) => {
                 adapter.peer_status(self.federation_id(), self.member_id())
             }
@@ -2760,12 +2750,7 @@ impl InMemoryFederationConsensus {
     /// Return this member's current peer status.
     #[must_use]
     pub fn peer_status(&self) -> FederationPeerStatus {
-        FederationPeerStatus::from_journal_with_backend(
-            self.federation_id,
-            self.member_id,
-            &self.journal,
-            FederationConsensusBackendKind::InMemory,
-        )
+        FederationPeerStatus::from_journal(self.federation_id, self.member_id, &self.journal)
     }
 
     /// Return a catch-up request for the next local missing operation.

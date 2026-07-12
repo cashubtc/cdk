@@ -3882,16 +3882,15 @@ impl MintState {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn mark_aleph_bft_network_finality_available(&self) -> Result<(), cdk::Error> {
-        let Some(config) = self.mint.federation_config() else {
+        if self.mint.federation_config().is_none() {
             return Err(cdk::Error::Custom(
                 "AlephBFT network finality requires federation config".to_string(),
             ));
-        };
-        if config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
-            return Err(cdk::Error::Custom(format!(
-                "AlephBFT network finality requires aleph_bft consensus backend, found {}",
-                config.consensus_backend()
-            )));
+        }
+        if self.federation_consensus_backend().await? != FederationConsensusBackendKind::AlephBft {
+            return Err(cdk::Error::Custom(
+                "AlephBFT network finality requires aleph_bft consensus runtime".to_string(),
+            ));
         }
         let Some(consensus) = &self.federation_consensus else {
             return Err(cdk::Error::Custom(
@@ -3968,10 +3967,10 @@ impl MintState {
     }
 
     async fn ensure_aleph_bft_network_finality_available(&self) -> Result<(), cdk::Error> {
-        let Some(config) = self.mint.federation_config() else {
+        if self.mint.federation_config().is_none() {
             return Ok(());
-        };
-        if config.consensus_backend() != FederationConsensusBackendKind::AlephBft {
+        }
+        if self.federation_consensus_backend().await? != FederationConsensusBackendKind::AlephBft {
             return Ok(());
         }
         let Some(status) = self.federation_aleph_bft_status().await else {

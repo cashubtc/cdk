@@ -329,9 +329,8 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
+        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
-        peer.consensus_backend,
         status.sync_state,
         status.sync_ready,
         sync_peer,
@@ -377,8 +376,7 @@ fn option_u64(value: Option<u64>) -> String {
 fn aleph_bft_status_fields(status: &FederationLocalStatusResponse) -> String {
     match &status.aleph_bft_status {
         Some(aleph) => format!(
-            "backend:{} finality:{} local_member:{} session:{} queued:{} pending_finalization:{} finalized:{} accepted:{} next_unit:{} next_finalization_unit:{} next_item:{} latest_accepted:{} members:{}",
-            aleph.consensus_backend,
+            "finality:{} local_member:{} session:{} queued:{} pending_finalization:{} finalized:{} accepted:{} next_unit:{} next_finalization_unit:{} next_item:{} latest_accepted:{} members:{}",
             aleph.finality,
             aleph.local_member,
             aleph.session,
@@ -558,19 +556,16 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
         if status.peer_status.operation_count != first.peer_status.operation_count
             || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
             || status.peer_status.state_digest != first.peer_status.state_digest
-            || status.peer_status.consensus_backend != first.peer_status.consensus_backend
         {
             bail!(
-                "federation status is not converged: member {} has operations {} order digest {} state digest {} consensus backend {}, expected operations {} order digest {} state digest {} consensus backend {}",
+                "federation status is not converged: member {} has operations {} order digest {} state digest {}, expected operations {} order digest {} state digest {}",
                 status.peer_status.member_id,
                 status.peer_status.operation_count,
                 status.peer_status.latest_order_digest,
                 status.peer_status.state_digest,
-                status.peer_status.consensus_backend,
                 first.peer_status.operation_count,
                 first.peer_status.latest_order_digest,
-                first.peer_status.state_digest,
-                first.peer_status.consensus_backend
+                first.peer_status.state_digest
             );
         }
     }
@@ -623,15 +618,6 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
 
     for (index, status) in statuses.iter().enumerate() {
         for other in statuses.iter().skip(index + 1) {
-            if status.peer_status.consensus_backend != other.peer_status.consensus_backend {
-                bail!(
-                    "federation status alert: members {} and {} disagree on consensus backend: {} vs {}",
-                    status.peer_status.member_id,
-                    other.peer_status.member_id,
-                    status.peer_status.consensus_backend,
-                    other.peer_status.consensus_backend
-                );
-            }
             if status.peer_status.operation_count != other.peer_status.operation_count {
                 continue;
             }

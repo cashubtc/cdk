@@ -289,7 +289,6 @@ fn assert_aleph_adapters_converged(adapters: &[FederationAlephBftConsensusAdapte
         assert_eq!(journal_fingerprint(adapter), expected_journal);
         assert_eq!(finalized_item_fingerprint(adapter), expected_finalized);
         let status = adapter.status();
-        assert_eq!(status.consensus_backend, expected_status.consensus_backend);
         assert_eq!(status.federation_id, expected_status.federation_id);
         assert_eq!(status.session, expected_status.session);
         assert_eq!(
@@ -487,10 +486,6 @@ fn consensus_runtime_aleph_bft_reports_status_and_rejects_synchronous_submit() {
 
     assert_eq!(
         runtime.backend_kind(),
-        FederationConsensusBackendKind::AlephBft
-    );
-    assert_eq!(
-        runtime.peer_status().consensus_backend,
         FederationConsensusBackendKind::AlephBft
     );
     assert!(matches!(
@@ -731,10 +726,6 @@ fn consensus_runtime_replays_entries_with_selected_backend() {
 
     assert_eq!(
         replayed.backend_kind(),
-        FederationConsensusBackendKind::InMemory
-    );
-    assert_eq!(
-        replayed.peer_status().consensus_backend,
         FederationConsensusBackendKind::InMemory
     );
     assert_eq!(replayed.peer_status().operation_count, 1);
@@ -1776,12 +1767,6 @@ fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
             .map(|item| item.operation_id)
             .collect::<Vec<_>>(),
         vec![Some(first_id), Some(second_id)]
-    );
-    assert_eq!(
-        adapter
-            .peer_status(federation_id, member_id_value(1))
-            .consensus_backend,
-        FederationConsensusBackendKind::AlephBft
     );
 }
 

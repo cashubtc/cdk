@@ -15,10 +15,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAlephBftFinalizedItem, FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload,
-    FederationConfig, FederationConfigDigest, FederationConsensusBackendKind,
-    FederationDkgCeremonyId, FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationConfig, FederationConfigDigest, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
@@ -1248,9 +1247,7 @@ pub struct FederationPeerStatus {
     pub federation_id: FederationId,
     /// Member ID of this peer.
     pub member_id: MemberId,
-    /// Consensus backend producing this peer's accepted operation order.
-    pub consensus_backend: FederationConsensusBackendKind,
-    /// Next AlephBFT finalized-item index required by this peer, when using AlephBFT.
+    /// Next AlephBFT finalized-item index required by this peer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aleph_bft_next_item_index: Option<u64>,
     /// Number of accepted operations in the local journal.
@@ -1279,8 +1276,7 @@ impl FederationPeerStatus {
             version: FEDERATION_REST_API_VERSION,
             federation_id,
             member_id,
-            consensus_backend: FederationConsensusBackendKind::InMemory,
-            aleph_bft_next_item_index: None,
+            aleph_bft_next_item_index: Some(0),
             operation_count,
             latest_index,
             latest_order_digest,
@@ -1302,23 +1298,12 @@ impl FederationPeerStatus {
             version: FEDERATION_REST_API_VERSION,
             federation_id,
             member_id,
-            consensus_backend: FederationConsensusBackendKind::InMemory,
-            aleph_bft_next_item_index: None,
+            aleph_bft_next_item_index: Some(0),
             operation_count,
             latest_index,
             latest_order_digest,
             state_digest,
         }
-    }
-
-    /// Return this status with an explicit consensus backend.
-    #[must_use]
-    pub fn with_consensus_backend(
-        mut self,
-        consensus_backend: FederationConsensusBackendKind,
-    ) -> Self {
-        self.consensus_backend = consensus_backend;
-        self
     }
 
     /// Return this status with an explicit AlephBFT finalized-item cursor.
@@ -1335,22 +1320,6 @@ impl FederationPeerStatus {
         member_id: MemberId,
         journal: &InMemoryFederationJournal,
     ) -> Self {
-        Self::from_journal_with_backend(
-            federation_id,
-            member_id,
-            journal,
-            FederationConsensusBackendKind::InMemory,
-        )
-    }
-
-    /// Create a peer status snapshot from a journal and explicit backend.
-    #[must_use]
-    pub fn from_journal_with_backend(
-        federation_id: FederationId,
-        member_id: MemberId,
-        journal: &InMemoryFederationJournal,
-        consensus_backend: FederationConsensusBackendKind,
-    ) -> Self {
         let latest_index = journal.entries().last().map(|entry| entry.index);
         Self::new_with_state_digest(
             federation_id,
@@ -1360,7 +1329,6 @@ impl FederationPeerStatus {
             journal.latest_order_digest(),
             journal.state_digest(),
         )
-        .with_consensus_backend(consensus_backend)
     }
 }
 
@@ -2435,37 +2403,13 @@ mod tests {
 
         assert_eq!(decoded.version, FEDERATION_REST_API_VERSION);
         assert_eq!(decoded.latest_index, Some(entry.index));
-        assert_eq!(
-            decoded.consensus_backend,
-            FederationConsensusBackendKind::InMemory
-        );
         assert_eq!(decoded.operation_count, 1);
         assert_eq!(decoded.latest_order_digest, entry.order_digest);
         assert_eq!(decoded.state_digest, journal.state_digest());
     }
 
     #[test]
-    fn peer_status_rejects_missing_consensus_backend() {
-        let status = FederationPeerStatus::new(
-            federation_id(),
-            member_id(),
-            0,
-            None,
-            FederationJournalDigest::genesis(),
-        );
-        let mut value = serde_json::to_value(&status).expect("status value");
-        value
-            .as_object_mut()
-            .expect("status object")
-            .remove("consensus_backend");
-
-        let err = serde_json::from_value::<FederationPeerStatus>(value)
-            .expect_err("status without consensus backend must fail");
-        assert!(err.to_string().contains("consensus_backend"));
-    }
-
-    #[test]
-    fn peer_status_round_trips_aleph_bft_backend_and_cursor() {
+    fn peer_status_round_trips_aleph_bft_cursor() {
         let status = FederationPeerStatus::new(
             federation_id(),
             member_id(),
@@ -2473,16 +2417,11 @@ mod tests {
             None,
             FederationJournalDigest::genesis(),
         )
-        .with_consensus_backend(FederationConsensusBackendKind::AlephBft)
         .with_aleph_bft_next_item_index(7);
 
         let json = serde_json::to_string(&status).expect("status json");
         let decoded: FederationPeerStatus = serde_json::from_str(&json).expect("status");
 
-        assert_eq!(
-            decoded.consensus_backend,
-            FederationConsensusBackendKind::AlephBft
-        );
         assert_eq!(decoded.aleph_bft_next_item_index, Some(7));
     }
 

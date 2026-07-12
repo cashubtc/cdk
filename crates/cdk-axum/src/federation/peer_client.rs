@@ -6,14 +6,13 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationConfig, FederationConsensusBackendKind, FederationDkgActivationRequest,
-    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
-    FEDERATION_REST_API_VERSION,
+    FederationConfig, FederationDkgActivationRequest, FederationDkgCommitmentRequest,
+    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
+    MemberConfigPublic, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
@@ -598,9 +597,7 @@ fn validate_peer_status(
             status.federation_id
         );
     }
-    if status.consensus_backend == FederationConsensusBackendKind::AlephBft
-        && status.aleph_bft_next_item_index.is_none()
-    {
+    if status.aleph_bft_next_item_index.is_none() {
         anyhow::bail!(
             "federation peer {} AlephBFT status missing finalized item cursor",
             member.member_id

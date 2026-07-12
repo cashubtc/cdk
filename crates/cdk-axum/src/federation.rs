@@ -9,16 +9,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationConsensusBackendKind, FederationError,
-    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
-    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationRecord, FederationPeerStatus,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
-    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    FederatedKeyset, FederationError, FederationJournalCatchUpResponse, FederationJournalDigest,
+    FederationJournalEntry, FederationMaterializedStateRow,
+    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
+    FederationOperation, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationRecord, FederationPeerStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
+    InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -677,16 +676,9 @@ async fn local_peer_order_status(state: &MintState) -> anyhow::Result<Federation
             cdk::federation::FederationJournalDigest::genesis(),
             FederationStateDigest::genesis(),
         ),
-    }
-    .with_consensus_backend(runtime_config.consensus_backend());
-    if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
-        let next_item_index = state
-            .federation_aleph_bft_status()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("AlephBFT consensus status is unavailable"))?
-            .next_item_index;
-        status = status.with_aleph_bft_next_item_index(next_item_index);
-    }
+    };
+    let next_item_index = local_finalized_item_cursor(state).await?;
+    status = status.with_aleph_bft_next_item_index(next_item_index);
     Ok(status)
 }
 
@@ -711,22 +703,27 @@ async fn local_peer_status_and_entries(
         .federation_config()
         .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
     let journal = durable_federation_journal(state).await?;
-    let mut status = FederationPeerStatus::from_journal_with_backend(
+    let mut status = FederationPeerStatus::from_journal(
         runtime_config.federation_id(),
         runtime_config.member_id(),
         &journal,
-        runtime_config.consensus_backend(),
     );
-    if runtime_config.consensus_backend() == FederationConsensusBackendKind::AlephBft {
-        let next_item_index = state
-            .federation_aleph_bft_status()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("AlephBFT consensus status is unavailable"))?
-            .next_item_index;
-        status = status.with_aleph_bft_next_item_index(next_item_index);
-    }
+    let next_item_index = local_finalized_item_cursor(state).await?;
+    status = status.with_aleph_bft_next_item_index(next_item_index);
     let entries = journal.entries().to_vec();
     Ok((status, entries))
+}
+
+async fn local_finalized_item_cursor(state: &MintState) -> anyhow::Result<u64> {
+    if let Some(status) = state.federation_aleph_bft_status().await {
+        return Ok(status.next_item_index);
+    }
+
+    #[cfg(test)]
+    return Ok(0);
+
+    #[cfg(not(test))]
+    anyhow::bail!("AlephBFT consensus status is unavailable")
 }
 
 async fn durable_federation_journal(

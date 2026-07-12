@@ -1,9 +1,9 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftFinalizedItem, FederationConsensusBackendKind, FederationError,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationRestMessageKind, FederationSignedRequest,
+    FederationAlephBftFinalizedItem, FederationError, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationRestMessageKind,
+    FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -81,14 +81,9 @@ async fn durable_catch_up_response(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
-    let response = maybe_attach_aleph_bft_finalized_items(
-        state,
-        request,
-        runtime_config.consensus_backend(),
-        response,
-    )
-    .await
-    .map_err(anyhow_response)?;
+    let response = maybe_attach_aleph_bft_finalized_items(state, request, response)
+        .await
+        .map_err(anyhow_response)?;
     let entries = journal.entries().to_vec();
 
     Ok((response, entries))
@@ -97,13 +92,8 @@ async fn durable_catch_up_response(
 async fn maybe_attach_aleph_bft_finalized_items(
     state: &MintState,
     request: &FederationJournalCatchUpRequest,
-    consensus_backend: FederationConsensusBackendKind,
     response: FederationJournalCatchUpResponse,
 ) -> anyhow::Result<FederationJournalCatchUpResponse> {
-    if consensus_backend != FederationConsensusBackendKind::AlephBft {
-        return Ok(response.with_aleph_bft_finalized_items(Vec::new(), true));
-    }
-
     let finalized_items = state
         .mint
         .localstore()

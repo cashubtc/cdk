@@ -749,8 +749,6 @@ where
         let mut recovered_from_peer = false;
         let mut latest_catch_up_state_digest = None;
 
-        ensure_peer_consensus_backend_matches(state, member, &local_status, &peer_status).await?;
-
         if peer_requires_catch_up(&local_status, &peer_status)? {
             state
                 .mark_federation_lagging(
@@ -800,7 +798,6 @@ where
         }
 
         local_status = local_peer_order_status(state).await?;
-        ensure_peer_consensus_backend_matches(state, member, &local_status, &peer_status).await?;
         let order_digest_mismatch =
             local_status.latest_order_digest != peer_status.latest_order_digest;
         if local_status.operation_count == peer_status.operation_count && order_digest_mismatch {
@@ -896,9 +893,6 @@ fn status_finalized_cursor_increased(
 }
 
 fn aleph_bft_next_item_index(status: &FederationPeerStatus) -> anyhow::Result<Option<u64>> {
-    if status.consensus_backend != FederationConsensusBackendKind::AlephBft {
-        return Ok(None);
-    }
     Ok(Some(status.aleph_bft_next_item_index.ok_or_else(|| {
         anyhow::anyhow!(
             "federation peer {} AlephBFT status missing finalized item cursor",
@@ -946,28 +940,4 @@ async fn wait_for_local_materialized_state_digest(
         member.member_id,
         operation_count
     )
-}
-
-async fn ensure_peer_consensus_backend_matches(
-    state: &MintState,
-    member: &MemberConfigPublic,
-    local_status: &FederationPeerStatus,
-    peer_status: &FederationPeerStatus,
-) -> anyhow::Result<()> {
-    if local_status.consensus_backend == peer_status.consensus_backend {
-        return Ok(());
-    }
-
-    state
-        .mark_federation_halted(format!(
-            "peer {} consensus backend mismatch: local {} peer {}",
-            member.member_id, local_status.consensus_backend, peer_status.consensus_backend
-        ))
-        .await;
-    anyhow::bail!(
-        "federation peer {} consensus backend mismatch: local {} peer {}",
-        member.member_id,
-        local_status.consensus_backend,
-        peer_status.consensus_backend
-    );
 }

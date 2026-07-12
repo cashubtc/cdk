@@ -926,7 +926,7 @@
           </article>
           <article class="item">
             <h3>Consensus backend cleanup underway</h3>
-            <p>The unused public in-memory multi-member simulator and parallel backend-adapter runtime have been deleted, including their self-only tests. Mintd backend selection has also been removed: config, environment variables, generated scripts, and recipes always use AlephBFT, including dealer-free DKG setup. Aleph recovery coverage targets the production consensus runtime directly. The remaining internal local engine and enum dispatch are the next cleanup boundary; the deterministic journal view remains intentionally separate.</p>
+            <p>The unused public in-memory multi-member simulator and parallel backend-adapter runtime have been deleted, including their self-only tests. Mintd backend selection has also been removed: config, environment variables, generated scripts, and recipes always use AlephBFT, including dealer-free DKG setup. Peer status and digest comparison no longer serialize or compare a constant backend label; finalized-item cursors, order digests, state digests, operation height, and quorum evidence remain the convergence checks. Aleph recovery coverage targets the production consensus runtime directly. The remaining internal local engine and enum dispatch are the next cleanup boundary; the deterministic journal view remains intentionally separate.</p>
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>

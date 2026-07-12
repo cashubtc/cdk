@@ -483,6 +483,15 @@ returns the sole production choice until the Axum/status enum is removed. The
 focused mint runtime tests, Axum federation test build, and mintd AlephBFT
 startup test pass.
 
+Peer status and operator digest comparison no longer carry or compare a
+consensus-backend label. With AlephBFT mandatory, that field was constant wire
+surface rather than a convergence invariant. Status now always requires the
+Aleph finalized-item cursor; catch-up always serves finalized-item evidence;
+order digest, materialized-state digest, operation height, and quorum evidence
+remain the safety checks. Verification passes 356 `cdk-common` tests, 22 Axum
+peer-client tests, 10 digest-comparison tests, 39 mintd status tests, three
+private journal-route tests, and seven Aleph catch-up tests.
+
 ### Problem
 
 Federation mode still exposes two selectable consensus backends even though

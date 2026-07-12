@@ -1,7 +1,7 @@
 use cdk_common::federation::{
-    FederationConsensusBackendKind, FederationId, FederationJournalDigest,
-    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
-    FederationPeerStatus, FederationStateDigest, FEDERATION_REST_API_VERSION,
+    FederationId, FederationJournalDigest, FederationMaterializedStateRow,
+    FederationMaterializedStateRowFingerprint, FederationPeerStatus, FederationStateDigest,
+    FEDERATION_REST_API_VERSION,
 };
 
 use super::*;
@@ -186,34 +186,6 @@ fn digest_comparison_rejects_reported_digest_alert() {
     assert_eq!(
         report.diagnostics[0].kind,
         DigestComparisonDiagnosticKind::DigestAlert
-    );
-}
-
-#[test]
-fn digest_comparison_rejects_consensus_backend_mismatch() {
-    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let state_digest = FederationStateDigest::from_order_digest(order_digest);
-    let first = local_status(1, 4, order_digest, state_digest);
-    let mut second = local_status(2, 4, order_digest, state_digest);
-    second.peer_status.consensus_backend = FederationConsensusBackendKind::AlephBft;
-    let statuses = vec![first, second];
-
-    let report = DigestComparisonReport::from_statuses(&statuses);
-    let err = report
-        .ensure_converged()
-        .expect_err("backend mismatch fails");
-
-    assert!(!report.is_converged());
-    assert_eq!(report.groups.len(), 2);
-    assert!(err.to_string().contains("consensus_backend_mismatch"));
-    assert_eq!(report.diagnostics.len(), 1);
-    assert_eq!(
-        report.diagnostics[0].kind,
-        DigestComparisonDiagnosticKind::ConsensusBackendMismatch
-    );
-    assert!(digest_group_line(&report.groups[0]).contains("consensus_backend="));
-    assert!(
-        digest_diagnostic_line(&report.diagnostics[0]).contains("kind=consensus_backend_mismatch")
     );
 }
 
