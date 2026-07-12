@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::error::FfiError;
+use crate::types::TokenUrEncoder;
 use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
@@ -168,5 +169,22 @@ impl Token {
             .locktimes()
             .map(|s| s.into_iter().collect())
             .unwrap_or_default()
+    }
+
+    /// Create a NUT-16 UR encoder for displaying this token as an animated
+    /// QR code
+    ///
+    /// `max_fragment_length` is the maximum number of payload bytes per QR
+    /// frame; `None` selects a default suited to most QR scanners. Each
+    /// `TokenUrEncoder::next_part` fragment is displayed as one QR frame.
+    pub fn ur_encoder(
+        &self,
+        max_fragment_length: Option<u32>,
+    ) -> Result<std::sync::Arc<TokenUrEncoder>, FfiError> {
+        let max_fragment_length = max_fragment_length
+            .map(|l| l as usize)
+            .unwrap_or(cdk::nuts::nut16::DEFAULT_MAX_FRAGMENT_LENGTH);
+        let encoder = cdk::nuts::nut16::TokenUrEncoder::new(&self.inner, max_fragment_length)?;
+        Ok(std::sync::Arc::new(TokenUrEncoder::from_inner(encoder)))
     }
 }

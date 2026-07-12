@@ -13,10 +13,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
+use cdk_common::QuoteId;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
+use crate::stmt::query;
 
 mod auth;
 mod completed_operations;
@@ -55,6 +57,17 @@ where
     pub(crate) inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
 }
 
+/// Sorted, deduplicated advisory lock keys for a batch of quotes.
+fn quote_lock_keys(quote_ids: &[QuoteId]) -> Vec<String> {
+    let mut keys = quote_ids
+        .iter()
+        .map(|quote_id| format!("cdk:quote:{quote_id}"))
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 impl<RM> SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -71,6 +84,19 @@ where
         Ok(Self { pool })
     }
 
+    async fn begin_transaction_from_pool(
+        pool: &Arc<Pool<RM>>,
+    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
+        let tx = SQLTransaction {
+            inner: ConnectionWithTransaction::new(
+                pool.get().await.map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
+        };
+
+        Ok(Box::new(tx))
+    }
+
     /// Migrate
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
@@ -80,8 +106,41 @@ where
     }
 }
 
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Take quote advisory locks in one statement and stable key order.
+    async fn take_quote_locks(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
+        if quote_ids.is_empty() || RM::Connection::name() != "postgres" {
+            return Ok(false);
+        }
+
+        query(
+            r#"
+            SELECT pg_advisory_xact_lock(hashtextextended(key, 0))
+            FROM (
+                SELECT key FROM unnest(ARRAY[:keys]::TEXT[]) AS t(key) ORDER BY key
+            ) sorted
+            "#,
+        )?
+        .bind_vec("keys", quote_lock_keys(quote_ids))?
+        .execute(&self.inner)
+        .await?;
+
+        Ok(true)
+    }
+}
+
 #[async_trait]
-impl<RM> database::MintTransaction<Error> for SQLTransaction<RM> where RM: DatabasePool + 'static {}
+impl<RM> database::MintTransaction<Error> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn lock_quotes(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
+        self.take_quote_locks(quote_ids).await
+    }
+}
 
 #[async_trait]
 impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
@@ -126,17 +185,7 @@ where
     async fn begin_transaction(
         &self,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
-                self.pool
-                    .get()
-                    .await
-                    .map_err(|e| Error::Database(Box::new(e)))?,
-            )
-            .await?,
-        };
-
-        Ok(Box::new(tx))
+        Self::begin_transaction_from_pool(&self.pool).await
     }
 }
 
@@ -297,19 +346,19 @@ mod tests {
             metric
                 .get_label()
                 .iter()
-                .any(|label| label.get_name() == *name && label.get_value() == *value)
+                .any(|label| label.name() == *name && label.value() == *value)
         })
     }
 
     fn counter_value(name: &str, labels: &[(&str, &str)]) -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != name {
+            if family.name() != name {
                 continue;
             }
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_counter().get_value();
+                    return metric.get_counter().value();
                 }
             }
         }
@@ -319,13 +368,13 @@ mod tests {
 
     fn gauge_value(name: &str, labels: &[(&str, &str)]) -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != name {
+            if family.name() != name {
                 continue;
             }
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_gauge().get_value();
+                    return metric.get_gauge().value();
                 }
             }
         }
@@ -335,13 +384,13 @@ mod tests {
 
     fn histogram_count(name: &str, labels: &[(&str, &str)]) -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != name {
+            if family.name() != name {
                 continue;
             }
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_histogram().get_sample_count() as f64;
+                    return metric.get_histogram().sample_count() as f64;
                 }
             }
         }
@@ -440,5 +489,20 @@ mod tests {
             gauge_value("cdk_mint_in_flight_requests", &in_flight_labels),
             in_flight_before
         );
+    }
+}
+
+#[cfg(test)]
+mod quote_lock_tests {
+    use super::*;
+
+    #[test]
+    fn quote_lock_keys_are_sorted_and_deduplicated() {
+        let first = QuoteId::BASE64("YQ==".to_owned());
+        let second = QuoteId::BASE64("Yg==".to_owned());
+        let mut expected = vec![format!("cdk:quote:{first}"), format!("cdk:quote:{second}")];
+        expected.sort();
+
+        assert_eq!(quote_lock_keys(&[second.clone(), first, second]), expected);
     }
 }

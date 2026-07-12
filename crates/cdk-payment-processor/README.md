@@ -10,7 +10,7 @@ The cdk-payment-processor is a Rust crate that provides both a binary and a libr
 - **Backend Implementations**: Supports CLN, LND, and a fake wallet (for testing)
 
 ### Features
-- Modular backend system supporting multiple Lightning implementations
+- Modular backend system supporting multiple payment backend implementations
 - Extensible design allowing for custom backend implementations
 
 ## Building from Source
@@ -26,17 +26,30 @@ nix develop .#regtest
 
 ### Configuration
 
-The server requires different environment variables depending on your chosen Lightning Network backend.
+The server requires different environment variables depending on your chosen payment backend.
 
 #### Core Settings
 ```sh
 # Choose backend: CLN, LND, or FAKEWALLET
-export CDK_PAYMENT_PROCESSOR_LN_BACKEND="CLN"
+export CDK_PAYMENT_PROCESSOR_BACKEND="CLN"
 
 # Server configuration
 export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1"
 export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090"
 ```
+
+When mintd connects with a TLS directory, the directory must contain
+`ca.pem`, `client.pem`, and `client.key`. The CA certificate verifies the
+payment processor, and the client certificate and private key authenticate
+mintd to an mTLS-enabled processor. Configured TLS does not fall back to an
+unauthenticated client connection when either client identity file is missing.
+
+Mintd can explicitly opt into a plaintext connection with
+`[grpc_processor].allow_insecure = true`, including for a non-loopback address.
+This is unsafe on an untrusted network because the connection has no transport
+authentication or encryption and can be intercepted or modified. Use plaintext
+only on a trusted, isolated network or through a separately authenticated and
+encrypted tunnel; prefer mTLS even for internal deployments.
 
 #### Backend-Specific Configuration
 

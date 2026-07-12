@@ -1,0 +1,37 @@
+[info]
+url = "https://example.com"
+listen_host = "0.0.0.0"
+listen_port = 8085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.http_cache]
+backend = "memory"
+ttl = 60
+tti = 60
+
+[mint_info]
+name = "CDK LDK Node mint"
+description = "LDK Node mint for Docker testing"
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "ldknode"
+unit = "sat"
+
+[ldk_node]
+bitcoin_network = "testnet"
+chain_source_type = "esplora"
+esplora_url = "https://blockstream.info/testnet/api"
+storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
+ldk_node_host = "0.0.0.0"
+ldk_node_port = 8090
+webserver_host = "0.0.0.0"
+webserver_port = 8091
+ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
+
+[prometheus]
+enabled = true
+address = "0.0.0.0"
+port = 9000

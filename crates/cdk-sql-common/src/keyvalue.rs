@@ -89,6 +89,43 @@ where
     Ok(())
 }
 
+/// Generic implementation of kv_write_if_absent for transactions
+#[cfg(feature = "mint")]
+pub(crate) async fn kv_write_if_absent_in_transaction<RM>(
+    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    primary_namespace: &str,
+    secondary_namespace: &str,
+    key: &str,
+    value: &[u8],
+) -> Result<bool, Error>
+where
+    RM: DatabasePool,
+{
+    // Validate parameters according to KV store requirements
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+    let current_time = unix_time();
+
+    let affected = query(
+        r#"
+        INSERT INTO kv_store
+        (primary_namespace, secondary_namespace, key, value, created_time, updated_time)
+        VALUES (:primary_namespace, :secondary_namespace, :key, :value, :created_time, :updated_time)
+        ON CONFLICT(primary_namespace, secondary_namespace, key) DO NOTHING
+        "#,
+    )?
+    .bind("primary_namespace", primary_namespace.to_owned())
+    .bind("secondary_namespace", secondary_namespace.to_owned())
+    .bind("key", key.to_owned())
+    .bind("value", value.to_vec())
+    .bind("created_time", current_time as i64)
+    .bind("updated_time", current_time as i64)
+    .execute(conn)
+    .await?;
+
+    Ok(affected == 1)
+}
+
 /// Generic implementation of kv_remove for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_remove_in_transaction<RM>(
@@ -117,6 +154,44 @@ where
     .await?;
 
     Ok(())
+}
+
+/// Generic implementation of kv_write_if_equals for transactions
+#[cfg(feature = "mint")]
+pub(crate) async fn kv_write_if_equals_in_transaction<RM>(
+    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    primary_namespace: &str,
+    secondary_namespace: &str,
+    key: &str,
+    expected: &[u8],
+    replacement: &[u8],
+) -> Result<bool, Error>
+where
+    RM: DatabasePool,
+{
+    // Validate parameters according to KV store requirements
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+    let affected = query(
+        r#"
+        UPDATE kv_store
+        SET value = :replacement,
+            updated_time = :updated_time
+        WHERE primary_namespace = :primary_namespace
+        AND secondary_namespace = :secondary_namespace
+        AND key = :key
+        AND value = :expected
+        "#,
+    )?
+    .bind("primary_namespace", primary_namespace.to_owned())
+    .bind("secondary_namespace", secondary_namespace.to_owned())
+    .bind("key", key.to_owned())
+    .bind("expected", expected.to_vec())
+    .bind("replacement", replacement.to_vec())
+    .bind("updated_time", unix_time() as i64)
+    .execute(conn)
+    .await?;
+
+    Ok(affected == 1)
 }
 
 /// Generic implementation of kv_list for transactions
@@ -181,6 +256,75 @@ where
         Column::Blob(data) => Some(data),
         _ => None,
     }))
+}
+
+/// Atomically inserts or replaces a key-value store entry.
+#[cfg(feature = "mint")]
+pub(crate) async fn kv_compare_and_swap<RM>(
+    pool: &Arc<Pool<RM>>,
+    primary_namespace: &str,
+    secondary_namespace: &str,
+    key: &str,
+    expected: Option<&[u8]>,
+    replacement: &[u8],
+) -> Result<bool, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+
+    let current_time = unix_time() as i64;
+    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
+    let affected = match expected {
+        Some(expected) => {
+            query(
+                r#"
+                UPDATE kv_store
+                SET value = :replacement,
+                    updated_time = :updated_time
+                WHERE primary_namespace = :primary_namespace
+                AND secondary_namespace = :secondary_namespace
+                AND key = :key
+                AND value = :expected
+                "#,
+            )?
+            .bind("replacement", replacement.to_vec())
+            .bind("updated_time", current_time)
+            .bind("primary_namespace", primary_namespace.to_owned())
+            .bind("secondary_namespace", secondary_namespace.to_owned())
+            .bind("key", key.to_owned())
+            .bind("expected", expected.to_vec())
+            .execute(&*conn)
+            .await?
+        }
+        None => {
+            query(
+                r#"
+                INSERT INTO kv_store
+                (primary_namespace, secondary_namespace, key, value, created_time, updated_time)
+                VALUES (
+                    :primary_namespace,
+                    :secondary_namespace,
+                    :key,
+                    :replacement,
+                    :created_time,
+                    :updated_time
+                )
+                ON CONFLICT(primary_namespace, secondary_namespace, key) DO NOTHING
+                "#,
+            )?
+            .bind("primary_namespace", primary_namespace.to_owned())
+            .bind("secondary_namespace", secondary_namespace.to_owned())
+            .bind("key", key.to_owned())
+            .bind("replacement", replacement.to_vec())
+            .bind("created_time", current_time)
+            .bind("updated_time", current_time)
+            .execute(&*conn)
+            .await?
+        }
+    };
+
+    Ok(affected == 1)
 }
 
 /// Generic implementation of kv_list for database (non-transactional)

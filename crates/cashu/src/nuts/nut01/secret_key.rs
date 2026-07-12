@@ -14,7 +14,18 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::{BlsSecretKey, Error, PublicKey};
 use crate::SECP256K1;
 
-/// Protocol secret key/scalar.
+/// Secret key material.
+///
+/// Secret keys intentionally do not implement [`fmt::Display`]. Export secret
+/// material explicitly with [`Self::to_secret_hex`] when it is required by a
+/// persistence or interoperability boundary.
+///
+/// ```compile_fail
+/// use cashu::nuts::SecretKey;
+///
+/// let secret_key = SecretKey::generate();
+/// let _ = secret_key.to_string();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretKey {
     /// Secp256k1 secret key.
@@ -32,12 +43,6 @@ impl From<secp256k1::SecretKey> for SecretKey {
 impl From<BlsSecretKey> for SecretKey {
     fn from(inner: BlsSecretKey) -> Self {
         Self::Bls(inner)
-    }
-}
-
-impl fmt::Display for SecretKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_secret_hex())
     }
 }
 
@@ -279,10 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn display_outputs_secret_hex() {
+    fn secret_hex_export_is_explicit() {
         let hex = "50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa";
         let secret_key = SecretKey::from_hex(hex).unwrap();
 
-        assert_eq!(secret_key.to_string(), hex);
+        assert_eq!(secret_key.to_secret_hex(), hex);
     }
 }

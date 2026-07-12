@@ -13,10 +13,14 @@ on:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
       cdk_ref:
-        description: 'CDK git ref to publish from. Must match release_tag.'
+        description: 'CDK git ref to publish from. Must match release_tag unless this is a nightly.'
         required: false
       prerelease:
         description: 'Mark the GitHub release as a pre-release'
+        type: boolean
+        default: false
+      nightly:
+        description: 'Build an immutable nightly prerelease from an exact CDK commit.'
         type: boolean
         default: false
   workflow_call:
@@ -34,10 +38,15 @@ on:
         type: boolean
         required: false
         default: false
+      nightly:
+        type: boolean
+        required: false
+        default: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
   TAG: ${{ inputs.release_tag }}
   CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
+  CDK_CHECKOUT_REF: ${{ inputs.nightly && inputs.cdk_ref || format('refs/tags/{0}', inputs.release_tag) }}
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
 
 jobs:
@@ -48,7 +57,22 @@ jobs:
       - name: Validate release ref
         shell: bash
         run: |
-          if [[ "${CDK_REF}" != "${TAG}" ]]; then
+          if [[ "${{ inputs.nightly }}" == "true" ]]; then
+            if [[ "${{ inputs.prerelease }}" != "true" ]]; then
+              echo "::error::Nightly releases must be marked as prereleases"
+              exit 1
+            fi
+
+            if [[ ! "${CDK_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Nightly cdk_ref must be an exact 40-character commit SHA; got ${CDK_REF}"
+              exit 1
+            fi
+
+            if [[ ! "${TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+-nightly[.][0-9]{8}[.]g[0-9a-f]{7}$ ]]; then
+              echo "::error::Nightly release_tag must look like v0.18.0-nightly.20260801.g1a2b3c4; got ${TAG}"
+              exit 1
+            fi
+          elif [[ "${CDK_REF}" != "${TAG}" ]]; then
             echo "::error::cdk_ref must match release_tag (${TAG}); got ${CDK_REF}"
             exit 1
           fi
@@ -58,10 +82,10 @@ jobs:
             exit 1
           fi
 
-      - name: Verify release tag exists
+      - name: Verify release source exists
         uses: actions/checkout@v5
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ env.CDK_CHECKOUT_REF }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -79,7 +103,7 @@ jobs:
       - name: Checkout monorepo
         uses: actions/checkout@v5
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ env.CDK_CHECKOUT_REF }}
           persist-credentials: false
 
       - name: Clone cdk-dart
@@ -154,9 +178,16 @@ jobs:
             -e "s/^readme\.workspace = true/readme = \"${WS_README}\"/" \
             cdk-dart/rust/Cargo.toml
 
-          # Resolve workspace dependency references
+          if [[ "${{ inputs.nightly }}" == "true" ]]; then
+            CDK_FFI_SOURCE="git = \"https://github.com/${GITHUB_REPOSITORY}\", rev = \"${CDK_REF}\""
+          else
+            CDK_FFI_SOURCE="version = \"=${CDK_VER}\""
+          fi
+
+          # Resolve workspace dependency references. Nightlies use the exact
+          # source commit because that cdk-ffi version is not on crates.io.
           sed -i \
-            -e "s/cdk-ffi = { workspace = true/cdk-ffi = { version = \"=${CDK_VER}\", default-features = false/" \
+            -e "s|cdk-ffi = { workspace = true|cdk-ffi = { ${CDK_FFI_SOURCE}, default-features = false|" \
             -e "s/uniffi = { workspace = true/uniffi = { version = \"${WS_UNIFFI_VER}\"/" \
             cdk-dart/rust/Cargo.toml
 
@@ -182,7 +213,11 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${RELEASE_BRANCH}"
+          if git show-ref --verify --quiet "refs/remotes/origin/${RELEASE_BRANCH}"; then
+            git checkout -B "${RELEASE_BRANCH}" "origin/${RELEASE_BRANCH}"
+          else
+            git checkout -b "${RELEASE_BRANCH}"
+          fi
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "sync: update sources for ${TAG}"
@@ -280,7 +315,7 @@ jobs:
         working-directory: cdk-dart/rust
         run: |
           mkdir -p ../generated-bindings
-          cargo run --release --bin uniffi-bindgen -- \
+          cargo run --release --bin uniffi-bindgen-dart -- \
             target/${{ matrix.target }}/release/${{ matrix.artifact }} \
             --out-dir ../generated-bindings
 
@@ -400,15 +435,26 @@ jobs:
           GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
           COMMIT_SHA=$(git -C cdk-dart rev-parse HEAD)
+          RELEASE_OPTIONS=(--generate-notes)
+          if [[ "${{ inputs.nightly }}" == "true" ]]; then
+            RELEASE_OPTIONS+=(
+              --prerelease
+              --latest=false
+              --notes "Nightly bindings built from CDK commit ${CDK_REF}: https://github.com/${GITHUB_REPOSITORY}/commit/${CDK_REF}"
+            )
+          elif [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            RELEASE_OPTIONS+=(--prerelease)
+          fi
+
           gh release create "${TAG}" \
             --repo ${{ vars.CDK_DART_REPO }} \
             --target "${COMMIT_SHA}" \
             --title "Release ${TAG}" \
-            --generate-notes \
-            ${{ inputs.prerelease && '--prerelease' || '' }} \
+            "${RELEASE_OPTIONS[@]}" \
             release-archives/*
 
       - name: Merge to default branch
+        if: ${{ !inputs.nightly }}
         working-directory: cdk-dart
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}

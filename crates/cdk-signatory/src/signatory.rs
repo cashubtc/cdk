@@ -14,32 +14,9 @@ use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
 
-#[derive(Debug)]
-/// Type alias to make the keyset info API more useful, queryable by unit and Id
-pub enum KeysetIdentifier {
-    /// Mint Keyset by unit
-    Unit(CurrencyUnit),
-    /// Mint Keyset by Id
-    Id(Id),
-}
-
-impl From<Id> for KeysetIdentifier {
-    fn from(id: Id) -> Self {
-        Self::Id(id)
-    }
-}
-
-impl From<CurrencyUnit> for KeysetIdentifier {
-    fn from(unit: CurrencyUnit) -> Self {
-        Self::Unit(unit)
-    }
-}
-
 /// RotateKeyArguments
 ///
 /// This struct is used to pass the arguments to the rotate_keyset function
-///
-/// TODO: Change argument to accept a vector of Amount instead of max_order.
 #[derive(Debug, Clone)]
 pub struct RotateKeyArguments {
     /// Unit
@@ -139,17 +116,20 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
     }
 }
 
+/// The info is authoritative for every field but the key material: a reload
+/// reuses the already-derived [`MintKeySet`] while re-reading the info, so
+/// sourcing anything else from the key would publish a stale value.
 impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
     fn from((info, key): &(MintKeySetInfo, MintKeySet)) -> Self {
         Self {
             id: info.id,
-            unit: key.unit.clone(),
+            unit: info.unit.clone(),
             active: info.active,
             input_fee_ppk: info.input_fee_ppk,
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
             version: info.derivation_path_index.unwrap_or(1),
-            final_expiry: key.final_expiry,
+            final_expiry: info.final_expiry,
             issuer_version: info.issuer_version.clone(),
         }
     }
@@ -176,6 +156,16 @@ pub trait Signatory {
     /// Retrieve the list of all mint keysets
     async fn keysets(&self) -> Result<SignatoryKeysets, Error>;
 
+    /// Subscribe to keyset updates.
+    ///
+    /// The returned receiver holds the latest full set of keysets. The current
+    /// set is available immediately and the value is replaced on every
+    /// rotation. Consumers should treat each value as the complete current
+    /// state, not a delta.
+    async fn subscribe_keysets(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<SignatoryKeysets>, Error>;
+
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
@@ -186,6 +176,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
+    use bitcoin::bip32::DerivationPath;
+    use bitcoin::secp256k1::Secp256k1;
     use cdk_common::nuts::nut01::Keys;
     use cdk_common::util::unix_time;
     use cdk_common::{CurrencyUnit, Id};
@@ -235,5 +227,46 @@ mod tests {
     fn test_is_expired_zero() {
         let ks = dummy_signatory_keyset(Some(0));
         assert!(ks.is_expired());
+    }
+
+    #[test]
+    fn conversion_prefers_info_over_cached_key() {
+        let path = DerivationPath::from_str("m/0'/0'/0'").unwrap();
+        let key = MintKeySet::generate_from_seed(
+            &Secp256k1::new(),
+            b"test-seed-conversion",
+            &[1, 2, 4, 8],
+            CurrencyUnit::Usd,
+            path.clone(),
+            0,
+            Some(222),
+            KeySetVersion::Version00,
+        );
+
+        let info = MintKeySetInfo {
+            id: key.id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            derivation_path: path,
+            derivation_path_index: Some(1),
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            final_expiry: Some(111),
+            issuer_version: None,
+        };
+
+        let keyset: SignatoryKeySet = (&(info, key)).into();
+
+        assert_eq!(
+            keyset.unit,
+            CurrencyUnit::Sat,
+            "unit must come from the keyset info, not the cached key"
+        );
+        assert_eq!(
+            keyset.final_expiry,
+            Some(111),
+            "final_expiry must come from the keyset info, not the cached key"
+        );
     }
 }

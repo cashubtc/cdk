@@ -1,5 +1,7 @@
 //! Quote-related FFI types
 
+use core::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
@@ -7,7 +9,7 @@ use super::mint::MintUrl;
 use crate::error::FfiError;
 
 /// FFI-compatible MintQuote
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuote {
     /// Quote ID
     pub id: String,
@@ -30,6 +32,9 @@ pub struct MintQuote {
     pub amount_issued: Amount,
     /// Amount paid
     pub amount_paid: Amount,
+    /// Last update timestamp
+    #[serde(default)]
+    pub updated_at: u64,
     /// Estimated confirmation target in blocks for onchain quotes
     pub estimated_blocks: Option<u32>,
     /// Payment method
@@ -41,6 +46,31 @@ pub struct MintQuote {
     /// Version for optimistic locking
     #[serde(default)]
     pub version: u32,
+}
+
+impl fmt::Debug for MintQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MintQuote")
+            .field("id", &self.id)
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("request", &self.request)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field("mint_url", &self.mint_url)
+            .field("amount_issued", &self.amount_issued)
+            .field("amount_paid", &self.amount_paid)
+            .field("updated_at", &self.updated_at)
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("payment_method", &self.payment_method)
+            .field(
+                "secret_key",
+                &self.secret_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("used_by_operation", &self.used_by_operation)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -55,6 +85,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             mint_url: quote.mint_url.clone().into(),
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
+            updated_at: quote.updated_at,
             estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
@@ -84,12 +115,34 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             mint_url: quote.mint_url.try_into()?,
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
+            updated_at: quote.updated_at,
             estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             secret_key,
             used_by_operation: quote.used_by_operation,
             version: quote.version,
         })
+    }
+}
+
+/// FFI-compatible quote for a maximum cross-mint Lightning transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct CrossMintTransferQuote {
+    /// Quote used to receive the Lightning payment at the destination mint.
+    pub mint_quote: MintQuote,
+    /// Quote used to pay the destination invoice from the source mint.
+    pub melt_quote: MeltQuote,
+    /// Input fee for spending all currently unspent source proofs.
+    pub input_fee: Amount,
+}
+
+impl From<cdk::wallet::CrossMintTransferQuote> for CrossMintTransferQuote {
+    fn from(quote: cdk::wallet::CrossMintTransferQuote) -> Self {
+        Self {
+            mint_quote: quote.mint_quote.into(),
+            melt_quote: quote.melt_quote.into(),
+            input_fee: quote.input_fee.into(),
+        }
     }
 }
 
@@ -134,6 +187,8 @@ pub struct MintQuoteBolt11Response {
     pub quote: String,
     /// Request string
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// State of the quote
     pub state: QuoteState,
     /// Expiry timestamp (optional)
@@ -142,6 +197,12 @@ pub struct MintQuoteBolt11Response {
     pub amount: Option<Amount>,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
+    /// Amount paid
+    pub amount_paid: Amount,
+    /// Amount issued
+    pub amount_issued: Amount,
+    /// Last update timestamp
+    pub updated_at: u64,
     /// Pubkey (optional)
     pub pubkey: Option<String>,
 }
@@ -151,10 +212,14 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
         Self {
             quote: response.quote,
             request: response.request,
+            method: response.method.into(),
             state: response.state.into(),
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
             unit: response.unit.map(Into::into),
+            amount_paid: response.amount_paid.into(),
+            amount_issued: response.amount_issued.into(),
+            updated_at: response.updated_at,
             pubkey: response.pubkey.map(|p| p.to_string()),
         }
     }
@@ -165,10 +230,14 @@ impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
         Self {
             quote: quote.id,
             request: quote.request,
+            method: quote.payment_method.into(),
             state: quote.state.into(),
             expiry: Some(quote.expiry),
             amount: quote.amount.map(Into::into),
             unit: Some(quote.unit.into()),
+            amount_paid: quote.amount_paid.into(),
+            amount_issued: quote.amount_issued.into(),
+            updated_at: quote.updated_at,
             pubkey: quote.secret_key.map(|sk| sk.public_key().to_string()),
         }
     }
@@ -184,6 +253,8 @@ pub struct MintQuoteCustomResponse {
     pub quote: String,
     /// Request string
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Expiry timestamp (optional)
     pub expiry: Option<u64>,
     /// Amount (optional)
@@ -192,6 +263,8 @@ pub struct MintQuoteCustomResponse {
     pub amount_paid: Amount,
     /// Amount issued
     pub amount_issued: Amount,
+    /// Last update timestamp
+    pub updated_at: u64,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
     /// Pubkey (optional)
@@ -214,10 +287,12 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
         Self {
             quote: response.quote,
             request: response.request,
+            method: response.method.into(),
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
             amount_paid: response.amount_paid.into(),
             amount_issued: response.amount_issued.into(),
+            updated_at: response.updated_at,
             unit: response.unit.map(Into::into),
             pubkey: response.pubkey.map(|p| p.to_string()),
             extra,
@@ -230,6 +305,8 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount
     pub amount: Amount,
     /// Fee reserve
@@ -250,6 +327,7 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
     fn from(response: cdk::nuts::MeltQuoteBolt11Response<String>) -> Self {
         Self {
             quote: response.quote,
+            method: response.method.into(),
             amount: response.amount.into(),
             fee_reserve: response.fee_reserve.into(),
             state: response.state.into(),
@@ -269,6 +347,8 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
 pub struct MeltQuoteCustomResponse {
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount
     pub amount: Amount,
     /// Fee reserve
@@ -300,6 +380,7 @@ impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomRespons
 
         Self {
             quote: response.quote,
+            method: response.method.into(),
             amount: response.amount.into(),
             fee_reserve: response.fee_reserve.map(Into::into),
             state: response.state.into(),
@@ -356,6 +437,8 @@ pub struct MintQuoteOnchainResponse {
     pub quote: String,
     /// Bitcoin address to pay
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Unit
     pub unit: CurrencyUnit,
     /// Expiry timestamp
@@ -366,6 +449,8 @@ pub struct MintQuoteOnchainResponse {
     pub amount_paid: Amount,
     /// Amount already issued for this quote
     pub amount_issued: Amount,
+    /// Last update timestamp
+    pub updated_at: u64,
 }
 
 impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainResponse {
@@ -373,11 +458,13 @@ impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainRespo
         Self {
             quote: response.quote,
             request: response.request,
+            method: response.method.into(),
             unit: response.unit.into(),
             expiry: response.expiry,
             pubkey: response.pubkey.to_string(),
             amount_paid: response.amount_paid.into(),
             amount_issued: response.amount_issued.into(),
+            updated_at: response.updated_at,
         }
     }
 }
@@ -408,6 +495,8 @@ impl From<cdk::nuts::nut30::MeltQuoteOnchainFeeOption> for MeltQuoteOnchainFeeOp
 pub struct MeltQuoteOnchainResponse {
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount being paid to the onchain address
     pub amount: Amount,
     /// Unit
@@ -437,6 +526,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
 
         Self {
             quote: response.quote,
+            method: response.method.into(),
             amount: response.amount.into(),
             unit: response.unit.into(),
             state: response.state.into(),
@@ -451,7 +541,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
 }
 
 /// FFI-compatible MeltQuote
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuote {
     /// Quote ID
     pub id: String,
@@ -482,6 +572,30 @@ pub struct MeltQuote {
     /// Version for optimistic locking
     #[serde(default)]
     pub version: u32,
+}
+
+impl fmt::Debug for MeltQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuote")
+            .field("id", &self.id)
+            .field("mint_url", &self.mint_url)
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("request", &self.request)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("fee_index", &self.fee_index)
+            .field("payment_method", &self.payment_method)
+            .field("used_by_operation", &self.used_by_operation)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -602,3 +716,65 @@ impl From<QuoteState> for cdk::nuts::MintQuoteState {
 }
 
 // Note: MeltQuoteState is the same as nut05::QuoteState, so we don't need a separate impl
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mint_quote_debug_redacts_secret_key_and_keeps_quote_id() {
+        let secret = "mint-quote-secret-key";
+        let quote = MintQuote {
+            id: "public-quote-id".to_string(),
+            amount: Some(Amount::new(100)),
+            unit: CurrencyUnit::Sat,
+            request: "payment-request".to_string(),
+            state: QuoteState::Paid,
+            expiry: 1_000,
+            mint_url: MintUrl {
+                url: "https://mint.example.com".to_string(),
+            },
+            amount_issued: Amount::zero(),
+            amount_paid: Amount::new(100),
+            updated_at: 500,
+            estimated_blocks: None,
+            payment_method: PaymentMethod::Bolt11,
+            secret_key: Some(secret.to_string()),
+            used_by_operation: Some("operation-id".to_string()),
+            version: 1,
+        };
+
+        let debug = format!("{quote:?}");
+
+        assert!(debug.contains("public-quote-id"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("secret_key: Some(\"[REDACTED]\")"));
+    }
+
+    #[test]
+    fn melt_quote_debug_redacts_payment_proof_and_keeps_quote_id() {
+        let secret = "ffi-melt-payment-preimage";
+        let quote = MeltQuote {
+            id: "public-melt-quote-id".to_string(),
+            mint_url: None,
+            amount: Amount::new(100),
+            unit: CurrencyUnit::Sat,
+            request: "public-payment-request".to_string(),
+            fee_reserve: Amount::new(1),
+            state: QuoteState::Paid,
+            expiry: 1_000,
+            payment_proof: Some(secret.to_string()),
+            estimated_blocks: None,
+            fee_index: None,
+            payment_method: PaymentMethod::Bolt11,
+            used_by_operation: None,
+            version: 0,
+        };
+
+        let debug = format!("{quote:?}");
+
+        assert!(debug.contains("public-melt-quote-id"));
+        assert!(debug.contains("payment_proof: Some(\"[REDACTED]\")"));
+        assert!(!debug.contains(secret));
+    }
+}

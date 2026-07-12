@@ -18,55 +18,58 @@ pub async fn init_keysets(
     localstore: &Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     supported_units: &HashMap<CurrencyUnit, (u64, Vec<u64>)>,
 ) -> Result<(), Error> {
-    let keysets_infos = localstore.get_keyset_infos().await?;
     let mut tx = localstore.begin_transaction().await?;
 
-    let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
-        keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
-            acc.entry(ks.unit.clone()).or_default().push(ks.clone());
-            acc
-        });
+    // The transaction holds the global keyset advisory lock, so reading each
+    // unit's keysets and reassigning the active pointer is atomic against any
+    // concurrent rotation. A pre-transaction read would reopen that race.
+    //
+    // Iterate in a deterministic order for reproducibility; HashMap iteration
+    // order is randomized per process.
+    let mut units: Vec<_> = supported_units.iter().collect();
+    units.sort_by(|a, b| a.0.cmp(b.0));
 
-    for (unit, keysets) in keysets_by_unit {
-        // We only care about units that are supported
-        if let Some((input_fee_ppk, amounts)) = supported_units.get(&unit) {
-            let mut keysets = keysets;
-            keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
+    for (unit, (input_fee_ppk, amounts)) in units {
+        let mut keysets = tx.get_keyset_infos_by_unit(unit).await?;
+        keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
 
-            if let Some(highest_index_keyset) = keysets.first() {
-                if highest_index_keyset.is_expired() {
-                    tracing::info!(
-                        "Highest index keyset for unit {} has expired, skipping reactivation",
-                        unit
-                    );
-                    continue;
-                }
+        let Some(highest_index_keyset) = keysets.first() else {
+            continue;
+        };
 
-                // Check if it matches our criteria
-                if highest_index_keyset.input_fee_ppk == *input_fee_ppk
-                    && highest_index_keyset.amounts == *amounts
-                {
-                    tracing::debug!("Current highest index keyset matches expect fee and amounts. Setting active");
-                    let id = highest_index_keyset.id;
+        if highest_index_keyset.is_expired() {
+            tracing::info!(
+                "Highest index keyset for unit {} has expired, skipping reactivation",
+                unit
+            );
+            continue;
+        }
 
-                    // Validate we can generate it (sanity check)
-                    let _ = MintKeySet::generate_from_xpriv(
-                        secp_ctx,
-                        xpriv,
-                        &highest_index_keyset.amounts,
-                        highest_index_keyset.unit.clone(),
-                        highest_index_keyset.derivation_path.clone(),
-                        highest_index_keyset.input_fee_ppk,
-                        highest_index_keyset.final_expiry,
-                        highest_index_keyset.id.get_version(),
-                    );
+        // Check if it matches our criteria
+        if highest_index_keyset.input_fee_ppk == *input_fee_ppk
+            && highest_index_keyset.amounts == *amounts
+        {
+            tracing::debug!(
+                "Current highest index keyset matches expect fee and amounts. Setting active"
+            );
+            let id = highest_index_keyset.id;
 
-                    let mut keyset_info = highest_index_keyset.clone();
-                    keyset_info.active = true;
-                    tx.add_keyset_info(keyset_info).await?;
-                    tx.set_active_keyset(unit.clone(), id).await?;
-                }
-            }
+            // Validate we can generate it (sanity check)
+            let _ = MintKeySet::generate_from_xpriv(
+                secp_ctx,
+                xpriv,
+                &highest_index_keyset.amounts,
+                highest_index_keyset.unit.clone(),
+                highest_index_keyset.derivation_path.clone(),
+                highest_index_keyset.input_fee_ppk,
+                highest_index_keyset.final_expiry,
+                highest_index_keyset.id.get_version(),
+            );
+
+            let mut keyset_info = highest_index_keyset.clone();
+            keyset_info.active = true;
+            tx.add_keyset_info(keyset_info).await?;
+            tx.set_active_keyset(unit.clone(), id).await?;
         }
     }
 

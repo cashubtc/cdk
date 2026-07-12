@@ -50,3 +50,58 @@ impl Cln {
         self
     }
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use cdk::cdk_payment::MintPayment;
+    use cdk::nuts::CurrencyUnit;
+    use cdk_sqlite::mint::memory;
+
+    use super::*;
+    use crate::config::Settings;
+    use crate::setup::PaymentBackendSetup;
+
+    #[tokio::test]
+    async fn bolt12_false_removes_bolt12_from_cln_capabilities() {
+        let config = {
+            let _guard = crate::test_utils::env_lock();
+            let previous_bolt12 = std::env::var_os(ENV_CLN_BOLT12);
+            std::env::set_var(ENV_CLN_BOLT12, "false");
+
+            let config = Cln {
+                rpc_path: PathBuf::from("/nonexistent/lightning-rpc"),
+                ..Default::default()
+            }
+            .from_env();
+
+            match previous_bolt12 {
+                Some(value) => std::env::set_var(ENV_CLN_BOLT12, value),
+                None => std::env::remove_var(ENV_CLN_BOLT12),
+            }
+
+            config
+        };
+        assert!(!config.bolt12, "the environment override must be applied");
+
+        let kv_store = Arc::new(memory::empty().await.expect("in-memory database"));
+        let backend = config
+            .setup(
+                &Settings::default(),
+                CurrencyUnit::Sat,
+                None,
+                Path::new("."),
+                Some(kv_store),
+            )
+            .await
+            .expect("CLN setup does not connect eagerly");
+
+        let capabilities = backend.get_settings().await.expect("CLN capabilities");
+        assert!(
+            capabilities.bolt12.is_none(),
+            "CDK_MINTD_CLN_BOLT12=false must disable BOLT12 capabilities"
+        );
+    }
+}

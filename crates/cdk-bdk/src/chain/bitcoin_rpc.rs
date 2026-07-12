@@ -4,6 +4,7 @@ use std::time::Instant;
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, Error as BitcoinRpcError, RawTx, RpcApi};
 use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
 use bdk_wallet::bitcoin::{Block, Transaction};
+use bdk_wallet::chain::BlockId;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
@@ -11,6 +12,39 @@ use tokio_util::sync::CancellationToken;
 use crate::chain::{BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome};
 use crate::error::Error;
 use crate::{CdkBdk, WalletWithDb};
+
+pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, Error> {
+    let client = Client::new(
+        &format!("http://{}:{}", config.host, config.port),
+        Auth::UserPass(config.user.clone(), config.password.clone()),
+    )
+    .map_err(|source| Error::ChainTipFetchFailed { source })?;
+    let chain_info = client
+        .get_blockchain_info()
+        .map_err(|source| Error::ChainTipFetchFailed { source })?;
+    let tip = u32::try_from(chain_info.blocks).map_err(|_| {
+        Error::InvalidConfig(format!(
+            "Bitcoin Core tip height {} exceeds the supported u32 range",
+            chain_info.blocks
+        ))
+    })?;
+    let height = config.wallet_rescan_from_height.unwrap_or(tip);
+
+    if height > tip {
+        return Err(Error::WalletRescanHeightTooHigh {
+            requested: height,
+            tip,
+        });
+    }
+
+    let hash = if height == tip {
+        chain_info.best_block_hash
+    } else {
+        client.get_block_hash(u64::from(height))?
+    };
+
+    Ok(BlockId { height, hash })
+}
 
 /// Apply a chunk of blocks to the wallet under a single lock acquisition,
 /// then persist.
@@ -340,7 +374,149 @@ pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::str::FromStr;
+    use std::thread;
+
+    use bdk_wallet::bitcoin::BlockHash;
+    use serde_json::{json, Value};
+
     use super::*;
+
+    const TIP_HASH: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const BIRTHDAY_HASH: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    fn chain_info(tip: u32) -> Value {
+        json!({
+            "chain": "regtest",
+            "blocks": tip,
+            "headers": tip,
+            "bestblockhash": TIP_HASH,
+            "difficulty": 1.0,
+            "mediantime": 0,
+            "verificationprogress": 1.0,
+            "initialblockdownload": false,
+            "chainwork": "00",
+            "size_on_disk": 0,
+            "pruned": false,
+            "warnings": ""
+        })
+    }
+
+    fn network_info() -> Value {
+        json!({ "version": 290000 })
+    }
+
+    fn spawn_rpc_server(results: Vec<Value>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test RPC server");
+        let port = listener.local_addr().expect("test RPC address").port();
+
+        thread::spawn(move || {
+            for result in results {
+                let (mut stream, _) = listener.accept().expect("accept test RPC connection");
+                let mut reader = BufReader::new(&mut stream);
+                let mut content_length = None;
+                loop {
+                    let mut line = String::new();
+                    reader
+                        .read_line(&mut line)
+                        .expect("read test RPC request header");
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(str::trim)
+                    {
+                        content_length =
+                            Some(value.parse::<usize>().expect("valid content length"));
+                    }
+                }
+                let mut request_body = vec![0; content_length.expect("request content length")];
+                reader
+                    .read_exact(&mut request_body)
+                    .expect("read test RPC request body");
+                let request: Value =
+                    serde_json::from_slice(&request_body).expect("valid JSON-RPC request");
+                let id = request["id"].clone();
+                drop(reader);
+
+                let body = json!({
+                    "jsonrpc": "2.0",
+                    "result": result,
+                    "error": null,
+                    "id": id
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .expect("write test RPC response");
+                stream.flush().expect("flush test RPC response");
+            }
+        });
+
+        port
+    }
+
+    fn rpc_config(port: u16, wallet_rescan_from_height: Option<u32>) -> BitcoinRpcConfig {
+        BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            user: "user".to_string(),
+            password: "password".to_string(),
+            wallet_rescan_from_height,
+        }
+    }
+
+    #[test]
+    fn fresh_wallet_defaults_to_current_tip() {
+        let port = spawn_rpc_server(vec![chain_info(100), network_info()]);
+
+        let checkpoint = initial_checkpoint(&rpc_config(port, None))
+            .expect("current tip should become the initial checkpoint");
+
+        assert_eq!(checkpoint.height, 100);
+        assert_eq!(
+            checkpoint.hash,
+            BlockHash::from_str(TIP_HASH).expect("valid tip hash")
+        );
+    }
+
+    #[test]
+    fn fresh_wallet_can_rescan_from_birthday_height() {
+        let port = spawn_rpc_server(vec![chain_info(100), network_info(), json!(BIRTHDAY_HASH)]);
+
+        let checkpoint = initial_checkpoint(&rpc_config(port, Some(42)))
+            .expect("birthday block should become the initial checkpoint");
+
+        assert_eq!(checkpoint.height, 42);
+        assert_eq!(
+            checkpoint.hash,
+            BlockHash::from_str(BIRTHDAY_HASH).expect("valid birthday hash")
+        );
+    }
+
+    #[test]
+    fn fresh_wallet_rejects_rescan_height_above_tip() {
+        let port = spawn_rpc_server(vec![chain_info(100), network_info()]);
+
+        let error = initial_checkpoint(&rpc_config(port, Some(101)))
+            .expect_err("future birthday height should fail");
+
+        assert!(matches!(
+            error,
+            Error::WalletRescanHeightTooHigh {
+                requested: 101,
+                tip: 100
+            }
+        ));
+    }
 
     #[test]
     fn classify_bitcoin_rpc_broadcast_errors() {

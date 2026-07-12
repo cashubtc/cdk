@@ -89,22 +89,19 @@ fuzz_target!(|input: Input| {
     let id_v1 = Id::v1_from_keys(&keys);
     // Round-trip byte form.
     let bytes = id_v1.to_bytes();
-    if let Ok(roundtrip) = Id::from_bytes(&bytes) {
-        assert_eq!(roundtrip, id_v1);
-    }
+    let roundtrip = Id::from_bytes(&bytes).expect("derived V1 id bytes must parse");
+    assert_eq!(roundtrip, id_v1);
     // Round-trip string form.
     let s = id_v1.to_string();
-    if let Ok(parsed) = Id::from_str(&s) {
-        assert_eq!(parsed, id_v1);
-    }
+    let parsed = Id::from_str(&s).expect("derived V1 id string must parse");
+    assert_eq!(parsed, id_v1);
 
     // --- NUT-02: V2 id derivation ---
     let unit = currency_unit_from(input.unit_tag, &input.custom_unit);
     let id_v2 = Id::v2_from_data(&keys, &unit, input.input_fee_ppk, input.expiry);
     let v2_bytes = id_v2.to_bytes();
-    if let Ok(roundtrip) = Id::from_bytes(&v2_bytes) {
-        assert_eq!(roundtrip, id_v2);
-    }
+    let roundtrip = Id::from_bytes(&v2_bytes).expect("derived V2 id bytes must parse");
+    assert_eq!(roundtrip, id_v2);
     // Deterministic: same inputs -> same id.
     let id_v2_again = Id::v2_from_data(&keys, &unit, input.input_fee_ppk, input.expiry);
     assert_eq!(id_v2, id_v2_again);

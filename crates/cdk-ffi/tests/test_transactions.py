@@ -237,6 +237,35 @@ async def test_wallet_proofs_by_ys_empty_errors():
             os.unlink(db_path)
 
 
+async def test_wallet_derivation_counter():
+    """Test namespaced derivation counter operations"""
+    print("\n=== Test: Wallet Derivation Counter ===")
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        backend = cdk_ffi.WalletDbBackend.SQLITE(path=db_path)
+        db = cdk_ffi.create_wallet_db(backend)
+
+        counter1 = await db.increment_derivation_counter("nut20_quote", 1)
+        counter2 = await db.increment_derivation_counter("nut20_quote", 5)
+        counter3 = await db.increment_derivation_counter("nut20_quote", 0)
+        p2pk_counter = await db.increment_derivation_counter("p2pk", 2)
+
+        print(f"✓ Derivation counter after +1: {counter1}")
+        assert counter1 == 1, f"Expected counter 1, got {counter1}"
+        assert counter2 == 6, f"Expected counter 6, got {counter2}"
+        assert counter3 == 6, f"Expected current counter 6, got {counter3}"
+        assert p2pk_counter == 2, f"Expected independent counter 2, got {p2pk_counter}"
+
+        print("✓ Test passed: namespaced derivation counters work")
+
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+
 async def test_wallet_proofs_by_ys():
     """Test retrieving proofs by Y values from the database"""
     print("\n=== Test: Wallet Get Proofs by Y Values ===")
@@ -327,6 +356,7 @@ async def main():
         ("Wallet Mint Management", test_wallet_mint_management),
         ("Wallet Keyset Management", test_wallet_keyset_management),
         ("Wallet Keyset Counter", test_wallet_keyset_counter),
+        ("Wallet Derivation Counter", test_wallet_derivation_counter),
         ("Wallet Quote Operations", test_wallet_quotes),
         ("Wallet Get Proofs by Y Values (Empty Errors)", test_wallet_proofs_by_ys_empty_errors),
         ("Wallet Get Proofs by Y Values", test_wallet_proofs_by_ys),

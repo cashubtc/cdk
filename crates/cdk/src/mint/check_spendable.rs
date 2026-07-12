@@ -160,4 +160,50 @@ mod tests {
     async fn test_check_state_returns_witness_for_spent_proofs() {
         assert!(check_state_witness_for_proof_state(State::Spent).await);
     }
+
+    #[tokio::test]
+    async fn test_check_state_returns_spent_for_duplicate_y() {
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(100)).await.unwrap();
+        let ys = proofs.ys().unwrap();
+        let duplicated_y = ys[0];
+        let db = mint.localstore();
+
+        {
+            let mut tx = db.begin_transaction().await.unwrap();
+            tx.add_proofs(
+                proofs,
+                None,
+                &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
+
+        {
+            let mut tx = db.begin_transaction().await.unwrap();
+            let mut acquired = tx.get_proofs(&ys).await.unwrap();
+            Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
+                .await
+                .unwrap();
+            Mint::update_proofs_state(&mut tx, &mut acquired, State::Spent)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+
+        let response = mint
+            .check_state(&CheckStateRequest {
+                ys: vec![duplicated_y, duplicated_y],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.states.len(), 2);
+        assert!(response
+            .states
+            .iter()
+            .all(|proof_state| proof_state.y == duplicated_y && proof_state.state == State::Spent));
+    }
 }

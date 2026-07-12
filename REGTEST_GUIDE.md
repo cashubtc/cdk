@@ -272,3 +272,25 @@ just regtest
 ```
 
 This environment provides everything needed for CDK development and testing in a single, easy-to-use interface! 🎉
+
+## Nextest archive reuse
+
+Integration tests can run from a pre-built nextest archive (`CDK_ITEST_ARCHIVE`,
+usually the `.#itest-archive` Nix build) instead of compiling with Cargo.
+Running nextest directly with `--archive-file` extracts the roughly 19 GB
+archive for every invocation, which is expensive for scripts that run several
+test binaries.
+
+CDK extracts each archive once into
+`${CDK_NEXTEST_EXTRACT_ROOT:-$TMPDIR/cdk-nextest-extract}/<key>` and reuses the
+extracted nextest metadata and test binaries. CI sets a host-level extraction
+root so jobs on the same runner share it. Each use refreshes the directory's
+modification time; when a new archive is extracted, directories unused for
+more than three days are removed.
+
+The nextest archive contains test binaries only. Integration-test harnesses
+such as `start_regtest` and `start_fake_mint` are separate Nix packages supplied
+by the `regtest` and `integration` development shells.
+
+See [Binary Cache](DEVELOPMENT.md#binary-cache) for the project cache's consumer
+and publisher configuration.

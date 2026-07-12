@@ -100,6 +100,8 @@ pub async fn resolve_bip353_payment_instruction(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     const TEST_CREQ: &str = "CREQB1QYQQWER9D4HNZV3NQGQQSQQQQQQQQQQRAQPSQQGQQSQQZQG9QQVXSAR5WPEN5TE0D45KUAPWV4UXZMTSD3JJUCM0D5RQQRJRDANXVET9YPCXZ7TDV4H8GXHR3TQ";
@@ -161,5 +163,17 @@ mod tests {
     fn test_create_bip321_uri_empty() {
         let uri = create_bip321_uri(None, None, None);
         assert_eq!(uri, "BITCOIN:");
+    }
+
+    #[test]
+    fn test_create_bip321_uri_preserves_base64_cashu_request() {
+        let creq = cdk::nuts::PaymentRequest::from_str(TEST_CREQ)
+            .expect("should parse test request")
+            .to_string();
+        assert!(creq.starts_with("creqA"));
+
+        let uri = create_bip321_uri(Some(creq.clone()), None, None);
+
+        assert!(uri.contains(creq.trim_end_matches('=')));
     }
 }

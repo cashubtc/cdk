@@ -10,9 +10,12 @@ pub const BDK_BITCOIND_RPC_HOST_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_HOST
 pub const BDK_BITCOIND_RPC_PORT_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_PORT";
 pub const BDK_BITCOIND_RPC_USER_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_USER";
 pub const BDK_BITCOIND_RPC_PASSWORD_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD";
+pub const BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR: &str = "CDK_MINTD_BDK_WALLET_RESCAN_FROM_HEIGHT";
 pub const BDK_CHAIN_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_BDK_CHAIN_SOURCE_TYPE";
 pub const BDK_ESPLORA_URL_ENV_VAR: &str = "CDK_MINTD_BDK_ESPLORA_URL";
 pub const BDK_ESPLORA_PARALLEL_REQUESTS_ENV_VAR: &str = "CDK_MINTD_BDK_ESPLORA_PARALLEL_REQUESTS";
+pub const BDK_ELECTRUM_URL_ENV_VAR: &str = "CDK_MINTD_BDK_ELECTRUM_URL";
+pub const BDK_ELECTRUM_BATCH_SIZE_ENV_VAR: &str = "CDK_MINTD_BDK_ELECTRUM_BATCH_SIZE";
 pub const BDK_NUM_CONFS_ENV_VAR: &str = "CDK_MINTD_BDK_NUM_CONFS";
 pub const BDK_FEE_PERCENT_ENV_VAR: &str = "CDK_MINTD_BDK_FEE_PERCENT";
 pub const BDK_RESERVE_FEE_MIN_ENV_VAR: &str = "CDK_MINTD_BDK_RESERVE_FEE_MIN";
@@ -61,6 +64,12 @@ impl Bdk {
             self.bitcoind_rpc_password = Some(bitcoind_rpc_password);
         }
 
+        if let Ok(wallet_rescan_from_height) = env::var(BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR) {
+            if let Ok(wallet_rescan_from_height) = wallet_rescan_from_height.parse::<u32>() {
+                self.wallet_rescan_from_height = Some(wallet_rescan_from_height);
+            }
+        }
+
         if let Ok(chain_source_type) = env::var(BDK_CHAIN_SOURCE_TYPE_ENV_VAR) {
             self.chain_source_type = Some(chain_source_type);
         }
@@ -72,6 +81,16 @@ impl Bdk {
         if let Ok(esplora_parallel_requests) = env::var(BDK_ESPLORA_PARALLEL_REQUESTS_ENV_VAR) {
             if let Ok(esplora_parallel_requests) = esplora_parallel_requests.parse::<usize>() {
                 self.esplora_parallel_requests = esplora_parallel_requests;
+            }
+        }
+
+        if let Ok(electrum_url) = env::var(BDK_ELECTRUM_URL_ENV_VAR) {
+            self.electrum_url = Some(electrum_url);
+        }
+
+        if let Ok(electrum_batch_size) = env::var(BDK_ELECTRUM_BATCH_SIZE_ENV_VAR) {
+            if let Ok(electrum_batch_size) = electrum_batch_size.parse::<usize>() {
+                self.electrum_batch_size = electrum_batch_size;
             }
         }
 

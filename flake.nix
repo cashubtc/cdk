@@ -2,10 +2,13 @@
   description = "CDK Flake";
 
   nixConfig = {
+    fallback = true;
     extra-substituters = [
+      "https://cache.cashudevkit.org"
       "https://cashudevkit.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "cashudevkit:Ukc9ltM4674fDHWWay+q4vdHDYKF48QIm6A+0z5/FqQ="
       "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
     ];
   };
@@ -19,12 +22,6 @@
       inputs = {
         nixpkgs.follows = "nixpkgs";
       };
-    };
-
-    fenix = {
-      url = "github:nix-community/fenix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-analyzer-src.follows = "";
     };
 
     flake-utils.url = "github:numtide/flake-utils";
@@ -123,7 +120,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.98.0".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -169,7 +166,7 @@
         # Stable toolchain with musl target for static builds (Linux only)
         static_toolchain =
           if muslTarget != null then
-            pkgs.rust-bin.stable."1.96.0".default.override
+            pkgs.rust-bin.stable."1.98.0".default.override
               {
                 targets = [ muslTarget ];
               }
@@ -208,25 +205,45 @@
           if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
         craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
 
+        # Include only checked-in fuzzing inputs. Using ./fuzz directly would also
+        # copy generated directories such as fuzz/target, corpus, and artifacts.
+        fuzzSrc = lib.fileset.unions [
+          ./fuzz/Cargo.toml
+          ./fuzz/Cargo.lock
+          ./fuzz/fuzz_targets
+          ./fuzz/seeds
+          ./fuzz/src
+        ];
+
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
         # because it uses a whitelist approach rather than scanning everything first
+        srcFileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
+          lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./Cargo.lock.msrv
+            ./clippy.toml
+            ./.typos.toml
+            ./rustfmt.toml
+            ./README.md
+            ./.cargo
+            ./crates
+            fuzzSrc
+            ./bindings
+          ]
+        );
+
         src = lib.fileset.toSource {
           root = ./.;
-          fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
-            lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./Cargo.lock.msrv
-              ./.typos.toml
-              ./rustfmt.toml
-              ./README.md
-              ./.cargo
-              ./crates
-              ./fuzz
-              ./bindings
-            ]
-          );
+          fileset = srcFileset;
+        };
+
+        # The integration-test harness binaries do not compile the test targets.
+        # Keep changes confined to those tests from invalidating their cache keys.
+        itestHarnessSrc = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.difference srcFileset ./crates/cdk-integration-tests/tests;
         };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
@@ -238,12 +255,13 @@
             lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock.msrv
+              ./clippy.toml
               ./.typos.toml
               ./rustfmt.toml
               ./README.md
               ./.cargo
               ./crates
-              ./fuzz
+              fuzzSrc
               ./bindings
             ]
           );
@@ -287,6 +305,9 @@
           # Environment variables
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+          # reqwest's rustls platform verifier loads the native CA store while
+          # building a client. Nix build sandboxes do not provide /etc/ssl.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps
@@ -365,12 +386,12 @@
         );
 
         # MSRV dependencies (separate cache due to different toolchain)
-        # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
+        # Exclude cdk-redb (and its dependents) and cdk-cli from MSRV coverage
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-bindings-releaser";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
           }
         );
 
@@ -420,6 +441,9 @@
               );
               doCheck = false;
               installPhaseCommand = "mkdir -p $out";
+              # These outputs are success markers; no later derivation consumes
+              # their target directories.
+              doInstallCargoArtifacts = false;
             }
           );
 
@@ -493,6 +517,19 @@
           }
         );
 
+        # Workspace-wide clippy check for all targets. This preserves the quick
+        # check coverage while reusing the warmed Crane dependency derivation.
+        workspaceClippyAllTargets = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-workspace-clippy-all-targets";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = "cargo clippy --workspace --all-targets -- -D warnings";
+            doCheck = false;
+            installPhaseCommand = "mkdir -p $out";
+          }
+        );
+
         # Strict docs check - build docs with warnings as errors
         # Uses mkCargoDerivation for custom RUSTDOCFLAGS
         strictDocs = craneLib.mkCargoDerivation (
@@ -512,7 +549,6 @@
                 -p cdk-axum \
                 -p cdk-cln \
                 -p cdk-lnd \
-                -p cdk-lnbits \
                 -p cdk-fake-wallet \
                 -p cdk-mint-rpc \
                 -p cdk-payment-processor \
@@ -550,6 +586,7 @@
               # Run Python tests
               python3 crates/cdk-ffi/tests/test_transactions.py
               python3 crates/cdk-ffi/tests/test_kvstore.py
+              python3 crates/cdk-ffi/tests/test_rate_limit.py
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
@@ -586,7 +623,7 @@
               # Generate Dart bindings via the custom uniffi-bindgen binary
               # Must run from bindings/dart/rust/ so it finds uniffi.toml
               (cd bindings/dart/rust && \
-                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen-dart -- \
                   "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
             '';
             doCheck = false;
@@ -612,9 +649,10 @@
               cargo build --release -p cdk-ffi-kotlin --target "${hostTarget}"
 
               # Generate Kotlin bindings
-              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
-                --library "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
+              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen-kotlin -- generate \
+                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
                 --language kotlin \
+                --config bindings/kotlin/rust/uniffi.toml \
                 --out-dir target/kotlin-bindings \
                 --no-format
             '';
@@ -629,11 +667,11 @@
               cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
 
               # Copy native library
-              cp "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
-                "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
+              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                "$out/cdk-jvm/src/main/resources/libcdk_ffi_kotlin.$LIB_EXT"
 
               # Strip debug symbols
-              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi_kotlin.$LIB_EXT" 2>/dev/null || true
             '';
           }
         );
@@ -722,11 +760,14 @@
         # These run both clippy and unit tests in a single derivation
         # ========================================
         clippyAndTestChecks = {
-          "core-lib" = [
+          "core-cashu" = [
             "-p cashu"
             "-p cashu --no-default-features"
             "-p cashu --no-default-features --features wallet"
             "-p cashu --no-default-features --features mint"
+          ];
+
+          "core-common-http" = [
             "-p cdk-http-client"
             "-p cdk-http-client --no-default-features --features reqwest"
             "-p cdk-common"
@@ -737,13 +778,22 @@
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/reqwest"
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/bitreq"
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/reqwest"
+          ];
+
+          "core-sdk-baseline" = [
             "-p cdk -p cdk-http-client"
             "-p cdk --no-default-features"
+          ];
+
+          "core-sdk-wallet" = [
             "-p cdk --no-default-features --features bip353"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/reqwest"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/tor,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/npubcash,cdk-http-client/reqwest"
+          ];
+
+          "core-sdk-mint" = [
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
@@ -761,18 +811,16 @@
           ];
 
           "lightning-and-api" = [
-            "-p cdk-http-client"
             "-p cdk-axum"
             "-p cdk-axum --no-default-features"
             "-p cdk-axum --no-default-features --features redis"
             "-p cdk-bdk"
             "-p cdk-cln"
             "-p cdk-lnd"
-            "-p cdk-lnbits"
             "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
-            "-p cdk-npubcash -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
+            "-p cdk-nostr -p cdk-http-client --no-default-features --features cdk-nostr/npubcash,cdk-http-client/bitreq"
           ];
 
           "mintd-main" = [
@@ -787,7 +835,6 @@
 
           "mintd-backends-sqlite" = [
             "-p cdk-mintd --no-default-features --features lnd,sqlite"
-            "-p cdk-mintd --no-default-features --features lnbits,sqlite"
             "-p cdk-mintd --no-default-features --features fakewallet,sqlite"
             "-p cdk-mintd --no-default-features --features grpc-processor,sqlite"
             "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite"
@@ -797,7 +844,6 @@
           "mintd-backends-postgres" = [
             "-p cdk-mintd --no-default-features --features cln,postgres"
             "-p cdk-mintd --no-default-features --features lnd,postgres"
-            "-p cdk-mintd --no-default-features --features lnbits,postgres"
             "-p cdk-mintd --no-default-features --features fakewallet,postgres"
             "-p cdk-mintd --no-default-features --features grpc-processor,postgres"
             "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres"
@@ -813,10 +859,7 @@
 
           # Mintd with all backends, databases, and features
           "cdk-mintd-all" =
-            "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
-
-          # CLI - default features (excludes redb which breaks MSRV)
-          "cdk-cli" = "-p cdk-cli";
+            "-p cdk-mintd --no-default-features --features \"cln,lnd,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 
           # Minimal builds to ensure no-default-features works
           "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";
@@ -844,10 +887,13 @@
             git
             pkg-config
             curl
+            cachix
+            jq
             just
             protobuf
             nixpkgs-fmt
             typos
+            tokei
 
             cargo-outdated
             cargo-mutants
@@ -860,6 +906,13 @@
             stopPostgres
             pgStatus
             pgConnect
+
+            # Redis
+            redis
+            startRedisSingle
+            stopRedisSingle
+            startRedisCluster
+            stopRedisCluster
 
             # Needed for github ci
             libz
@@ -893,11 +946,31 @@
           ])
           ++ (with pkgs; [
             mprocs
-          ]);
+            nostr-rs-relay
+          ])
+          # Integration-test cleanup starts the regtest process tree in a
+          # dedicated session on Linux and uses procps to catch any child that
+          # daemonizes out of that group. Bash job control is the portable
+          # fallback on Darwin, where these Linux tools are unavailable.
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.procps
+            pkgs.util-linux
+          ];
 
         commonShellHook = ''
           # Needed for github ci
           export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.zlib ]}:$LD_LIBRARY_PATH
+        '';
+
+        dockerShellHook = ''
+          # Ensure Docker is available
+          if ! command -v docker &> /dev/null; then
+            echo "Docker is not installed or not in PATH"
+            echo "Please install Docker to run integration tests"
+            exit 1
+          fi
+          echo "Docker is available at $(command -v docker)"
+          echo "Docker version: $(docker --version)"
         '';
 
         pgShellHook = ''
@@ -912,6 +985,20 @@
           echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
           echo "  pg-status       - Check PostgreSQL status" >&2
           echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
+          echo "" >&2
+        '';
+
+        redisShellHook = ''
+          # Redis environment variables (single-node defaults)
+          export CDK_MINTD_CACHE_REDIS_URL="redis://127.0.0.1:6379"
+          export CDK_MINTD_CACHE_REDIS_CLUSTER_NODES="redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003"
+
+          echo "" >&2
+          echo "Redis commands available:" >&2
+          echo "  start-redis-single   - Start a single-node Redis on port 6379" >&2
+          echo "  stop-redis-single    - Stop the single-node Redis" >&2
+          echo "  start-redis-cluster  - Start a 3-node Redis cluster on ports 7001-7003" >&2
+          echo "  stop-redis-cluster   - Stop the Redis cluster" >&2
           echo "" >&2
         '';
 
@@ -932,6 +1019,25 @@
           PGPASSWORD="${postgresConf.pgPassword}"
           PGDATABASE="${postgresConf.pgDatabase}"
 
+          start_postgres_server() {
+            # Override old clusters too: a .pg_data created before this fix can
+            # still contain an absolute Unix-socket directory that is no longer
+            # valid after moving the workspace.
+            if ! ${pkgs.postgresql_16}/bin/pg_ctl \
+              -D "$PGDATA" \
+              -l "$PGDATA/logfile" \
+              -o "-c unix_socket_directories=" \
+              start; then
+              echo "PostgreSQL failed to start. Server log:" >&2
+              if [ -f "$PGDATA/logfile" ]; then
+                cat "$PGDATA/logfile" >&2
+              else
+                echo "No PostgreSQL logfile was created." >&2
+              fi
+              return 1
+            fi
+          }
+
           # Stop any existing instance first
           if [ -d "$PGDATA" ] && ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" status > /dev/null 2>&1; then
             echo "Stopping existing PostgreSQL instance..."
@@ -945,10 +1051,12 @@
             # Configure PostgreSQL
             echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
             echo "port = $PGPORT" >> "$PGDATA/postgresql.conf"
-            echo "unix_socket_directories = '$PGDATA'" >> "$PGDATA/postgresql.conf"
+            # All clients use TCP. Disabling Unix sockets avoids PostgreSQL's
+            # short Unix-socket pathname limit in deeply nested CI workspaces.
+            printf "unix_socket_directories = '%s'\n" "" >> "$PGDATA/postgresql.conf"
 
             # Start temporarily to create user and database
-            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+            start_postgres_server
             sleep 2
 
             # Create user and database
@@ -961,7 +1069,7 @@
           fi
 
           echo "Starting PostgreSQL on port $PGPORT..."
-          ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+          start_postgres_server
           echo "PostgreSQL started. Connection URL: postgresql://$PGUSER:$PGPASSWORD@localhost:$PGPORT/$PGDATABASE"
         '';
 
@@ -989,6 +1097,155 @@
         # Script to connect to PostgreSQL
         pgConnect = pkgs.writeShellScriptBin "pg-connect" ''
           ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+        '';
+
+        # Script to start a 3-node Redis cluster (ports 7001-7003)
+        startRedisCluster = pkgs.writeShellScriptBin "start-redis-cluster" ''
+          set -e
+          REDIS_DIR="$PWD/.redis_cluster"
+          mkdir -p "$REDIS_DIR"
+
+          _start_node() {
+            local port=$1
+            local pidfile="$REDIS_DIR/redis-$port.pid"
+
+            # Skip if already running
+            _pid=""
+            [ -f "$pidfile" ] && _pid=$(cat "$pidfile" 2>/dev/null || true)
+            if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+              echo "Redis node on port $port already running (pid $_pid)"
+              return
+            fi
+
+            ${pkgs.redis}/bin/redis-server \
+              --port $port \
+              --cluster-enabled yes \
+              --cluster-config-file "$REDIS_DIR/nodes-$port.conf" \
+              --cluster-node-timeout 5000 \
+              --cluster-announce-ip 127.0.0.1 \
+              --appendonly no \
+              --save "" \
+              --daemonize yes \
+              --logfile "$REDIS_DIR/redis-$port.log" \
+              --pidfile "$pidfile"
+
+            echo "Started Redis node on port $port"
+          }
+
+          echo "Starting Redis cluster nodes..."
+          _start_node 7001
+          _start_node 7002
+          _start_node 7003
+
+          # Wait for all nodes to be ready
+          echo "Waiting for nodes to be ready..."
+          for port in 7001 7002 7003; do
+            ready=0
+            for i in $(seq 1 20); do
+              if ${pkgs.redis}/bin/redis-cli -p $port ping 2>/dev/null | grep -q PONG; then
+                ready=1
+                break
+              fi
+              sleep 0.5
+            done
+            if [ "$ready" -eq 0 ]; then
+              echo "ERROR: Redis node on port $port failed to start within 10 seconds" >&2
+              exit 1
+            fi
+          done
+
+          # Create the cluster if not already formed
+          CLUSTER_STATE=$(${pkgs.redis}/bin/redis-cli -p 7001 cluster info 2>/dev/null | grep cluster_state | cut -d: -f2 | tr -d '[:space:]')
+          if [ "$CLUSTER_STATE" = "ok" ]; then
+            echo "Redis cluster already initialized"
+          else
+            echo "Forming Redis cluster..."
+            ${pkgs.redis}/bin/redis-cli --cluster create \
+              127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 \
+              --cluster-replicas 0 --cluster-yes
+          fi
+
+          echo "Redis cluster ready. Nodes: redis://127.0.0.1:7001, redis://127.0.0.1:7002, redis://127.0.0.1:7003"
+        '';
+
+        # Script to stop the Redis cluster
+        stopRedisCluster = pkgs.writeShellScriptBin "stop-redis-cluster" ''
+          REDIS_DIR="$PWD/.redis_cluster"
+          for port in 7001 7002 7003; do
+            pidfile="$REDIS_DIR/redis-$port.pid"
+            if [ -f "$pidfile" ]; then
+              pid=$(cat "$pidfile")
+              if kill -0 "$pid" 2>/dev/null; then
+                echo "Stopping Redis node on port $port (pid $pid)..."
+                kill "$pid"
+              else
+                echo "Redis node on port $port not running (stale pid file)"
+              fi
+              rm -f "$pidfile"
+            else
+              echo "No pid file for Redis node on port $port"
+            fi
+          done
+          echo "Redis cluster stopped."
+        '';
+
+        # Script to start a single-node Redis (port 6379)
+        startRedisSingle = pkgs.writeShellScriptBin "start-redis-single" ''
+          set -e
+          REDIS_DIR="$PWD/.redis_single"
+          mkdir -p "$REDIS_DIR"
+          PIDFILE="$REDIS_DIR/redis-6379.pid"
+
+          # Skip if already running
+          _pid=""
+          [ -f "$PIDFILE" ] && _pid=$(cat "$PIDFILE" 2>/dev/null || true)
+          if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+            echo "Single-node Redis already running (pid $_pid)"
+            exit 0
+          fi
+
+          ${pkgs.redis}/bin/redis-server \
+            --port 6379 \
+            --appendonly no \
+            --save "" \
+            --daemonize yes \
+            --logfile "$REDIS_DIR/redis-6379.log" \
+            --pidfile "$PIDFILE"
+
+          # Wait for the node to be ready
+          ready=0
+          for i in $(seq 1 20); do
+            if ${pkgs.redis}/bin/redis-cli -p 6379 ping 2>/dev/null | grep -q PONG; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ready" -eq 0 ]; then
+            echo "ERROR: Single-node Redis failed to start within 10 seconds" >&2
+            exit 1
+          fi
+
+          echo "Single-node Redis ready at redis://127.0.0.1:6379"
+        '';
+
+        # Script to stop the single-node Redis
+        stopRedisSingle = pkgs.writeShellScriptBin "stop-redis-single" ''
+          REDIS_DIR="$PWD/.redis_single"
+          PIDFILE="$REDIS_DIR/redis-6379.pid"
+          if [ -f "$PIDFILE" ]; then
+            pid=$(cat "$PIDFILE")
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "Stopping single-node Redis (pid $pid)..."
+              kill "$pid"
+            else
+              echo "Single-node Redis not running (stale pid file)"
+            fi
+            rm -f "$PIDFILE"
+          else
+            echo "No pid file for single-node Redis"
+          fi
+          echo "Single-node Redis stopped."
         '';
 
         # Helper to build a statically-linked binary package (Linux only)
@@ -1136,6 +1393,7 @@
             commonCraneArgs
             // {
               pname = "cdk-itest-${name}";
+              src = itestHarnessSrc;
               cargoArtifacts = workspaceDeps;
               inherit cargoExtraArgs;
               # Only install the specific binary, not the entire workspace
@@ -1170,6 +1428,12 @@
             '';
             doCheck = false;
             installPhaseCommand = "";
+            # mkCargoDerivation would otherwise also compress the whole cargo
+            # target dir into $out/target.tar.zst (crane's cargoArtifacts
+            # mechanism). Nothing consumes this package's artifacts and the
+            # extra tarball (~4.7 GB) nearly doubles the store path that binary
+            # caches have to push and every runner has to pull, so skip it.
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -1180,10 +1444,27 @@
         ++ lib.optionals isDarwin [
           # Additional darwin specific native inputs can be set here
         ];
+
+        defaultPackage =
+          if muslTarget != null then
+            mkStaticPackage
+              {
+                bin = "cdk-mintd";
+                name = "cdk-mintd";
+                cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+              }
+          else
+            mkDarwinPackage {
+              bin = "cdk-mintd";
+              name = "cdk-mintd";
+              cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+            };
       in
       {
         # Expose deps for explicit cache warming
         packages = {
+          default = defaultPackage;
+          attic-client = pkgs.attic-client;
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
           # Language bindings (cached cdylib + uniffi codegen)
@@ -1197,11 +1478,7 @@
         }
         # Static binary packages (fully statically-linked, Linux only)
         // lib.optionalAttrs (muslTarget != null) {
-          cdk-mintd-static = mkStaticPackage {
-            bin = "cdk-mintd";
-            name = "cdk-mintd";
-            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-          };
+          cdk-mintd-static = defaultPackage;
 
           cdk-mintd-ldk-static = mkStaticPackage {
             bin = "cdk-mintd";
@@ -1217,11 +1494,7 @@
         }
         # macOS release binary packages (dynamically linked, Apple Silicon only)
         // lib.optionalAttrs isDarwin {
-          cdk-mintd-darwin = mkDarwinPackage {
-            bin = "cdk-mintd";
-            name = "cdk-mintd";
-            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-          };
+          cdk-mintd-darwin = defaultPackage;
 
           cdk-mintd-ldk-darwin = mkDarwinPackage {
             bin = "cdk-mintd";
@@ -1303,6 +1576,9 @@
               exampleChecks
           ))
           // {
+            # Workspace-wide all-targets clippy check
+            workspace-clippy-all-targets = workspaceClippyAllTargets;
+
             # Doc tests
             doc-tests = docTests;
 
@@ -1318,24 +1594,6 @@
             # devShells
             msrv = pkgs.mkShell (
               {
-                shellHook = "
-                  cargo update
-                  cargo update home --precise 0.5.11
-                  cargo update typed-index-collections --precise 3.3.0
-                  cargo update simple_asn1 --precise 0.6.3
-                  cargo update cookie_store --precise 0.22.0
-                  cargo update serde_with --precise 3.17.0
-                  cargo update time --precise 0.3.44
-                  cargo update unicode-segmentation --precise 1.12.0
-                  cargo update idna_adapter --precise 1.2.1
-                  cargo update icu_normalizer --precise 2.0.1
-                  cargo update icu_provider --precise 2.1.1
-                  cargo update icu_locale_core --precise 2.1.1
-                  cargo update tonic-prost@0.14.6 --precise 0.14.5
-                  cargo update tonic-prost-build@0.14.6 --precise 0.14.5
-                  cargo update tonic-build@0.14.6 --precise 0.14.5
-                  cargo update tonic@0.14.6 --precise 0.14.5
-               ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
               }
@@ -1344,7 +1602,7 @@
 
             stable = pkgs.mkShell (
               {
-                shellHook = commonShellHook + pgShellHook;
+                shellHook = commonShellHook + pgShellHook + redisShellHook;
                 buildInputs = baseBuildInputs ++ [
                   stable_toolchain
                 ];
@@ -1356,7 +1614,7 @@
 
             regtest = pkgs.mkShell (
               {
-                shellHook = commonShellHook + pgShellHook;
+                shellHook = commonShellHook + pgShellHook + redisShellHook;
                 buildInputs =
                   baseBuildInputs
                   ++ regtestBuildInputs
@@ -1397,18 +1655,7 @@
             # Shell with Docker for integration tests
             integration = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Ensure Docker is available
-                  if ! command -v docker &> /dev/null; then
-                    echo "Docker is not installed or not in PATH"
-                    echo "Please install Docker to run integration tests"
-                    exit 1
-                  fi
-                  echo "Docker is available at $(which docker)"
-                  echo "Docker version: $(docker --version)"
-                ''
-                + commonShellHook
-                + pgShellHook;
+                shellHook = dockerShellHook + commonShellHook + pgShellHook;
                 buildInputs =
                   baseBuildInputs
                   ++ regtestBuildInputs
@@ -1419,6 +1666,21 @@
                     pkgsUnstable.cargo-llvm-cov
                   ]
                   ++ builtins.attrValues itestBinaries;
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
+            # Minimal shell for the Nutshell interoperability tests. These tests
+            # compile their own binaries with Cargo and do not use the pre-built
+            # integration-test harnesses from the full integration shell.
+            nutshell = pkgs.mkShell (
+              {
+                shellHook = dockerShellHook + commonShellHook;
+                buildInputs = baseBuildInputs ++ [
+                  stable_toolchain
+                  pkgs.docker-client
+                ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -1488,7 +1750,7 @@
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
                 androidRustFlags = "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384";
-                buildToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+                buildToolchain = pkgs.rust-bin.stable."1.98.0".default.override {
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"
@@ -1559,6 +1821,7 @@
               nightly
               nightly-regtest
               integration
+              nutshell
               ffi
               bindings
               kotlin-build

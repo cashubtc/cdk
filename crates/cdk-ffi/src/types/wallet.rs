@@ -331,7 +331,7 @@ pub struct SecretKey {
 impl fmt::Debug for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretKey")
-            .field("hex", &"[redacted]")
+            .field("hex", &"[REDACTED]")
             .finish()
     }
 }
@@ -384,7 +384,7 @@ impl From<cdk::nuts::SecretKey> for SecretKey {
 }
 
 /// FFI-compatible Receive options
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
@@ -395,6 +395,17 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+}
+
+impl fmt::Debug for ReceiveOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceiveOptions")
+            .field("amount_split_target", &self.amount_split_target)
+            .field("p2pk_signing_keys", &"[REDACTED]")
+            .field("preimages", &"[REDACTED]")
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 impl Default for ReceiveOptions {
@@ -603,7 +614,7 @@ impl PreparedSend {
 }
 
 /// FFI-compatible FinalizedMelt result
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct FinalizedMelt {
     pub quote_id: String,
     pub state: super::quote::QuoteState,
@@ -611,6 +622,19 @@ pub struct FinalizedMelt {
     pub change: Option<Proofs>,
     pub amount: Amount,
     pub fee_paid: Amount,
+}
+
+impl fmt::Debug for FinalizedMelt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FinalizedMelt")
+            .field("quote_id", &self.quote_id)
+            .field("state", &self.state)
+            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
+            .field("change_proof_count", &self.change.as_ref().map(Vec::len))
+            .field("amount", &self.amount)
+            .field("fee_paid", &self.fee_paid)
+            .finish()
+    }
 }
 
 impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
@@ -1052,5 +1076,54 @@ impl From<cdk::WalletKey> for WalletKey {
             mint_url: value.mint_url.into(),
             unit: value.unit.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::proof::Proof;
+
+    #[test]
+    fn receive_options_debug_redacts_preimages() {
+        let preimage = "ffi-receive-preimage-secret";
+        let options = ReceiveOptions {
+            preimages: vec![preimage.to_string()],
+            ..Default::default()
+        };
+
+        let debug = format!("{options:?}");
+
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(preimage));
+    }
+
+    #[test]
+    fn finalized_melt_debug_redacts_preimage_and_change_proofs() {
+        let preimage = "payment-preimage";
+        let proof_secret = "change-proof-secret";
+        let finalized = FinalizedMelt {
+            quote_id: "public-melt-quote-id".to_string(),
+            state: super::super::quote::QuoteState::Paid,
+            preimage: Some(preimage.to_string()),
+            change: Some(vec![Proof {
+                amount: Amount::new(1),
+                secret: proof_secret.to_string(),
+                c: "public-signature".to_string(),
+                keyset_id: "public-keyset-id".to_string(),
+                witness: None,
+                dleq: None,
+                p2pk_e: None,
+            }]),
+            amount: Amount::new(100),
+            fee_paid: Amount::new(1),
+        };
+
+        let debug = format!("{finalized:?}");
+
+        assert!(debug.contains("public-melt-quote-id"));
+        assert!(debug.contains("change_proof_count: Some(1)"));
+        assert!(!debug.contains(preimage));
+        assert!(!debug.contains(proof_secret));
     }
 }

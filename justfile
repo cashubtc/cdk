@@ -7,6 +7,41 @@ alias t := test
 default:
   @just --list
 
+# Enter a Nix development shell without copying ignored files from JJ workspaces.
+develop shell="stable":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  shell_name={{quote(shell)}}
+  case "$shell_name" in
+    ""|*[!a-zA-Z0-9._-]*)
+      echo "Error: invalid development shell name: $shell_name" >&2
+      exit 2
+      ;;
+  esac
+
+  flake_ref=".#${shell_name}"
+  if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
+    revision=$(jj log -r @ --no-graph -T commit_id)
+
+    if git_dir=$(jj git root 2>/dev/null); then
+      case "$git_dir" in
+        */.git)
+          git_source=${git_dir%/.git}
+          ;;
+        *)
+          git_source=$git_dir
+          ;;
+      esac
+
+      flake_ref="git+file://${git_source}?rev=${revision}#${shell_name}"
+    else
+      echo "Warning: JJ repository is not Git-backed; using the workspace path." >&2
+    fi
+  fi
+
+  exec nix develop "$flake_ref" -c "${SHELL:-bash}"
+
 # Create a new SQL migration file
 new-migration target name:
   #!/usr/bin/env bash
@@ -38,6 +73,36 @@ build *ARGS="--workspace --all-targets":
   fi
   cargo build {{ARGS}}
 
+# Build the default Nix package.
+nix-build:
+  nix build --accept-flake-config
+
+# Build and push the default package and reusable Crane dependency artifacts to Attic.
+attic-push:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  targets=(
+    '.#default'
+    '.#deps'
+    '.#deps-msrv'
+    '.#itest-archive'
+    '.#start-fake-mint'
+    '.#start-regtest-mints'
+    '.#start-fake-auth-mint'
+    '.#start-regtest'
+    '.#signatory'
+    '.#cdk-payment-processor'
+    '.#cdk-mintd-grpc'
+  )
+  system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+  if [[ "$system" == *-linux ]]; then
+    targets+=('.#deps-static')
+  fi
+  nix build --accept-flake-config --json --no-link "${targets[@]}" \
+    | jq -r '.[].outputs | to_entries[].value' \
+    | attic push --stdin cashudevkit-cache:cashudevkit
+
 # Build a statically-linked binary by profile name (requires nix)
 # Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
 build-static profile:
@@ -57,6 +122,41 @@ build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk
   sha256sum -- *-x86_64 > SHA256SUMS
   echo "Checksums:"
   cat SHA256SUMS
+
+# Build the CI cache warmup targets locally.
+ci-cache-build:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  nix build -L --no-link \
+    '.#deps' \
+    '.#deps-msrv' \
+    '.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    '.#dart-bindings' \
+    '.#kotlin-bindings' \
+    '.#go-bindings'
+
+# Push the locally built CI cache warmup targets to Cachix.
+ci-cache-push:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  nix build --json --no-link \
+    '.#deps' \
+    '.#deps-msrv' \
+    '.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    '.#dart-bindings' \
+    '.#kotlin-bindings' \
+    '.#go-bindings' \
+    | jq -r '.[].outputs | to_entries[].value' \
+    | cachix push cashudevkit
+
+# Build and push CI cache warmup targets as they complete.
+ci-cache-watch:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cachix watch-exec cashudevkit -- just ci-cache-build
 
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
@@ -88,14 +188,10 @@ test:
   # Unit/lib tests always run from source (not included in the nextest archive)
   cargo test --lib --workspace --exclude cdk-postgres
 
-  # Run pure integration tests
-  if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
-    # Run the mint integration test from the pre-built nextest archive
-    cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(/^mint$/)"
-  else
-    # Run pure integration tests
-    cargo test -p cdk-integration-tests --test mint
-  fi
+  # Run the mint integration test (from the pre-built nextest archive when
+  # CDK_ITEST_ARCHIVE is set, otherwise via cargo test)
+  source ./misc/itest_helpers.sh
+  run_test mint
 
 test-units:
   #!/usr/bin/env bash
@@ -125,6 +221,11 @@ coverage:
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
 
+  # Run cdk-nostr tests with all features; its npubcash/nwc modules are
+  # feature-gated, so the default-feature workspace run does not execute them.
+  echo "Running cdk-nostr feature-gated tests coverage..."
+  cargo llvm-cov --no-report --lib -p cdk-nostr --all-features
+
   # Run pure integration tests with coverage (memory backend)
   echo "Running pure integration tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
@@ -132,6 +233,14 @@ coverage:
   # Run pure integration tests with coverage (sqlite backend)
   echo "Running pure integration tests coverage (sqlite)..."
   CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
+
+  # Run NWC e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NWC e2e tests coverage (memory)..."
+  CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test nwc_e2e
+
+  # Run NIP-17 inbox e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NIP-17 inbox e2e tests coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test nip17_inbox_e2e
 
   # Generate report
   echo "Generating coverage report..."
@@ -145,10 +254,13 @@ test-pure db="memory":
   fi
 
   if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
-    # Run pure integration tests from nextest archive
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~integration_tests_pure)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~test_swap_flow)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~wallet_saga)" -j 1
+    # Run pure integration tests from nextest archive (extracted once, reused)
+    source ./misc/itest_helpers.sh
+    export CDK_TEST_DB_TYPE={{db}}
+    run_test integration_tests_pure -j 1
+    run_test test_swap_flow -j 1
+    run_test wallet_saga -j 1
+    run_test nwc_e2e -j 1
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -158,7 +270,40 @@ test-pure db="memory":
 
     # Run wallet saga tests
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+
+    # Run NWC (NIP-47) e2e tests (requires nostr-rs-relay on PATH; skipped locally if absent)
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
   fi
+
+# Run Redis cache clippy and unit tests against both single-node and cluster Redis.
+# Starts a single-node Redis (port 6379) and a 3-node cluster (ports 7001-7003)
+# using Nix-managed scripts, mirrors both code paths in cdk-axum cache.
+test-redis:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  # Start both Redis topologies and stop them on exit
+  trap 'stop-redis-single; stop-redis-cluster' EXIT
+  start-redis-single
+  start-redis-cluster
+
+  # Lint once (compile-time only, topology is irrelevant for clippy)
+  CDK_MINTD_CACHE_BACKEND=redis \
+  CDK_MINTD_CACHE_REDIS_USE_CLUSTER=false \
+  CDK_MINTD_CACHE_REDIS_URL=redis://127.0.0.1:6379 \
+    cargo clippy -p cdk-axum --features redis -- -D warnings
+
+  # Run the full lib test suite once with both endpoint vars present.
+  # Each test constructs its own topology explicitly so a single invocation
+  # exercises both the single-node and cluster paths.
+  CDK_MINTD_CACHE_BACKEND=redis \
+  CDK_MINTD_CACHE_REDIS_URL=redis://127.0.0.1:6379 \
+  CDK_MINTD_CACHE_REDIS_CLUSTER_NODES=redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003 \
+    cargo test -p cdk-axum --features redis,integration-tests --lib
+
 
 # Mutation Testing Commands
 
@@ -355,7 +500,7 @@ test-nutshell:
 
   # Set environment variables and run tests
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
-  export LN_BACKEND=FAKEWALLET
+  export PAYMENT_BACKEND=FAKEWALLET
 
   # Track test results
   test_exit_code=0
@@ -378,7 +523,7 @@ test-nutshell:
   fi
 
   unset CDK_TEST_MINT_URL
-  unset LN_BACKEND
+  unset PAYMENT_BACKEND
 
   # Exit with error code if any test failed
   if [ $test_exit_code -ne 0 ]; then
@@ -420,18 +565,45 @@ lint:
   typos
   echo "All checks passed!"
 
+# Refresh stable and MSRV lockfiles, excluding registry releases newer than seven days.
 update-msrv-lock:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    nix develop --ignore-environment .#msrv --command bash -c '
-        cp Cargo.lock Cargo.lock.msrv
-        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
-    '
+    nix develop --ignore-environment .#nightly --command bash -c '
+        export CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="7 days"
+        cargo_update() {
+            cargo -Z min-publish-age update "$@"
+        }
 
-    nix develop --ignore-environment .#stable --command bash -c '
-        cargo update
-        echo "Updated Cargo.lock (stable)"
+        cargo_update
+        echo "Updated Cargo.lock with a seven-day minimum publish age"
+
+        lock_dir=$(mktemp -d /data/rust/tmp/cdk-msrv-lock.XXXXXX)
+        cleanup() {
+            rm -f "$lock_dir/Cargo.lock"
+            rmdir "$lock_dir" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+
+        cp Cargo.lock "$lock_dir/Cargo.lock"
+        export CARGO_RESOLVER_LOCKFILE_PATH="$lock_dir/Cargo.lock"
+        export CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS="fallback"
+
+        cargo_update
+        cargo_update home --precise 0.5.11
+        cargo_update typed-index-collections --precise 3.3.0
+        cargo_update simple_asn1 --precise 0.6.3
+        cargo_update cookie_store --precise 0.22.0
+        cargo_update serde_with --precise 3.17.0
+        cargo_update time --precise 0.3.44
+        cargo_update unicode-segmentation --precise 1.12.0
+        cargo_update idna_adapter --precise 1.2.1
+        cargo_update icu_normalizer --precise 2.0.1
+        cargo_update icu_provider --precise 2.1.1
+        cargo_update icu_locale_core --precise 2.1.1
+        cp "$lock_dir/Cargo.lock" Cargo.lock.msrv
+        echo "Updated Cargo.lock.msrv for MSRV 1.85.0"
     '
 
 itest db suite="all":
@@ -589,7 +761,7 @@ release m="":
     "-p cdk-prometheus"
     "-p cdk-http-client"
     "-p cdk-common"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -604,7 +776,6 @@ release m="":
     "-p cdk-bdk"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-lnbits"
     "-p cdk-ldk-node"
     "-p cdk-payment-processor"
     "-p cdk-cli"
@@ -629,7 +800,7 @@ check-docs:
     "-p cashu"
     "-p cdk-common"
     "-p cdk-http-client"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -642,7 +813,6 @@ check-docs:
     "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-lnbits"
     "-p cdk-ldk-node"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
@@ -664,7 +834,7 @@ docs-strict:
     "-p cashu"
     "-p cdk-common"
     "-p cdk-http-client"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -677,7 +847,6 @@ docs-strict:
     "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-lnbits"
     "-p cdk-ldk-node"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
@@ -784,10 +953,15 @@ ffi-generate-swift *ARGS="--release":
     BUILD_TYPE="debug"
   fi
 
-  # Set up SPM-compatible directory structure for testing
+  # Set up SPM-compatible directory structure for testing.
+  # Derive the FFI module name from the generated header so the on-disk
+  # directory matches the target path written into Package.swift below
+  # (the header name follows uniffi.toml's module_name, e.g. CashuDevKitFFI).
   BINDINGS_DIR="$ROOT/target/bindings/swift"
   SWIFT_SRC="$ROOT/Sources/Cdk"
-  FFI_MODULE="$ROOT/Sources/cdk_ffiFFI"
+  HEADER_NAME=$(basename "$BINDINGS_DIR/"*FFI.h)
+  MODULE_NAME="${HEADER_NAME%.h}"
+  FFI_MODULE="$ROOT/Sources/${MODULE_NAME}"
   mkdir -p "$SWIFT_SRC" "$FFI_MODULE"
 
   # Copy generated Swift sources
@@ -796,9 +970,7 @@ ffi-generate-swift *ARGS="--release":
   # Copy generated FFI header and create modulemap.
   # The modulemap generated by uniffi uses 'link' directives; replace with one
   # that lets SPM link the dylib via Package.swift linkerSettings instead.
-  cp "$BINDINGS_DIR/"*FFI.h "$FFI_MODULE/" 2>/dev/null || true
-  HEADER_NAME=$(basename "$FFI_MODULE/"*.h)
-  MODULE_NAME="${HEADER_NAME%.h}"
+  cp "$BINDINGS_DIR/"*FFI.h "$FFI_MODULE/"
   printf 'module %s {\n    header "%s"\n    export *\n}\n' \
     "${MODULE_NAME}" "${HEADER_NAME}" > "$FFI_MODULE/module.modulemap"
 
@@ -858,6 +1030,7 @@ ffi-test: ffi-generate-python
   echo "🧪 Running Python FFI tests..."
   python3 crates/cdk-ffi/tests/test_transactions.py
   python3 crates/cdk-ffi/tests/test_kvstore.py
+  python3 crates/cdk-ffi/tests/test_rate_limit.py
   echo "✅ Tests completed!"
 
 # Build debug version and generate Python bindings quickly (for development)
@@ -1064,14 +1237,14 @@ binding-kotlin:
   cd "{{justfile_directory()}}"
   result=$(nix build .#kotlin-bindings --print-out-paths --no-link)
   cp -r "$result"/* bindings/kotlin/
-  chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+  chmod -R u+w bindings/kotlin
 
 # Run Kotlin binding tests
 test-kotlin:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}/bindings/kotlin"
-  ./gradlew :cdk-jvm:test
+  ./gradlew -PcdkJvmOnly=true :cdk-jvm:test
 
 
 # Run Swift binding tests

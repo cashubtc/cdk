@@ -3,6 +3,8 @@
 use std::env;
 use std::path::PathBuf;
 
+use anyhow::{bail, Context, Result};
+
 use crate::config::Lnd;
 
 // LND environment variables
@@ -13,7 +15,7 @@ pub const ENV_LND_FEE_PERCENT: &str = "CDK_MINTD_LND_FEE_PERCENT";
 pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK_MINTD_LND_RESERVE_FEE_MIN";
 
 impl Lnd {
-    pub fn from_env(mut self) -> Self {
+    pub fn from_env(mut self) -> Result<Self> {
         if let Ok(address) = env::var(ENV_LND_ADDRESS) {
             self.address = address;
         }
@@ -27,9 +29,15 @@ impl Lnd {
         }
 
         if let Ok(fee_str) = env::var(ENV_LND_FEE_PERCENT) {
-            if let Ok(fee) = fee_str.parse() {
-                self.fee_percent = fee;
+            let fee = fee_str.parse::<f32>().with_context(|| {
+                format!("{ENV_LND_FEE_PERCENT} must be a floating-point number")
+            })?;
+            if !fee.is_finite() || !(0.0..=1.0).contains(&fee) {
+                bail!(
+                    "{ENV_LND_FEE_PERCENT} must be finite and between 0.0 and 1.0 inclusive (0.02 means 2%)"
+                );
             }
+            self.fee_percent = fee;
         }
 
         if let Ok(reserve_fee_str) = env::var(ENV_LND_RESERVE_FEE_MIN) {
@@ -38,6 +46,6 @@ impl Lnd {
             }
         }
 
-        self
+        Ok(self)
     }
 }

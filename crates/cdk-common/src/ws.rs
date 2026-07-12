@@ -20,14 +20,8 @@ pub type WsUnsubscribeRequest = nut17::ws::WsUnsubscribeRequest<SubId>;
 /// Notification message sent over websocket
 pub type WsNotification = nut17::ws::WsNotification<SubId>;
 
-/// Response to a subscription request
-pub type WsSubscribeResponse = nut17::ws::WsSubscribeResponse<SubId>;
-
 /// Result part of a websocket response
 pub type WsResponseResult = nut17::ws::WsResponseResult<SubId>;
-
-/// Response to an unsubscribe request
-pub type WsUnsubscribeResponse = nut17::ws::WsUnsubscribeResponse<SubId>;
 
 /// Generic websocket request
 pub type WsRequest = nut17::ws::WsRequest<SubId>;
@@ -43,6 +37,12 @@ pub type WsErrorBody = nut17::ws::WsErrorBody;
 
 /// Either a websocket message or a response
 pub type WsMessageOrResponse = nut17::ws::WsMessageOrResponse<SubId>;
+
+/// Raw notification content with an undecoded JSON payload
+pub type RawNotificationInner = nut17::ws::RawNotificationInner<SubId>;
+
+/// Either a websocket message or a response with raw notification payloads
+pub type RawWsMessageOrResponse = nut17::ws::RawWsMessageOrResponse<SubId>;
 
 /// Inner content of a notification with generic payload type
 pub type NotificationInner<T> = nut17::ws::NotificationInner<T, SubId>;
@@ -92,4 +92,38 @@ pub fn notification_to_ws_message(notification: NotificationInner<QuoteId>) -> W
         method: "subscribe".to_string(),
         params: notification_uuid_to_notification_string(notification),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use cashu::nut17::MAX_SUBSCRIPTION_ID_LEN;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn websocket_requests_reject_oversized_subscription_ids() {
+        let oversized_id = "a".repeat(MAX_SUBSCRIPTION_ID_LEN + 1);
+        let subscribe = json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "kind": "bolt11_mint_quote",
+                "filters": [],
+                "subId": oversized_id,
+            },
+            "id": 1,
+        });
+        assert!(serde_json::from_value::<WsRequest>(subscribe).is_err());
+
+        let unsubscribe = json!({
+            "jsonrpc": "2.0",
+            "method": "unsubscribe",
+            "params": {
+                "subId": "a".repeat(MAX_SUBSCRIPTION_ID_LEN + 1),
+            },
+            "id": 2,
+        });
+        assert!(serde_json::from_value::<WsRequest>(unsubscribe).is_err());
+    }
 }

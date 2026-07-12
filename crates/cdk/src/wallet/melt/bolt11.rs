@@ -17,6 +17,19 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
+        let quote = self.request_melt_bolt11_quote(request, options).await?;
+
+        self.localstore.add_melt_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
+    /// Request a BOLT11 melt quote without persisting it to the wallet database.
+    pub(crate) async fn request_melt_bolt11_quote(
+        &self,
+        request: String,
+        options: Option<MeltOptions>,
+    ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
@@ -73,8 +86,6 @@ impl Wallet {
             used_by_operation: None,
             version: 0,
         };
-
-        self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }

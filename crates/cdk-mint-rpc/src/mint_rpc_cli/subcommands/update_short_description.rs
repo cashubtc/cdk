@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::{InterceptedCdkMintClient, UpdateDescriptionRequest};
+use crate::info::UpdateShortDescriptionRequest;
+use crate::InterceptedMintInfoServiceClient;
 
 /// Command to update the mint's short description
 ///
@@ -23,11 +24,11 @@ pub struct UpdateShortDescriptionCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new short description to set
 pub async fn update_short_description(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &UpdateShortDescriptionCommand,
 ) -> Result<()> {
     let _response = client
-        .update_short_description(Request::new(UpdateDescriptionRequest {
+        .update_short_description(Request::new(UpdateShortDescriptionRequest {
             description: sub_command_args.description.clone(),
         }))
         .await?;

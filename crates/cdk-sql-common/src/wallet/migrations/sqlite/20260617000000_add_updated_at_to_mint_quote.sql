@@ -1,0 +1,1 @@
+ALTER TABLE mint_quote ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;

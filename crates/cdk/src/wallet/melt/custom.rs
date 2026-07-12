@@ -27,6 +27,7 @@ impl Wallet {
             method: method.to_string(),
             request: request.clone(),
             unit: self.unit.clone(),
+            amount: None,
             extra: extra.unwrap_or(serde_json::Value::Null),
         };
         let quote_res = self

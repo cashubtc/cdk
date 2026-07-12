@@ -1,0 +1,33 @@
+[info]
+url = "https://example.com"
+listen_host = "0.0.0.0"
+listen_port = 8085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.http_cache]
+backend = "memory"
+ttl = 60
+tti = 60
+
+[mint_info]
+name = "CDK fake wallet mint"
+description = "Fake wallet mint for local Docker testing"
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "fakewallet"
+unit = "sat"
+
+[onchain]
+onchain_backend = "fakewallet"
+
+[fake_wallet]
+supported_units = ["sat"]
+custom_payment_methods = [{ method = "paypal", unit = "sat" }]
+
+[prometheus]
+enabled = true
+address = "0.0.0.0"
+port = 9000

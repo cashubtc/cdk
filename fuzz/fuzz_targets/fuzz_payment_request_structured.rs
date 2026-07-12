@@ -39,9 +39,7 @@ fuzz_target!(|arb: PaymentRequestArb| {
             Ok(parsed) => assert_eq!(parsed, pr, "payment request bech32 round-trip mismatch"),
             Err(e) => panic!("bech32-encoded payment request must re-parse: {e:?}"),
         },
-        // A generator quirk (e.g. a field that cannot be bech32-encoded) is
-        // acceptable; we're primarily proving the encoder does not panic.
-        Err(_) => {}
+        Err(e) => panic!("generated valid payment request must be bech32-encodable: {e:?}"),
     }
 
     // ---------------------------------------------------------------------

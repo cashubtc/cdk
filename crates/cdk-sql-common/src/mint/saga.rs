@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::{SagaDatabase, SagaTransaction};
+use cdk_common::database::mint::{Acquired, SagaDatabase, SagaTransaction};
 use cdk_common::database::Error;
 use cdk_common::mint;
 use cdk_common::util::unix_time;
@@ -109,6 +109,13 @@ where
         .transpose()?)
     }
 
+    async fn get_saga_for_update(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<Acquired<mint::Saga>>, Self::Err> {
+        Ok(self.get_saga(operation_id).await?.map(Into::into))
+    }
+
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -140,14 +147,14 @@ where
         Ok(())
     }
 
-    async fn update_saga(
+    async fn update_acquired_saga(
         &mut self,
-        operation_id: &uuid::Uuid,
+        saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
-        query(
+        let affected = query(
             r#"
             UPDATE saga_state
             SET state = :state, updated_at = :updated_at
@@ -156,22 +163,33 @@ where
         )?
         .bind("state", new_state.state())
         .bind("updated_at", current_time as i64)
-        .bind("operation_id", operation_id.to_string())
+        .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;
+
+        if affected != 1 {
+            return Err(Error::Internal(format!(
+                "Saga {} not found for state update to {}",
+                saga.operation_id,
+                new_state.state()
+            )));
+        }
+
+        saga.state = new_state;
+        saga.updated_at = current_time;
 
         Ok(())
     }
 
-    async fn update_saga_with_finalization_data(
+    async fn update_acquired_saga_with_finalization_data(
         &mut self,
-        operation_id: &uuid::Uuid,
+        saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
         finalization_data: Option<&mint::MeltFinalizationData>,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
-        query(
+        let affected = query(
             r#"
             UPDATE saga_state
             SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
@@ -189,9 +207,21 @@ where
                 })?,
         )
         .bind("updated_at", current_time as i64)
-        .bind("operation_id", operation_id.to_string())
+        .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;
+
+        if affected != 1 {
+            return Err(Error::Internal(format!(
+                "Saga {} not found for finalization update to {}",
+                saga.operation_id,
+                new_state.state()
+            )));
+        }
+
+        saga.state = new_state;
+        saga.finalization_data = finalization_data.cloned();
+        saga.updated_at = current_time;
 
         Ok(())
     }

@@ -203,6 +203,12 @@ impl Amount<()> {
     /// Returns an error if the amount cannot be fully represented
     /// with the available denominations.
     pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
+        if fee_and_amounts.amounts.contains(&0) {
+            return Err(Error::InvalidAmount(
+                "denominations must be greater than zero".to_owned(),
+            ));
+        }
+
         let parts: Vec<Self> = fee_and_amounts
             .amounts
             .iter()
@@ -428,7 +434,7 @@ impl Amount<CurrencyUnit> {
     /// ```
     /// # use cashu::{Amount, nuts::CurrencyUnit};
     /// let sat_amount = Amount::new(1000, CurrencyUnit::Sat);
-    /// let custom = Amount::new(50, CurrencyUnit::Custom("BTC".into()));
+    /// let custom = Amount::new(50, CurrencyUnit::custom("BTC"));
     /// ```
     pub fn new(value: u64, unit: CurrencyUnit) -> Self {
         Self { value, unit }
@@ -1694,7 +1700,7 @@ mod tests {
 
     #[test]
     fn test_amount_new_with_custom_unit() {
-        let custom_unit = CurrencyUnit::Custom("BTC".to_string());
+        let custom_unit = CurrencyUnit::Custom("BTC".into());
         let amount = Amount::new(50, custom_unit.clone());
 
         assert_eq!(amount.value(), 50);
@@ -2088,7 +2094,7 @@ mod tests {
         let amount = Amount::new(100, CurrencyUnit::Usd);
         assert_eq!(amount.display_with_unit(), "100 usd");
 
-        let amount = Amount::new(123, CurrencyUnit::Custom("BTC".to_string()));
+        let amount = Amount::new(123, CurrencyUnit::Custom("BTC".into()));
         assert_eq!(amount.display_with_unit(), "123 btc");
     }
 
@@ -2534,5 +2540,17 @@ mod tests {
             Amount::try_sum(proofs.iter().copied()).unwrap(),
             Amount::from(5)
         );
+    }
+
+    /// A keyset may advertise a zero denomination. Dividing by it panics, so
+    /// the split rejects the keyset instead of trusting it.
+    #[test]
+    fn test_split_rejects_zero_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![0, 1, 2]).into();
+
+        assert!(matches!(
+            Amount::from(3).split(&fee_and_amounts),
+            Err(Error::InvalidAmount(_))
+        ));
     }
 }

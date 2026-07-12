@@ -68,7 +68,7 @@ use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState,
-    Transaction, TransactionDirection, WalletSaga, WalletSagaState,
+    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;
@@ -79,7 +79,7 @@ use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
-use crate::nuts::{Proofs, State, Token};
+use crate::nuts::{Proof, Proofs, State, Token};
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
@@ -184,6 +184,7 @@ struct InputFeeCoverageContext<'a> {
     send_amounts: &'a [Amount],
     force_swap: bool,
     is_exact_or_offline: bool,
+    derivation_indices: &'a HashMap<Proof, u32>,
 }
 
 fn ensure_selected_proofs_cover_input_fees(
@@ -225,12 +226,13 @@ fn ensure_selected_proofs_cover_input_fees(
         let shortfall = (context.amount + context.send_fee)
             .checked_sub(selected_net)
             .unwrap_or(Amount::ZERO);
-        let additional = Wallet::select_proofs(
+        let additional = Wallet::select_proofs_with_derivation_indices(
             shortfall,
             remaining_proofs.clone(),
             context.active_keyset_ids,
             context.keyset_fees,
             false,
+            context.derivation_indices,
         )?;
 
         if additional.is_empty() {
@@ -525,12 +527,14 @@ impl<'a> SendSaga<'a, Initial> {
                 .any(crate::wallet::util::is_p2pk_locked);
 
         let proof_pool = available_proofs.clone();
-        let mut selected_proofs = Wallet::select_proofs(
+        let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
+        let mut selected_proofs = Wallet::select_proofs_with_derivation_indices(
             selection_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
             opts.include_fee || force_swap,
+            &derivation_indices,
         )?;
 
         let send_fee = if opts.include_fee {
@@ -554,6 +558,7 @@ impl<'a> SendSaga<'a, Initial> {
                     send_amounts: &send_amounts.0,
                     force_swap,
                     is_exact_or_offline,
+                    derivation_indices: &derivation_indices,
                 },
             )?;
         }
@@ -926,6 +931,7 @@ impl<'a> SendSaga<'a, Prepared> {
                     payment_proof: None,
                     payment_method: None,
                     saga_id: Some(operation_id),
+                    status: TransactionStatus::Pending,
                 })
                 .await?;
 
@@ -975,6 +981,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         "Send saga confirmation failed (definitive): {}. Running compensations.",
                         e
                     );
+                    self.wallet.mark_transaction_failed(operation_id).await?;
                     execute_compensations(&mut self.compensations).await?;
                 }
                 Err(e)
@@ -1025,7 +1032,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
             // Already spent by recipient
             tracing::info!("Cannot revoke: token already claimed by recipient");
             // We should finalize the saga as "Spent"
-            self.finalize().await?;
+            self.finalize(TransactionStatus::Completed).await?;
             return Err(Error::Custom("Token already claimed".to_string()));
         }
 
@@ -1070,7 +1077,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                     }
                 };
 
-                self.finalize().await?;
+                self.finalize(TransactionStatus::Failed).await?;
 
                 Ok(amount_recovered)
             }
@@ -1118,7 +1125,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 "Token for operation {} has been claimed",
                 self.state_data.operation_id
             );
-            self.finalize().await?;
+            self.finalize(TransactionStatus::Completed).await?;
             Ok(true)
         } else {
             Ok(false)
@@ -1126,7 +1133,11 @@ impl<'a> SendSaga<'a, TokenCreated> {
     }
 
     /// Finalize the saga (delete from DB)
-    async fn finalize(self) -> Result<(), Error> {
+    async fn finalize(self, status: TransactionStatus) -> Result<(), Error> {
+        self.wallet
+            .update_transaction_status_by_saga_id(self.state_data.operation_id, status)
+            .await?;
+
         if let Err(e) = self
             .wallet
             .localstore
@@ -1175,6 +1186,7 @@ impl std::fmt::Debug for SendSaga<'_, Prepared> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use cdk_common::amount::KeysetFeeAndAmounts;
@@ -1220,7 +1232,7 @@ mod tests {
     fn test_p2pk_proof(keyset_id: crate::nuts::Id, amount: u64) -> Proof {
         let secret_key = SecretKey::generate();
         let spending_conditions = SpendingConditions::new_p2pk(secret_key.public_key(), None);
-        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.into();
+        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.try_into().unwrap();
         let secret: crate::secret::Secret = nut10_secret.try_into().unwrap();
         let mut proof = test_proof(keyset_id, amount);
         proof.secret = secret;
@@ -1620,6 +1632,7 @@ mod tests {
                 send_amounts: &send_amounts,
                 force_swap: true,
                 is_exact_or_offline: false,
+                derivation_indices: &HashMap::new(),
             },
         )
         .unwrap();
@@ -1654,6 +1667,7 @@ mod tests {
                 send_amounts: &send_amounts,
                 force_swap: true,
                 is_exact_or_offline: false,
+                derivation_indices: &HashMap::new(),
             },
         )
         .expect_err("selected proofs cannot cover input fees without extra proofs");
@@ -1684,6 +1698,7 @@ mod tests {
                 send_amounts: &send_amounts,
                 force_swap: false,
                 is_exact_or_offline: false,
+                derivation_indices: &HashMap::new(),
             },
         )
         .unwrap();

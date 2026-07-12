@@ -35,6 +35,11 @@ pub struct LndClient {
 impl LndClient {
     /// Create rpc client
     pub async fn new(addr: String, cert_file: PathBuf, macaroon_file: PathBuf) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
         let client =
             fedimint_tonic_lnd::connect(addr.clone(), cert_file.clone(), macaroon_file.clone())
                 .await

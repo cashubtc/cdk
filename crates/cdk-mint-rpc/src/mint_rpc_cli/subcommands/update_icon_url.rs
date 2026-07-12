@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::{InterceptedCdkMintClient, UpdateIconUrlRequest};
+use crate::info::UpdateIconUrlRequest;
+use crate::InterceptedMintInfoServiceClient;
 
 /// Command to update the mint's icon URL
 ///
@@ -22,7 +23,7 @@ pub struct UpdateIconUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new icon URL to set
 pub async fn update_icon_url(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &UpdateIconUrlCommand,
 ) -> Result<()> {
     let _response = client

@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package cdk_mint_quote_v1;
+
+// Quote administration for a mint.
+service QuoteService {
+    // Returns the mint's quote time-to-live settings.
+    rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
+    // Updates the mint's quote time-to-live settings.
+    rpc UpdateQuoteTtl(UpdateQuoteTtlRequest) returns (UpdateQuoteTtlResponse) {}
+    // Force-marks a mint quote as paid.
+    rpc UpdateMintQuoteState(UpdateMintQuoteStateRequest) returns (UpdateMintQuoteStateResponse) {}
+}
+
+// State of a mint quote, as defined by NUT-04. The mint derives it from the
+// amounts recorded against the quote rather than storing it.
+enum MintQuoteState {
+    // Never sent by the mint; rejected with gRPC status INVALID_ARGUMENT.
+    MINT_QUOTE_STATE_UNSPECIFIED = 0;
+    // No payment has been recorded for the quote.
+    MINT_QUOTE_STATE_UNPAID = 1;
+    // The quote is paid and the wallet may mint against it.
+    MINT_QUOTE_STATE_PAID = 2;
+    // Every paid amount has been issued as ecash.
+    MINT_QUOTE_STATE_ISSUED = 3;
+}
+
+message GetQuoteTtlRequest {
+}
+
+// The mint's current quote time-to-live settings. On failure a gRPC error
+// status is returned instead.
+message GetQuoteTtlResponse {
+    // Seconds a mint quote stays valid after it is created.
+    uint64 mint_ttl = 1;
+    // Seconds a melt quote stays valid after it is created.
+    uint64 melt_ttl = 2;
+}
+
+message UpdateQuoteTtlRequest {
+    // New seconds a mint quote stays valid. Omit to keep the current value.
+    optional uint64 mint_ttl = 1;
+    // New seconds a melt quote stays valid. Omit to keep the current value.
+    optional uint64 melt_ttl = 2;
+}
+
+// The settings in effect after the update, with omitted request fields carrying
+// over their previous values. On failure a gRPC error status is returned
+// instead.
+message UpdateQuoteTtlResponse {
+    // Seconds a mint quote stays valid after it is created.
+    uint64 mint_ttl = 1;
+    // Seconds a melt quote stays valid after it is created.
+    uint64 melt_ttl = 2;
+}
+
+message UpdateMintQuoteStateRequest {
+    // ID of the mint quote to update. A quote the mint does not know fails
+    // with gRPC status INVALID_ARGUMENT.
+    string quote_id = 1;
+    // State to move the quote to. Only MINT_QUOTE_STATE_PAID is supported;
+    // any other value fails with gRPC status INVALID_ARGUMENT. Marking a
+    // quote paid records a payment against it as the backend would: methods
+    // taking more than one payment (bolt12, onchain) can end up paid twice,
+    // and an unpaid quote with no fixed amount has no amount to record and
+    // fails with gRPC status INTERNAL.
+    MintQuoteState state = 2;
+}
+
+// The quote as it stands after the update. On failure a gRPC error status is
+// returned instead.
+message UpdateMintQuoteStateResponse {
+    // ID of the updated quote.
+    string quote_id = 1;
+    // State of the quote after the update, derived from its recorded amounts.
+    MintQuoteState state = 2;
+}

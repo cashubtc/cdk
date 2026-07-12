@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cdk_common::database::DynMintDatabase;
 use cdk_common::melt::MeltQuoteRequest;
@@ -27,7 +27,7 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     MeltQuoteBolt12Response, MeltRequest, Mint, PaymentMethod,
 };
-use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
+use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -56,14 +56,6 @@ fn pending_melt_notification_wait_interval() -> Duration {
         Duration::from_millis(10)
     } else {
         Duration::from_secs(1)
-    }
-}
-
-fn pending_melt_status_recheck_interval() -> Duration {
-    if cfg!(test) {
-        Duration::from_millis(20)
-    } else {
-        Duration::from_secs(5)
     }
 }
 
@@ -105,20 +97,43 @@ impl std::future::IntoFuture for PendingMelt {
     }
 }
 
+fn validate_custom_quote_fields(request: &str, extra: &serde_json::Value) -> Result<(), Error> {
+    if request.len() > MAX_REQUEST_FIELD_LEN {
+        return Err(Error::RequestFieldTooLarge {
+            field: "request".to_string(),
+            actual: request.len(),
+            max: MAX_REQUEST_FIELD_LEN,
+        });
+    }
+
+    if !extra.is_null() {
+        let extra_str = extra.to_string();
+        if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+            return Err(Error::RequestFieldTooLarge {
+                field: "extra".to_string(),
+                actual: extra_str.len(),
+                max: MAX_REQUEST_FIELD_LEN,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 impl Mint {
     /// Loads a settled (non-pending, non-unknown) melt response from the database.
     ///
     /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
     /// state (backend could not determine status); the caller should keep
-    /// polling. Returns `Ok(Some(response))` once the quote has reached a
+    /// waiting. Returns `Ok(Some(response))` once the quote has reached a
     /// final state (`Paid`, `Failed`, or post-attempt `Unpaid`), with any
     /// change blind signatures attached.
     ///
-    /// `Unknown` is treated as "keep polling" by design: a backend may recover
-    /// and report a definitive status on a later check. A permanently `Unknown`
-    /// quote in the pending-wait path will eventually hit
-    /// `pending_melt_wait_timeout` and return `Error::PendingMeltTimeout`;
-    /// startup recovery / explicit status checks handle the long-tail case.
+    /// `Unknown` is treated as "keep waiting" by design: a backend may recover
+    /// and report a definitive status through its event stream or an explicit
+    /// quote check. A permanently `Unknown` quote eventually returns
+    /// `Error::PendingMeltTimeout` to this waiter without changing durable
+    /// state.
     async fn load_settled_melt_response(
         localstore: &DynMintDatabase,
         quote_id: &QuoteId,
@@ -143,63 +158,6 @@ impl Mint {
         };
 
         Ok(Some(quote.into_response(change_opt)))
-    }
-
-    /// Attempts to resolve a pending melt quote by checking the backend and
-    /// running saga outcome processing.
-    ///
-    /// Returns `Ok(None)` when reconciliation proceeded normally (whether or
-    /// not the quote moved out of `Pending`). Returns `Ok(Some(err_string))`
-    /// when the backend status check itself failed — the caller may surface
-    /// this message on a subsequent `PendingMeltTimeout` for better diagnostics.
-    /// Returns `Err` on database errors or on unrecoverable saga processing
-    /// failures.
-    async fn reconcile_pending_melt_quote(
-        mint: &Mint,
-        localstore: &DynMintDatabase,
-        pubsub_manager: &Arc<crate::mint::subscription::PubSubManager>,
-        quote_id: &QuoteId,
-    ) -> Result<Option<String>, Error> {
-        let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
-            return Err(Error::UnknownQuote);
-        };
-
-        if quote.state != MeltQuoteState::Pending {
-            return Ok(None);
-        }
-
-        let Some(saga) = localstore.get_melt_saga_by_quote_id(quote_id).await? else {
-            tracing::warn!(
-                "Pending melt quote {} has no saga metadata during reconciliation",
-                quote_id
-            );
-            return Ok(None);
-        };
-
-        let payment_response = match mint.check_melt_payment_status(&quote).await {
-            Ok(payment_response) => payment_response,
-            Err(err) => {
-                let err_string = err.to_string();
-                tracing::warn!(
-                    "Failed to reconcile pending melt quote {} with backend status: {}",
-                    quote_id,
-                    err_string
-                );
-                return Ok(Some(err_string));
-            }
-        };
-
-        crate::mint::saga_recovery::process_melt_saga_outcome(
-            &saga,
-            &mut quote,
-            &payment_response,
-            localstore,
-            pubsub_manager,
-            mint,
-        )
-        .await?;
-
-        Ok(None)
     }
 
     #[instrument(skip_all)]
@@ -317,14 +275,14 @@ impl Mint {
                 ..
             } = melt_request;
 
-            let ln = self
+            let payment_backend = self
                 .payment_processors
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     PaymentMethod::Known(KnownMethod::Bolt11),
                 ))
                 .ok_or_else(|| {
-                    tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
+                    tracing::info!("Could not get payment backend for {}, bolt11 ", unit);
 
                     Error::UnsupportedUnit
                 })?;
@@ -342,7 +300,7 @@ impl Mint {
                 quote_id: quote_id.clone(),
             };
 
-            let payment_quote = ln
+            let payment_quote = payment_backend
                 .get_payment_quote(
                     &melt_request.unit,
                     OutgoingPaymentOptions::Bolt11(Box::new(bolt11)),
@@ -423,7 +381,7 @@ impl Mint {
     async fn get_melt_bolt12_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_bolt12_quote");
 
@@ -434,14 +392,14 @@ impl Mint {
                 options,
             } = melt_request;
 
-            let ln = self
+            let payment_backend = self
                 .payment_processors
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     PaymentMethod::Known(KnownMethod::Bolt12),
                 ))
                 .ok_or_else(|| {
-                    tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
+                    tracing::info!("Could not get payment backend for {}, bolt12 ", unit);
 
                     Error::UnsupportedUnit
                 })?;
@@ -458,7 +416,7 @@ impl Mint {
                 quote_id: quote_id.clone(),
             };
 
-            let payment_quote = ln
+            let payment_quote = payment_backend
                 .get_payment_quote(
                     &melt_request.unit,
                     OutgoingPaymentOptions::Bolt12(Box::new(outgoing_payment_options)),
@@ -546,14 +504,14 @@ impl Mint {
         let result = async {
             let unit = &melt_request.unit;
 
-            let ln = self
+            let payment_backend = self
                 .payment_processors
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     PaymentMethod::Known(KnownMethod::Onchain),
                 ))
                 .ok_or_else(|| {
-                    tracing::info!("Could not get ln backend for {}, onchain ", unit);
+                    tracing::info!("Could not get payment backend for {}, onchain ", unit);
                     Error::UnsupportedUnit
                 })?;
 
@@ -579,7 +537,7 @@ impl Mint {
                 metadata: None,
             };
 
-            let payment_quote = ln
+            let payment_quote = payment_backend
                 .get_payment_quote(
                     unit,
                     OutgoingPaymentOptions::Onchain(Box::new(outgoing_payment_options)),
@@ -682,28 +640,22 @@ impl Mint {
                 request,
                 unit,
                 method,
+                amount,
                 extra,
             } = melt_request;
 
-            if !extra.is_null() {
-                let extra_str = extra.to_string();
-                if extra_str.len() > MAX_REQUEST_FIELD_LEN {
-                    return Err(Error::RequestFieldTooLarge {
-                        field: "extra".to_string(),
-                        actual: extra_str.len(),
-                        max: MAX_REQUEST_FIELD_LEN,
-                    });
-                }
-            }
+            let payment_method = PaymentMethod::from(method.as_str());
+            validate_custom_payment_method(&payment_method)?;
+            validate_custom_quote_fields(request, extra)?;
 
-            let ln = self
+            let payment_backend = self
                 .payment_processors
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
-                    PaymentMethod::from(method.as_str()),
+                    payment_method.clone(),
                 ))
                 .ok_or_else(|| {
-                    tracing::info!("Could not get payment processor for {}, {} ", unit, method);
+                    tracing::info!("Could not get payment backend for {}, {} ", unit, method);
                     Error::UnsupportedUnit
                 })?;
 
@@ -720,6 +672,7 @@ impl Mint {
                 OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.clone(),
+                    amount: (*amount).map(|a| a.with_unit(unit.clone())),
                     max_fee_amount: None,
                     timeout_secs: None,
                     melt_options: None,
@@ -727,7 +680,7 @@ impl Mint {
                     quote_id: quote_id.clone(),
                 }));
 
-            let payment_quote = ln
+            let payment_quote = payment_backend
                 .get_payment_quote(&melt_request.unit, custom_options)
                 .await
                 .map_err(|err| {
@@ -748,7 +701,7 @@ impl Mint {
             // the payment processor handles method-specific validation
             self.check_melt_request_acceptable(
                 payment_quote.amount.clone(),
-                PaymentMethod::from(method.as_str()),
+                payment_method.clone(),
                 request.clone(),
                 None, // Custom methods don't use options
             )
@@ -772,7 +725,7 @@ impl Mint {
                 unix_time() + melt_ttl,
                 payment_quote.request_lookup_id.clone(),
                 None, // Custom methods don't use options
-                PaymentMethod::from(method.as_str()),
+                payment_method,
                 payment_quote.extra_json,
                 payment_quote.estimated_blocks,
             );
@@ -839,6 +792,7 @@ impl Mint {
                         change: change.clone(),
                         request: Some(quote.request.to_string()),
                         unit: Some(quote.unit.clone()),
+                        method: PaymentMethod::Known(KnownMethod::Bolt11),
                     })
                 }
                 PaymentMethod::Known(KnownMethod::Bolt12) => {
@@ -852,6 +806,7 @@ impl Mint {
                         change: change.clone(),
                         request: Some(quote.request.to_string()),
                         unit: Some(quote.unit.clone()),
+                        method: PaymentMethod::Known(KnownMethod::Bolt12),
                     })
                 }
                 PaymentMethod::Known(KnownMethod::Onchain) => {
@@ -927,6 +882,13 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        // Keep status checks and payment events behind the live dispatch for
+        // this quote. Without this process-local guard, a check could observe
+        // Unpaid before `make_payment` dispatches, compensate the saga, and
+        // then allow the payment task to continue.
+        let quote_lock = self.melt_quote_lock(&quote_id).await;
+        let active_melt_guard = quote_lock.lock_owned().await;
+
         let init_saga = MeltSaga::new(
             std::sync::Arc::new(self.clone()),
             self.localstore.clone(),
@@ -944,7 +906,6 @@ impl Mint {
         let pubsub = self.pubsub_manager();
 
         let quote_for_spawn = quote.clone();
-        let mint_for_spawn = Arc::new(self.clone());
         let completion = tokio::spawn(async move {
             tracing::debug!(
                 "Starting background melt completion for quote: {}",
@@ -959,7 +920,17 @@ impl Mint {
             {
                 Ok((setup_saga, settlement)) => {
                     // Step 3: Make payment (internal or external)
-                    match setup_saga.make_payment(settlement).await {
+                    let payment_outcome = setup_saga.make_payment(settlement).await;
+
+                    // Once the backend has returned a pending/unknown outcome,
+                    // dispatch is complete and explicit quote checks may safely
+                    // reconcile it. Confirmed payments keep the guard through
+                    // finalization.
+                    if matches!(&payment_outcome, Ok(PaymentOutcome::Pending { .. })) {
+                        drop(active_melt_guard);
+                    }
+
+                    match payment_outcome {
                         Ok(PaymentOutcome::Confirmed(payment_saga)) => {
                             // Step 4: Finalize (TX2 - marks spent, issues change)
                             payment_saga.finalize().await
@@ -985,11 +956,12 @@ impl Mint {
                                     }
                                 };
 
+                                let sub_id = crate::subscription::SubId::from(format!(
+                                    "melt_sync_wait_{}",
+                                    quote_id_for_log
+                                ));
                                 let params = Params {
-                                    id: Arc::new(crate::subscription::SubId::from(format!(
-                                        "melt_sync_wait_{}",
-                                        quote_id_for_log
-                                    ))),
+                                    id: Arc::new(sub_id),
                                     kind,
                                     filters: vec![quote_id_for_log.to_string()],
                                 };
@@ -999,11 +971,7 @@ impl Mint {
                                     Err(_err) => return Err(Error::Internal),
                                 };
 
-                                let start = Instant::now();
-                                let mut last_status_recheck = start
-                                    .checked_sub(pending_melt_status_recheck_interval())
-                                    .unwrap_or(start);
-                                let mut last_backend_error: Option<String> = None;
+                                let start = tokio::time::Instant::now();
 
                                 loop {
                                     if let Some(response) = Self::load_settled_melt_response(
@@ -1017,38 +985,8 @@ impl Mint {
 
                                     if start.elapsed() >= pending_melt_wait_timeout() {
                                         return Err(Error::PendingMeltTimeout {
-                                            last_backend_error,
+                                            last_backend_error: None,
                                         });
-                                    }
-
-                                    if last_status_recheck.elapsed()
-                                        >= pending_melt_status_recheck_interval()
-                                    {
-                                        match Self::reconcile_pending_melt_quote(
-                                            &mint_for_spawn,
-                                            &localstore,
-                                            &pubsub,
-                                            &quote_id_for_log,
-                                        )
-                                        .await?
-                                        {
-                                            Some(err_string) => {
-                                                last_backend_error = Some(err_string);
-                                            }
-                                            None => {
-                                                last_backend_error = None;
-                                            }
-                                        }
-                                        last_status_recheck = Instant::now();
-
-                                        if let Some(response) = Self::load_settled_melt_response(
-                                            &localstore,
-                                            &quote_id_for_log,
-                                        )
-                                        .await?
-                                        {
-                                            return Ok(response);
-                                        }
                                     }
 
                                     let Ok(maybe_event) = tokio::time::timeout(
@@ -1076,8 +1014,8 @@ impl Mint {
                                             // inherently asynchronous. We subscribe to
                                             // `OnchainMeltQuote` events above (see `Kind` mapping)
                                             // and must handle them here; otherwise onchain waiters
-                                            // would rely solely on polling via
-                                            // `reconcile_pending_melt_quote`.
+                                            // would rely solely on the
+                                            // explicit quote-check path.
                                             NotificationPayload::MeltQuoteOnchainResponse(r) => {
                                                 (r.quote, r.state)
                                             }

@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::wallet::WalletRepository;
-use cdk::{Amount, OidcClient};
+use cdk::{Amount, Wallet};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -75,7 +75,7 @@ pub async fn mint_blind_auth(
 
             // Get the mint info to access OIDC configuration
             let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
-            match refresh_access_token(&mint_info, &token_data.refresh_token).await {
+            match refresh_access_token(&wallet, &mint_info, &token_data.refresh_token).await {
                 Ok((new_access_token, new_refresh_token)) => {
                     println!("Successfully refreshed access token");
 
@@ -141,51 +141,27 @@ pub async fn mint_blind_auth(
 }
 
 async fn refresh_access_token(
+    wallet: &Wallet,
     mint_info: &MintInfo,
     refresh_token: &str,
 ) -> Result<(String, String)> {
     let openid_discovery = mint_info
-        .nuts
-        .nut21
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("OIDC discovery information not available"))?
-        .openid_discovery;
+        .openid_discovery()
+        .ok_or_else(|| anyhow::anyhow!("OIDC discovery information not available"))?;
+    let client_id = mint_info
+        .client_id()
+        .ok_or_else(|| anyhow::anyhow!("OIDC client ID is not available"))?;
+    let oidc_client = wallet.oidc_client(openid_discovery, None);
+    let token_response = oidc_client
+        .refresh_access_token(client_id, refresh_token.to_string())
+        .await?;
 
-    let oidc_client = OidcClient::new(openid_discovery, None);
-
-    // Get the token endpoint from the OIDC configuration
-    let token_url = oidc_client.get_oidc_config().await?.token_endpoint;
-
-    // Create the request parameters for token refresh
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("client_id", "cashu-client"), // Using default client ID
-    ];
-
-    // Make the token refresh request
-    let client = cdk_common::HttpClient::new();
-    let response = client.post(&token_url).form(&params).send().await?;
-
-    if !response.is_success() {
-        return Err(anyhow::anyhow!(
-            "Token refresh failed with status: {}",
-            response.status()
-        ));
-    }
-
-    let token_response: serde_json::Value = response.json().await?;
-
-    let access_token = token_response["access_token"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No access token in refresh response"))?
-        .to_string();
+    let access_token = token_response.access_token;
 
     // Get the new refresh token or use the old one if not provided
-    let new_refresh_token = token_response["refresh_token"]
-        .as_str()
-        .unwrap_or(refresh_token)
-        .to_string();
+    let new_refresh_token = token_response
+        .refresh_token
+        .unwrap_or_else(|| refresh_token.to_string());
 
     Ok((access_token, new_refresh_token))
 }

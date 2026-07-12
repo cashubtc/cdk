@@ -15,6 +15,7 @@ pub mod proof;
 pub mod quote;
 pub mod subscription;
 pub mod transaction;
+pub mod ur;
 pub mod wallet;
 
 // Re-export all types for convenient access
@@ -29,4 +30,5 @@ pub use proof::*;
 pub use quote::*;
 pub use subscription::*;
 pub use transaction::*;
+pub use ur::*;
 pub use wallet::*;

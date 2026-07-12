@@ -7,7 +7,7 @@ CDK onchain payment backend using [BDK (Bitcoin Development Kit)](https://bitcoi
 - On-chain Bitcoin payments (receive and send)
 - BIP84 (Native SegWit) key derivation from a BIP39 mnemonic
 - SQLite-backed wallet persistence via BDK
-- Blockchain sync via Bitcoin Core RPC
+- Blockchain sync via Bitcoin Core RPC, Electrum, or Esplora
 - Confirmation tracking for incoming and outgoing transactions
 - Pending transaction persistence via KV store
 
@@ -16,7 +16,17 @@ CDK onchain payment backend using [BDK (Bitcoin Development Kit)](https://bitcoi
 | Source | Status |
 |---|---|
 | Bitcoin Core RPC | Supported |
+| Electrum | Supported |
 | Esplora | Supported |
+
+Electrum sources accept `tcp://` and `ssl://` server URLs:
+
+```rust,ignore
+let chain_source = ChainSource::Electrum(ElectrumConfig {
+    url: "ssl://electrum.example.com:50002".to_string(),
+    batch_size: 5,
+});
+```
 
 ## Usage
 
@@ -28,6 +38,7 @@ let chain_source = ChainSource::BitcoinRpc(BitcoinRpcConfig {
     port: 18443,
     user: "user".to_string(),
     password: "password".to_string(),
+    wallet_rescan_from_height: None,
 });
 
 let backend = CdkBdk::new(
@@ -77,6 +88,12 @@ blocks per wallet-lock acquisition) so user-facing operations like address
 reveal and batch construction are not blocked during long chain catch-ups.
 Chain-source clients are reused across sync iterations and rebuilt only on
 error.
+
+Fresh Bitcoin Core wallets checkpoint at the current chain tip instead of
+scanning from genesis. When restoring from a mnemonic, set
+`BitcoinRpcConfig::wallet_rescan_from_height` to the wallet's known birthday
+height. This setting only affects wallet creation and never rewinds persisted
+wallet state.
 
 ## Finality and Confirmation Policy
 

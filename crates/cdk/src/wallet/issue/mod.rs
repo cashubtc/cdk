@@ -2,6 +2,8 @@
 //!
 //! This module provides functionality for minting new proofs via Bolt11, Bolt12, and Custom methods.
 
+use std::collections::HashMap;
+
 pub(crate) mod saga;
 
 use cdk_common::nut00::KnownMethod;
@@ -14,41 +16,151 @@ use crate::amount::SplitTarget;
 use crate::nuts::{BatchCheckMintQuoteRequest, Proofs, SecretKey, SpendingConditions};
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
-use crate::wallet::{MintQuote, MintQuoteState};
+use crate::wallet::{DerivationCounterNamespace, MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
-fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse<String>) {
+/// Keep automatic batches bounded when a mint advertises NUT-29 without a
+/// `max_batch_size`.
+const DEFAULT_BATCH_SIZE: usize = 100;
+
+fn automatic_batch_size(
+    settings: &cdk_common::nut29::Settings,
+    payment_method: &PaymentMethod,
+) -> Option<usize> {
+    if settings.is_empty() {
+        return None;
+    }
+
+    if let Some(methods) = &settings.methods {
+        if !methods
+            .iter()
+            .any(|method| method == payment_method.as_str())
+        {
+            return None;
+        }
+    }
+
+    let max_batch_size = settings
+        .max_batch_size
+        .and_then(|size| usize::try_from(size).ok())
+        .unwrap_or(DEFAULT_BATCH_SIZE);
+
+    (max_batch_size >= 2).then_some(max_batch_size)
+}
+
+pub(crate) fn apply_mint_quote_response(
+    quote: &mut MintQuote,
+    response: &MintQuoteResponse<String>,
+) -> bool {
     match response {
         MintQuoteResponse::Bolt11(response) => {
-            quote.state = response.state;
-            match response.state {
+            let state =
+                if response.amount_paid > Amount::ZERO || response.amount_issued > Amount::ZERO {
+                    match cdk_common::mint_quote::quote_state_from_amounts(
+                        response.amount_paid,
+                        response.amount_issued,
+                    ) {
+                        Ok(state) => state,
+                        Err(err) => {
+                            tracing::debug!("Ignoring invalid mint quote accounting: {}", err);
+                            return false;
+                        }
+                    }
+                } else {
+                    response.state
+                };
+            let (amount_paid, amount_issued) = match state {
                 MintQuoteState::Paid => {
-                    quote.amount_paid = response.amount.unwrap_or_default();
+                    let amount_paid = if response.amount_paid > Amount::ZERO {
+                        response.amount_paid
+                    } else {
+                        response.amount.unwrap_or_default()
+                    };
+                    (amount_paid, response.amount_issued)
                 }
                 MintQuoteState::Issued => {
                     let amount = response.amount.unwrap_or_default();
-                    quote.amount_paid = amount;
-                    quote.amount_issued = amount;
+                    let amount_paid = if response.amount_paid > Amount::ZERO {
+                        response.amount_paid
+                    } else {
+                        amount
+                    };
+                    let amount_issued = if response.amount_issued > Amount::ZERO {
+                        response.amount_issued
+                    } else {
+                        amount
+                    };
+                    (amount_paid, amount_issued)
                 }
-                MintQuoteState::Unpaid => (),
+                MintQuoteState::Unpaid => (response.amount_paid, response.amount_issued),
+            };
+
+            if is_stale_mint_quote_update(quote, response.updated_at, amount_paid, amount_issued) {
+                return false;
             }
+
+            quote.state = state;
+            quote.amount_paid = amount_paid;
+            quote.amount_issued = amount_issued;
+            quote.updated_at = quote.updated_at.max(response.updated_at);
+            true
         }
-        MintQuoteResponse::Bolt12(response) => {
-            quote.amount_paid = response.amount_paid;
-            quote.amount_issued = response.amount_issued;
-            quote.update_state_from_amounts();
-        }
-        MintQuoteResponse::Onchain(response) => {
-            quote.amount_paid = response.amount_paid;
-            quote.amount_issued = response.amount_issued;
-            quote.update_state_from_amounts();
-        }
-        MintQuoteResponse::Custom { response, .. } => {
-            quote.amount_paid = response.amount_paid;
-            quote.amount_issued = response.amount_issued;
-            quote.update_state_from_amounts();
-        }
+        MintQuoteResponse::Bolt12(response) => apply_accounting_mint_quote_update(
+            quote,
+            response.amount_paid,
+            response.amount_issued,
+            response.updated_at,
+        ),
+        MintQuoteResponse::Onchain(response) => apply_accounting_mint_quote_update(
+            quote,
+            response.amount_paid,
+            response.amount_issued,
+            response.updated_at,
+        ),
+        MintQuoteResponse::Custom { response, .. } => apply_accounting_mint_quote_update(
+            quote,
+            response.amount_paid,
+            response.amount_issued,
+            response.updated_at,
+        ),
     }
+}
+
+pub(crate) fn apply_accounting_mint_quote_update(
+    quote: &mut MintQuote,
+    amount_paid: Amount,
+    amount_issued: Amount,
+    updated_at: u64,
+) -> bool {
+    if amount_issued > amount_paid {
+        tracing::debug!(
+            "Ignoring invalid mint quote accounting: amount_issued {} exceeds amount_paid {}",
+            amount_issued,
+            amount_paid
+        );
+        return false;
+    }
+
+    if is_stale_mint_quote_update(quote, updated_at, amount_paid, amount_issued) {
+        return false;
+    }
+
+    quote.amount_paid = amount_paid;
+    quote.amount_issued = amount_issued;
+    quote.updated_at = quote.updated_at.max(updated_at);
+    quote.update_state_from_amounts();
+    true
+}
+
+fn is_stale_mint_quote_update(
+    quote: &MintQuote,
+    updated_at: u64,
+    amount_paid: Amount,
+    amount_issued: Amount,
+) -> bool {
+    updated_at < quote.updated_at
+        || amount_paid < quote.amount_paid
+        || amount_issued < quote.amount_issued
 }
 
 fn local_mint_quote_amount(method: &PaymentMethod, amount: Option<Amount>) -> Option<Amount> {
@@ -68,42 +180,52 @@ fn mint_quote_response_amount(response: &MintQuoteResponse<String>) -> Option<Am
 }
 
 impl Wallet {
+    async fn next_mint_quote_signing_key(&self) -> Result<SecretKey, Error> {
+        let counter = self
+            .reserve_derivation_index(DerivationCounterNamespace::Nut20Quote, 0)
+            .await?;
+
+        Ok(crate::nuts::nut20::derive_quote_locking_key(
+            &self.seed, counter,
+        )?)
+    }
+
     /// Resolve the NUT-20 signing key for a mint quote
     ///
-    /// Returns the quote's stored key if present. NpubCash quotes do not
-    /// persist a key; for those the key is re-derived from the wallet seed.
+    /// Re-derives the key for explicitly marked NpubCash quotes. For all other
+    /// quotes, returns the stored key without modifying wallet state.
     pub(crate) async fn mint_quote_signing_key(
         &self,
         quote: &MintQuote,
     ) -> Result<Option<SecretKey>, Error> {
         #[cfg(feature = "npubcash")]
-        if let Some(secret_key) = &quote.secret_key {
-            if self.is_legacy_npubcash_secret_key(secret_key) {
-                self.scrub_legacy_npubcash_quote(quote).await?;
-                return Ok(Some(self.npubcash_quote_secret_key(
-                    crate::wallet::npubcash::NpubCashQuoteKey::LegacySeedPrefix,
-                )?));
-            }
-
-            return Ok(Some(secret_key.clone()));
-        }
-
-        #[cfg(not(feature = "npubcash"))]
-        if let Some(secret_key) = &quote.secret_key {
-            return Ok(Some(secret_key.clone()));
-        }
-
-        #[cfg(feature = "npubcash")]
         if let Some(key) = self.npubcash_quote_key(&quote.id).await? {
             return Ok(Some(self.npubcash_quote_secret_key(key)?));
         }
 
-        Ok(None)
+        Ok(quote.secret_key.clone())
     }
 
     /// Create a mint quote for the given payment method and amount
-    #[instrument(skip(self, method))]
+    #[instrument(skip(self, method, extra))]
     pub async fn mint_quote(
+        &self,
+        method: PaymentMethod,
+        amount: Option<Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<MintQuote, Error> {
+        let quote = self
+            .request_mint_quote(method, amount, description, extra)
+            .await?;
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
+    /// Request a mint quote without persisting it to the wallet database.
+    pub(crate) async fn request_mint_quote(
         &self,
         method: PaymentMethod,
         amount: Option<Amount>,
@@ -122,15 +244,26 @@ impl Wallet {
                 .get_settings(&unit, &method)
                 .ok_or(Error::UnsupportedUnit)?;
 
-            match settings.options {
-                Some(MintMethodOptions::Bolt11 { description }) if description => (),
-                _ => return Err(Error::InvoiceDescriptionUnsupported),
+            let description_supported = match (&method, settings.options) {
+                (
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    Some(MintMethodOptions::Bolt11 { description }),
+                )
+                | (
+                    PaymentMethod::Known(KnownMethod::Bolt12),
+                    Some(MintMethodOptions::Bolt12 { description }),
+                ) => description,
+                _ => false,
+            };
+
+            if !description_supported {
+                return Err(Error::InvoiceDescriptionUnsupported);
             }
         }
 
         self.keysets(Default::default()).await?;
 
-        let secret_key = SecretKey::generate();
+        let secret_key = self.next_mint_quote_signing_key().await?;
 
         let request = match &method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -155,7 +288,7 @@ impl Wallet {
                 MintQuoteRequest::Custom {
                     method: method.clone(),
                     request: cdk_common::nuts::MintQuoteCustomRequest {
-                        amount,
+                        amount: Some(amount),
                         unit: unit.clone(),
                         description,
                         pubkey: Some(secret_key.public_key()),
@@ -187,8 +320,6 @@ impl Wallet {
             Some(secret_key),
         );
         apply_mint_quote_response(&mut quote, &response);
-
-        self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -329,6 +460,8 @@ impl Wallet {
     }
 
     /// Refresh states and mint all unissued quotes that have mintable amounts.
+    /// Uses NUT-29 batch quote checks and batch minting automatically when the
+    /// mint advertises support for the quotes' payment method.
     /// Returns the total amount minted across all quotes.
     ///
     /// # Privacy
@@ -338,50 +471,200 @@ impl Wallet {
     /// linking all these quotes to a single wallet session.
     #[instrument(skip(self))]
     pub async fn mint_unissued_quotes(&self) -> Result<Amount, Error> {
-        let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
+        let mint_quotes = self.get_unissued_mint_quotes().await?;
+        self.mint_given_unissued_quotes(mint_quotes).await
+    }
+
+    /// Mint the mintable quotes among a pre-filtered set of unissued quotes.
+    ///
+    /// Refreshes each quote's state with the mint and mints whatever is
+    /// mintable, using NUT-29 batch quote checks and batch minting when the
+    /// mint advertises support for the quotes' payment method. Returns the
+    /// total amount minted across the given quotes.
+    ///
+    /// The caller is responsible for the selection of quotes; this is used by
+    /// flows that must only touch a known subset of quotes (e.g. claiming
+    /// NpubCash quotes without sweeping unrelated deposits).
+    #[instrument(skip(self, mint_quotes))]
+    pub(crate) async fn mint_given_unissued_quotes(
+        &self,
+        mint_quotes: Vec<MintQuote>,
+    ) -> Result<Amount, Error> {
         let mut total_amount = Amount::ZERO;
+        let batch_settings = self
+            .load_mint_info()
+            .await
+            .map(|info| info.nuts.nut29)
+            .inspect_err(|err| {
+                tracing::warn!(
+                    "Could not load mint info for automatic batch minting; using individual requests: {}",
+                    err
+                );
+            })
+            .ok();
+        let mut batch_groups: HashMap<PaymentMethod, Vec<MintQuote>> = HashMap::new();
 
         for mint_quote in mint_quotes {
-            if mint_quote.mint_url != self.mint_url || mint_quote.unit != self.unit {
-                continue;
+            // A reservation indicates an interrupted operation. Keep it on the
+            // individual path so inner_check_mint_quote_status can resume its
+            // existing saga rather than placing the quote in a new batch.
+            let batch_size = batch_settings
+                .as_ref()
+                .and_then(|settings| automatic_batch_size(settings, &mint_quote.payment_method));
+            if mint_quote.used_by_operation.is_none() && batch_size.is_some() {
+                batch_groups
+                    .entry(mint_quote.payment_method.clone())
+                    .or_default()
+                    .push(mint_quote);
+            } else {
+                total_amount = total_amount
+                    .checked_add(self.refresh_and_mint_quote(mint_quote).await?)
+                    .ok_or(Error::AmountOverflow)?;
             }
+        }
 
-            let current_amount_issued = mint_quote.amount_issued;
+        for (payment_method, quotes) in batch_groups {
+            let batch_size = batch_settings
+                .as_ref()
+                .and_then(|settings| automatic_batch_size(settings, &payment_method))
+                .unwrap_or(1);
 
-            let mint_quote = match self.inner_check_mint_quote_status(mint_quote).await {
-                Ok(q) => q,
-                Err(err) => {
-                    tracing::warn!("Could not check quote state: {}", err);
+            for chunk in quotes.chunks(batch_size) {
+                if chunk.len() < 2 {
+                    total_amount = total_amount
+                        .checked_add(self.refresh_and_mint_quote(chunk[0].clone()).await?)
+                        .ok_or(Error::AmountOverflow)?;
                     continue;
                 }
-            };
 
-            if mint_quote.amount_mintable() > Amount::ZERO {
+                let quote_ids = chunk
+                    .iter()
+                    .map(|quote| quote.id.as_str())
+                    .collect::<Vec<_>>();
+                let refreshed = match self.batch_check_mint_quote_status(&quote_ids).await {
+                    Ok(quotes) => quotes,
+                    Err(err) => {
+                        // Status checks are read-only, so falling back to
+                        // individual requests is safe.
+                        tracing::warn!(
+                            "Could not batch check {} mint quotes: {}; using individual requests",
+                            chunk.len(),
+                            err
+                        );
+                        for quote in chunk {
+                            total_amount = total_amount
+                                .checked_add(self.refresh_and_mint_quote(quote.clone()).await?)
+                                .ok_or(Error::AmountOverflow)?;
+                        }
+                        continue;
+                    }
+                };
+
+                let mintable = refreshed
+                    .into_iter()
+                    .filter(|quote| quote.amount_mintable() > Amount::ZERO)
+                    .collect::<Vec<_>>();
+
+                if mintable.len() < 2 {
+                    for quote in mintable {
+                        total_amount = total_amount
+                            .checked_add(self.mint_refreshed_quote(quote).await?)
+                            .ok_or(Error::AmountOverflow)?;
+                    }
+                    continue;
+                }
+
+                let previous_amounts = mintable
+                    .iter()
+                    .map(|quote| (quote.id.clone(), quote.amount_issued))
+                    .collect::<HashMap<_, _>>();
+                let mintable_ids = mintable
+                    .iter()
+                    .map(|quote| quote.id.as_str())
+                    .collect::<Vec<_>>();
+
                 if let Err(err) = self
-                    .mint(&mint_quote.id, SplitTarget::default(), None)
+                    .batch_mint(&mintable_ids, SplitTarget::default(), None, None)
                     .await
                 {
-                    tracing::warn!("Could not mint quote {}: {}", mint_quote.id, err);
+                    if matches!(err, Error::BatchSizeExceeded { .. }) {
+                        // The mint rejected the request while validating it,
+                        // so nothing was written — e.g. it enforces a smaller
+                        // batch limit than its NUT-29 settings advertise.
+                        // Retrying as individual mint requests is safe.
+                        tracing::warn!(
+                            "Batch mint of {} quotes rejected ({}); using individual requests",
+                            mintable.len(),
+                            err
+                        );
+                        for quote in mintable {
+                            total_amount = total_amount
+                                .checked_add(self.mint_refreshed_quote(quote).await?)
+                                .ok_or(Error::AmountOverflow)?;
+                        }
+                        continue;
+                    }
+
+                    // Do not retry an ambiguous write as individual mint
+                    // requests. The persisted batch saga owns recovery.
+                    tracing::warn!("Could not batch mint quotes: {}", err);
                     continue;
                 }
+
+                for quote in mintable {
+                    let Some(updated_quote) = self.localstore.get_mint_quote(&quote.id).await?
+                    else {
+                        continue;
+                    };
+                    let previous = previous_amounts.get(&quote.id).copied().unwrap_or_default();
+                    total_amount = total_amount
+                        .checked_add(
+                            updated_quote
+                                .amount_issued
+                                .checked_sub(previous)
+                                .unwrap_or_default(),
+                        )
+                        .ok_or(Error::AmountOverflow)?;
+                }
             }
-
-            // Get updated quote to calculate minted amount
-            let updated_quote = match self.localstore.get_mint_quote(&mint_quote.id).await {
-                Ok(Some(q)) => q,
-                _ => continue,
-            };
-
-            total_amount = total_amount
-                .checked_add(
-                    updated_quote
-                        .amount_issued
-                        .checked_sub(current_amount_issued)
-                        .unwrap_or_default(),
-                )
-                .ok_or(Error::AmountOverflow)?;
         }
+
         Ok(total_amount)
+    }
+
+    async fn refresh_and_mint_quote(&self, mint_quote: MintQuote) -> Result<Amount, Error> {
+        let mint_quote = match self.inner_check_mint_quote_status(mint_quote).await {
+            Ok(quote) => quote,
+            Err(err) => {
+                tracing::warn!("Could not check quote state: {}", err);
+                return Ok(Amount::ZERO);
+            }
+        };
+
+        self.mint_refreshed_quote(mint_quote).await
+    }
+
+    async fn mint_refreshed_quote(&self, mint_quote: MintQuote) -> Result<Amount, Error> {
+        let current_amount_issued = mint_quote.amount_issued;
+
+        if mint_quote.amount_mintable() > Amount::ZERO {
+            if let Err(err) = self
+                .mint(&mint_quote.id, SplitTarget::default(), None)
+                .await
+            {
+                tracing::warn!("Could not mint quote {}: {}", mint_quote.id, err);
+                return Ok(Amount::ZERO);
+            }
+        }
+
+        let Some(updated_quote) = self.localstore.get_mint_quote(&mint_quote.id).await? else {
+            return Ok(Amount::ZERO);
+        };
+
+        Ok(updated_quote
+            .amount_issued
+            .checked_sub(current_amount_issued)
+            .unwrap_or_default())
     }
 
     /// Get active mint quotes
@@ -611,9 +894,109 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use bip39::Mnemonic;
+    use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::CurrencyUnit;
 
     use super::*;
+
+    #[tokio::test]
+    async fn mint_quote_signing_keys_follow_nut20_counter_across_wallet_instances() {
+        let mnemonic = Mnemonic::from_str(
+            "half depart obvious quality work element tank gorilla view sugar picture humble",
+        )
+        .expect("valid mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let db = crate::wallet::test_utils::create_test_db().await;
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            db.clone(),
+            seed,
+            None,
+        )
+        .expect("wallet should build");
+
+        let first = wallet
+            .next_mint_quote_signing_key()
+            .await
+            .expect("first key should derive");
+        let second = wallet
+            .next_mint_quote_signing_key()
+            .await
+            .expect("second key should derive");
+
+        let restarted_wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            db,
+            seed,
+            None,
+        )
+        .expect("wallet should rebuild");
+        let third = restarted_wallet
+            .next_mint_quote_signing_key()
+            .await
+            .expect("third key should derive");
+
+        assert_eq!(
+            first.public_key().to_hex(),
+            "03062837166e56114b59a4d1fd3a5a812bf7aadc1dde758428cf943d80acd41539"
+        );
+        assert_eq!(
+            second.public_key().to_hex(),
+            "02b47d9d41725f5ce6f08c874835cef25376cb1e95f6cb073fef52ca8fd986cf15"
+        );
+        assert_eq!(
+            third.public_key().to_hex(),
+            "029acbd3a46fd75bc05ba0226d0b4d909b2fb6e96c80544a094a1a3567737e44d3"
+        );
+    }
+
+    #[test]
+    fn automatic_batching_honors_nut29_method_and_limit() {
+        let settings = cdk_common::nut29::Settings::new(Some(25), Some(vec!["bolt11".to_string()]));
+
+        assert_eq!(
+            automatic_batch_size(&settings, &PaymentMethod::BOLT11),
+            Some(25)
+        );
+        assert_eq!(
+            automatic_batch_size(&settings, &PaymentMethod::BOLT12),
+            None
+        );
+    }
+
+    #[test]
+    fn automatic_batching_uses_bounded_default() {
+        let settings = cdk_common::nut29::Settings::new(None, Some(vec!["bolt11".to_string()]));
+
+        assert_eq!(
+            automatic_batch_size(&settings, &PaymentMethod::BOLT11),
+            Some(DEFAULT_BATCH_SIZE)
+        );
+    }
+
+    #[test]
+    fn automatic_batching_rejects_absent_or_single_quote_batches() {
+        assert_eq!(
+            automatic_batch_size(
+                &cdk_common::nut29::Settings::default(),
+                &PaymentMethod::BOLT11
+            ),
+            None
+        );
+        assert_eq!(
+            automatic_batch_size(
+                &cdk_common::nut29::Settings::new(Some(1), None),
+                &PaymentMethod::BOLT11
+            ),
+            None
+        );
+    }
 
     #[test]
     fn local_onchain_mint_quote_amount_is_not_stored() {
@@ -632,12 +1015,208 @@ mod tests {
                 quote: "quote-id".to_string(),
                 request: "bc1qexample".to_string(),
                 unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Known(KnownMethod::Onchain),
                 expiry: Some(1_700_000_000),
                 pubkey: SecretKey::generate().public_key(),
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::from(250),
+                updated_at: 0,
             });
 
         assert_eq!(mint_quote_response_amount(&response), None);
+    }
+
+    #[test]
+    fn stale_mint_quote_response_does_not_decrease_accounting() {
+        let mut quote = MintQuote::new(
+            "quote-id".to_string(),
+            MintUrl::from_str("https://mint.example.com").expect("valid mint url"),
+            PaymentMethod::Custom("custom".to_string()),
+            Some(Amount::from(200)),
+            CurrencyUnit::Sat,
+            "custom-request".to_string(),
+            1_700_000_000,
+            None,
+        );
+        quote.amount_paid = Amount::from(100);
+        quote.amount_issued = Amount::from(20);
+        quote.updated_at = 10;
+        quote.update_state_from_amounts();
+
+        let stale_response = custom_mint_quote_response(Amount::from(200), Amount::from(20), 9);
+        assert!(!apply_mint_quote_response(&mut quote, &stale_response));
+
+        assert_eq!(quote.amount_paid, Amount::from(100));
+        assert_eq!(quote.amount_issued, Amount::from(20));
+        assert_eq!(quote.updated_at, 10);
+
+        let decreasing_response =
+            custom_mint_quote_response(Amount::from(90), Amount::from(20), 11);
+        assert!(!apply_mint_quote_response(&mut quote, &decreasing_response));
+
+        assert_eq!(quote.amount_paid, Amount::from(100));
+        assert_eq!(quote.amount_issued, Amount::from(20));
+        assert_eq!(quote.updated_at, 10);
+
+        let fresh_response = custom_mint_quote_response(Amount::from(150), Amount::from(30), 12);
+        assert!(apply_mint_quote_response(&mut quote, &fresh_response));
+
+        assert_eq!(quote.amount_paid, Amount::from(150));
+        assert_eq!(quote.amount_issued, Amount::from(30));
+        assert_eq!(quote.updated_at, 12);
+    }
+
+    #[test]
+    fn invalid_mint_quote_response_does_not_apply_accounting() {
+        let mut quote = MintQuote::new(
+            "quote-id".to_string(),
+            MintUrl::from_str("https://mint.example.com").expect("valid mint url"),
+            PaymentMethod::Custom("custom".to_string()),
+            Some(Amount::from(200)),
+            CurrencyUnit::Sat,
+            "custom-request".to_string(),
+            1_700_000_000,
+            None,
+        );
+        quote.amount_paid = Amount::from(100);
+        quote.amount_issued = Amount::from(20);
+        quote.updated_at = 10;
+        quote.update_state_from_amounts();
+
+        let invalid_response = custom_mint_quote_response(Amount::from(120), Amount::from(150), 11);
+        assert!(!apply_mint_quote_response(&mut quote, &invalid_response));
+
+        assert_eq!(quote.amount_paid, Amount::from(100));
+        assert_eq!(quote.amount_issued, Amount::from(20));
+        assert_eq!(quote.updated_at, 10);
+        assert_eq!(quote.state, MintQuoteState::Paid);
+    }
+
+    fn custom_mint_quote_response(
+        amount_paid: Amount,
+        amount_issued: Amount,
+        updated_at: u64,
+    ) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Custom {
+            method: PaymentMethod::Custom("custom".to_string()),
+            response: cdk_common::nut04::MintQuoteCustomResponse {
+                quote: "quote-id".to_string(),
+                request: "custom-request".to_string(),
+                method: PaymentMethod::Custom("custom".to_string()),
+                amount: Some(Amount::from(200)),
+                amount_paid,
+                amount_issued,
+                updated_at,
+                unit: Some(CurrencyUnit::Sat),
+                expiry: Some(1_700_000_000),
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        }
+    }
+
+    fn paid_bolt11_quote_response(quote: &MintQuote) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(crate::nuts::MintQuoteBolt11Response {
+            quote: quote.id.clone(),
+            request: quote.request.clone(),
+            amount: quote.amount,
+            unit: Some(quote.unit.clone()),
+            method: quote.payment_method.clone(),
+            amount_paid: quote.amount.unwrap_or_default(),
+            amount_issued: Amount::ZERO,
+            updated_at: 1,
+            state: crate::nuts::MintQuoteState::Paid,
+            expiry: Some(quote.expiry),
+            pubkey: None,
+        })
+    }
+
+    /// Stage a wallet whose mock mint advertises NUT-29 batching and holds
+    /// `quote_count` paid, unissued bolt11 quotes.
+    async fn batch_claim_wallet(
+        quote_count: usize,
+    ) -> (
+        Wallet,
+        Arc<crate::wallet::test_utils::MockMintConnector>,
+        Vec<MintQuote>,
+    ) {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = crate::wallet::test_utils::test_mint_info();
+        mint_info.nuts.nut29 = cdk_common::nut29::Settings::new(Some(100), None);
+        mock_client.set_active_keyset(crate::wallet::test_utils::test_keyset());
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let mut quotes = Vec::new();
+        for _ in 0..quote_count {
+            let mut quote = test_mint_quote(wallet.mint_url.clone());
+            quote.state = crate::nuts::MintQuoteState::Paid;
+            quote.amount_paid = quote.amount.unwrap_or_default();
+            db.add_mint_quote(quote.clone())
+                .await
+                .expect("add mint quote");
+            quotes.push(quote);
+        }
+
+        (wallet, mock_client, quotes)
+    }
+
+    #[tokio::test]
+    async fn batch_size_rejection_falls_back_to_individual_minting() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+
+        let refreshed = quotes.iter().map(paid_bolt11_quote_response).collect();
+        mock_client.push_post_batch_check_mint_quote_status_response(Ok(refreshed));
+        // The mint enforces a smaller batch limit than it advertises and
+        // rejects the request during validation — nothing was written.
+        mock_client
+            .push_post_batch_mint_response(Err(Error::BatchSizeExceeded { actual: 2, max: 1 }));
+        // The individual retries fail as well (no signatures staged); the
+        // fallback only needs to attempt one request per quote.
+        mock_client.push_post_mint_response(Err(Error::Custom("staged".to_string())));
+        mock_client.push_post_mint_response(Err(Error::Custom("staged".to_string())));
+
+        let minted = wallet
+            .mint_unissued_quotes()
+            .await
+            .expect("claim should complete");
+
+        assert_eq!(minted, Amount::ZERO);
+        assert_eq!(mock_client.post_batch_mint_requests().len(), 1);
+        assert_eq!(
+            mock_client.post_mint_requests().len(),
+            2,
+            "a definitive batch-size rejection must retry each quote individually"
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_batch_mint_error_is_left_to_saga_recovery() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+
+        let refreshed = quotes.iter().map(paid_bolt11_quote_response).collect();
+        mock_client.push_post_batch_check_mint_quote_status_response(Ok(refreshed));
+        // A transport-style failure is an ambiguous write: the batch saga
+        // owns recovery, no individual retry may be attempted.
+        mock_client
+            .push_post_batch_mint_response(Err(Error::Custom("connection reset".to_string())));
+
+        let minted = wallet
+            .mint_unissued_quotes()
+            .await
+            .expect("claim should complete");
+
+        assert_eq!(minted, Amount::ZERO);
+        assert_eq!(mock_client.post_batch_mint_requests().len(), 1);
+        assert_eq!(
+            mock_client.post_mint_requests().len(),
+            0,
+            "ambiguous writes must not be retried as individual mints"
+        );
     }
 }

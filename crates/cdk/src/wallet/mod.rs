@@ -12,7 +12,7 @@ use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{KeysetLoadPolicy, ProofInfo};
 use cdk_common::{PublicKey, SecretKey, SECP256K1};
-use getrandom::getrandom;
+use getrandom::fill;
 pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
 };
@@ -37,7 +37,7 @@ use crate::wallet::blind_signature::{
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
-use crate::Amount;
+use crate::{Amount, OidcClient};
 
 mod auth;
 pub mod bip321;
@@ -45,7 +45,9 @@ mod blind_signature;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-pub use mint_connector::TorHttpClient;
+pub use mint_connector::{
+    RateLimitedTorAuthHttpClient, RateLimitedTorHttpClient, TorAuthHttpClient, TorHttpClient,
+};
 mod balance;
 mod builder;
 mod issue;
@@ -55,6 +57,8 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+#[cfg(feature = "nwc")]
+pub mod nwc;
 mod p2pk;
 pub mod payment_request;
 mod proofs;
@@ -88,23 +92,41 @@ pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+    RateLimitConfig, RateLimiterManager, TokenBucket,
 };
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 #[cfg(feature = "npubcash")]
 pub use npubcash::derive_npubcash_secret_key_from_seed;
-pub use payment_request::CreateRequestParams;
+#[cfg(feature = "nwc")]
+pub use nwc::{derive_nwc_secret_key_from_seed, WalletNwcHandler};
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
+pub use payment_request::{CreateRequestParams, PayRequestOptions, PreparedPaymentRequest};
 pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
-pub use types::{MeltQuote, MintQuote, SendKind};
+pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};
 pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DerivationCounterNamespace {
+    P2pk,
+    Nut20Quote,
+}
+
+impl DerivationCounterNamespace {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::P2pk => "p2pk",
+            Self::Nut20Quote => "nut20_quote",
+        }
+    }
+}
 
 /// CDK Wallet
 ///
@@ -133,11 +155,20 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
+    auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
-    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
+    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_nostr::npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    /// Handle to the client-side rate limiter, when the wallet paces any of the
+    /// clients it builds.
+    ///
+    /// `None` when rate limiting was disabled, or when a custom client replaced
+    /// the transport and no rate-limited auth client remains. Cloning the manager
+    /// shares its per-host budgets, so this reconfigures the same limiter the
+    /// transport paces through.
+    rate_limiter: Option<RateLimiterManager>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -169,7 +200,7 @@ impl From<WalletSubscription> for WalletParams {
     fn from(val: WalletSubscription) -> Self {
         let mut buffer = vec![0u8; 10];
 
-        getrandom(&mut buffer).expect("Failed to generate random bytes");
+        fill(&mut buffer).expect("Failed to generate random bytes");
 
         let id = Arc::new(
             buffer
@@ -278,6 +309,76 @@ impl Wallet {
             .build()
     }
 
+    /// Replace the client-side rate-limit configuration at runtime.
+    ///
+    /// Applies to every host the wallet's limiter paces, not only the mint: the
+    /// buckets already in use and any created later. That includes third-party
+    /// hosts the wallet's transport reaches, such as an LNURL service or an OIDC
+    /// provider.
+    ///
+    /// It is a no-op when the wallet paces nothing, either because rate limiting
+    /// was disabled ([`WalletBuilder::without_rate_limiting`]) or because a
+    /// custom client ([`WalletBuilder::client`]/[`WalletBuilder::shared_client`])
+    /// replaced the main transport and no rate-limited auth client remains. With
+    /// a custom main client plus a CAT it reconfigures only the blind-auth
+    /// client's pacing.
+    ///
+    /// When the wallet was built through a [`WalletRepository`], the limiter is
+    /// shared with every other wallet in that repository, so this reconfigures
+    /// pacing repository-wide.
+    ///
+    /// [`Wallet::is_rate_limited`] reports whether the call took effect, since
+    /// the no-op cases are otherwise silent.
+    pub fn set_rate_limiting_config(&self, config: RateLimitConfig) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.set_config(config);
+        }
+    }
+
+    /// Disable client-side rate limiting at runtime.
+    ///
+    /// Has the same reach as [`Wallet::set_rate_limiting_config`]: every host the
+    /// wallet's limiter paces, repository-wide for a repository-built wallet, and
+    /// a no-op when the wallet paces nothing.
+    pub fn disable_rate_limiting(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.set_enabled(false);
+        }
+    }
+
+    /// Whether this wallet's requests are being paced right now.
+    ///
+    /// False both when pacing was turned off and when the wallet paces nothing
+    /// at all, which is the case [`Wallet::set_rate_limiting_config`] silently
+    /// ignores.
+    pub fn is_rate_limited(&self) -> bool {
+        self.rate_limiter
+            .as_ref()
+            .is_some_and(RateLimiterManager::is_enabled)
+    }
+
+    /// Wait until the rate-limit budget this wallet has drawn down has been
+    /// handed to storage.
+    ///
+    /// Persistence is otherwise best effort: the request path never waits for
+    /// the store, and dropping a wallet leaves the final write to a detached
+    /// background task. A caller that does not await this barrier can rebuild
+    /// the wallet, or tear down the runtime, before that write lands, and the
+    /// rebuilt wallet then starts with a full burst. Await it before dropping a
+    /// wallet whose budget must carry over.
+    ///
+    /// The wait is bounded, so a slow or hung store cannot hang shutdown; on
+    /// timeout the budget is simply not persisted.
+    ///
+    /// Has the same reach as [`Wallet::set_rate_limiting_config`]: every host
+    /// the wallet's limiter paces, repository-wide for a wallet built through a
+    /// [`WalletRepository`], and a no-op when the wallet paces nothing.
+    pub async fn flush_rate_limits(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.flush().await;
+        }
+    }
+
     /// Subscribe to events
     pub async fn subscribe<T: Into<WalletParams>>(
         &self,
@@ -286,6 +387,11 @@ impl Wallet {
         self.subscription
             .subscribe(self.mint_url.clone(), query.into())
             .map_err(|e| Error::SubscriptionError(e.to_string()))
+    }
+
+    /// Create an OIDC client using this wallet's mint connector transport.
+    pub fn oidc_client(&self, openid_discovery: String, client_id: Option<String>) -> OidcClient {
+        self.client.oidc_client(openid_discovery, client_id)
     }
 
     /// Subscribe to mint quote state changes for the given quote IDs and payment method
@@ -368,7 +474,11 @@ impl Wallet {
             .await?
             .fee();
 
-        let fee = (input_fee_ppk * count).div_ceil(1000);
+        let fee = input_fee_ppk
+            .checked_mul(count)
+            .and_then(|product| product.checked_add(999))
+            .map(|sum| sum / 1000)
+            .ok_or(Error::AmountOverflow)?;
 
         Ok(Amount::from(fee))
     }
@@ -417,43 +527,60 @@ impl Wallet {
 
         // Create or update auth wallet
         {
+            let protected_endpoints = mint_info.protected_endpoints();
+            let oidc_client = mint_info
+                .openid_discovery()
+                .map(|url| self.oidc_client(url, None));
+            let auth_enabled = !protected_endpoints.is_empty()
+                || oidc_client.is_some()
+                || mint_info.bat_max_mint().is_some();
+
             let mut auth_wallet = self.auth_wallet.write().await;
-            match &*auth_wallet {
-                Some(auth_wallet) => {
-                    let mut protected_endpoints = auth_wallet.protected_endpoints.write().await;
-                    *protected_endpoints = mint_info.protected_endpoints();
+            if auth_enabled {
+                match &*auth_wallet {
+                    Some(auth_wallet) => {
+                        {
+                            let mut current_protected_endpoints =
+                                auth_wallet.protected_endpoints.write().await;
+                            *current_protected_endpoints = protected_endpoints;
+                        }
+                        auth_wallet.set_oidc_client(oidc_client).await;
+                    }
+                    None => {
+                        tracing::info!("Mint has auth enabled; creating auth wallet");
 
-                    if let Some(oidc_client) = mint_info
-                        .openid_discovery()
-                        .map(|url| crate::OidcClient::new(url, None))
-                    {
-                        auth_wallet.set_oidc_client(Some(oidc_client)).await;
+                        let new_auth_wallet = match self.auth_connector.as_ref() {
+                            Some(auth_connector) => AuthWallet::with_auth_client(
+                                self.mint_url.clone(),
+                                self.localstore.clone(),
+                                self.metadata_cache.clone(),
+                                protected_endpoints,
+                                oidc_client,
+                                auth_connector.clone(),
+                            ),
+                            None => AuthWallet::with_auth_client(
+                                self.mint_url.clone(),
+                                self.localstore.clone(),
+                                self.metadata_cache.clone(),
+                                protected_endpoints,
+                                oidc_client,
+                                self.client.auth_connector(self.mint_url.clone(), None),
+                            ),
+                        };
+                        *auth_wallet = Some(new_auth_wallet.clone());
+
+                        self.client
+                            .set_auth_wallet(Some(new_auth_wallet.clone()))
+                            .await;
+
+                        if let Err(e) = new_auth_wallet.refresh_keysets().await {
+                            tracing::error!("Could not fetch auth keysets: {}", e);
+                        }
                     }
                 }
-                None => {
-                    tracing::info!("Mint has auth enabled creating auth wallet");
-
-                    let oidc_client = mint_info
-                        .openid_discovery()
-                        .map(|url| crate::OidcClient::new(url, None));
-                    let new_auth_wallet = AuthWallet::new(
-                        self.mint_url.clone(),
-                        None,
-                        self.localstore.clone(),
-                        self.metadata_cache.clone(),
-                        mint_info.protected_endpoints(),
-                        oidc_client,
-                    );
-                    *auth_wallet = Some(new_auth_wallet.clone());
-
-                    self.client
-                        .set_auth_wallet(Some(new_auth_wallet.clone()))
-                        .await;
-
-                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
-                        tracing::error!("Could not fetch auth keysets: {}", e);
-                    }
-                }
+            } else if auth_wallet.take().is_some() {
+                tracing::info!("Mint does not advertise auth; removing auth wallet");
+                self.client.set_auth_wallet(None).await;
             }
         }
 
@@ -533,7 +660,11 @@ impl Wallet {
 
         for amount in amounts_needed_refill {
             let values_sum = Amount::try_sum(values.clone().into_iter())?;
-            if values_sum + amount <= change_amount {
+            if values_sum
+                .checked_add(amount)
+                .ok_or(Error::AmountOverflow)?
+                <= change_amount
+            {
                 values.push(amount);
             }
         }
@@ -684,23 +815,38 @@ impl Wallet {
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
                     .zip(states)
-                    .filter_map(|(p, state)| {
+                    .enumerate()
+                    .filter_map(|(index, (p, state))| {
                         ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
                             .ok()
+                            .map(|proof_info| {
+                                proof_info.with_derivation_index(
+                                    start_counter + matched_secrets[index].0 as u32,
+                                )
+                            })
                     })
                     .try_fold(
                         (Vec::new(), restored_result),
                         |(mut proofs, mut restored_result), proof_info| {
                             match proof_info.state {
                                 State::Spent => {
-                                    restored_result.spent += proof_info.proof.amount;
+                                    restored_result.spent = restored_result
+                                        .spent
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                 }
-                                State::Unspent =>  {
-                                    restored_result.unspent += proof_info.proof.amount;
+                                State::Unspent => {
+                                    restored_result.unspent = restored_result
+                                        .unspent
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                     proofs.push(proof_info);
                                 }
                                 State::Pending => {
-                                    restored_result.pending += proof_info.proof.amount;
+                                    restored_result.pending = restored_result
+                                        .pending
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                     proofs.push(proof_info);
                                 }
                                 _ => {
@@ -948,31 +1094,59 @@ impl Wallet {
 
     /// generates and stores public key in database
     pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
-        let public_keys = self.localstore.list_p2pk_keys().await?;
-
-        let mut last_derivation_index = 0;
-
-        for public_key in public_keys {
-            if public_key.derivation_index >= last_derivation_index {
-                last_derivation_index = public_key.derivation_index + 1;
-            }
-        }
+        let minimum_index = match self.localstore.latest_p2pk().await? {
+            Some(key) => key.derivation_index.checked_add(1).ok_or_else(|| {
+                Error::Custom("P2PK derivation index has been exhausted".to_owned())
+            })?,
+            None => 0,
+        };
+        let derivation_index = self
+            .reserve_derivation_index(DerivationCounterNamespace::P2pk, minimum_index)
+            .await?;
 
         let derivation_path = DerivationPath::from(vec![
             ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
             ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
             ChildNumber::from_hardened_idx(0)?,
             ChildNumber::from_hardened_idx(0)?,
-            ChildNumber::from_normal_idx(last_derivation_index)?,
+            ChildNumber::from_normal_idx(derivation_index)?,
         ]);
 
         let pubkey = p2pk::generate_public_key(&derivation_path, &self.seed).await?;
 
         self.localstore
-            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .add_p2pk_key(&pubkey, derivation_path, derivation_index)
             .await?;
 
         Ok(pubkey)
+    }
+
+    pub(crate) async fn reserve_derivation_index(
+        &self,
+        namespace: DerivationCounterNamespace,
+        minimum_index: u32,
+    ) -> Result<u32, Error> {
+        let namespace = namespace.as_str();
+        let current_counter = self
+            .localstore
+            .increment_derivation_counter(namespace, 0)
+            .await?;
+        let catch_up = minimum_index.saturating_sub(current_counter);
+        let reservation_count = catch_up.checked_add(1).ok_or_else(|| {
+            Error::Custom(format!(
+                "Derivation counter namespace `{namespace}` has been exhausted"
+            ))
+        })?;
+        let next_counter = self
+            .localstore
+            .increment_derivation_counter(namespace, reservation_count)
+            .await?;
+
+        next_counter.checked_sub(1).ok_or_else(|| {
+            Error::Custom(format!(
+                "Derivation counter namespace `{namespace}` did not advance after reservation"
+            ))
+        })
     }
 
     /// gets public key by it's hex value
@@ -1021,9 +1195,106 @@ impl Drop for Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use bitcoin::bip32::DerivationPath;
+    use bitcoin::secp256k1::Secp256k1;
+    use cdk_common::nut02::KeySetVersion;
+    use cdk_common::nuts::{KeySet, KeySetInfo, KeysetResponse, MintKeySet};
+
     use super::*;
-    use crate::nuts::{BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
+    use crate::nuts::{AuthToken, BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
     use crate::secret::Secret;
+
+    fn build_test_auth_keyset(seed_byte: u8) -> KeySet {
+        let secp = Secp256k1::new();
+        let seed = [seed_byte; 32];
+        let path = DerivationPath::from_str("m/0'").expect("valid derivation path");
+        let mint_keyset = MintKeySet::generate_from_seed(
+            &secp,
+            &seed,
+            &[1, 2],
+            CurrencyUnit::Auth,
+            path,
+            0,
+            None,
+            KeySetVersion::Version00,
+        );
+
+        KeySet {
+            id: mint_keyset.id,
+            unit: mint_keyset.unit.clone(),
+            active: None,
+            keys: mint_keyset.keys.into(),
+            input_fee_ppk: mint_keyset.input_fee_ppk,
+            final_expiry: mint_keyset.final_expiry,
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingAuthConnector {
+        keyset: KeySet,
+        keysets_calls: Arc<Mutex<usize>>,
+        keyset_calls: Arc<Mutex<usize>>,
+    }
+
+    impl CountingAuthConnector {
+        fn new(keyset: KeySet) -> Self {
+            Self {
+                keyset,
+                keysets_calls: Arc::new(Mutex::new(0)),
+                keyset_calls: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AuthMintConnector for CountingAuthConnector {
+        async fn get_auth_token(&self) -> Result<AuthToken, Error> {
+            Ok(AuthToken::ClearAuth("dummy".to_string()))
+        }
+
+        async fn set_auth_token(&self, _: AuthToken) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+            Ok(MintInfo::default())
+        }
+
+        async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+            *self.keyset_calls.lock().expect("lock") += 1;
+            if keyset_id == self.keyset.id {
+                Ok(self.keyset.clone())
+            } else {
+                Err(Error::UnknownKeySet)
+            }
+        }
+
+        async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
+            *self.keysets_calls.lock().expect("lock") += 1;
+            Ok(KeysetResponse {
+                keysets: vec![KeySetInfo {
+                    id: self.keyset.id,
+                    unit: CurrencyUnit::Auth,
+                    active: true,
+                    input_fee_ppk: self.keyset.input_fee_ppk,
+                    final_expiry: self.keyset.final_expiry,
+                }],
+            })
+        }
+
+        async fn post_mint_blind_auth(
+            &self,
+            _: crate::nuts::nut22::MintAuthRequest,
+        ) -> Result<crate::nuts::MintResponse, Error> {
+            Err(Error::Custom(
+                "post_mint_blind_auth is not used in this test".to_string(),
+            ))
+        }
+    }
 
     /// Test that restore signature matching works correctly when response is in order
     #[test]
@@ -1045,18 +1316,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1143,18 +1417,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1241,18 +1518,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1331,5 +1611,188 @@ mod tests {
             "expected Error::IncorrectWallet for token with a different mint URL; got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_mint_info_does_not_create_auth_wallet_without_auth_settings() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_info, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        wallet
+            .fetch_mint_info()
+            .await
+            .expect("mint info should load from mock connector");
+
+        assert!(wallet.auth_wallet.read().await.is_none());
+
+        let result = wallet.get_unspent_auth_proofs().await;
+        assert!(
+            matches!(result, Err(Error::AuthSettingsUndefined)),
+            "expected auth settings to remain undefined; got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_mint_info_uses_configured_auth_connector_for_auth_settings() {
+        use crate::wallet::test_utils::{
+            create_test_db, test_mint_info, test_mint_url, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mint_info.nuts.nut22 = Some(crate::nuts::BlindAuthSettings::new(10, Vec::new()));
+        mock_client.set_mint_info_response(Ok(mint_info));
+
+        let auth_connector = Arc::new(CountingAuthConnector::new(build_test_auth_keyset(1)));
+        let keysets_calls = auth_connector.keysets_calls.clone();
+        let keyset_calls = auth_connector.keyset_calls.clone();
+
+        let wallet = WalletBuilder::new()
+            .mint_url(test_mint_url())
+            .unit(CurrencyUnit::Sat)
+            .localstore(db)
+            .seed([0u8; 64])
+            .shared_client(mock_client)
+            .auth_connector(auth_connector)
+            .build()
+            .expect("wallet should build");
+
+        wallet
+            .fetch_mint_info()
+            .await
+            .expect("mint info should load and auth keysets should refresh from mock connector");
+
+        assert!(wallet.auth_wallet.read().await.is_some());
+        assert_eq!(*keysets_calls.lock().expect("lock"), 1);
+        assert_eq!(*keyset_calls.lock().expect("lock"), 1);
+    }
+
+    #[tokio::test]
+    async fn determine_split_target_values_rejects_amount_overflow() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut wallet = create_test_wallet_with_mock(db, mock_client).await;
+        wallet.set_target_proof_count(1);
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![u64::MAX - 1, u64::MAX]));
+
+        let result = wallet
+            .determine_split_target_values(Amount::from(u64::MAX), &fee_and_amounts)
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_unspent_amount_overflow() {
+        use crate::nuts::{CheckStateResponse, Keys, ProofState, RestoreResponse};
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_info, MockMintConnector,
+        };
+
+        let seed = [7; 64];
+        let max_key = SecretKey::from_slice(&[1; 32]).expect("valid secret key");
+        let one_key = SecretKey::from_slice(&[2; 32]).expect("valid secret key");
+        let keys = Keys::new(BTreeMap::from([
+            (Amount::from(1), one_key.public_key()),
+            (Amount::from(u64::MAX), max_key.public_key()),
+        ]));
+        let keyset_id = Id::v1_from_keys(&keys);
+        let keyset = KeySet {
+            id: keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        let premint_secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 2)
+            .expect("restore secrets should derive");
+        let outputs = premint_secrets.blinded_messages();
+        let signatures = vec![
+            BlindSignature {
+                amount: Amount::from(u64::MAX),
+                keyset_id,
+                c: crate::dhke::sign_message(&max_key, &outputs[0].blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            },
+            BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: crate::dhke::sign_message(&one_key, &outputs[1].blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            },
+        ];
+        let states = premint_secrets
+            .secrets
+            .iter()
+            .map(|premint| {
+                ProofState::from((
+                    crate::dhke::hash_to_curve(premint.secret.as_bytes())
+                        .expect("proof Y should derive"),
+                    State::Unspent,
+                ))
+            })
+            .collect();
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_active_keyset(keyset);
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            outputs,
+            signatures,
+        }));
+        mock_client.set_check_state_response(Ok(CheckStateResponse { states }));
+        let wallet = create_test_wallet_with_mock_seed(db, mock_client, seed).await;
+
+        let result = wallet
+            .restore_with_opts(NUT13Options::new(2, 1).expect("valid restore options"))
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_keyset_count_fee_rejects_amount_overflow() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut keyset = test_keyset();
+        keyset.input_fee_ppk = u64::MAX / 2;
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let result = wallet.get_keyset_count_fee(&keyset_id, 3).await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
     }
 }

@@ -53,6 +53,8 @@ use crate::bip353::Bip353Address;
 use crate::error::Error;
 use crate::nuts::PaymentRequest;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use crate::wallet::util::escape_log_value;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::wallet::MintConnector;
 
 /// Parsed payment instruction with all available payment methods.
@@ -89,7 +91,7 @@ pub struct ParsedPaymentInstruction {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct Bip321UriBuilder {
-    /// A cashu payment request as a CREQB1 bech32m string.
+    /// A cashu payment request as a NUT-18 `creqA` or NUT-26 `creqb1` string.
     cashu_request_str: Option<String>,
     /// A BOLT11 invoice string.
     bolt11_invoice: Option<String>,
@@ -111,7 +113,7 @@ impl Bip321UriBuilder {
         Self::default()
     }
 
-    /// Set the cashu payment request from a raw CREQB1 bech32m string.
+    /// Set the cashu payment request from a raw NUT-18 or NUT-26 string.
     pub fn with_cashu_request_str(mut self, creq: String) -> Self {
         self.cashu_request_str = Some(creq);
         self
@@ -215,18 +217,25 @@ pub async fn resolve_bip353_payment_instruction(
     network: bitcoin::Network,
 ) -> Result<ParsedPaymentInstruction, Error> {
     let address = Bip353Address::from_str(bip353_address).map_err(|e| {
-        tracing::error!("Failed to parse BIP353 address '{}': {}", bip353_address, e);
+        tracing::error!(
+            "Failed to parse BIP353 address '{}': {}",
+            escape_log_value(bip353_address),
+            escape_log_value(&e)
+        );
         Error::Bip353Parse(e.to_string())
     })?;
 
-    tracing::debug!("Resolving BIP353 address: {}", address);
     let address_string = address.to_string();
+    tracing::debug!(
+        "Resolving BIP353 address: {}",
+        escape_log_value(&address_string)
+    );
 
     let resolved_uri = address.resolve(client).await.map_err(|e| {
         tracing::error!(
             "Failed to resolve BIP353 address '{}': {}",
-            address_string,
-            e
+            escape_log_value(&address_string),
+            escape_log_value(&e)
         );
         Error::Bip353Resolve(e.to_string())
     })?;
@@ -236,8 +245,8 @@ pub async fn resolve_bip353_payment_instruction(
         .map_err(|e| {
             tracing::error!(
                 "Failed to parse resolved BIP353 payment instruction '{}': {}",
-                resolved_uri,
-                e
+                escape_log_value(&resolved_uri),
+                escape_log_value(&e)
             );
             Error::Bip321Parse(format!("Invalid resolved bitcoin URI: {e}"))
         })
@@ -338,7 +347,7 @@ impl fmt::Display for Bip321UriBuilder {
         }
 
         if let Some(ref creq) = self.cashu_request_str {
-            query_params.append_pair("CREQ", &creq.to_ascii_uppercase());
+            query_params.append_pair("CREQ", &qr_friendly_cashu_request(creq));
         }
 
         let query_string = query_params.finish();
@@ -349,6 +358,19 @@ impl fmt::Display for Bip321UriBuilder {
 
         f.write_str(&uri)
     }
+}
+
+fn qr_friendly_cashu_request(creq: &str) -> String {
+    // NUT-26 uses bech32m and can be uppercased for more efficient QR encoding.
+    // NUT-18 uses case-sensitive base64 and must be preserved verbatim.
+    if creq
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("creqb1"))
+    {
+        return creq.to_ascii_uppercase();
+    }
+
+    creq.to_string()
 }
 
 fn uppercase_qr_address(address: &str) -> String {
@@ -382,6 +404,21 @@ fn format_btc_amount_from_sats(sats: u64) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    #[test]
+    fn bip353_log_values_escape_terminal_controls() {
+        let value = "alice\u{1b}]52;c;clipboard\u{07}\r\u{85}\u{202e}@example.com";
+        let escaped = escape_log_value(value);
+
+        assert_eq!(
+            escaped,
+            "alice\\e]52;c;clipboard\\a\\r\\u{85}\\u{202e}@example.com"
+        );
+        assert!(!escaped
+            .chars()
+            .any(|ch| { ch.is_control() || cdk_common::terminal::is_bidi_control_character(ch) }));
+    }
+
     const TEST_CREQ: &str = "CREQB1QYQQWER9D4HNZV3NQGQQSQQQQQQQQQQRAQPSQQGQQSQQZQG9QQVXSAR5WPEN5TE0D45KUAPWV4UXZMTSD3JJUCM0D5RQQRJRDANXVET9YPCXZ7TDV4H8GXHR3TQ";
     const TEST_BOLT11: &str = "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql";
 
@@ -411,6 +448,36 @@ mod tests {
 
         assert_has_creq(&uri);
         assert!(uri.contains(TEST_CREQ));
+    }
+
+    #[test]
+    fn test_bip321_uri_uppercases_bech32_cashu_request() {
+        let uri = Bip321UriBuilder::new()
+            .with_cashu_request_str(TEST_CREQ.to_ascii_lowercase())
+            .to_string();
+
+        assert!(uri.contains(TEST_CREQ));
+    }
+
+    #[test]
+    fn test_bip321_uri_preserves_base64_cashu_request() {
+        let creq = test_payment_request().to_string();
+        assert!(creq.starts_with("creqA"));
+
+        let uri = Bip321UriBuilder::new()
+            .with_cashu_request_str(creq.clone())
+            .to_string();
+
+        let query = uri
+            .split_once('?')
+            .map(|(_, query)| query)
+            .expect("URI should contain a query");
+        let encoded_creq = form_urlencoded::parse(query.as_bytes())
+            .find_map(|(name, value)| (name == "CREQ").then_some(value))
+            .expect("URI should contain a CREQ parameter");
+
+        assert_eq!(encoded_creq, creq);
+        assert!(PaymentRequest::from_str(&encoded_creq).is_ok());
     }
 
     #[test]
