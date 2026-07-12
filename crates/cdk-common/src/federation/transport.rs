@@ -643,7 +643,6 @@ impl FederationRestSequenceTracker {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPeerStatusRequest {
     /// Include per-row materialized state fingerprints for operator diffing.
-    #[serde(default, skip_serializing_if = "is_false")]
     pub include_materialized_rows: bool,
 }
 
@@ -655,10 +654,6 @@ impl FederationPeerStatusRequest {
             include_materialized_rows: true,
         }
     }
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Signed request payload carrying one member's pre-reveal DKG commitment hash.
@@ -1255,7 +1250,6 @@ pub struct FederationPeerStatus {
     /// Latest accepted-order digest.
     pub latest_order_digest: FederationJournalDigest,
     /// Digest of consensus-visible state.
-    #[serde(default = "FederationStateDigest::genesis")]
     pub state_digest: FederationStateDigest,
 }
 
@@ -1848,7 +1842,6 @@ pub struct FederationJournalCatchUpResponse {
     /// Latest local accepted-order digest.
     pub latest_order_digest: FederationJournalDigest,
     /// Latest local consensus-visible state digest.
-    #[serde(default = "FederationStateDigest::genesis")]
     pub state_digest: FederationStateDigest,
     /// Signed summary of the returned accepted-operation range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2439,6 +2432,20 @@ mod tests {
             .remove("aleph_bft_next_item_index");
         assert!(serde_json::from_value::<FederationJournalCatchUpRequest>(request_value).is_err());
 
+        let mut status_value = serde_json::to_value(FederationPeerStatus::new(
+            federation_id(),
+            member_id(),
+            0,
+            None,
+            FederationJournalDigest::genesis(),
+        ))
+        .expect("status json");
+        status_value
+            .as_object_mut()
+            .expect("status object")
+            .remove("state_digest");
+        assert!(serde_json::from_value::<FederationPeerStatus>(status_value).is_err());
+
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
         let response = FederationJournalCatchUpResponse::from_journal(
@@ -2458,6 +2465,17 @@ mod tests {
             serde_json::from_value::<FederationJournalCatchUpResponse>(response_without_items)
                 .is_err()
         );
+
+        let mut response_without_state_digest =
+            serde_json::to_value(&response).expect("response json without state digest");
+        response_without_state_digest
+            .as_object_mut()
+            .expect("response object")
+            .remove("state_digest");
+        assert!(serde_json::from_value::<FederationJournalCatchUpResponse>(
+            response_without_state_digest
+        )
+        .is_err());
 
         let mut response_without_complete =
             serde_json::to_value(&response).expect("response json without completeness");
@@ -2912,16 +2930,14 @@ mod tests {
     fn peer_status_request_materialized_rows_are_opt_in() {
         let default_json =
             serde_json::to_string(&FederationPeerStatusRequest::default()).expect("default json");
-        assert_eq!(default_json, "{}");
+        assert_eq!(default_json, r#"{"include_materialized_rows":false}"#);
 
         let opt_in_json =
             serde_json::to_string(&FederationPeerStatusRequest::with_materialized_rows())
                 .expect("opt-in json");
         assert_eq!(opt_in_json, r#"{"include_materialized_rows":true}"#);
 
-        let legacy: FederationPeerStatusRequest =
-            serde_json::from_str("{}").expect("legacy status request");
-        assert!(!legacy.include_materialized_rows);
+        assert!(serde_json::from_str::<FederationPeerStatusRequest>("{}").is_err());
     }
 
     #[test]

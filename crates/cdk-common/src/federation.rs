@@ -1804,7 +1804,6 @@ pub struct FederatedKeyset {
     /// Whether members should sign new outputs for this keyset.
     pub active: bool,
     /// Input fee in parts per thousand.
-    #[serde(default)]
     pub input_fee_ppk: u64,
     /// Optional final expiry timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5989,6 +5988,21 @@ mod tests {
             serde_json::from_value::<FederationConfig>(json).is_err(),
             "federation configs must explicitly declare payment-observation policy"
         );
+    }
+
+    #[test]
+    fn federation_config_rejects_missing_keyset_fee() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        let mut json = serde_json::to_value(&config).expect("config json");
+        json["keysets"][0]
+            .as_object_mut()
+            .expect("keyset object")
+            .remove("input_fee_ppk");
+
+        assert!(serde_json::from_value::<FederationConfig>(json).is_err());
     }
 
     #[test]

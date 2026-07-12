@@ -113,7 +113,6 @@ impl FederationAddSubCommand {
 
 /// Persistent public federation wallet registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct FederationWalletRegistry {
     /// Sidecar schema version.
     pub version: u16,
@@ -208,7 +207,6 @@ pub struct StoredFederationWallet {
     /// Public federation config; never contains member private configs or secret shares.
     pub public_config: FederationConfig,
     /// Wallet-side member request policy.
-    #[serde(default)]
     pub connector_policy: StoredFederationConnectorPolicy,
 }
 
@@ -298,10 +296,9 @@ impl StoredFederationWallet {
 
 /// Persisted wallet-side federation request policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct StoredFederationConnectorPolicy {
     /// Preferred member for sequential first-healthy calls.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_member_id: Option<MemberId>,
     /// Timeout in seconds for sequential first-healthy-member calls.
     pub member_fallback_timeout_secs: u64,
@@ -665,6 +662,46 @@ mod tests {
             FederationWalletRegistry::load(&work_dir).expect_err("malformed registry rejected");
 
         assert!(!err.to_string().is_empty());
+        fs::remove_dir_all(work_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn registry_load_rejects_missing_current_fields() {
+        let work_dir = temp_work_dir();
+        let public_config = valid_public_config();
+        let local_mint_url = primary_member_mint_url(&public_config).expect("primary url");
+        let wallet = StoredFederationWallet {
+            local_mint_url,
+            public_config,
+            connector_policy: StoredFederationConnectorPolicy::default(),
+        };
+        let registry = FederationWalletRegistry {
+            version: FEDERATION_REGISTRY_VERSION,
+            wallets: vec![wallet],
+        };
+
+        for field in ["version", "connector_policy"] {
+            let mut value = serde_json::to_value(&registry).expect("registry json");
+            if field == "version" {
+                value
+                    .as_object_mut()
+                    .expect("registry object")
+                    .remove(field);
+            } else {
+                value["wallets"][0]
+                    .as_object_mut()
+                    .expect("wallet object")
+                    .remove(field);
+            }
+            fs::write(
+                registry_path(&work_dir),
+                serde_json::to_vec(&value).expect("registry bytes"),
+            )
+            .expect("write incomplete registry");
+            FederationWalletRegistry::load(&work_dir)
+                .expect_err("incomplete current registry rejected");
+        }
+
         fs::remove_dir_all(work_dir).expect("remove temp dir");
     }
 

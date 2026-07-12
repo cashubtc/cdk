@@ -148,21 +148,13 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
     let order_digest =
         cdk_common::federation::FederationJournalDigest::from_hex(column_as_string!(&order_digest))
             .map_err(|e| Error::Internal(format!("Invalid federation order digest: {e}")))?;
-    let operation_outcome_hash = match column_as_nullable_string!(&operation_outcome_hash) {
-        Some(value) => Some(
-            FederationOperationOutcomeHash::from_hex(value).map_err(|e| {
+    let operation_outcome_hash =
+        FederationOperationOutcomeHash::from_hex(column_as_string!(&operation_outcome_hash))
+            .map_err(|e| {
                 Error::Internal(format!("Invalid federation operation outcome hash: {e}"))
-            })?,
-        ),
-        None => None,
-    };
-    let state_digest = match column_as_nullable_string!(&state_digest) {
-        Some(value) => Some(
-            FederationStateDigest::from_hex(value)
-                .map_err(|e| Error::Internal(format!("Invalid federation state digest: {e}")))?,
-        ),
-        None => None,
-    };
+            })?;
+    let state_digest = FederationStateDigest::from_hex(column_as_string!(&state_digest))
+        .map_err(|e| Error::Internal(format!("Invalid federation state digest: {e}")))?;
     let consensus_evidence = optional_json::<FederationJournalConsensusEvidence>(
         &consensus_evidence_json,
         "journal consensus evidence",
@@ -862,16 +854,8 @@ where
             entry.previous_order_digest.to_string(),
         )
         .bind("order_digest", entry.order_digest.to_string())
-        .bind(
-            "operation_outcome_hash",
-            entry
-                .operation_outcome_hash
-                .map(|operation_outcome_hash| operation_outcome_hash.to_string()),
-        )
-        .bind(
-            "state_digest",
-            entry.state_digest.map(|state_digest| state_digest.to_string()),
-        )
+        .bind("operation_outcome_hash", entry.operation_outcome_hash.to_string())
+        .bind("state_digest", entry.state_digest.to_string())
         .bind(
             "consensus_evidence_json",
             entry

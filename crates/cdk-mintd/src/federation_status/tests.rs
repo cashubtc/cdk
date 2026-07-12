@@ -917,6 +917,22 @@ fn status_session_outcome_quorum_guard_accepts_covered_current_height() {
 }
 
 #[test]
+fn status_json_rejects_missing_current_fields() {
+    let (public_config, _) = status_fixture();
+    let status = local_status(&public_config, 1, 0);
+
+    for field in [
+        "pending_mempool_items",
+        "session_outcome_quorum_signers",
+        "materialized_state_rows",
+    ] {
+        let mut value = serde_json::to_value(&status).expect("status json");
+        value.as_object_mut().expect("status object").remove(field);
+        assert!(serde_json::from_value::<FederationLocalStatusResponse>(value).is_err());
+    }
+}
+
+#[test]
 fn status_session_outcome_quorum_guard_rejects_missing_evidence() {
     let (public_config, _) = status_fixture();
     let status = local_status(&public_config, 1, 3);

@@ -240,7 +240,7 @@ pub struct FederationMintQuotePaymentObservation {
     /// Amount already issued for the quote.
     pub amount_issued: Amount,
     /// Optional stable backend payment identifier observed by this member.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_id: Option<PaymentIdentifier>,
     /// Optional method-specific proof or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -732,22 +732,16 @@ pub struct FederationPaymentObservationReportSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote_age_secs: Option<u64>,
     /// Whether this unresolved report has exceeded the stale observation threshold.
-    #[serde(default)]
     pub stale: bool,
     /// Suggested operator action for this report.
-    #[serde(default)]
     pub recommended_action: FederationPaymentObservationReportAction,
     /// Whether a consensus quarantine operation has been accepted for this quote.
-    #[serde(default)]
     pub quarantined: bool,
     /// Operation IDs of accepted quarantine operations for this quote.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quarantine_operation_ids: Vec<FederationOperationId>,
     /// Consensus order indices of accepted quarantine operations for this quote.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quarantine_operation_indices: Vec<u64>,
     /// Redacted machine-readable quarantine reasons.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quarantine_reasons: Vec<FederationPaymentObservationQuarantineReason>,
 }
 

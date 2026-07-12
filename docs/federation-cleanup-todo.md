@@ -1050,7 +1050,42 @@ Persisting each failed delivery increases write contention and recovery code.
 
 ## 15. Remove undeployed federation wire-compatibility defaults
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Current consensus-visible federation fields now fail closed instead of silently
+deserializing obsolete development shapes. Peer status and catch-up responses
+require the materialized-state digest; journal entries require conflict keys,
+the accepted-operation outcome hash, and the post-application state digest;
+materialized rows require their deterministic field map; federation keysets
+require their fee; wallet registry entries require the current schema version
+and connector policy; and operator status/payment-observation reports require
+their current counters, flags, and collections. The status request also carries
+its materialized-row choice explicitly, including `false`.
+
+The journal and SQL codecs now model accepted outcome/state hashes as concrete
+values rather than optional compatibility fields, and fresh SQLite/PostgreSQL
+federation schemas require both columns. Missing-field regressions cover peer
+status, catch-up, journal metadata, keyset fees, and wallet registry policy.
+There were no legacy serde aliases to retain or remove.
+
+Optionality with a current meaning remains intact: setup/DKG phase artifacts,
+pagination and known-digest hints, optional consensus/session evidence,
+application rejection metadata, payment identifiers/proofs, empty-history
+indexes, and optional operator diagnostics. Explicit protocol-version checks
+remain the boundary for genuinely different wire versions.
+
+Verification:
+
+- all 221 focused `cdk-common` federation tests pass;
+- all 21 SQLite federation persistence and fresh-schema tests pass;
+- all 11 focused CLI registry tests and all 99 mint federation tests pass;
+- all 41 focused mintd federation-status tests pass;
+- all 332 Axum federation tests pass, including live AlephBFT, private REST,
+  DKG, restart, and catch-up paths;
+- all 28 standalone Axum and 134 standalone SQLite tests pass;
+- federation-enabled PostgreSQL and mintd compile checks pass.
 
 ### Problem
 

@@ -339,7 +339,6 @@ pub struct FederationMaterializedStateRow {
     /// Stable row key inside the table.
     pub key: String,
     /// Deterministic row fields as string values.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: BTreeMap<String, String>,
 }
 
@@ -570,18 +569,15 @@ pub struct FederationJournalEntry {
     /// Versioned operation envelope.
     pub envelope: FederationOperationEnvelope,
     /// All quote-scoped conflict keys touched by the operation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflict_keys: Vec<FederationOperationConflictKey>,
     /// Digest before this operation was appended.
     pub previous_order_digest: FederationJournalDigest,
     /// Digest after this operation was appended.
     pub order_digest: FederationJournalDigest,
     /// Stable hash of the accepted operation outcome.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation_outcome_hash: Option<FederationOperationOutcomeHash>,
+    pub operation_outcome_hash: FederationOperationOutcomeHash,
     /// Consensus-visible state digest after this operation was appended.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_digest: Option<FederationStateDigest>,
+    pub state_digest: FederationStateDigest,
     /// Ordering-backend evidence for this accepted operation, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consensus_evidence: Option<FederationJournalConsensusEvidence>,
@@ -630,25 +626,21 @@ impl FederationJournalEntry {
             return Err(FederationError::JournalRejectionStateMismatch { index: self.index });
         }
 
-        if let Some(found) = self.state_digest {
-            if found != expected_state_digest {
-                return Err(FederationError::JournalStateDigestMismatch {
-                    index: self.index,
-                    expected: expected_state_digest,
-                    found,
-                });
-            }
+        if self.state_digest != expected_state_digest {
+            return Err(FederationError::JournalStateDigestMismatch {
+                index: self.index,
+                expected: expected_state_digest,
+                found: self.state_digest,
+            });
         }
 
-        if let Some(found) = self.operation_outcome_hash {
-            let expected = self.expected_operation_outcome_hash(expected_state_digest);
-            if found != expected {
-                return Err(FederationError::JournalOutcomeHashMismatch {
-                    index: self.index,
-                    expected: expected.to_string(),
-                    found: found.to_string(),
-                });
-            }
+        let expected = self.expected_operation_outcome_hash(expected_state_digest);
+        if self.operation_outcome_hash != expected {
+            return Err(FederationError::JournalOutcomeHashMismatch {
+                index: self.index,
+                expected: expected.to_string(),
+                found: self.operation_outcome_hash.to_string(),
+            });
         }
 
         Ok(())
@@ -1092,8 +1084,8 @@ impl InMemoryFederationJournal {
             conflict_keys: conflict_keys.clone(),
             previous_order_digest,
             order_digest,
-            operation_outcome_hash: Some(operation_outcome_hash),
-            state_digest: Some(state_digest),
+            operation_outcome_hash,
+            state_digest,
             consensus_evidence,
             rejection: None,
             status,
@@ -1353,8 +1345,8 @@ mod tests {
             .entry()
             .clone();
 
-        let state_digest = entry.state_digest.expect("state digest");
-        let outcome_hash = entry.operation_outcome_hash.expect("outcome hash");
+        let state_digest = entry.state_digest;
+        let outcome_hash = entry.operation_outcome_hash;
 
         assert_eq!(state_digest, journal.state_digest());
         assert_eq!(
@@ -1375,18 +1367,37 @@ mod tests {
 
         let mut tampered_outcome_hash = entry.clone();
         tampered_outcome_hash.operation_outcome_hash =
-            Some(FederationOperationOutcomeHash::from_bytes([42; 32]));
+            FederationOperationOutcomeHash::from_bytes([42; 32]);
         assert!(matches!(
             InMemoryFederationJournal::from_entries(vec![tampered_outcome_hash]),
             Err(FederationError::JournalOutcomeHashMismatch { .. })
         ));
 
         let mut tampered_state_digest = entry;
-        tampered_state_digest.state_digest = Some(FederationStateDigest::from_bytes([24; 32]));
+        tampered_state_digest.state_digest = FederationStateDigest::from_bytes([24; 32]);
         assert!(matches!(
             InMemoryFederationJournal::from_entries(vec![tampered_state_digest]),
             Err(FederationError::JournalStateDigestMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn journal_entry_json_requires_current_consensus_metadata() {
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append")
+            .entry()
+            .clone();
+
+        for field in ["conflict_keys", "operation_outcome_hash", "state_digest"] {
+            let mut value = serde_json::to_value(&entry).expect("journal entry json");
+            value
+                .as_object_mut()
+                .expect("journal entry object")
+                .remove(field);
+            assert!(serde_json::from_value::<FederationJournalEntry>(value).is_err());
+        }
     }
 
     #[test]

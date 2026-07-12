@@ -31,49 +31,35 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sync_peer: Option<MemberId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sync_local_operation_count: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sync_peer_operation_count: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sync_operation_count: Option<u64>,
-    #[serde(default)]
     pub(crate) pending_mempool_items: u64,
-    #[serde(default)]
     pub(crate) pending_response_waiters: u64,
-    #[serde(default)]
     pub(crate) response_cache_items: u64,
-    #[serde(default)]
     pub(crate) response_cache_lookups: u64,
-    #[serde(default)]
     pub(crate) response_cache_hits: u64,
-    #[serde(default)]
     pub(crate) response_cache_hit_rate_bps: u64,
-    #[serde(default)]
     pub(crate) duplicate_submissions: u64,
-    #[serde(default)]
     pub(crate) duplicate_pending_waiter_joins: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_from_index: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_latest_index: Option<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
-    #[serde(default)]
     pub(crate) aleph_bft_live_session_active: bool,
-    #[serde(default)]
     pub(crate) aleph_bft_network_inbound_active: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
 }
 

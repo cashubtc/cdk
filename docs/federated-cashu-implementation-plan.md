@@ -149,6 +149,15 @@ Resolved blocking bugs:
   below-quorum full value-operation,
   production-paced above-quorum basic recovery, and below-finality conflicting
   swap plus melt side-effect matrices.
+- Undeployed federation wire shapes are now strict. Materialized state digests,
+  journal conflict/outcome/state metadata, keyset fees, wallet registry policy,
+  and current status/report fields are required instead of receiving legacy
+  defaults. Optional setup phases, pagination, evidence, payment proof data,
+  and diagnostics remain optional only where absence has current meaning.
+  Missing-field regressions fail closed, while 221 common federation, 21
+  SQLite federation, 11 CLI registry, 99 mint federation, 41 mintd status, and
+  332 Axum federation tests pass alongside 28 standalone Axum and 134
+  standalone SQLite tests; PostgreSQL and mintd federation checks are clean.
 
 ## Recent performance checkpoint
 
