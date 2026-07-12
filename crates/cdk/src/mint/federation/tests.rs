@@ -17,11 +17,11 @@ use cdk_common::error::Error;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationApplicationState, FederationError,
     FederationJournalConsensusEvidence, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
     FederationSwapOperation, InMemoryFederationJournal, MemberId, ThresholdParams,
     TrustedDealerKeysetSpec, TrustedDealerMember,
@@ -40,13 +40,14 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, Conditions, CurrencyUnit, Id,
-    MeltQuoteBolt11Request, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteBolt11Request,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCreateResponse,
+    MeltQuoteCustomResponse, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteBolt11Request,
     MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
     PaymentMethod, Proof, ProofsMethods, PublicKey, RestoreRequest, SecretKey, SigFlag,
     SpendingConditions, State, SwapRequest,
 };
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
-use tokio::sync::{Barrier, Mutex};
+use tokio::sync::Mutex;
 
 mod admission;
 mod keyset;
@@ -330,12 +331,12 @@ struct CountingBackendAgnosticPaymentProcessor {
     make_payment_calls: Arc<AtomicUsize>,
 }
 
-struct BarrierBackendAgnosticPaymentProcessor {
-    quote_barrier: Arc<Barrier>,
+struct QuoteCountingBackendAgnosticPaymentProcessor {
+    quote_calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
-impl MintPayment for BarrierBackendAgnosticPaymentProcessor {
+impl MintPayment for QuoteCountingBackendAgnosticPaymentProcessor {
     type Err = payment::Error;
 
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
@@ -356,7 +357,7 @@ impl MintPayment for BarrierBackendAgnosticPaymentProcessor {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        self.quote_barrier.wait().await;
+        self.quote_calls.fetch_add(1, Ordering::Relaxed);
         BackendAgnosticPaymentProcessor
             .get_payment_quote(unit, options)
             .await
@@ -484,6 +485,25 @@ async fn federated_test_mint_with_backend_agnostic_payment(
         Arc::new(BackendAgnosticPaymentProcessor),
     )
     .await
+}
+
+async fn standalone_test_mint_with_backend_agnostic_payment() -> (Mint, Arc<MintSqliteDatabase>) {
+    let localstore = Arc::new(memory::empty().await.expect("mint db"));
+    let mut builder = MintBuilder::new(localstore.clone());
+    builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(BackendAgnosticPaymentProcessor),
+        )
+        .await
+        .expect("payment processor");
+    let mint = builder
+        .build_with_seed(localstore.clone(), &[9; 64])
+        .await
+        .expect("mint");
+    (mint, localstore)
 }
 
 async fn federated_test_mint_with_counting_payment_processor(
@@ -799,6 +819,63 @@ fn pending_melt_quote_request(amount_msat: u64) -> MeltQuoteRequest {
     fake_melt_quote_request(amount_msat, MeltQuoteState::Pending)
 }
 
+fn test_melt_quote_response(
+    quote: &QuoteId,
+    request: &MeltQuoteRequest,
+) -> MeltQuoteCreateResponse<QuoteId> {
+    match request {
+        MeltQuoteRequest::Bolt11(request) => {
+            MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
+                quote: quote.clone(),
+                amount: Amount::from(
+                    request
+                        .request
+                        .amount_milli_satoshis()
+                        .unwrap_or(1_000)
+                        .div_ceil(1_000),
+                ),
+                fee_reserve: Amount::from(1),
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                payment_preimage: None,
+                change: None,
+                request: Some(request.request.to_string()),
+                unit: Some(request.unit.clone()),
+            })
+        }
+        MeltQuoteRequest::Custom(request) => MeltQuoteCreateResponse::Custom((
+            PaymentMethod::from(request.method.as_str()),
+            MeltQuoteCustomResponse {
+                quote: quote.clone(),
+                amount: Amount::from(1),
+                fee_reserve: Some(Amount::from(1)),
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                payment_preimage: None,
+                change: None,
+                request: Some(request.request.clone()),
+                unit: Some(request.unit.clone()),
+                extra: serde_json::Value::Null,
+            },
+        )),
+        _ => panic!("unsupported federation melt quote test fixture"),
+    }
+}
+
+fn melt_quote_op(
+    runtime_config: &FederationRuntimeConfig,
+    quote: QuoteId,
+    request: MeltQuoteRequest,
+) -> FederationOperationEnvelope {
+    let response = test_melt_quote_response(&quote, &request);
+    runtime_config.melt_quote_operation(
+        quote,
+        request,
+        response,
+        FederationMeltQuoteMetadata::default(),
+    )
+}
+
 async fn setup_pending_federated_melt(
     mint: &Mint,
     localstore: &Arc<MintSqliteDatabase>,
@@ -808,7 +885,11 @@ async fn setup_pending_federated_melt(
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(mint, &quote_entry).await;
 

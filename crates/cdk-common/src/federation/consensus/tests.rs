@@ -90,18 +90,18 @@ fn melt_quote_envelope(
     quote: &str,
     unit: CurrencyUnit,
 ) -> FederationOperationEnvelope {
+    let request = MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        request: "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq"
+            .parse()
+            .expect("bolt11 invoice"),
+        unit,
+        options: None,
+    });
     FederationOperationEnvelope::new(
         federation_id,
-        super::super::FederationOperation::MeltQuote(super::super::FederationMeltQuoteOperation {
-            quote: quote.to_string(),
-            request: MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
-                request: "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq"
-                    .parse()
-                    .expect("bolt11 invoice"),
-                unit,
-                options: None,
-            }),
-        }),
+        super::super::FederationOperation::MeltQuote(
+            super::super::operation::test_melt_quote_operation(quote, request),
+        ),
     )
 }
 

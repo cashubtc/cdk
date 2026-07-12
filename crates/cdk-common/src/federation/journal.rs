@@ -1108,18 +1108,19 @@ mod tests {
     #[test]
     fn journal_appends_operations_with_monotonic_indices_and_digest() {
         let first = mint_quote_envelope(1);
+        let melt_quote_request = crate::MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
+            method: "custom".to_string(),
+            request: "payreq".to_string(),
+            unit: CurrencyUnit::Sat,
+            extra: serde_json::Value::Null,
+        });
         let second = FederationOperationEnvelope::new(
             federation_id(),
             super::super::FederationOperation::MeltQuote(
-                super::super::FederationMeltQuoteOperation {
-                    quote: "melt-quote".to_string(),
-                    request: crate::MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
-                        method: "custom".to_string(),
-                        request: "payreq".to_string(),
-                        unit: CurrencyUnit::Sat,
-                        extra: serde_json::Value::Null,
-                    }),
-                },
+                super::super::operation::test_melt_quote_operation(
+                    "melt-quote",
+                    melt_quote_request,
+                ),
             ),
         );
         let mut journal = InMemoryFederationJournal::new();

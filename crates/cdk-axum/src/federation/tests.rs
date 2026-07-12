@@ -25,9 +25,10 @@ use cdk::federation::{
     FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
     FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationRecord, FederationPaymentObservationReportAction,
     FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
@@ -43,9 +44,9 @@ use cdk::nuts::nut01::{
 };
 use cdk::nuts::nut22::AuthToken;
 use cdk::nuts::{
-    BlindedMessage, CheckStateRequest, CurrencyUnit, Id, MeltQuoteBolt11Request, MeltQuoteState,
-    MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod,
-    PublicKey, RestoreRequest, SecretKey,
+    BlindedMessage, CheckStateRequest, CurrencyUnit, Id, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteState, MintRequest, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
 };
 use cdk::types::FeeReserve;
 use cdk::Amount;
@@ -3084,6 +3085,39 @@ fn swap_output(state: &MintState, label: &str) -> BlindedMessage {
     )
 }
 
+fn test_melt_quote_operation(
+    config: &cdk::mint::FederationRuntimeConfig,
+    quote: QuoteId,
+    request: cdk::MeltQuoteRequest,
+) -> FederationOperationEnvelope {
+    let cdk::MeltQuoteRequest::Bolt11(bolt11) = &request else {
+        panic!("federation route tests only construct bolt11 melt quotes");
+    };
+    let response = cdk::MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
+        quote: quote.clone(),
+        amount: Amount::from(
+            bolt11
+                .request
+                .amount_milli_satoshis()
+                .unwrap_or(1_000)
+                .div_ceil(1_000),
+        ),
+        fee_reserve: Amount::from(1),
+        state: MeltQuoteState::Unpaid,
+        expiry: 4_000_000_000,
+        payment_preimage: None,
+        change: None,
+        request: Some(bolt11.request.to_string()),
+        unit: Some(bolt11.unit.clone()),
+    });
+    config.melt_quote_operation(
+        quote,
+        request,
+        response,
+        FederationMeltQuoteMetadata::default(),
+    )
+}
+
 async fn melt_quote(state: &MintState, amount_msat: u64) -> QuoteId {
     melt_quote_with_description(state, amount_msat, "".to_string()).await
 }
@@ -5344,7 +5378,7 @@ async fn catch_up_applies_melt_quote_operation_to_local_store() {
         unit: CurrencyUnit::Sat,
         options: None,
     });
-    let envelope = config.melt_quote_operation(quote_id.clone(), request);
+    let envelope = test_melt_quote_operation(&config, quote_id.clone(), request);
     let operation_id = envelope.operation_id().expect("operation id");
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
@@ -6968,7 +7002,8 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         1000,
         serde_json::to_string(&fake_description).expect("fake invoice description"),
     );
-    let melt_quote_envelope = config.melt_quote_operation(
+    let melt_quote_envelope = test_melt_quote_operation(
+        &config,
         melt_quote_id.clone(),
         cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
             request: melt_invoice,
@@ -9148,7 +9183,8 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         .expect("conflicting swap operation id");
 
     let melt_quote_id = QuoteId::new();
-    let melt_quote_envelope = config.melt_quote_operation(
+    let melt_quote_envelope = test_melt_quote_operation(
+        &config,
         melt_quote_id.clone(),
         cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
             request: create_fake_invoice(1000, "aleph cross-member melt".to_string()),
@@ -13165,7 +13201,8 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         pay_err: false,
         check_err: false,
     };
-    let melt_quote_envelope = runtime_config.melt_quote_operation(
+    let melt_quote_envelope = test_melt_quote_operation(
+        &runtime_config,
         melt_quote_id.clone(),
         cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
             request: create_fake_invoice(
@@ -13964,7 +14001,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         options: None,
     });
     let melt_quote_envelope =
-        runtime_config.melt_quote_operation(melt_quote_id.clone(), melt_quote_request);
+        test_melt_quote_operation(&runtime_config, melt_quote_id.clone(), melt_quote_request);
     let melt_quote_operation_id =
         submit_live_operation_allowing_pending_timeout(&session.states[0], melt_quote_envelope)
             .await;
@@ -17664,10 +17701,7 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
 
     let err = state
-        .submit_federation_envelope_to_consensus(mint_quote_envelope(
-            &state,
-            &QuoteId::new(),
-        ))
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(&state, &QuoteId::new()))
         .await
         .expect_err("full response waiter set should reject");
     assert!(matches!(
@@ -17911,10 +17945,7 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
     assert_eq!(state.federation_response_cache_entry_count(), 1);
 
     let duplicate_response = state
-        .submit_federation_envelope_to_consensus(mint_quote_envelope(
-            &state,
-            &first_quote_id,
-        ))
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(&state, &first_quote_id))
         .await
         .expect("duplicate submit after cache eviction");
     assert_eq!(duplicate_response.operation_id, first_operation_id);
@@ -18261,10 +18292,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let rejected_quote_id = QuoteId::new();
 
     let err = state
-        .submit_federation_envelope_to_consensus(mint_quote_envelope(
-            &state,
-            &rejected_quote_id,
-        ))
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(&state, &rejected_quote_id))
         .await
         .expect_err("full pending mempool should reject new operation");
 

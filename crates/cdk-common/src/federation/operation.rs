@@ -19,10 +19,12 @@ use super::{
     FederatedKeyset, FederationConfig, FederationError, FederationId,
     FederationPaymentObservationContext, MemberId, Result,
 };
+use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
 use crate::{
-    Amount, BatchMintRequest, BlindedMessage, Id, MeltQuoteRequest, MeltQuoteState, MeltRequest,
-    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, SwapRequest,
+    Amount, BatchMintRequest, BlindedMessage, Id, MeltQuoteCreateResponse, MeltQuoteRequest,
+    MeltQuoteResponse, MeltQuoteState, MeltRequest, MintQuoteRequest, MintQuoteResponse,
+    MintQuoteState, MintRequest, PaymentMethod, QuoteId, SwapRequest,
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v2";
@@ -329,6 +331,208 @@ pub struct FederationMeltQuoteOperation {
     pub quote: String,
     /// Wallet's quote request.
     pub request: MeltQuoteRequest,
+    /// Canonical public quote response accepted by the federation.
+    pub response: MeltQuoteCreateResponse<String>,
+    /// Internal backend metadata omitted from the public response.
+    pub metadata: FederationMeltQuoteMetadata,
+}
+
+/// Backend metadata required to execute an accepted federated melt quote.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationMeltQuoteMetadata {
+    /// Stable payment-processor lookup identifier.
+    pub request_lookup_id: Option<PaymentIdentifier>,
+    /// Payment-method-specific response fields.
+    pub extra_json: Option<serde_json::Value>,
+    /// Backend-estimated confirmation target.
+    pub estimated_blocks: Option<u32>,
+}
+
+impl FederationMeltQuoteMetadata {
+    /// Capture internal metadata from a prepared quote.
+    #[must_use]
+    pub fn from_melt_quote(quote: &MeltQuote) -> Self {
+        Self {
+            request_lookup_id: quote.request_lookup_id.clone(),
+            extra_json: quote.extra_json.clone(),
+            estimated_blocks: quote.estimated_blocks,
+        }
+    }
+}
+
+impl FederationMeltQuoteOperation {
+    /// Validate and materialize the accepted quote using deterministic time.
+    pub fn into_melt_quote(
+        &self,
+        quote_id: QuoteId,
+        created_time: u64,
+    ) -> std::result::Result<MeltQuote, crate::Error> {
+        let response: MeltQuoteResponse<String> = self.response.clone().into();
+        let (expected_request, unit) = match &self.request {
+            MeltQuoteRequest::Bolt11(request) => {
+                (request.request.to_string(), request.unit.clone())
+            }
+            MeltQuoteRequest::Bolt12(request) => (request.request.clone(), request.unit.clone()),
+            MeltQuoteRequest::Onchain(request) => (request.request.clone(), request.unit.clone()),
+            MeltQuoteRequest::Custom(request) => (request.request.clone(), request.unit.clone()),
+        };
+        if self.quote != quote_id.to_string()
+            || response.quote() != &self.quote
+            || response.method() != self.request.method()
+            || response.state() != MeltQuoteState::Unpaid
+            || response.payment_proof().is_some()
+            || response.change().is_some()
+            || response.request() != Some(expected_request.as_str())
+            || response.unit() != Some(unit.clone())
+        {
+            return Err(crate::Error::InvalidPaymentRequest);
+        }
+
+        let (payment_request, fee_reserve, options, fee_options) =
+            match (&self.request, &self.response) {
+                (MeltQuoteRequest::Bolt11(request), MeltQuoteCreateResponse::Bolt11(_)) => (
+                    MeltPaymentRequest::Bolt11 {
+                        bolt11: request.request.clone(),
+                    },
+                    response.fee_reserve(),
+                    request.options,
+                    Vec::new(),
+                ),
+                (MeltQuoteRequest::Bolt12(request), MeltQuoteCreateResponse::Bolt12(_)) => {
+                    let offer = request
+                        .request
+                        .parse()
+                        .map_err(|_| crate::Error::Bolt12parse)?;
+                    (
+                        MeltPaymentRequest::Bolt12 {
+                            offer: Box::new(offer),
+                        },
+                        response.fee_reserve(),
+                        request.options,
+                        Vec::new(),
+                    )
+                }
+                (MeltQuoteRequest::Onchain(request), MeltQuoteCreateResponse::Onchain(onchain)) => {
+                    if onchain.selected_fee_index.is_some()
+                        || onchain.amount != request.amount
+                        || self.metadata.request_lookup_id
+                            != Some(PaymentIdentifier::QuoteId(quote_id.clone()))
+                    {
+                        return Err(crate::Error::InvalidPaymentRequest);
+                    }
+                    let initial = onchain
+                        .fee_options
+                        .iter()
+                        .min_by_key(|option| u64::from(option.fee_reserve))
+                        .ok_or(crate::Error::OnchainFeeOptionsEmpty)?;
+                    if self.metadata.estimated_blocks != Some(initial.estimated_blocks) {
+                        return Err(crate::Error::InvalidPaymentRequest);
+                    }
+                    (
+                        MeltPaymentRequest::Onchain {
+                            address: request.request.clone(),
+                        },
+                        initial.fee_reserve,
+                        None,
+                        onchain.fee_options.clone(),
+                    )
+                }
+                (
+                    MeltQuoteRequest::Custom(request),
+                    MeltQuoteCreateResponse::Custom((_, custom)),
+                ) => {
+                    if custom.extra
+                        != self
+                            .metadata
+                            .extra_json
+                            .clone()
+                            .unwrap_or(serde_json::Value::Null)
+                    {
+                        return Err(crate::Error::InvalidPaymentRequest);
+                    }
+                    (
+                        MeltPaymentRequest::Custom {
+                            method: request.method.clone(),
+                            request: request.request.clone(),
+                        },
+                        response.fee_reserve(),
+                        None,
+                        Vec::new(),
+                    )
+                }
+                _ => return Err(crate::Error::InvalidPaymentMethod),
+            };
+
+        MeltQuote::from_db(
+            quote_id,
+            unit,
+            payment_request,
+            response.amount().into(),
+            fee_reserve.into(),
+            MeltQuoteState::Unpaid,
+            response.expiry(),
+            None,
+            self.metadata.request_lookup_id.clone(),
+            options,
+            created_time,
+            None,
+            self.request.method(),
+            self.metadata.extra_json.clone(),
+            self.metadata.estimated_blocks,
+            fee_options,
+            None,
+        )
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_melt_quote_operation(
+    quote: &str,
+    request: MeltQuoteRequest,
+) -> FederationMeltQuoteOperation {
+    let response = match &request {
+        MeltQuoteRequest::Bolt11(request) => {
+            MeltQuoteCreateResponse::Bolt11(crate::MeltQuoteBolt11Response {
+                quote: quote.to_string(),
+                amount: Amount::from(
+                    request
+                        .request
+                        .amount_milli_satoshis()
+                        .unwrap_or(1_000)
+                        .div_ceil(1_000),
+                ),
+                fee_reserve: Amount::from(1),
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                payment_preimage: None,
+                change: None,
+                request: Some(request.request.to_string()),
+                unit: Some(request.unit.clone()),
+            })
+        }
+        MeltQuoteRequest::Custom(request) => MeltQuoteCreateResponse::Custom((
+            PaymentMethod::from(request.method.as_str()),
+            crate::MeltQuoteCustomResponse {
+                quote: quote.to_string(),
+                amount: Amount::from(1),
+                fee_reserve: Some(Amount::from(1)),
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                payment_preimage: None,
+                change: None,
+                request: Some(request.request.clone()),
+                unit: Some(request.unit.clone()),
+                extra: serde_json::Value::Null,
+            },
+        )),
+        _ => panic!("unsupported common federation melt quote fixture"),
+    };
+    FederationMeltQuoteOperation {
+        quote: quote.to_string(),
+        request,
+        response,
+        metadata: FederationMeltQuoteMetadata::default(),
+    }
 }
 
 /// Observed outgoing melt payment state.
@@ -1511,6 +1715,87 @@ mod tests {
 
     fn bls_key(byte: u8) -> BlsSecretKey {
         BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    #[test]
+    fn federated_melt_quote_conversion_handles_bolt12_and_onchain() {
+        use bitcoin::secp256k1::{PublicKey as Secp256k1PublicKey, Secp256k1, SecretKey};
+        use lightning::offers::offer::OfferBuilder;
+
+        use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
+        use crate::{MeltQuoteBolt12Request, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse};
+
+        let quote_id = QuoteId::new();
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[0xcd; 32]).expect("secret key");
+        let pubkey = Secp256k1PublicKey::from_secret_key(&secp, &secret_key);
+        let offer = OfferBuilder::new(pubkey).build().expect("offer");
+        let bolt12_request = MeltQuoteRequest::Bolt12(MeltQuoteBolt12Request {
+            request: offer.to_string(),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        });
+        let bolt12 = FederationMeltQuoteOperation {
+            quote: quote_id.to_string(),
+            request: bolt12_request,
+            response: MeltQuoteCreateResponse::Bolt12(crate::MeltQuoteBolt12Response {
+                quote: quote_id.to_string(),
+                amount: Amount::from(2),
+                fee_reserve: Amount::from(1),
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                payment_preimage: None,
+                change: None,
+                request: Some(offer.to_string()),
+                unit: Some(CurrencyUnit::Sat),
+            }),
+            metadata: FederationMeltQuoteMetadata::default(),
+        };
+        let bolt12_quote = bolt12
+            .into_melt_quote(quote_id.clone(), 1)
+            .expect("bolt12 quote");
+        assert_eq!(bolt12_quote.payment_method, PaymentMethod::BOLT12);
+
+        let onchain_quote_id = QuoteId::new();
+        let onchain_request = MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+            request: "bcrt1qexample".to_string(),
+            amount: Amount::from(100),
+            unit: CurrencyUnit::Sat,
+        });
+        let fee_options = vec![MeltQuoteOnchainFeeOption {
+            fee_index: 7,
+            fee_reserve: Amount::from(3),
+            estimated_blocks: 6,
+        }];
+        let onchain = FederationMeltQuoteOperation {
+            quote: onchain_quote_id.to_string(),
+            request: onchain_request,
+            response: MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainResponse {
+                quote: onchain_quote_id.to_string(),
+                amount: Amount::from(100),
+                unit: CurrencyUnit::Sat,
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                request: "bcrt1qexample".to_string(),
+                fee_options: fee_options.clone(),
+                selected_fee_index: None,
+                outpoint: None,
+                change: None,
+            }),
+            metadata: FederationMeltQuoteMetadata {
+                request_lookup_id: Some(PaymentIdentifier::QuoteId(onchain_quote_id.clone())),
+                extra_json: None,
+                estimated_blocks: Some(6),
+            },
+        };
+        let onchain_quote = onchain
+            .into_melt_quote(onchain_quote_id, 2)
+            .expect("onchain quote");
+        assert_eq!(
+            onchain_quote.payment_method,
+            PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Onchain)
+        );
+        assert_eq!(onchain_quote.fee_options(), fee_options);
     }
 
     fn rotation_keyset_spec(seed: u8) -> TrustedDealerKeysetSpec {
@@ -2776,15 +3061,14 @@ mod tests {
                 "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
             )],
         );
-        let melt_quote = FederationOperation::MeltQuote(FederationMeltQuoteOperation {
-            quote: "melt-quote".to_string(),
-            request: MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
-                method: "custom".to_string(),
-                request: "payreq".to_string(),
-                unit: CurrencyUnit::Sat,
-                extra: json!({"route": "fake"}),
-            }),
+        let request = MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
+            method: "custom".to_string(),
+            request: "payreq".to_string(),
+            unit: CurrencyUnit::Sat,
+            extra: json!({"route": "fake"}),
         });
+        let melt_quote =
+            FederationOperation::MeltQuote(test_melt_quote_operation("melt-quote", request));
         let melt = FederationOperation::Melt(FederationMeltOperation {
             request: MeltRequest::new(
                 "melt-quote".to_string(),

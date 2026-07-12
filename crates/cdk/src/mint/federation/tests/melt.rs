@@ -3,17 +3,16 @@ use super::*;
 #[tokio::test]
 async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
     let runtime_config = runtime_config();
-    let quote_barrier = Arc::new(Barrier::new(2));
-    let payment_processor = Arc::new(BarrierBackendAgnosticPaymentProcessor {
-        quote_barrier: Arc::clone(&quote_barrier),
-    });
-    let (mint, localstore) =
-        federated_test_mint_with_payment_processor(runtime_config.clone(), payment_processor).await;
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_journal_entry(&localstore, &quote_entry).await;
 
@@ -22,8 +21,12 @@ async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
         mint.apply_accepted_federation_operation(&quote_entry),
     );
 
-    assert_eq!(first.expect("first concurrent apply"), true);
-    assert_eq!(second.expect("second concurrent apply"), true);
+    let first = first.expect("first concurrent apply");
+    let second = second.expect("second concurrent apply");
+    assert!(
+        first || second,
+        "one concurrent apply must materialize the quote"
+    );
     let persisted_quote = localstore
         .get_melt_quote(&quote)
         .await
@@ -37,6 +40,183 @@ async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
         .await
         .expect_err("same quote id with another request must be rejected");
     assert!(mismatch.to_string().contains("mismatched local quote"));
+}
+
+#[tokio::test]
+async fn accepted_melt_quote_materializes_canonical_terms_without_follower_backend_call() {
+    let runtime_config = runtime_config();
+    let (proposer, proposer_store) =
+        federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+    let request = pending_melt_quote_request(1_000);
+    let quote = QuoteId::new();
+    let (response, metadata) = proposer
+        .prepare_federation_melt_quote(quote.clone(), request.clone())
+        .await
+        .expect("prepare canonical melt quote");
+    assert_eq!(response.quote(), Some(&quote));
+    assert!(proposer_store
+        .get_melt_quote(&quote)
+        .await
+        .expect("proposer quote lookup")
+        .is_none());
+
+    let quote_calls = Arc::new(AtomicUsize::new(0));
+    let follower_backend = Arc::new(QuoteCountingBackendAgnosticPaymentProcessor {
+        quote_calls: Arc::clone(&quote_calls),
+    });
+    let (follower, follower_store) =
+        federated_test_mint_with_payment_processor(runtime_config.clone(), follower_backend).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(
+            quote.clone(),
+            request,
+            response.clone(),
+            metadata.clone(),
+        ),
+    );
+    persist_and_apply_entry(&follower, &quote_entry).await;
+    assert!(!follower
+        .apply_accepted_federation_operation(&quote_entry)
+        .await
+        .expect("exact quote replay"));
+
+    assert_eq!(quote_calls.load(Ordering::Relaxed), 0);
+    let stored = follower_store
+        .get_melt_quote(&quote)
+        .await
+        .expect("follower quote lookup")
+        .expect("follower quote");
+    assert_eq!(
+        FederationMeltQuoteMetadata::from_melt_quote(&stored),
+        metadata
+    );
+    let MeltQuoteCreateResponse::Bolt11(response) = response else {
+        panic!("expected bolt11 response");
+    };
+    assert_eq!(
+        stored.amount(),
+        response.amount.with_unit(stored.unit.clone())
+    );
+    assert_eq!(
+        stored.fee_reserve(),
+        response.fee_reserve.with_unit(stored.unit.clone())
+    );
+    assert_eq!(stored.expiry, response.expiry);
+    assert_eq!(stored.created_time, quote_entry.index.saturating_add(1));
+}
+
+#[tokio::test]
+async fn accepted_melt_quote_rejects_conflicting_preexisting_quote_without_rewrite() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let quote = QuoteId::new();
+    let request = pending_melt_quote_request(1_000);
+    let response = test_melt_quote_response(&quote, &request);
+    let envelope = runtime_config.melt_quote_operation(
+        quote.clone(),
+        request,
+        response,
+        FederationMeltQuoteMetadata::default(),
+    );
+    let FederationOperation::MeltQuote(operation) = &envelope.operation else {
+        panic!("expected melt quote operation");
+    };
+    let conflicting = operation
+        .into_melt_quote(quote.clone(), 999)
+        .expect("conflicting local quote");
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    tx.add_melt_quote(conflicting)
+        .await
+        .expect("insert conflicting quote");
+    tx.commit().await.expect("commit conflicting quote");
+
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_entry = appended_entry(&mut journal, envelope);
+    persist_journal_entry(&localstore, &quote_entry).await;
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&quote_entry))
+            .await,
+        Err(Error::InvalidPaymentRequest)
+    ));
+    assert_eq!(
+        localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("conflicting quote lookup")
+            .expect("conflicting quote")
+            .created_time,
+        999
+    );
+}
+
+#[tokio::test]
+async fn standalone_melt_quote_creation_still_persists_quote() {
+    let (mint, localstore) = standalone_test_mint_with_backend_agnostic_payment().await;
+    let request = pending_melt_quote_request(1_000);
+    let response = mint
+        .get_melt_quote(request)
+        .await
+        .expect("standalone melt quote");
+    let quote = response.quote().cloned().expect("quote id");
+    let stored = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("standalone quote lookup")
+        .expect("standalone quote persisted");
+    assert_eq!(stored.id, quote);
+    assert_eq!(stored.state, MeltQuoteState::Unpaid);
+}
+
+#[tokio::test]
+async fn later_melt_quote_does_not_retroactively_authorize_older_melt() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "pre-quote-melt-input-one"),
+        proof_for_runtime(&runtime_config, "pre-quote-melt-input-two"),
+    ];
+    let input_ys = proofs.ys().expect("pre-quote input ys");
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(quote.clone(), proofs, None))
+            .expect("melt operation"),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await,
+        Err(Error::UnknownQuote)
+    ));
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    assert!(quote_entry.index > melt_entry.index);
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await,
+        Err(Error::UnknownQuote)
+    ));
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("pre-quote input states"),
+        vec![None, None]
+    );
 }
 
 #[tokio::test]
@@ -146,7 +326,11 @@ async fn apply_federation_melt_rejects_bad_proof_signature_before_state_changes(
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -198,8 +382,11 @@ async fn apply_federation_melt_rejects_oversized_proof_content_before_state_chan
     let secret_quote = QuoteId::new();
     let secret_quote_entry = appended_entry(
         &mut journal,
-        runtime_config
-            .melt_quote_operation(secret_quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            secret_quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &secret_quote_entry).await;
     let keyset = &runtime_config.public_config().keysets[0];
@@ -239,8 +426,11 @@ async fn apply_federation_melt_rejects_oversized_proof_content_before_state_chan
     let witness_quote = QuoteId::new();
     let witness_quote_entry = appended_entry(
         &mut journal,
-        runtime_config
-            .melt_quote_operation(witness_quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            witness_quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &witness_quote_entry).await;
 
@@ -287,7 +477,11 @@ async fn apply_federation_melt_rejects_duplicate_inputs_before_state_changes() {
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -328,7 +522,11 @@ async fn apply_federation_melt_rejects_p2pk_missing_witness_before_state_changes
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -370,7 +568,11 @@ async fn apply_federation_melt_rejects_non_v3_change_before_state_changes() {
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -419,7 +621,11 @@ async fn apply_federation_melt_rejects_unbalanced_inputs_before_payment_attempt(
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -553,7 +759,11 @@ async fn melt_federation_pending_quote_allows_same_operation_replay_without_paym
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -686,7 +896,11 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -786,7 +1000,11 @@ async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -879,7 +1097,11 @@ async fn apply_federation_melt_retries_failed_quote_state_with_payment_attempt()
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
     set_melt_quote_state(&localstore, &quote, MeltQuoteState::Failed).await;
@@ -959,7 +1181,8 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
     };
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(
+        melt_quote_op(
+            &runtime_config,
             quote.clone(),
             MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
                 request: cdk_fake_wallet::create_fake_invoice(
@@ -1172,7 +1395,11 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
 
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
@@ -1269,7 +1496,8 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(
+        melt_quote_op(
+            &runtime_config,
             quote.clone(),
             fake_melt_quote_request(1_000, MeltQuoteState::Paid),
         ),
@@ -1643,9 +1871,16 @@ async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() 
     let (mint, localstore) =
         federated_test_mint_with_payment_processor(runtime_config.clone(), payment_processor).await;
     let quote = QuoteId::new();
-    mint.get_federation_melt_quote(quote.clone(), pending_melt_quote_request(1_000))
-        .await
-        .expect("federation melt quote");
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
     let input_ys;
     let request = {
         let proofs = vec![
@@ -1730,7 +1965,8 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
     let melt_quote = QuoteId::new();
     let melt_quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(
+        melt_quote_op(
+            &runtime_config,
             melt_quote.clone(),
             MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
                 request: invoice,
@@ -1973,7 +2209,11 @@ async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment()
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        melt_quote_op(
+            &runtime_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 

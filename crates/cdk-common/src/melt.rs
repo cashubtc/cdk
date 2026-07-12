@@ -90,6 +90,17 @@ pub enum MeltQuoteCreateResponse<Q> {
     Custom((PaymentMethod, MeltQuoteCustomResponse<Q>)),
 }
 
+impl<Q> From<MeltQuoteCreateResponse<Q>> for MeltQuoteResponse<Q> {
+    fn from(value: MeltQuoteCreateResponse<Q>) -> Self {
+        match value {
+            MeltQuoteCreateResponse::Bolt11(response) => Self::Bolt11(response),
+            MeltQuoteCreateResponse::Bolt12(response) => Self::Bolt12(response),
+            MeltQuoteCreateResponse::Onchain(response) => Self::Onchain(response),
+            MeltQuoteCreateResponse::Custom(response) => Self::Custom(response),
+        }
+    }
+}
+
 impl<Q> MeltQuoteResponse<Q> {
     /// Returns the payment method for this response.
     pub fn method(&self) -> PaymentMethod {

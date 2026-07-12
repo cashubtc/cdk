@@ -144,28 +144,40 @@ async fn check_melt_quote_for_route(
     state.mint.check_melt_quote(quote_id).await
 }
 
+#[cfg(feature = "federation")]
+type RouteFederationMeltQuoteMetadata = cdk::federation::FederationMeltQuoteMetadata;
+#[cfg(not(feature = "federation"))]
+type RouteFederationMeltQuoteMetadata = ();
+
 async fn create_melt_quote_for_route(
     state: &MintState,
     request: cdk::MeltQuoteRequest,
     assigned_quote_id: Option<QuoteId>,
-) -> Result<MeltQuoteCreateResponse<QuoteId>, cdk::Error> {
+) -> Result<
+    (
+        MeltQuoteCreateResponse<QuoteId>,
+        Option<RouteFederationMeltQuoteMetadata>,
+    ),
+    cdk::Error,
+> {
     #[cfg(feature = "federation")]
     if let Some(quote_id) = assigned_quote_id {
-        if let Some(response) = state
+        if let Some((response, metadata)) = state
             .mint
-            .existing_federation_melt_quote(&quote_id, &request)
+            .existing_federation_melt_quote_preparation(&quote_id, &request)
             .await?
         {
-            return Ok(response);
+            return Ok((response, Some(metadata)));
         }
-        return state
+        let (response, metadata) = state
             .mint
-            .get_federation_melt_quote(quote_id, request)
-            .await;
+            .prepare_federation_melt_quote(quote_id, request)
+            .await?;
+        return Ok((response, Some(metadata)));
     }
 
     let _ = assigned_quote_id;
-    state.mint.get_melt_quote(request).await
+    Ok((state.mint.get_melt_quote(request).await?, None))
 }
 
 impl<S> FromRequestParts<S> for PreferHeader
@@ -415,12 +427,14 @@ async fn submit_federation_melt_quote_operation(
     state: &MintState,
     request: cdk::MeltQuoteRequest,
     response: &MeltQuoteCreateResponse<QuoteId>,
+    metadata: Option<RouteFederationMeltQuoteMetadata>,
 ) -> Result<(), cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
         return Ok(());
     };
     let quote = response.quote().cloned().ok_or(cdk::Error::UnknownQuote)?;
-    let envelope = config.melt_quote_operation(quote, request);
+    let metadata = metadata.ok_or(cdk::Error::Internal)?;
+    let envelope = config.melt_quote_operation(quote, request, response.clone(), metadata);
     state.submit_federation_envelope(envelope).await?;
     Ok(())
 }
@@ -792,7 +806,7 @@ pub async fn post_melt_custom_quote(
     let assigned_quote_id =
         assigned_federation_quote_id(&state, quote_query).map_err(into_response)?;
 
-    let (quote_request, response) = match method.as_str() {
+    let (quote_request, response, federation_metadata) = match method.as_str() {
         "bolt11" => {
             let bolt11_request: MeltQuoteBolt11Request =
                 serde_json::from_value(payload).map_err(|e| {
@@ -801,7 +815,7 @@ pub async fn post_melt_custom_quote(
                 })?;
 
             let quote_request = cdk::MeltQuoteRequest::Bolt11(bolt11_request);
-            let response = create_melt_quote_for_route(
+            let (response, metadata) = create_melt_quote_for_route(
                 &state,
                 quote_request.clone(),
                 assigned_quote_id.clone(),
@@ -809,7 +823,7 @@ pub async fn post_melt_custom_quote(
             .await
             .map_err(into_response)?;
 
-            (quote_request, response)
+            (quote_request, response, metadata)
         }
         "bolt12" => {
             let bolt12_request: MeltQuoteBolt12Request =
@@ -819,7 +833,7 @@ pub async fn post_melt_custom_quote(
                 })?;
 
             let quote_request = cdk::MeltQuoteRequest::Bolt12(bolt12_request);
-            let response = create_melt_quote_for_route(
+            let (response, metadata) = create_melt_quote_for_route(
                 &state,
                 quote_request.clone(),
                 assigned_quote_id.clone(),
@@ -827,7 +841,7 @@ pub async fn post_melt_custom_quote(
             .await
             .map_err(into_response)?;
 
-            (quote_request, response)
+            (quote_request, response, metadata)
         }
         "onchain" => {
             let onchain_request: MeltQuoteOnchainRequest = serde_json::from_value(payload)
@@ -837,7 +851,7 @@ pub async fn post_melt_custom_quote(
                 })?;
 
             let quote_request = cdk::MeltQuoteRequest::Onchain(onchain_request);
-            let response = create_melt_quote_for_route(
+            let (response, metadata) = create_melt_quote_for_route(
                 &state,
                 quote_request.clone(),
                 assigned_quote_id.clone(),
@@ -845,7 +859,7 @@ pub async fn post_melt_custom_quote(
             .await
             .map_err(into_response)?;
 
-            (quote_request, response)
+            (quote_request, response, metadata)
         }
         _ => {
             let custom_request: MeltQuoteCustomRequest =
@@ -862,7 +876,7 @@ pub async fn post_melt_custom_quote(
             }
 
             let quote_request = cdk::MeltQuoteRequest::Custom(custom_request);
-            let response = create_melt_quote_for_route(
+            let (response, metadata) = create_melt_quote_for_route(
                 &state,
                 quote_request.clone(),
                 assigned_quote_id.clone(),
@@ -870,16 +884,16 @@ pub async fn post_melt_custom_quote(
             .await
             .map_err(into_response)?;
 
-            (quote_request, response)
+            (quote_request, response, metadata)
         }
     };
 
     #[cfg(feature = "federation")]
-    submit_federation_melt_quote_operation(&state, quote_request, &response)
+    submit_federation_melt_quote_operation(&state, quote_request, &response, federation_metadata)
         .await
         .map_err(into_response)?;
     #[cfg(not(feature = "federation"))]
-    let _ = quote_request;
+    let _ = (quote_request, federation_metadata);
 
     Ok(melt_quote_create_response_to_json(response))
 }

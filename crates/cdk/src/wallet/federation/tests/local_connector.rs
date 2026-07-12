@@ -427,12 +427,13 @@ impl MintConnector for LocalFederatedMemberConnector {
             return Ok(response.into());
         }
 
-        let response = self
+        let (response, metadata) = self
             .mint
-            .get_federation_melt_quote(quote_id.clone(), request.clone())
+            .prepare_federation_melt_quote(quote_id.clone(), request.clone())
             .await?;
         let config = self.effective_federation_config().await?;
-        let envelope = config.melt_quote_operation(quote_id.clone(), request);
+        let envelope =
+            config.melt_quote_operation(quote_id.clone(), request, response.clone(), metadata);
         self.append_and_apply_to_federation(envelope).await?;
         Ok(response.into())
     }

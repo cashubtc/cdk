@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use cdk_common::database::{DynMintDatabase, Error as DatabaseError};
 #[cfg(feature = "federation")]
-use cdk_common::federation::FederationOperationId;
+use cdk_common::federation::{FederationMeltQuoteMetadata, FederationOperationId};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 #[cfg(feature = "federation")]
@@ -126,6 +126,40 @@ pub(super) fn ensure_melt_quote_matches_request(
     }
 }
 
+fn melt_quote_create_response(quote: MeltQuote) -> MeltQuoteCreateResponse<QuoteId> {
+    match quote.into_response(None) {
+        MeltQuoteResponse::Bolt11(response) => MeltQuoteCreateResponse::Bolt11(response),
+        MeltQuoteResponse::Bolt12(response) => MeltQuoteCreateResponse::Bolt12(response),
+        MeltQuoteResponse::Onchain(response) => MeltQuoteCreateResponse::Onchain(response),
+        MeltQuoteResponse::Custom(response) => MeltQuoteCreateResponse::Custom(response),
+    }
+}
+
+#[cfg(feature = "federation")]
+fn federation_melt_quote_preparation(
+    quote: &MeltQuote,
+) -> (
+    MeltQuoteCreateResponse<QuoteId>,
+    FederationMeltQuoteMetadata,
+) {
+    let mut canonical = quote.clone();
+    canonical.state = MeltQuoteState::Unpaid;
+    canonical.payment_proof = None;
+    canonical.paid_time = None;
+    canonical.selected_fee_index = None;
+
+    let mut metadata = FederationMeltQuoteMetadata::from_melt_quote(quote);
+    if quote.payment_method == PaymentMethod::Known(KnownMethod::Onchain) {
+        metadata.estimated_blocks = quote
+            .fee_options()
+            .iter()
+            .min_by_key(|option| u64::from(option.fee_reserve))
+            .map(|option| option.estimated_blocks);
+    }
+
+    (melt_quote_create_response(canonical), metadata)
+}
+
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
 pub struct PendingMelt {
@@ -193,13 +227,27 @@ impl Mint {
         };
         ensure_melt_quote_matches_request(&quote, request)?;
 
-        let response: MeltQuoteResponse<QuoteId> = quote.into();
-        Ok(Some(match response {
-            MeltQuoteResponse::Bolt11(response) => MeltQuoteCreateResponse::Bolt11(response),
-            MeltQuoteResponse::Bolt12(response) => MeltQuoteCreateResponse::Bolt12(response),
-            MeltQuoteResponse::Onchain(response) => MeltQuoteCreateResponse::Onchain(response),
-            MeltQuoteResponse::Custom(response) => MeltQuoteCreateResponse::Custom(response),
-        }))
+        Ok(Some(melt_quote_create_response(quote)))
+    }
+
+    /// Return an existing federated melt quote and its internal metadata.
+    #[cfg(feature = "federation")]
+    pub async fn existing_federation_melt_quote_preparation(
+        &self,
+        quote_id: &QuoteId,
+        request: &MeltQuoteRequest,
+    ) -> Result<
+        Option<(
+            MeltQuoteCreateResponse<QuoteId>,
+            FederationMeltQuoteMetadata,
+        )>,
+        Error,
+    > {
+        let Some(quote) = self.localstore.get_melt_quote(quote_id).await? else {
+            return Ok(None);
+        };
+        ensure_melt_quote_matches_request(&quote, request)?;
+        Ok(Some(federation_melt_quote_preparation(&quote)))
     }
 
     async fn persist_melt_quote_idempotently(
@@ -409,58 +457,60 @@ impl Mint {
         &self,
         melt_quote_request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error> {
-        match melt_quote_request {
-            MeltQuoteRequest::Bolt11(bolt11_request) => Ok(MeltQuoteCreateResponse::Bolt11(
-                self.get_melt_bolt11_quote_impl(&bolt11_request, None)
-                    .await?,
-            )),
-            MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
-                self.get_melt_bolt12_quote_impl(&bolt12_request, None)
-                    .await?,
-            )),
-            MeltQuoteRequest::Onchain(onchain_request) => Ok(MeltQuoteCreateResponse::Onchain(
-                self.get_melt_onchain_quote_impl(&onchain_request, None)
-                    .await?,
-            )),
-            MeltQuoteRequest::Custom(request) => {
-                let quote = self.get_melt_custom_quote_impl(&request, None).await?;
-                let method = PaymentMethod::from(request.method.as_str());
-
-                Ok(MeltQuoteCreateResponse::Custom((method, quote)))
+        let quote = match melt_quote_request {
+            MeltQuoteRequest::Bolt11(request) => {
+                self.get_melt_bolt11_quote_impl(&request, None, true)
+                    .await?
             }
-        }
+            MeltQuoteRequest::Bolt12(request) => {
+                self.get_melt_bolt12_quote_impl(&request, None, true)
+                    .await?
+            }
+            MeltQuoteRequest::Onchain(request) => {
+                self.get_melt_onchain_quote_impl(&request, None, true)
+                    .await?
+            }
+            MeltQuoteRequest::Custom(request) => {
+                self.get_melt_custom_quote_impl(&request, None, true)
+                    .await?
+            }
+        };
+        Ok(melt_quote_create_response(quote))
     }
 
-    /// Get a melt quote using a consensus-assigned quote id for federation replay.
+    /// Prepare a canonical melt quote without persisting proposer-local state.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
-    pub async fn get_federation_melt_quote(
+    pub async fn prepare_federation_melt_quote(
         &self,
         quote_id: QuoteId,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error> {
-        match melt_quote_request {
-            MeltQuoteRequest::Bolt11(bolt11_request) => Ok(MeltQuoteCreateResponse::Bolt11(
-                self.get_melt_bolt11_quote_impl(&bolt11_request, Some(quote_id))
-                    .await?,
-            )),
-            MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
-                self.get_melt_bolt12_quote_impl(&bolt12_request, Some(quote_id))
-                    .await?,
-            )),
-            MeltQuoteRequest::Onchain(onchain_request) => Ok(MeltQuoteCreateResponse::Onchain(
-                self.get_melt_onchain_quote_impl(&onchain_request, Some(quote_id))
-                    .await?,
-            )),
-            MeltQuoteRequest::Custom(request) => {
-                let method = PaymentMethod::from(request.method.as_str());
-                let quote = self
-                    .get_melt_custom_quote_impl(&request, Some(quote_id))
-                    .await?;
-
-                Ok(MeltQuoteCreateResponse::Custom((method, quote)))
+    ) -> Result<
+        (
+            MeltQuoteCreateResponse<QuoteId>,
+            FederationMeltQuoteMetadata,
+        ),
+        Error,
+    > {
+        let quote = match melt_quote_request {
+            MeltQuoteRequest::Bolt11(request) => {
+                self.get_melt_bolt11_quote_impl(&request, Some(quote_id), false)
+                    .await?
             }
-        }
+            MeltQuoteRequest::Bolt12(request) => {
+                self.get_melt_bolt12_quote_impl(&request, Some(quote_id), false)
+                    .await?
+            }
+            MeltQuoteRequest::Onchain(request) => {
+                self.get_melt_onchain_quote_impl(&request, Some(quote_id), false)
+                    .await?
+            }
+            MeltQuoteRequest::Custom(request) => {
+                self.get_melt_custom_quote_impl(&request, Some(quote_id), false)
+                    .await?
+            }
+        };
+        Ok(federation_melt_quote_preparation(&quote))
     }
 
     /// Implementation of get_melt_bolt11_quote
@@ -469,7 +519,8 @@ impl Mint {
         &self,
         melt_request: &MeltQuoteBolt11Request,
         quote_id: Option<QuoteId>,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        persist_quote: bool,
+    ) -> Result<MeltQuote, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_bolt11_quote");
 
@@ -566,12 +617,12 @@ impl Mint {
                 payment_quote.request_lookup_id
             );
 
-            let request = MeltQuoteRequest::Bolt11(melt_request.clone());
-            let quote = self
-                .persist_melt_quote_idempotently(quote, &request)
-                .await?;
-
-            Ok(quote.into())
+            if persist_quote {
+                let request = MeltQuoteRequest::Bolt11(melt_request.clone());
+                self.persist_melt_quote_idempotently(quote, &request).await
+            } else {
+                Ok(quote)
+            }
         }
         .await;
 
@@ -589,7 +640,8 @@ impl Mint {
         &self,
         melt_request: &MeltQuoteBolt12Request,
         quote_id: Option<QuoteId>,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        persist_quote: bool,
+    ) -> Result<MeltQuote, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_bolt12_quote");
 
@@ -684,12 +736,12 @@ impl Mint {
                 payment_quote.request_lookup_id
             );
 
-            let request = MeltQuoteRequest::Bolt12(melt_request.clone());
-            let quote = self
-                .persist_melt_quote_idempotently(quote, &request)
-                .await?;
-
-            Ok(quote.into())
+            if persist_quote {
+                let request = MeltQuoteRequest::Bolt12(melt_request.clone());
+                self.persist_melt_quote_idempotently(quote, &request).await
+            } else {
+                Ok(quote)
+            }
         }
         .await;
 
@@ -707,7 +759,8 @@ impl Mint {
         &self,
         melt_request: &MeltQuoteOnchainRequest,
         quote_id: Option<QuoteId>,
-    ) -> Result<MeltQuoteOnchainResponse<QuoteId>, Error> {
+        persist_quote: bool,
+    ) -> Result<MeltQuote, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_onchain_quote");
 
@@ -820,12 +873,12 @@ impl Mint {
                 fee_options,
             )?;
 
-            let request = MeltQuoteRequest::Onchain(melt_request.clone());
-            let quote = self
-                .persist_melt_quote_idempotently(quote, &request)
-                .await?;
-
-            Ok(quote.into())
+            if persist_quote {
+                let request = MeltQuoteRequest::Onchain(melt_request.clone());
+                self.persist_melt_quote_idempotently(quote, &request).await
+            } else {
+                Ok(quote)
+            }
         }
         .await;
 
@@ -843,7 +896,8 @@ impl Mint {
         &self,
         melt_request: &MeltQuoteCustomRequest,
         quote_id: Option<QuoteId>,
-    ) -> Result<MeltQuoteCustomResponse<QuoteId>, Error> {
+        persist_quote: bool,
+    ) -> Result<MeltQuote, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_custom_quote");
 
@@ -956,12 +1010,12 @@ impl Mint {
                 payment_quote.request_lookup_id
             );
 
-            let request = MeltQuoteRequest::Custom(melt_request.clone());
-            let quote = self
-                .persist_melt_quote_idempotently(quote, &request)
-                .await?;
-
-            Ok(quote.into())
+            if persist_quote {
+                let request = MeltQuoteRequest::Custom(melt_request.clone());
+                self.persist_melt_quote_idempotently(quote, &request).await
+            } else {
+                Ok(quote)
+            }
         }
         .await;
 

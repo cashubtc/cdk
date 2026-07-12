@@ -101,22 +101,28 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
         .validate_federated_mint_payment_observation_submission(&over_issued_mint)
         .is_err());
 
+    let request = pending_melt_quote_request(1_000);
     let melt_quote = FederationMeltQuoteOperation {
         quote: quote.to_string(),
-        request: pending_melt_quote_request(1_000),
+        response: test_melt_quote_response(&quote, &request).into(),
+        metadata: FederationMeltQuoteMetadata::default(),
+        request,
     };
     runtime_config
         .validate_federated_melt_quote_submission(&melt_quote)
         .expect("valid melt quote submission");
 
+    let request = MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
+        method: "custom".to_string(),
+        request: String::new(),
+        unit: CurrencyUnit::Sat,
+        extra: serde_json::Value::Null,
+    });
     let empty_melt_quote = FederationMeltQuoteOperation {
         quote: quote.to_string(),
-        request: MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
-            method: "custom".to_string(),
-            request: String::new(),
-            unit: CurrencyUnit::Sat,
-            extra: serde_json::Value::Null,
-        }),
+        response: test_melt_quote_response(&quote, &request).into(),
+        metadata: FederationMeltQuoteMetadata::default(),
+        request,
     };
     assert!(runtime_config
         .validate_federated_melt_quote_submission(&empty_melt_quote)

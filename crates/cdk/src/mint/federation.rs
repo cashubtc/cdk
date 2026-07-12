@@ -16,11 +16,11 @@ use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationApplicationState, FederationBlindSignatureShareSet, FederationConfig,
     FederationConfigDigest, FederationError, FederationId, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
@@ -30,11 +30,12 @@ use cdk_common::mint::{
 };
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
 use cdk_common::{
-    Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltQuoteRequest,
-    MeltRequest, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
-    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
-    MintResponse, NotificationPayload, PaymentMethod, Proofs, ProofsMethods, PublicKey, QuoteId,
-    RestoreRequest, SpendingConditionVerification, State, SwapRequest, SwapResponse,
+    Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit,
+    MeltQuoteCreateResponse, MeltQuoteRequest, MeltRequest, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, NotificationPayload,
+    PaymentMethod, Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest,
+    SpendingConditionVerification, State, SwapRequest, SwapResponse,
 };
 use uuid::Uuid;
 
@@ -325,6 +326,8 @@ impl FederationRuntimeConfig {
         &self,
         quote: Q,
         request: MeltQuoteRequest,
+        response: MeltQuoteCreateResponse<QuoteId>,
+        metadata: FederationMeltQuoteMetadata,
     ) -> FederationOperationEnvelope
     where
         Q: ToString,
@@ -333,6 +336,8 @@ impl FederationRuntimeConfig {
             FederationMeltQuoteOperation {
                 quote: quote.to_string(),
                 request,
+                response: response.into(),
+                metadata,
             },
         ))
     }
@@ -352,6 +357,8 @@ impl FederationRuntimeConfig {
                 "federation melt quote request has empty payment request".to_string(),
             ));
         }
+        let quote = operation.into_melt_quote(quote_id_from_federation(&operation.quote)?, 1)?;
+        ensure_melt_quote_matches_request(&quote, &operation.request)?;
 
         Ok(())
     }
@@ -1432,6 +1439,27 @@ impl Mint {
         ))
     }
 
+    async fn require_prior_applied_melt_quote(
+        &self,
+        quote: &QuoteId,
+        max_operation_index: u64,
+    ) -> Result<(), Error> {
+        let entries = self.localstore.get_federation_journal_entries().await?;
+        let has_prior_quote = entries.iter().any(|entry| {
+            entry.index < max_operation_index
+                && entry.status() == FederationOperationStatus::Applied
+                && matches!(
+                    &entry.envelope.operation,
+                    FederationOperation::MeltQuote(operation)
+                        if operation.quote == quote.to_string()
+                )
+        });
+        if !has_prior_quote {
+            return Err(Error::UnknownQuote);
+        }
+        Ok(())
+    }
+
     fn federation_payment_observation_can_finalize_at_or_before(
         &self,
         candidate: &FederationPaymentObservation,
@@ -2044,15 +2072,24 @@ impl Mint {
         operation: &FederationMeltQuoteOperation,
     ) -> Result<(), Error> {
         let quote_id = quote_id_from_federation(&operation.quote)?;
-        if let Some(existing) = self.localstore.get_melt_quote(&quote_id).await? {
-            ensure_melt_quote_matches_request(&existing, &operation.request)?;
-        } else {
-            self.get_federation_melt_quote(quote_id, operation.request.clone())
-                .await?;
-        }
+        let created_time = federation_accepted_logical_time(entry);
+        let quote = operation.into_melt_quote(quote_id, created_time)?;
+        ensure_melt_quote_matches_request(&quote, &operation.request)?;
 
-        let transaction = self.localstore.begin_transaction().await?;
-        finish_federation_apply_transaction(transaction, entry, Ok(())).await
+        let mut tx = self.localstore.begin_transaction().await?;
+        let outcome = async {
+            if let Some(existing) = tx.get_melt_quote(&quote.id).await? {
+                ensure_melt_quote_matches_request(&existing, &operation.request)?;
+                if !federation_melt_quote_immutable_terms_match(&existing, &quote) {
+                    return Err(Error::InvalidPaymentRequest);
+                }
+            } else {
+                tx.add_melt_quote(quote).await?;
+            }
+            Ok(())
+        }
+        .await;
+        finish_federation_apply_transaction(tx, entry, outcome).await
     }
 
     async fn apply_federation_melt_quote_payment(
@@ -2255,6 +2292,8 @@ impl Mint {
         let operation_id = entry.operation_id;
         let request = MeltRequest::<QuoteId>::try_from(operation.request.clone())
             .map_err(|_| Error::UnknownQuote)?;
+        self.require_prior_applied_melt_quote(request.quote(), entry.index)
+            .await?;
         if self
             .federation_payment_observation_is_quarantined_at_or_before(
                 FederationPaymentObservationContext::MeltQuote,
@@ -2677,6 +2716,42 @@ fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {
         MeltQuoteRequest::Onchain(request) => request.request.clone(),
         MeltQuoteRequest::Custom(request) => request.request.clone(),
     }
+}
+
+fn federation_melt_quote_immutable_terms_match(existing: &MeltQuote, proposed: &MeltQuote) -> bool {
+    let fee_selection_matches = match existing.selected_fee_index {
+        Some(selected)
+            if existing.payment_method
+                == PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) =>
+        {
+            existing
+                .fee_options()
+                .iter()
+                .find(|option| option.fee_index == selected)
+                .is_some_and(|option| {
+                    existing.fee_reserve() == option.fee_reserve.with_unit(existing.unit.clone())
+                        && existing.estimated_blocks == Some(option.estimated_blocks)
+                })
+        }
+        Some(_) => false,
+        None => {
+            existing.fee_reserve() == proposed.fee_reserve()
+                && existing.estimated_blocks == proposed.estimated_blocks
+        }
+    };
+
+    existing.id == proposed.id
+        && existing.unit == proposed.unit
+        && existing.request == proposed.request
+        && existing.amount() == proposed.amount()
+        && fee_selection_matches
+        && existing.expiry == proposed.expiry
+        && existing.request_lookup_id == proposed.request_lookup_id
+        && existing.options == proposed.options
+        && existing.created_time == proposed.created_time
+        && existing.payment_method == proposed.payment_method
+        && existing.extra_json == proposed.extra_json
+        && existing.fee_options() == proposed.fee_options()
 }
 
 fn federation_payment_identifier_from_label(payment_id: &str) -> PaymentIdentifier {
