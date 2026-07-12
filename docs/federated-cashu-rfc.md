@@ -87,19 +87,23 @@ restarted finalized config is not hidden by an intermediary cache.
 
 The response contains only `FederationConfig`: member public URLs, member
 identity public keys, thresholds, v3/BLS aggregate keysets and public shares,
-payment-observation policy, protocol versions, and the signed setup transcript.
+payment-observation policy, one wallet-facing protocol version, and the signed
+setup transcript. Member-only operation, consensus, REST, Aleph-unit, and
+catch-up versions are carried by their private payloads and are not wallet
+compatibility gates.
 It must never contain a member identity secret key, BLS secret share, database
 credential, payment credential, or private runtime state.
 
 A wallet joining from one member URL treats the response as untrusted input and
 must:
 
-1. fully validate the federation ID, roster, thresholds, transcript, protocol
-   versions, payment policy, and every v3/BLS aggregate keyset and member share;
+1. fully validate the federation ID, roster, thresholds, transcript, wallet
+   protocol version, payment policy, and every v3/BLS aggregate keyset and
+   member share;
 2. require the supplied URL to identify exactly one member in the config;
 3. fetch that member's `GET /v1/info` response and verify its member ID,
-   federation ID, protocol versions, and full config digest against the fetched
-   config; and
+   federation ID, wallet protocol version, and full config digest against the
+   fetched config; and
 4. persist or construct a federation connector only after all checks succeed.
 
 This bootstraps trust from the member URL chosen by the user while preventing a

@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn registry_rejects_stale_public_config_protocol_version() {
         let mut public_config = valid_public_config();
-        public_config.protocol_versions.operation += 1;
+        public_config.wallet_protocol_version += 1;
         let local_mint_url = default_member_mint_url(&public_config).expect("default member url");
         let mut registry = FederationWalletRegistry::default();
 

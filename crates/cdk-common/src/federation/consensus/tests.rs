@@ -756,6 +756,9 @@ fn aleph_bft_unit_payload_commits_to_ordered_items_and_operation_ids() {
     assert_eq!(payload.session, 7);
     assert_eq!(payload.unit_index, 11);
     assert_eq!(payload.operation_ids, vec![operation_id]);
+    let payload_json = serde_json::to_value(&payload).expect("payload json");
+    assert!(payload_json.get("protocol_versions").is_none());
+    assert!(payload_json.get("consensus_item_version").is_none());
     assert_eq!(payload.body_hash, same_payload.body_hash);
     assert_eq!(
         payload.canonical_bytes().expect("payload canonical bytes"),
@@ -765,6 +768,26 @@ fn aleph_bft_unit_payload_commits_to_ordered_items_and_operation_ids() {
     );
     assert_ne!(payload.body_hash, reversed_payload.body_hash);
     assert_eq!(reversed_payload.operation_ids, vec![operation_id]);
+}
+
+#[test]
+fn aleph_bft_unit_payload_rejects_item_version_at_item_boundary() {
+    let mut item = FederationConsensusModuleFact::new("mint", "future", json!({"ok": true}));
+    item.version = FEDERATION_CONSENSUS_ITEM_VERSION + 1;
+
+    assert!(matches!(
+        FederationAlephBftUnitPayload::new(
+            federation_id(13),
+            member_id_value(2),
+            7,
+            0,
+            vec![FederationConsensusItem::ModuleFact(item)],
+        ),
+        Err(FederationError::ConsensusItemVersionMismatch {
+            expected: FEDERATION_CONSENSUS_ITEM_VERSION,
+            found,
+        }) if found == FEDERATION_CONSENSUS_ITEM_VERSION + 1
+    ));
 }
 
 #[test]

@@ -288,8 +288,8 @@ pub struct FederationInfo {
     pub member_id: u16,
     /// Digest of the complete public federation config.
     pub config_digest: String,
-    /// Federation protocol component versions used by this member.
-    pub protocol_versions: FederationProtocolInfo,
+    /// Wallet-facing federation protocol version used by this member.
+    pub wallet_protocol_version: u16,
 }
 
 impl FederationInfo {
@@ -298,7 +298,7 @@ impl FederationInfo {
         federation_id: S,
         member_id: u16,
         config_digest: D,
-        protocol_versions: FederationProtocolInfo,
+        wallet_protocol_version: u16,
     ) -> Self
     where
         S: Into<String>,
@@ -308,37 +308,7 @@ impl FederationInfo {
             federation_id: federation_id.into(),
             member_id,
             config_digest: config_digest.into(),
-            protocol_versions,
-        }
-    }
-}
-
-/// CDK federation protocol component versions advertised in mint info.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FederationProtocolInfo {
-    /// Canonical operation envelope version.
-    pub operation: u16,
-    /// Consensus item envelope version.
-    pub consensus_item: u16,
-    /// Private federation REST API version.
-    pub rest_api: u16,
-    /// Signed catch-up certificate payload version.
-    pub catch_up_certificate: u16,
-}
-
-impl FederationProtocolInfo {
-    /// Create new federation protocol metadata.
-    pub fn new(
-        operation: u16,
-        consensus_item: u16,
-        rest_api: u16,
-        catch_up_certificate: u16,
-    ) -> Self {
-        Self {
-            operation,
-            consensus_item,
-            rest_api,
-            catch_up_certificate,
+            wallet_protocol_version,
         }
     }
 }
@@ -855,7 +825,7 @@ mod tests {
             "1111111111111111111111111111111111111111111111111111111111111111",
             2,
             "2222222222222222222222222222222222222222222222222222222222222222",
-            FederationProtocolInfo::new(1, 2, 3, 4),
+            1,
         );
         let info = MintInfo::new().federation(federation.clone());
 

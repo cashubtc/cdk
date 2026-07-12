@@ -239,19 +239,19 @@ fn runtime_config_rejects_duplicate_outputs_before_consensus() {
 }
 
 #[test]
-fn runtime_config_rejects_unsupported_protocol_versions() {
+fn runtime_config_rejects_unsupported_wallet_protocol_version() {
     let runtime_config = runtime_config();
     let mut public_config = runtime_config.public_config().clone();
     let private_config = runtime_config.private_config().clone();
-    let expected = public_config.protocol_versions.rest_api;
+    let expected = public_config.wallet_protocol_version;
     let found = expected.saturating_add(1);
-    public_config.protocol_versions.rest_api = found;
+    public_config.wallet_protocol_version = found;
 
     assert!(matches!(
         FederationRuntimeConfig::new(public_config, private_config),
         Err(cdk_common::Error::Federation(
             FederationError::ProtocolVersionMismatch {
-                component: "rest_api",
+                component: "wallet",
                 expected: actual_expected,
                 found: actual_found,
             }

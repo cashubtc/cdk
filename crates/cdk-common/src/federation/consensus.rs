@@ -15,9 +15,9 @@ use super::{
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationProtocolVersions, FederationRestMessageKind, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, InMemoryFederationJournal,
-    MemberId, Result, ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -142,10 +142,6 @@ pub struct FederationAlephBftUnitPayload {
     pub session: u64,
     /// Submitting member's unit index within the session.
     pub unit_index: u64,
-    /// Federation protocol versions required to interpret this unit.
-    pub protocol_versions: FederationProtocolVersions,
-    /// Consensus item version required for every item in the body.
-    pub consensus_item_version: u16,
     /// Operation IDs derived from operation items, in body order.
     pub operation_ids: Vec<FederationOperationId>,
     /// Hash of the ordered canonical item body.
@@ -171,8 +167,6 @@ impl FederationAlephBftUnitPayload {
             submitting_member,
             session,
             unit_index,
-            protocol_versions: FederationProtocolVersions::current(),
-            consensus_item_version: FEDERATION_CONSENSUS_ITEM_VERSION,
             operation_ids,
             body_hash,
             items,
@@ -214,9 +208,6 @@ impl FederationAlephBftUnitPayload {
                 found: self.version,
             });
         }
-        self.protocol_versions.validate()?;
-        ensure_consensus_item_version(self.consensus_item_version)?;
-
         for item in &self.items {
             item.ensure_supported_version()?;
         }

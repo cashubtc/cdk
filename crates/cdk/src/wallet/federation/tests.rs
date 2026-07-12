@@ -1463,20 +1463,20 @@ fn federated_mint_connector_rejects_invalid_invite_code() {
 }
 
 #[test]
-fn federated_mint_connector_rejects_unsupported_protocol_versions() {
+fn federated_mint_connector_rejects_unsupported_wallet_protocol_version() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);
     let connectors = member_connectors(&bundle, &outputs);
     let mut public_config = bundle.public_config.clone();
-    let expected = public_config.protocol_versions.rest_api;
+    let expected = public_config.wallet_protocol_version;
     let found = expected.saturating_add(1);
-    public_config.protocol_versions.rest_api = found;
+    public_config.wallet_protocol_version = found;
 
     assert!(matches!(
         FederatedMintConnector::new(public_config, connectors),
         Err(crate::Error::Federation(
             FederationError::ProtocolVersionMismatch {
-                component: "rest_api",
+                component: "wallet",
                 expected: actual_expected,
                 found: actual_found,
             }

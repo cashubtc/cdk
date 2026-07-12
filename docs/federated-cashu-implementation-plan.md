@@ -570,7 +570,9 @@ Objective: create deterministic federation configs and local key shares for test
 
 Implementation checklist:
 
-- [x] Add `FederationConfig` with federation ID, member set, consensus params, signature threshold, keyset metadata, supported units, and protocol versions.
+- [x] Add `FederationConfig` with federation ID, member set, consensus params,
+  signature threshold, keyset metadata, supported units, and one wallet-facing
+  protocol version. Member-only versions remain in the payloads they govern.
 - [x] Add public member config data with member ID, public API URL, private federation REST URL, federation identity public key, and public BLS shares.
 - [x] Add private member config data with member ID, federation identity private key, local secret BLS shares, and config-file/runtime wiring.
 - [x] Represent the federation roster deterministically in `FederationConfig`, mapping member IDs to identity public keys, endpoint data, and BLS public shares.
@@ -742,11 +744,12 @@ Architecture checklist:
   `Operation(FederationOperation)`, payment observation facts, session
   signatures, default/compatibility items, and future module facts. This is now
   represented by `FederationAlephBftUnitPayload`.
-- [x] Ensure every unit payload includes or commits to federation ID, consensus
-  item version, operation hash, submitting member, accepted session/index, body
-  hash, and protocol-version metadata. The payload includes member/session/unit
-  metadata, current federation protocol versions, derived operation IDs, and a
-  length-prefixed hash over the ordered canonical item body.
+- [x] Ensure every unit payload includes or commits to federation ID, operation
+  hash, submitting member, accepted session/index, and body hash. The payload
+  has its own exact version, includes member/session/unit metadata and derived
+  operation IDs, and hashes the ordered canonical item body. Each consensus item
+  carries and validates its own version; the unit does not duplicate an
+  aggregate protocol bundle or item version.
 - [x] Reuse the existing signed private REST envelope as the authenticated
   admission and transport envelope where practical, but make it explicitly
   mappable into AlephBFT proposals without changing the canonical operation
@@ -1286,16 +1289,16 @@ Wallet checklist:
   temporarily rate-limited member can still contribute a threshold share after a
   configured retry.
 - [x] The connector rejects members advertising mismatched federation IDs,
-  mismatched aggregate keysets, mismatched protocol versions, or non-v3/BLS
+  mismatched aggregate keysets, mismatched wallet protocol versions, or non-v3/BLS
   aggregate federation keysets before submitting value-changing requests.
   Current code exposes typed Cashu `MintInfo.federation` metadata containing
-  federation ID, member ID, config digest, and protocol versions. Federation
+  federation ID, member ID, config digest, and wallet protocol version. Federation
   mints advertise this metadata in `/v1/info`; wallets require it before
   aggregate keyset discovery and before mint, batch mint, swap, melt, restore,
   check-state, and mint-info fanout. The connector rejects missing or mismatched
   member mint-info metadata, excludes members with mismatched or non-v3 active
   aggregate keysets, fails before signing if a threshold compatible subset
-  cannot be reached, rejects unsupported public-config protocol versions at
+  cannot be reached, rejects unsupported public-config wallet protocol versions at
   connector construction, and rejects non-v3 mint, batch mint, swap, restore,
   and melt change outputs before contacting any members.
 - [x] The connector tolerates a member that already processed the operation and
@@ -1611,7 +1614,7 @@ AlephBFT and consensus unit tests:
   target session 2 before wallet batches and continues through the standard
   convergence checks.
 - [x] Catch-up from signed catch-up certificates and journal ranges rejects bad
-  signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
+  signatures, wrong federation IDs, unsupported embedded payload versions, truncated ranges,
   and state-digest mismatches. Covered by
   `catch_up_response_rejects_bad_catch_up_certificate_signature`,
   `catch_up_response_rejects_truncated_signed_catch_up_certificate_range`,
@@ -2294,7 +2297,7 @@ Implementation checklist:
   unauthenticated `GET /v1/config`; standalone mints do not mount the route.
   URL discovery fully validates the config, requires the supplied URL to match
   exactly one roster member, then cross-checks that member's federation ID,
-  member ID, protocol versions, and config digest against `GET /v1/info` before
+  member ID, wallet protocol version, and config digest against `GET /v1/info` before
   connector construction.
 - [x] Wrap one `HttpClient` per member.
 - [x] `get_mint_keys`, `get_mint_keysets`, and `get_mint_info` should query multiple members and require matching federation ID and aggregate keysets.
@@ -3849,7 +3852,9 @@ Implementation checklist:
 - [x] Validate configured key shares against public shares.
 - [x] Add an explicit rotation-time proof-of-possession gate before activating a new keyset.
 - [x] Wallet sees NUT-02 keyset changes consistently across members.
-- [x] Add protocol version negotiation in federation metadata.
+- [x] Add wallet protocol version negotiation in public federation metadata;
+  keep operation, consensus-item, private-REST, Aleph-unit, and catch-up versions
+  local to their member-facing payloads.
 - [x] Add migration plan for changing operation encoding versions.
 - [x] Add member add/remove as a later, explicit governance operation. Do not include in MVP.
 
@@ -3886,9 +3891,15 @@ Verified setup-transcript rotation-lineage checkpoint:
 
 Operation encoding migration plan:
 
-- Treat `FederationProtocolVersions.operation`, `consensus_item`, `rest_api`, and `catch_up_certificate` as hard compatibility gates. A member must reject startup config, wallet metadata, private REST payloads, consensus items, catch-up certificates, operation admission, runtime replay, and catch-up material when any advertised or embedded major version differs from the current build.
+- Treat `wallet_protocol_version` as the public wallet compatibility gate. Treat
+  operation-envelope, consensus-item, private-REST, Aleph-unit, and catch-up
+  certificate versions as member-facing gates at the payloads they govern. Mint
+  startup and wallet metadata must reject only a wallet protocol mismatch;
+  member routes, consensus admission, replay, and catch-up reject incompatible
+  embedded artifacts at their own boundary.
 - Because federation has not been deployed, federation JSON must be strict: do
-  not silently default missing protocol-version metadata, missing
+  not silently default a missing wallet protocol version or embedded member
+  payload version, missing
   payment-observation policy, partial payment-observation contexts, implicit
   removed payment-observation operator-limit fields, missing invite versions, or old
   development aliases. Generate fresh configs instead of accepting old
@@ -3896,7 +3907,11 @@ Operation encoding migration plan:
   experimental federated Cashu compatibility code rather than maintaining it.
 - For a future operation encoding change, introduce the new decoder and encoder behind a new `FEDERATION_OPERATION_VERSION` plus golden vectors before any federation advertises it. The operation hash transcript must remain domain-separated by the versioned envelope bytes so old and new encodings cannot collide.
 - For a future consensus item encoding change, bump `FEDERATION_CONSENSUS_ITEM_VERSION`, add item-level admission tests for `Operation`, `ModuleFact`, `Default`, and any production BFT items, and require stale members to reject queue admission before dispatch.
-- Rollout must be all-or-nothing for a federation roster until dynamic upgrade governance exists: generate a new public config advertising the new versions, require all members to load the same config, refuse mixed-version rosters at startup, and keep old members halted rather than participating in consensus.
+- A wallet-protocol rollout must be all-or-nothing for a federation roster until
+  dynamic upgrade governance exists: generate a new public config, require all
+  members to load it, and keep old members halted. Member-only protocol changes
+  do not alter wallet metadata, but mixed member payload versions still fail at
+  private REST, consensus, or catch-up admission until every member is upgraded.
 - Catch-up/replay is the last safety gate. Persisted journal entries and peer catch-up responses must be revalidated through the embedded operation envelope version and catch-up certificate version before updating local journal state or materialized mint state.
 - Every encoding migration needs checked-in canonical vectors, stale-config startup tests, consensus item admission rejection tests, catch-up/replay rejection tests, and wallet metadata rejection tests before release.
 
@@ -4095,7 +4110,7 @@ Implementation checklist:
   `<member-public-url>/v1/config`, performs full external config validation,
   requires the supplied URL to identify exactly one roster member, fetches
   `/v1/info` from that same member, and verifies matching federation ID, member
-  ID, protocol versions, and config digest before mutating the registry. The
+  ID, wallet protocol version, and config digest before mutating the registry. The
   discovery member URL becomes the default local wallet mint URL unless
   `--local-mint-url` is supplied. File and invite imports remain available for
   offline setup.
@@ -4155,7 +4170,7 @@ Implementation checklist:
   A second focused receive test now proves a token whose mint URL is an imported
   member public URL reaches federation wallet resolution rather than the
   untrusted-mint gate, without needing live member HTTP.
-- [x] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction. Process smokes cover a reachable mismatched member, insufficient valid advertisements, missing federation mint-info metadata, all members unreachable, insufficient consensus threshold, and slow-member quote behavior without duplicate quote churn. Non-v3 raw outputs are intentionally unrepresentable in the CLI; crafted requests are rejected at the wallet pre-fanout and mint pre-consensus boundaries.
+- [x] Add clear CLI errors for missing federation metadata, mismatched member rosters, insufficient threshold responses, non-v3 aggregate keysets, stale invite/config versions, and all-members-unreachable cases. The receive path tells users to import the federation public config when a token mint URL is not trusted or recognized as an imported federation member. Focused CLI registry/import tests cover malformed registry JSON, malformed public-config JSON, stale registry versions, stale public-config wallet protocol versions, mismatched roster metadata, inactive keysets, and non-v3/BLS keysets before connector construction. Process smokes cover a reachable mismatched member, insufficient valid advertisements, missing federation mint-info metadata, all members unreachable, insufficient consensus threshold, and slow-member quote behavior without duplicate quote churn. Non-v3 raw outputs are intentionally unrepresentable in the CLI; crafted requests are rejected at the wallet pre-fanout and mint pre-consensus boundaries.
 - [x] Document how to use `cdk-cli` against a locally generated federation from
   the regtest/smoke tooling for the first AlephBFT fakewallet smoke path.
 
@@ -4213,7 +4228,7 @@ Latest checkpoint:
   local proofs afterward. The CLI mint command now also exits with an error when
   its proof stream surfaces an error before completion, instead of silently
   reporting a zero-value receive. Focused CLI unit tests now also prove malformed
-  registry/public-config JSON, stale registry/public-config protocol versions,
+  registry/public-config JSON, stale registry/public-config wallet protocol versions,
   mismatched roster metadata, inactive keysets, and non-v3/BLS keysets are
   rejected before any federated connector is constructed. A repository-level CLI
   utility test now proves imported federation wallets are activated into the
@@ -4316,7 +4331,7 @@ Tests and success criteria:
 
 - [x] CLI unit tests prove federation wallet public-config and registry parsing
   accepts a valid config and rejects malformed JSON, stale registry versions,
-  stale public-config protocol versions, mismatched rosters, inactive keysets,
+  stale public-config wallet protocol versions, mismatched rosters, inactive keysets,
   and non-v3/BLS federation metadata before constructing a wallet connector.
   Focused tests also cover valid public config persistence, member public mint
   URL resolution, connector construction, explicit quote-coordinator policy

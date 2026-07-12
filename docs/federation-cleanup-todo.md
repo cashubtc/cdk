@@ -2191,7 +2191,7 @@ administrative requests.
 
 ## 33. Separate wallet-facing and member-facing protocol versions
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2213,6 +2213,31 @@ catch-up protocol the wallet never uses.
   validation, mint info, setup/DKG transcript, and startup checks.
 - Test independent wallet-protocol and member-protocol incompatibility and
   confirm failures occur only at the relevant boundary.
+
+### Resolution
+
+- Replaced the public four-component `FederationProtocolVersions` bundle with
+  one required `wallet_protocol_version` in `FederationConfig` and
+  `GET /v1/info`. Wallet import, connector construction, mint startup, config
+  digest validation, and member-advertisement checks now gate only the contract
+  wallets actually interpret.
+- Kept member compatibility at each governing artifact instead of adding a
+  second aggregate version struct: operation envelopes, consensus items,
+  private signed REST requests, catch-up certificates, and AlephBFT unit
+  payloads each retain exact local version validation.
+- Removed `FederationProtocolInfo`, the aggregate public config field, its
+  cross-layer conversion and comparison code, and the duplicate
+  `protocol_versions` and `consensus_item_version` fields from AlephBFT unit
+  payloads. Embedded consensus items remain independently version checked.
+- The public config and mint-info JSON now contain no private REST,
+  consensus-item, operation, or catch-up version advertisement. A future
+  member-only protocol change therefore cannot invalidate an otherwise
+  compatible wallet config or change its wallet compatibility decision.
+- Verification passes all 548 Cashu tests, all 332 shared federation tests, all
+  84 wallet federation tests, all 100 mint federation tests, all 17 CLI
+  federation registry/discovery tests, focused Axum public-config,
+  finalization, catch-up, and live private-REST finality tests, and all 28
+  standalone Axum tests. The federation-enabled PostgreSQL test target compiles.
 
 ## 34. Split the cdk-common federation module by domain
 
@@ -2472,8 +2497,9 @@ inconsistent about whether the first operation encoding is v1 or v2.
 ### Cleanup
 
 - Treat the complete current federation implementation as the initial version
-  1 protocol. In particular, advertise `protocol_versions.operation` as 1 and
-  rebase the current operation envelope and operation-ID hash domain to v1.
+  1 protocol. Keep `wallet_protocol_version` at 1 and rebase the current
+  operation envelope and operation-ID hash domain to v1 at the operation
+  payload boundary; do not reintroduce internal versions into wallet metadata.
 - Rebase the complete current DKG commitment hash, persisted participant-state
   format, and signed transcript hash domain to v1. Keep the present ceremony
   binding, transcript contents, cryptographic verification, and restart-safety
@@ -2510,10 +2536,10 @@ inconsistent about whether the first operation encoding is v1 or v2.
 - SQLite and PostgreSQL federation schemas and migration registration: retain
   the single consolidated federation migration per backend and every earlier
   standalone migration; do not add an experimental-federation upgrade chain.
-- Prove `/v1/info` advertises operation, consensus-item, private-REST, and
-  catch-up certificate version 1, and that current members and wallets accept that
-  configuration while altered version 0, 2, and future values fail closed at
-  the relevant boundary.
+- Prove `/v1/info` advertises wallet protocol version 1, while operation,
+  consensus-item, private-REST, Aleph-unit, and catch-up-certificate versions
+  remain in the payloads they govern. Altered version 0, 2, and future values
+  must fail closed only at the relevant wallet or member boundary.
 - Prove the canonical v1 operation vector, operation IDs, DKG commitments,
   participant-state restart, transcript equality/signatures, config digests,
   invites, and materialized-state verification are deterministic across all

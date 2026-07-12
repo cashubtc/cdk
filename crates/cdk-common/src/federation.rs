@@ -103,7 +103,7 @@ use crate::nuts::nut01::{
     BlsSecretKey, BlsSecretKeyShare, BlsSignerId,
 };
 use crate::nuts::nut02::{KeySet, KeySetVersion};
-use crate::nuts::nut06::{FederationInfo, FederationProtocolInfo};
+use crate::nuts::nut06::FederationInfo;
 use crate::{
     mint_url::MintUrl, Amount, BlindedMessage, CurrencyUnit, Id, Keys, PublicKey, SecretKey,
 };
@@ -124,6 +124,8 @@ const FEDERATION_OPERATOR_REDACTED_URL_CREDENTIAL: &str = "redacted";
 pub const FEDERATION_INVITE_PREFIX: &str = "cashufedA";
 /// Federation invite payload version supported by this build.
 pub const FEDERATION_INVITE_VERSION: u16 = 1;
+/// Wallet-facing federation protocol version advertised by configs and members.
+pub const FEDERATION_WALLET_PROTOCOL_VERSION: u16 = 1;
 
 /// Result alias for federation configuration validation.
 pub type Result<T> = std::result::Result<T, FederationError>;
@@ -1481,78 +1483,6 @@ impl ThresholdParams {
         }
 
         Ok(())
-    }
-}
-
-/// Federation protocol component versions advertised in public metadata.
-///
-/// These versions let members and federation-aware wallets fail closed when a
-/// config requires operation, consensus, private REST, or catch-up certificate
-/// semantics they do not understand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FederationProtocolVersions {
-    /// Canonical operation envelope version.
-    pub operation: u16,
-    /// Consensus item envelope version.
-    pub consensus_item: u16,
-    /// Private federation REST API version.
-    pub rest_api: u16,
-    /// Signed catch-up certificate payload version.
-    pub catch_up_certificate: u16,
-}
-
-impl FederationProtocolVersions {
-    /// Return the protocol versions supported by this CDK build.
-    #[must_use]
-    pub const fn current() -> Self {
-        Self {
-            operation: FEDERATION_OPERATION_VERSION,
-            consensus_item: FEDERATION_CONSENSUS_ITEM_VERSION,
-            rest_api: FEDERATION_REST_API_VERSION,
-            catch_up_certificate: FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
-        }
-    }
-
-    /// Validate that every advertised protocol component is supported.
-    pub fn validate(&self) -> Result<()> {
-        let current = Self::current();
-        validate_protocol_component("operation", current.operation, self.operation)?;
-        validate_protocol_component(
-            "consensus_item",
-            current.consensus_item,
-            self.consensus_item,
-        )?;
-        validate_protocol_component("rest_api", current.rest_api, self.rest_api)?;
-        validate_protocol_component(
-            "catch_up_certificate",
-            current.catch_up_certificate,
-            self.catch_up_certificate,
-        )?;
-        Ok(())
-    }
-
-    fn to_mint_info(self) -> FederationProtocolInfo {
-        FederationProtocolInfo::new(
-            self.operation,
-            self.consensus_item,
-            self.rest_api,
-            self.catch_up_certificate,
-        )
-    }
-
-    fn from_mint_info(info: FederationProtocolInfo) -> Self {
-        Self {
-            operation: info.operation,
-            consensus_item: info.consensus_item,
-            rest_api: info.rest_api,
-            catch_up_certificate: info.catch_up_certificate,
-        }
-    }
-}
-
-impl Default for FederationProtocolVersions {
-    fn default() -> Self {
-        Self::current()
     }
 }
 
@@ -4523,8 +4453,8 @@ fn dkg_signature_transcript(transcript_hash: FederationDkgTranscriptHash) -> Vec
 pub struct FederationConfig {
     /// Stable federation roster ID.
     pub federation_id: FederationId,
-    /// Protocol component versions required by this public config.
-    pub protocol_versions: FederationProtocolVersions,
+    /// Wallet-facing federation protocol required by this public config.
+    pub wallet_protocol_version: u16,
     /// Federation threshold settings.
     pub threshold_params: ThresholdParams,
     /// Public member roster keyed by member ID.
@@ -4550,7 +4480,7 @@ impl FederationConfig {
         let federation_id = Self::derive_federation_id(threshold_params, &members)?;
         let config = Self {
             federation_id,
-            protocol_versions: FederationProtocolVersions::current(),
+            wallet_protocol_version: FEDERATION_WALLET_PROTOCOL_VERSION,
             threshold_params,
             members,
             keysets,
@@ -4597,7 +4527,11 @@ impl FederationConfig {
 
     /// Validate this config.
     pub fn validate(&self) -> Result<()> {
-        self.protocol_versions.validate()?;
+        validate_protocol_component(
+            "wallet",
+            FEDERATION_WALLET_PROTOCOL_VERSION,
+            self.wallet_protocol_version,
+        )?;
 
         let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
         if expected_id != self.federation_id {
@@ -4629,7 +4563,11 @@ impl FederationConfig {
     /// external federation configs should still use [`Self::validate`] at
     /// import or mint startup.
     pub fn validate_wallet_runtime_metadata(&self) -> Result<()> {
-        self.protocol_versions.validate()?;
+        validate_protocol_component(
+            "wallet",
+            FEDERATION_WALLET_PROTOCOL_VERSION,
+            self.wallet_protocol_version,
+        )?;
 
         let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
         if expected_id != self.federation_id {
@@ -4690,7 +4628,7 @@ impl FederationConfig {
             self.federation_id.to_string(),
             member_id.get(),
             config_digest.to_string(),
-            self.protocol_versions.to_mint_info(),
+            self.wallet_protocol_version,
         ))
     }
 
@@ -4745,27 +4683,10 @@ impl FederationConfig {
             });
         }
 
-        let advertised_versions =
-            FederationProtocolVersions::from_mint_info(info.protocol_versions);
         validate_protocol_component(
-            "operation",
-            self.protocol_versions.operation,
-            advertised_versions.operation,
-        )?;
-        validate_protocol_component(
-            "consensus_item",
-            self.protocol_versions.consensus_item,
-            advertised_versions.consensus_item,
-        )?;
-        validate_protocol_component(
-            "rest_api",
-            self.protocol_versions.rest_api,
-            advertised_versions.rest_api,
-        )?;
-        validate_protocol_component(
-            "catch_up_certificate",
-            self.protocol_versions.catch_up_certificate,
-            advertised_versions.catch_up_certificate,
+            "wallet",
+            self.wallet_protocol_version,
+            info.wallet_protocol_version,
         )?;
 
         Ok(())
@@ -5539,7 +5460,7 @@ mod tests {
         let mut info = config
             .mint_info_for_member(member_id(2))
             .expect("mint-info federation advertisement");
-        info.protocol_versions.operation = info.protocol_versions.operation.saturating_add(1);
+        info.wallet_protocol_version = info.wallet_protocol_version.saturating_add(1);
 
         assert!(matches!(
             config.validate_member_mint_info(member_id(2), &info),
@@ -5547,9 +5468,9 @@ mod tests {
                 component,
                 expected,
                 found,
-            }) if component == "operation"
-                && expected == FederationProtocolVersions::current().operation
-                && found == FederationProtocolVersions::current().operation.saturating_add(1)
+            }) if component == "wallet"
+                && expected == FEDERATION_WALLET_PROTOCOL_VERSION
+                && found == FEDERATION_WALLET_PROTOCOL_VERSION.saturating_add(1)
         ));
     }
 
@@ -5825,103 +5746,47 @@ mod tests {
     }
 
     #[test]
-    fn federation_config_advertises_current_protocol_versions() {
+    fn federation_config_advertises_only_current_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
 
         assert_eq!(
-            config.protocol_versions,
-            FederationProtocolVersions::current()
+            config.wallet_protocol_version,
+            FEDERATION_WALLET_PROTOCOL_VERSION
         );
 
         let json = serde_json::to_value(&config).expect("config json");
-        let versions = json
-            .get("protocol_versions")
-            .and_then(serde_json::Value::as_object)
-            .expect("protocol versions object");
         assert_eq!(
-            versions
-                .get("operation")
+            json.get("wallet_protocol_version")
                 .and_then(serde_json::Value::as_u64),
-            Some(u64::from(FEDERATION_OPERATION_VERSION))
+            Some(u64::from(FEDERATION_WALLET_PROTOCOL_VERSION))
         );
-        assert_eq!(
-            versions
-                .get("consensus_item")
-                .and_then(serde_json::Value::as_u64),
-            Some(u64::from(FEDERATION_CONSENSUS_ITEM_VERSION))
-        );
-        assert_eq!(
-            versions.get("rest_api").and_then(serde_json::Value::as_u64),
-            Some(u64::from(FEDERATION_REST_API_VERSION))
-        );
-        assert_eq!(
-            versions
-                .get("catch_up_certificate")
-                .and_then(serde_json::Value::as_u64),
-            Some(u64::from(FEDERATION_CATCH_UP_CERTIFICATE_VERSION))
-        );
+        assert!(json.get("protocol_versions").is_none());
     }
 
     #[test]
-    fn federation_config_rejects_missing_protocol_versions() {
+    fn federation_config_rejects_missing_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
         let mut json = serde_json::to_value(&config).expect("config json");
         json.as_object_mut()
             .expect("config object")
-            .remove("protocol_versions");
+            .remove("wallet_protocol_version");
 
         assert!(
             serde_json::from_value::<FederationConfig>(json).is_err(),
-            "federation configs must explicitly advertise protocol versions"
+            "federation configs must explicitly advertise the wallet protocol version"
         );
     }
 
     #[test]
-    fn federation_protocol_versions_reject_missing_components() {
-        assert!(
-            serde_json::from_value::<FederationProtocolVersions>(serde_json::json!({
-                "operation": FEDERATION_OPERATION_VERSION
-            }))
-            .is_err(),
-            "partial federation protocol version metadata must not be accepted"
-        );
-    }
-
-    #[test]
-    fn federation_config_rejects_unsupported_protocol_versions() {
+    fn federation_config_rejects_unsupported_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
-
-        let mut operation = config.clone();
-        let expected = operation.protocol_versions.operation;
+        let mut config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        let expected = config.wallet_protocol_version;
         let found = expected.saturating_add(1);
-        operation.protocol_versions.operation = found;
-        assert_protocol_version_mismatch(operation, "operation", expected, found);
-
-        let mut consensus_item = config.clone();
-        let expected = consensus_item.protocol_versions.consensus_item;
-        let found = expected.saturating_add(1);
-        consensus_item.protocol_versions.consensus_item = found;
-        assert_protocol_version_mismatch(consensus_item, "consensus_item", expected, found);
-
-        let mut rest_api = config.clone();
-        let expected = rest_api.protocol_versions.rest_api;
-        let found = expected.saturating_add(1);
-        rest_api.protocol_versions.rest_api = found;
-        assert_protocol_version_mismatch(rest_api, "rest_api", expected, found);
-
-        let mut catch_up_certificate = config;
-        let expected = catch_up_certificate.protocol_versions.catch_up_certificate;
-        let found = expected.saturating_add(1);
-        catch_up_certificate.protocol_versions.catch_up_certificate = found;
-        assert_protocol_version_mismatch(
-            catch_up_certificate,
-            "catch_up_certificate",
-            expected,
-            found,
-        );
+        config.wallet_protocol_version = found;
+        assert_protocol_version_mismatch(config, "wallet", expected, found);
     }
 
     #[test]

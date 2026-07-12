@@ -57,7 +57,7 @@ The DKG implementation should reuse those types where possible and should ultima
 - Unknown identities, duplicate member IDs, duplicate signer IDs, and malformed shares are rejected.
 - Every secret share is bound to the member ID that receives it.
 - Every public share is bound to the member ID that owns it.
-- The final transcript binds federation ID, roster hash, threshold params, keyset version, units, amounts, aggregate keys, member public shares, protocol versions, and DKG session ID.
+- The final transcript binds federation ID, roster hash, threshold params, keyset version, units, amounts, aggregate keys, member public shares, the wallet protocol version, and DKG session ID. Member-only protocol versions remain in their governing payloads.
 - All honest members derive identical aggregate public keysets and identical public configs.
 - Each honest member derives exactly one private share per amount per keyset.
 - Failed, equivocal, or incomplete DKG ceremonies abort safely and do not create an ambiguous config.
@@ -98,7 +98,7 @@ Add a new feature-gated module, preferably under `crates/cdk-common/src/federati
 
 - `DkgProtocolVersion`: version byte or enum for DKG transcript compatibility.
 - `DkgSessionId`: 32-byte session ID derived from setup entropy plus roster hash, or randomly generated and signed by all members.
-- `DkgContext`: canonical context for federation ID, roster hash, member IDs, identity public keys, threshold params, keyset specs, protocol versions, and curve suite.
+- `DkgContext`: canonical context for federation ID, roster hash, member IDs, identity public keys, threshold params, keyset specs, the wallet protocol version, and curve suite.
 - `DkgKeysetSpec`: unit, active flag, input fee, optional final expiry, amounts, and keyset purpose.
 - `DkgMemberCommitments`: member ID plus per-keyset/per-amount polynomial commitments.
 - `DkgPrivateShare`: sender ID, recipient ID, keyset spec ID, amount, scalar evaluation, and context hash.
@@ -496,4 +496,3 @@ Tests and success criteria:
 - [ ] Local 4-of-5 and 3-of-5 ceremonies pass.
 - [ ] Invalid share, equivocation, replay, wrong roster, and wrong identity tests pass.
 - [ ] Key rotation has explicit consensus activation and cannot silently replace active keys.
-
