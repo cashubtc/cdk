@@ -925,6 +925,10 @@
             <p>Federation is still undeployed, so federation configs, invites, fixtures, route behavior, and keyset metadata are strict current-shape artifacts. There is no compatibility branch for old experimental federation behavior; operators should regenerate development configs rather than relying on silent defaults, implicit limits, old aliases, missing-version upgrades, or migration shims for experimental formats.</p>
           </article>
           <article class="item">
+            <h3>Consensus backend cleanup underway</h3>
+            <p>The unused public in-memory multi-member simulator and parallel backend-adapter runtime have been deleted, including their self-only tests. Aleph recovery coverage now targets the production consensus runtime directly. The remaining selectable local engine and backend configuration are the next cleanup boundary; the deterministic journal view remains intentionally separate.</p>
+          </article>
+          <article class="item">
             <h3>Real payment observations fail closed</h3>
             <p>General federation config construction derives member-quorum finality from the consensus threshold. Fake-wallet testing keeps one-observation finality only through an explicit trusted-dealer/test policy, while production startup rejects that policy without the local development override. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed. Melt observations no longer carry unused free-form failure text that could split otherwise matching failed-payment evidence.</p>
           </article>

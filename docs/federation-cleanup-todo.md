@@ -436,7 +436,29 @@ defined interpretation adds schema and conflict surface without functionality.
 
 ## 6. Remove the production in-memory consensus backend
 
-**Status:** Todo
+**Status:** In progress (dead simulator/adapter layer removed 2026-07-12)
+
+### Progress
+
+Removed the unused public `InMemoryFederationConsensusNetwork`,
+`InMemoryFederationConsensusAdapter`, `FederationConsensusBackendAdapter`, and
+`FederationConsensusBackendAdapterRuntime` architecture. No production caller
+constructed or referenced this second adapter stack; it existed only to test
+its own deterministic simulator. The useful Aleph recovery assertion was moved
+to `FederationConsensusRuntime`, the runtime production actually uses, before
+deleting the dead tests.
+
+This checkpoint removes roughly 1,950 lines and 22 simulator/adapter-only tests
+while retaining 357 passing `cdk-common` tests covering the real Aleph adapter,
+unit data provider, finalization handler, runtime recovery, duplicate/conflict
+handling, direct journal behavior, and catch-up validation. Federation-enabled
+`cdk`, Axum, and mintd compile successfully.
+
+Item 6 is not complete yet. `InMemoryFederationConsensus`, the backend enum and
+runtime dispatch, mintd selector/environment/config fields, and local-finality
+tests still remain and must be migrated or removed. `InMemoryFederationJournal`
+also remains intentionally untouched pending the separate journal-view naming
+decision.
 
 ### Problem
 
