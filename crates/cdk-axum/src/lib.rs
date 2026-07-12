@@ -27,8 +27,8 @@ use cdk::federation::{
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSubmitOperationResponse,
-    MemberId,
+    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -67,9 +67,6 @@ type FederationDkgMemberAdmissionHandle = Arc<FederationDkgAdmissionState>;
 #[cfg(feature = "federation")]
 type FederationInvalidOperationAlertHandle =
     Arc<tokio::sync::Mutex<FederationInvalidOperationAlertTracker>>;
-#[cfg(feature = "federation")]
-type FederationAlephBftPendingSequenceHandle =
-    Arc<tokio::sync::Mutex<HashMap<FederationOperationId, BTreeMap<MemberId, u64>>>>;
 #[cfg(feature = "federation")]
 type FederationAlephBftNetworkInboundHandle =
     Arc<dyn self::federation::CdkAlephBftNetworkInboundQueue>;
@@ -1501,25 +1498,19 @@ impl MintState {
         let operation_id = envelope.operation_id()?;
         self.ensure_federation_ready_for_public_submit().await?;
 
-        let response = self
-            .submit_federation_envelope_with_sequence(envelope, None)
-            .await?;
+        let response = self.submit_federation_envelope_to_consensus(envelope).await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
 
-    pub(crate) async fn submit_federation_envelope_with_sequence(
+    pub(crate) async fn submit_federation_envelope_to_consensus(
         &self,
         envelope: FederationOperationEnvelope,
-        sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         self.validate_federation_envelope_admission(&envelope)
             .await?;
         let operation_id = envelope.operation_id()?;
-        let response = self
-            .federation
-            .submit_envelope_with_sequence(envelope, sequence)
-            .await?;
+        let response = self.federation.submit_envelope(envelope).await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
@@ -1545,9 +1536,7 @@ impl MintState {
             }
         }
         let operation_id = envelope.operation_id()?;
-        let response = self
-            .submit_federation_envelope_with_sequence(envelope, None)
-            .await?;
+        let response = self.submit_federation_envelope_to_consensus(envelope).await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
@@ -1610,19 +1599,7 @@ impl MintState {
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
-        self.apply_federation_aleph_bft_finalized_unit_with_sequence(payload, None)
-            .await
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn apply_federation_aleph_bft_finalized_unit_with_sequence(
-        &self,
-        payload: FederationAlephBftUnitPayload,
-        sequence: Option<(MemberId, u64)>,
-    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
-        self.federation
-            .apply_finalized_unit(payload, sequence)
-            .await
+        self.federation.apply_finalized_unit(payload).await
     }
 
     #[cfg(test)]
@@ -1647,12 +1624,12 @@ impl MintState {
     }
 
     #[cfg(test)]
-    pub(crate) async fn persist_federation_sequence(
+    pub(crate) async fn persist_federation_dkg_sequence(
         &self,
         sender: MemberId,
         sequence: u64,
     ) -> Result<(), cdk::Error> {
-        self.federation.persist_sequence(sender, sequence).await
+        self.federation.persist_dkg_sequence(sender, sequence).await
     }
 
     pub(crate) async fn persist_federation_dkg_commitment(
@@ -1729,7 +1706,7 @@ impl MintState {
         &self,
         outcome: &FederationCatchUpCertificate,
     ) -> Result<(), cdk::Error> {
-        self.persist_federation_journal_entries(&[], Some(outcome), None)
+        self.persist_federation_journal_entries(&[], Some(outcome))
             .await
     }
 
@@ -1737,13 +1714,11 @@ impl MintState {
         &self,
         entries: &[FederationJournalEntry],
         catch_up_certificate: Option<&FederationCatchUpCertificate>,
-        sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         let catch_up_certificates = catch_up_certificate.into_iter().collect::<Vec<_>>();
         self.persist_federation_journal_entries_with_catch_up_certificates(
             entries,
             &catch_up_certificates,
-            sequence,
         )
         .await
     }
@@ -1752,15 +1727,19 @@ impl MintState {
         &self,
         entries: &[FederationJournalEntry],
         catch_up_certificates: &[&FederationCatchUpCertificate],
-        sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         self.federation
-            .persist_journal_entries(entries, catch_up_certificates, sequence)
+            .persist_journal_entries(entries, catch_up_certificates)
             .await
     }
 
-    async fn record_federation_sequence(&self, sender: MemberId, sequence: u64) {
-        self.federation.record_sequence(sender, sequence).await;
+    async fn record_federation_sequence(
+        &self,
+        kind: FederationRestMessageKind,
+        sender: MemberId,
+        sequence: u64,
+    ) {
+        self.federation.record_sequence(kind, sender, sequence).await;
     }
 
     pub(crate) async fn restore_federation_startup_readiness(&self) {
@@ -2192,9 +2171,6 @@ async fn create_mint_router_with_custom_cache_inner(
                 ))
             }),
             payment_observer: federation::FederationPaymentObserver::default(),
-            aleph_bft_pending_sequences: federation_consensus
-                .as_ref()
-                .map(|_| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(test)]
@@ -2374,7 +2350,7 @@ async fn create_federation_runtime_state(
     tx.commit().await?;
 
     let persisted_entries = db.get_federation_journal_entries().await?;
-    let sequences = db.get_federation_member_sequences().await?;
+    let dkg_sequences = db.get_federation_dkg_member_sequences().await?;
     let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
     let active_session = db
         .get_federation_aleph_bft_active_session()
@@ -2434,7 +2410,7 @@ async fn create_federation_runtime_state(
     for operation_id in applied {
         consensus.update_status(operation_id, FederationOperationStatus::Applied)?;
     }
-    let sequences = FederationRestSequenceTracker::from_sequences(sequences);
+    let sequences = FederationRestSequenceTracker::from_dkg_sequences(dkg_sequences);
 
     Ok((
         Some(Arc::new(tokio::sync::Mutex::new(consensus))),

@@ -848,20 +848,20 @@ where
         Ok(())
     }
 
-    async fn set_federation_member_sequence(
+    async fn set_federation_dkg_member_sequence(
         &mut self,
         member_id: MemberId,
         sequence: u64,
     ) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT INTO federation_member_sequences
+            INSERT INTO federation_dkg_member_sequences
             (member_id, last_sequence)
             VALUES
             (:member_id, :last_sequence)
             ON CONFLICT (member_id)
             DO UPDATE SET last_sequence = EXCLUDED.last_sequence
-            WHERE federation_member_sequences.last_sequence < EXCLUDED.last_sequence
+            WHERE federation_dkg_member_sequences.last_sequence < EXCLUDED.last_sequence
             "#,
         )?
         .bind("member_id", i64::from(member_id.get()))
@@ -1542,7 +1542,7 @@ where
         .collect()
     }
 
-    async fn get_federation_member_sequences(
+    async fn get_federation_dkg_member_sequences(
         &self,
     ) -> Result<std::collections::BTreeMap<MemberId, u64>, Self::Err> {
         let conn = self
@@ -1553,7 +1553,7 @@ where
         let rows = query(
             r#"
             SELECT member_id, last_sequence
-            FROM federation_member_sequences
+            FROM federation_dkg_member_sequences
             ORDER BY member_id ASC
             "#,
         )?

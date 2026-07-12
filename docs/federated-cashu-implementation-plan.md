@@ -195,11 +195,12 @@ Resolved blocking bugs:
   runtime owner; no trait or event bus was added. Operation
   waiter registration, response-cache policy/statistics, and notification
   delivery are the first methods moved onto the runtime; focused saturation,
-  timeout, eviction, cache-bound, and notification tests pass. Pending source
-  sequences, duplicate finalized-unit verification, and response reconstruction
-  now also execute there; five finalized-unit and sequence-persistence
-  regressions pass. The complete readiness state machine and live-session
-  admission check now run on the runtime while `MintState` persists returned
+  timeout, eviction, cache-bound, and notification tests pass. Duplicate
+  finalized-unit verification and response reconstruction now also execute
+  there. Operation submission is idempotent by canonical operation ID and no
+  longer carries source sequences into finalization. The complete readiness
+  state machine and live-session admission check now run on the runtime while
+  `MintState` persists returned
   transitions; status restoration/persistence and public-submit gating tests
   pass. Aleph status/mempool reads and local/peer activity signaling now run on
   the runtime as well; all 11 activity-wake tests and status-counter coverage
@@ -207,21 +208,20 @@ Resolved blocking bugs:
   Axum, while inert standalone runtimes hold none; this avoids a one-use trait
   and enables intact submission/replay moves. Effective-keyset admission is the
   first mint-dependent method moved and passes rotated-keyset plus all 28
-  standalone Axum regressions. Atomic journal/catch-up certificate, pending-operation,
-  finalization, source-sequence, and catch-up transactions now belong to the
+  standalone Axum regressions. Atomic journal/catch-up certificate,
+  pending-operation, finalization, and catch-up transactions now belong to the
   runtime; five finalized-unit and all 29 focused catch-up tests pass. Replay,
   lock retry/backoff, durable application/rejection state, standard
   `ErrorResponse` persistence, and catch-up rejection verification now also run
   there, with failed mint/swap and startup replay regressions green. The complete
   authoritative finalized-unit path now runs as one runtime-owned ordered
   method: duplicate recovery, finalization, atomic persistence, consensus-state
-  replacement, mint application, source-sequence advancement, latency recording,
-  and waiter notification. Five finalized-unit tests pass, including duplicate
-  replay with unmaterialized entries, durable sequence advancement, and recovery
-  after lost waiters. Consensus submission now belongs to the runtime as one
-  ordered path covering duplicate joins, waiter bounds, mempool admission,
-  durable pending persistence, activity wake-up, source sequences, timeout
-  reporting, test-local finality, and submission metrics. Seven focused
+  replacement, mint application, latency recording, and waiter notification.
+  Five finalized-unit tests pass, including duplicate
+  replay with unmaterialized entries and recovery after lost waiters. Consensus
+  submission now belongs to the runtime as one ordered path covering duplicate
+  joins, waiter bounds, mempool admission, durable pending persistence, activity
+  wake-up, timeout reporting, test-local finality, and submission metrics. Seven focused
   submission tests plus duplicate-pending, notification, cache, duplicate-race,
   and Prometheus metric regressions pass; public readiness/admission and final
   Cashu response validation remain thin `MintState` adapters. Signed catch-up
@@ -1048,8 +1048,8 @@ Mint-side restructuring checklist:
   federated mint, swap, melt, restore, or change-output path can call standalone
   signing or mutation helpers before consensus acceptance. Current coverage
   wires quote/payment/quarantine plus mint/swap/melt/restore/keyset-rotation
-  admission through public submit, private submit-with-sequence, and non-primary
-  forwarding before append, sequence persistence, or peer forwarding. Public
+  admission through public submit, authenticated private submit, and non-primary
+  forwarding before journal append or peer forwarding. Public
   Axum mint/swap/melt handlers are source-audited to try federation submission
   before standalone fallback, restore is source-audited to read persisted
   federation shares without direct signing, and member-mode `Mint` guards reject
@@ -1099,8 +1099,9 @@ Mint-side restructuring checklist:
   AlephBFT submits now check the existing operation notification registry after
   durable journal duplicate detection but before consensus admission. If the
   same operation is already pending locally, the duplicate request joins the
-  existing waiter instead of re-entering queue admission; private REST sequence
-  metadata is still retained for the finalized operation.
+  existing waiter instead of re-entering queue admission. The canonical
+  operation ID and durable pending/finalized records provide idempotency; no
+  private REST sequence metadata is coupled to operation finalization.
 - [x] Define retryable timeout semantics: if consensus has not finalized before
   the public API timeout, return a clear pending/retryable error without
   changing operation state; retrying the exact request must later return the
@@ -1123,9 +1124,8 @@ Mint-side restructuring checklist:
   responses now expose a shared accepted-status guard that allows only accepted,
   applying, or applied journal entries through public and forwarded submit
   boundaries. Rejected and failed finalized outcomes become a typed
-  `RejectedOperation` federation error, while the direct in-memory sequence
-  path still records private REST sequence metadata for terminal duplicate
-  responses before returning the error.
+  `RejectedOperation` federation error. Terminal duplicates are reconstructed
+  by operation ID and do not mutate durable DKG replay watermarks.
 
 Federated public API checklist:
 
@@ -2136,7 +2136,7 @@ Implementation checklist:
   - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
   - [x] `federation_signature_share`, implemented as `federation_signature_shares`.
   - [x] `federation_payment_observations`.
-  - [x] `federation_member_sequences` for private REST sequence watermarks.
+  - [x] `federation_dkg_member_sequences` for effectful DKG replay watermarks.
   - [x] Keep runtime member readiness derived and in memory; the obsolete
     `federation_member_status` table and database API were removed.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.

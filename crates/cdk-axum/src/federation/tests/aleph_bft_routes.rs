@@ -217,7 +217,7 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("durable sequences");
     assert!(
@@ -271,7 +271,7 @@ async fn private_aleph_bft_network_message_route_rejects_same_sequence_equivocat
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("durable sequences after equivocation");
     assert!(
@@ -304,7 +304,7 @@ async fn private_aleph_bft_network_message_route_rejects_kind_mismatch_before_se
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences after rejection")
         .is_empty());
@@ -338,7 +338,7 @@ async fn private_aleph_bft_network_message_route_rejects_missing_inbound_before_
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences after rejection")
         .is_empty());
@@ -371,7 +371,7 @@ async fn private_aleph_bft_network_message_route_rejects_bad_scale_before_sequen
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences after rejection")
         .is_empty());
@@ -406,7 +406,7 @@ async fn private_aleph_bft_network_message_route_rejects_trailing_scale_bytes_be
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences after rejection")
         .is_empty());
@@ -445,7 +445,7 @@ async fn private_aleph_bft_network_message_route_rejects_session_mismatch_before
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences after rejection")
         .is_empty());

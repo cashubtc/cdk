@@ -2295,9 +2295,6 @@ mod tests {
                     crate::FederationInvalidOperationAlertTracker::default(),
                 ))),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
-                aleph_bft_pending_sequences: Some(Arc::new(
-                    tokio::sync::Mutex::new(HashMap::new()),
-                )),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 local_finality_test,
@@ -3105,8 +3102,6 @@ mod tests {
                     ))
                 }),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
-                aleph_bft_pending_sequences: is_federated
-                    .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 local_finality_test: is_federated,
@@ -3166,7 +3161,7 @@ mod tests {
                     })?;
                 let envelope = config.melt_operation(request.clone())?;
                 state
-                    .submit_federation_envelope_with_sequence(envelope, None)
+                    .submit_federation_envelope_to_consensus(envelope)
                     .await?;
             }
 
@@ -3209,7 +3204,7 @@ mod tests {
 
                 for state in &self.states {
                     state
-                        .submit_federation_envelope_with_sequence(envelope.clone(), None)
+                        .submit_federation_envelope_to_consensus(envelope.clone())
                         .await?;
                 }
             }
@@ -3364,7 +3359,7 @@ mod tests {
             let envelope = config.mint_operation(input.clone())?;
             let response = self
                 .state
-                .submit_federation_envelope_with_sequence(envelope, None)
+                .submit_federation_envelope_to_consensus(envelope)
                 .await?;
 
             self.state
@@ -3422,7 +3417,7 @@ mod tests {
                     })?;
                 let envelope = config.melt_operation(request.clone())?;
                 self.state
-                    .submit_federation_envelope_with_sequence(envelope, None)
+                    .submit_federation_envelope_to_consensus(envelope)
                     .await?;
             }
 
@@ -3448,7 +3443,7 @@ mod tests {
             let envelope = config.swap_operation(request.clone())?;
             let response = self
                 .state
-                .submit_federation_envelope_with_sequence(envelope, None)
+                .submit_federation_envelope_to_consensus(envelope)
                 .await?;
 
             self.state

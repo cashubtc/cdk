@@ -499,7 +499,7 @@ async fn dkg_activation_mismatch_fails_before_sequence_or_record_mutation() {
         .expect("activations before mismatch");
     let before_sequences = receiver
         .db
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences before mismatch");
     let mut tampered = *before_activations
@@ -537,7 +537,7 @@ async fn dkg_activation_mismatch_fails_before_sequence_or_record_mutation() {
     assert_eq!(
         receiver
             .db
-            .get_federation_member_sequences()
+            .get_federation_dkg_member_sequences()
             .await
             .expect("sequences after mismatch"),
         before_sequences

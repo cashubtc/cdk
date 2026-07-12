@@ -302,10 +302,9 @@ async fn post_operation(
     let _permit =
         acquire_private_rest_admission(&state, FederationRestMessageKind::SubmitOperation)?;
     let admission = verify_operation_admission(&state, &payload).await?;
-    let sequence = Some(admission.sender_sequence());
     let envelope = admission.operation_envelope().clone();
     let response = state
-        .submit_federation_envelope_with_sequence(envelope, sequence)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .map_err(cdk_error_response)?;
     tracing::debug!("Accepted federation operation {}", response.operation_id);
@@ -317,20 +316,12 @@ async fn verify_operation_admission(
     request: &FederationSignedRequest<FederationSubmitOperationRequest>,
 ) -> Result<FederationVerifiedOperationAdmission, Response> {
     let runtime_config = federation_runtime_config(state)?;
-    let admission = FederationVerifiedOperationAdmission::from_signed_submit_request(
+    FederationVerifiedOperationAdmission::from_signed_submit_request(
         request,
         runtime_config.public_config(),
         runtime_config.member_id(),
     )
-    .map_err(federation_error_response)?;
-
-    let sequences = federation_sequences(state)?;
-    let sequences = sequences.lock().await;
-    sequences
-        .verify_next_sequence(admission.sender, admission.sequence)
-        .map_err(federation_error_response)?;
-
-    Ok(admission)
+    .map_err(federation_error_response)
 }
 
 async fn verify_federation_request<T>(

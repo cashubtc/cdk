@@ -92,7 +92,11 @@ pub(super) async fn post_dkg_readiness(
         )
         .map_err(federation_error_response)?;
     state
-        .record_federation_sequence(verified.sender, verified.sequence)
+        .record_federation_sequence(
+            FederationRestMessageKind::DkgReadiness,
+            verified.sender,
+            verified.sequence,
+        )
         .await;
 
     Ok(Json(FederationDkgSetupResponse::new(

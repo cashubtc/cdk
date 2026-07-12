@@ -5,11 +5,11 @@ use std::sync::Arc;
 use super::{FederationDkgAutoStartConfig, FederationPeerSyncConfig};
 use crate::{
     FederationAlephBftLiveSessionState, FederationAlephBftNetworkInboundState,
-    FederationAlephBftPendingSequenceHandle, FederationConsensusHandle,
-    FederationDkgMemberAdmissionHandle, FederationInvalidOperationAlertHandle,
-    FederationNotificationHandle, FederationOperationNotificationStats,
-    FederationOperationWaitRegistration, FederationRestAdmissionHandle, FederationSequenceHandle,
-    FederationSyncHandle, FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
+    FederationConsensusHandle, FederationDkgMemberAdmissionHandle,
+    FederationInvalidOperationAlertHandle, FederationNotificationHandle,
+    FederationOperationNotificationStats, FederationOperationWaitRegistration,
+    FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncHandle,
+    FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
 };
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
@@ -21,8 +21,8 @@ use cdk::federation::{
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationSubmitOperationResponse, MemberId,
-    FEDERATION_REST_API_VERSION,
+    FederationOperationId, FederationOperationStatus, FederationRestMessageKind,
+    FederationSubmitOperationResponse, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 
@@ -41,7 +41,6 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
-    pub(crate) aleph_bft_pending_sequences: Option<FederationAlephBftPendingSequenceHandle>,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
     #[cfg(test)]
@@ -66,7 +65,6 @@ impl FederationNodeRuntime {
             dkg_member_admission: None,
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
-            aleph_bft_pending_sequences: None,
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(test)]
@@ -291,57 +289,6 @@ impl FederationNodeRuntime {
         }
 
         Ok(Some(responses))
-    }
-
-    pub(crate) async fn remember_pending_sequence(
-        &self,
-        operation_id: FederationOperationId,
-        sender: MemberId,
-        sequence: u64,
-    ) {
-        let Some(pending) = &self.aleph_bft_pending_sequences else {
-            return;
-        };
-        pending
-            .lock()
-            .await
-            .entry(operation_id)
-            .or_default()
-            .insert(sender, sequence);
-    }
-
-    pub(crate) async fn pending_sequences_for_entries(
-        &self,
-        entries: &[FederationJournalEntry],
-    ) -> Vec<(MemberId, u64)> {
-        let Some(pending) = &self.aleph_bft_pending_sequences else {
-            return Vec::new();
-        };
-        let pending = pending.lock().await;
-        let mut sequences = Vec::new();
-        for entry in entries {
-            if let Some(entry_sequences) = pending.get(&entry.operation_id) {
-                sequences.extend(
-                    entry_sequences
-                        .iter()
-                        .map(|(member, sequence)| (*member, *sequence)),
-                );
-            }
-        }
-        sequences
-    }
-
-    pub(crate) async fn clear_pending_sequences_for_entries(
-        &self,
-        entries: &[FederationJournalEntry],
-    ) {
-        let Some(pending) = &self.aleph_bft_pending_sequences else {
-            return;
-        };
-        let mut pending = pending.lock().await;
-        for entry in entries {
-            pending.remove(&entry.operation_id);
-        }
     }
 
     pub(crate) async fn sync_status(&self) -> Option<FederationSyncStatus> {
@@ -588,15 +535,13 @@ impl FederationNodeRuntime {
         Ok(())
     }
 
-    pub(crate) async fn submit_envelope_with_sequence(
+    pub(crate) async fn submit_envelope(
         &self,
         envelope: FederationOperationEnvelope,
-        sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         #[cfg(feature = "prometheus")]
         let operation_label = envelope.operation.kind().to_string();
         let operation_id = envelope.operation_id()?;
-        let broadcast_activity = sequence.is_none();
         let sync_config = self.peer_sync_config.unwrap_or_default();
         let notifications = self.notifications.as_ref().ok_or_else(|| {
             cdk::Error::Custom(
@@ -617,12 +562,8 @@ impl FederationNodeRuntime {
                 let wait_registration = notifications
                     .register_waiter(operation_id, sync_config.response_waiter_limit)?;
                 drop(consensus);
-                self.mark_consensus_activity(operation_id, broadcast_activity)
+                self.mark_consensus_activity(operation_id, true)
                     .await;
-                if let Some((sender, sequence)) = sequence {
-                    self.remember_pending_sequence(operation_id, sender, sequence)
-                        .await;
-                }
                 let response = Self::wait_for_operation_acceptance(
                     operation_id,
                     sync_config,
@@ -639,11 +580,6 @@ impl FederationNodeRuntime {
             );
             notifications.record_duplicate_submission();
             drop(consensus);
-            if let Some(sequence) = sequence {
-                self.persist_journal_entries(&[], &[], Some(sequence))
-                    .await?;
-                self.record_sequence(sequence.0, sequence.1).await;
-            }
             return Ok(response);
         }
 
@@ -693,8 +629,7 @@ impl FederationNodeRuntime {
 
         *consensus = next_consensus;
         drop(consensus);
-        self.mark_consensus_activity(operation_id, broadcast_activity)
-            .await;
+        self.mark_consensus_activity(operation_id, true).await;
         if accepted_admission {
             #[cfg(feature = "prometheus")]
             self.record_accepted_operation_metric(&operation_label);
@@ -702,10 +637,6 @@ impl FederationNodeRuntime {
                 super::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
                 [operation_id],
             );
-        }
-        if let Some((sender, sequence)) = sequence {
-            self.remember_pending_sequence(operation_id, sender, sequence)
-                .await;
         }
         #[cfg(test)]
         self.finalize_unit_locally_for_test().await?;
@@ -733,7 +664,7 @@ impl FederationNodeRuntime {
             consensus.lock().await.next_aleph_bft_unit_payload()?
         };
         if let Some(unit) = unit {
-            self.apply_finalized_unit(unit, None).await?;
+            self.apply_finalized_unit(unit).await?;
         }
 
         Ok(())
@@ -947,14 +878,17 @@ impl FederationNodeRuntime {
         Ok(applied)
     }
 
-    pub(crate) async fn persist_sequence(
+    pub(crate) async fn persist_dkg_sequence(
         &self,
         sender: MemberId,
         sequence: u64,
     ) -> Result<(), cdk::Error> {
-        self.persist_journal_entries(&[], &[], Some((sender, sequence)))
-            .await?;
-        self.record_sequence(sender, sequence).await;
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.commit().await?;
+        self.record_sequence(FederationRestMessageKind::DkgCommitment, sender, sequence)
+            .await;
         Ok(())
     }
 
@@ -972,7 +906,7 @@ impl FederationNodeRuntime {
             .any(|existing| existing == commitment)
         {
             commitment.validate_against_config(&public_config)?;
-            return self.persist_sequence(sender, sequence).await;
+            return self.persist_dkg_sequence(sender, sequence).await;
         }
         let mut setup_state = self
             .load_dkg_setup_state(&public_config, commitment.ceremony_id)
@@ -981,9 +915,10 @@ impl FederationNodeRuntime {
 
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_commitment(commitment).await?;
-        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
         tx.commit().await?;
-        self.record_sequence(sender, sequence).await;
+        self.record_sequence(FederationRestMessageKind::DkgCommitment, sender, sequence)
+            .await;
         Ok(())
     }
 
@@ -1011,7 +946,7 @@ impl FederationNodeRuntime {
                     })
                 })?;
             commitment.validate_reveal(reveal, &public_config)?;
-            return self.persist_sequence(sender, sequence).await;
+            return self.persist_dkg_sequence(sender, sequence).await;
         }
         let mut setup_state = self
             .load_dkg_setup_state(&public_config, reveal.ceremony_id)
@@ -1020,9 +955,10 @@ impl FederationNodeRuntime {
 
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_reveal(reveal).await?;
-        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
         tx.commit().await?;
-        self.record_sequence(sender, sequence).await;
+        self.record_sequence(FederationRestMessageKind::DkgReveal, sender, sequence)
+            .await;
         Ok(())
     }
 
@@ -1065,7 +1001,7 @@ impl FederationNodeRuntime {
             .iter()
             .any(|existing| existing == contribution)
         {
-            return self.persist_sequence(sender, sequence).await;
+            return self.persist_dkg_sequence(sender, sequence).await;
         }
         let setup_state = self
             .load_dkg_setup_state(&public_config, contribution.ceremony_id)
@@ -1109,9 +1045,10 @@ impl FederationNodeRuntime {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_secret_share_contribution(contribution)
             .await?;
-        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
         tx.commit().await?;
-        self.record_sequence(sender, sequence).await;
+        self.record_sequence(FederationRestMessageKind::DkgSecretShare, sender, sequence)
+            .await;
         Ok(())
     }
 
@@ -1143,7 +1080,7 @@ impl FederationNodeRuntime {
             .iter()
             .any(|existing| existing == signature)
         {
-            return self.persist_sequence(sender, sequence).await;
+            return self.persist_dkg_sequence(sender, sequence).await;
         }
         let expected_hash = self.expected_dkg_transcript_hash(&public_config).await?;
         if signature.transcript_hash != expected_hash {
@@ -1161,9 +1098,14 @@ impl FederationNodeRuntime {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_transcript_signature(signature)
             .await?;
-        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
         tx.commit().await?;
-        self.record_sequence(sender, sequence).await;
+        self.record_sequence(
+            FederationRestMessageKind::DkgTranscriptSignature,
+            sender,
+            sequence,
+        )
+        .await;
         Ok(())
     }
 
@@ -1195,14 +1137,15 @@ impl FederationNodeRuntime {
             .iter()
             .any(|existing| existing == activation)
         {
-            return self.persist_sequence(sender, sequence).await;
+            return self.persist_dkg_sequence(sender, sequence).await;
         }
 
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_activation(activation).await?;
-        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
         tx.commit().await?;
-        self.record_sequence(sender, sequence).await;
+        self.record_sequence(FederationRestMessageKind::DkgActivation, sender, sequence)
+            .await;
         Ok(())
     }
 
@@ -1303,7 +1246,6 @@ impl FederationNodeRuntime {
         &self,
         entries: &[FederationJournalEntry],
         catch_up_certificates: &[&FederationCatchUpCertificate],
-        sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1313,9 +1255,6 @@ impl FederationNodeRuntime {
         for catch_up_certificate in catch_up_certificates {
             tx.add_federation_catch_up_certificate(catch_up_certificate)
                 .await?;
-        }
-        if let Some((sender, sequence)) = sequence {
-            tx.set_federation_member_sequence(sender, sequence).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -1337,7 +1276,6 @@ impl FederationNodeRuntime {
         &self,
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
-        sequences: &[(MemberId, u64)],
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1349,10 +1287,6 @@ impl FederationNodeRuntime {
         }
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
-        }
-        for (sender, sequence) in sequences {
-            tx.set_federation_member_sequence(*sender, *sequence)
-                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -1386,16 +1320,23 @@ impl FederationNodeRuntime {
         Ok(())
     }
 
-    pub(crate) async fn record_sequence(&self, sender: MemberId, sequence: u64) {
+    pub(crate) async fn record_sequence(
+        &self,
+        kind: FederationRestMessageKind,
+        sender: MemberId,
+        sequence: u64,
+    ) {
         if let Some(sequences) = &self.sequences {
-            sequences.lock().await.record_sequence(sender, sequence);
+            sequences
+                .lock()
+                .await
+                .record_sequence(kind, sender, sequence);
         }
     }
 
     pub(crate) async fn apply_finalized_unit(
         &self,
         payload: FederationAlephBftUnitPayload,
-        sequence: Option<(MemberId, u64)>,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
         let consensus = self.consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
@@ -1403,11 +1344,6 @@ impl FederationNodeRuntime {
         let mut consensus = consensus.lock().await;
         if let Some(responses) = Self::duplicate_finalized_unit_responses(&consensus, &payload)? {
             drop(consensus);
-            if let Some(sequence) = sequence {
-                self.persist_journal_entries(&[], &[], Some(sequence))
-                    .await?;
-                self.record_sequence(sequence.0, sequence.1).await;
-            }
             let entries = responses
                 .iter()
                 .map(|response| response.outcome.entry().clone())
@@ -1422,10 +1358,6 @@ impl FederationNodeRuntime {
         let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
         let finalized_items =
             next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
-        let outcome_entries = responses
-            .iter()
-            .map(|response| response.outcome.entry().clone())
-            .collect::<Vec<_>>();
         let entries = responses
             .iter()
             .filter_map(|response| match &response.outcome {
@@ -1434,23 +1366,12 @@ impl FederationNodeRuntime {
             })
             .collect::<Vec<_>>();
         let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
-        let mut sequences = self.pending_sequences_for_entries(&outcome_entries).await;
-        if let Some(sequence) = sequence {
-            sequences.push(sequence);
-        }
-
-        self.persist_finalization(&finalized_items, &entries, &sequences)
-            .await?;
+        self.persist_finalization(&finalized_items, &entries).await?;
         *consensus = next_consensus;
         drop(consensus);
-        self.clear_pending_sequences_for_entries(&outcome_entries)
-            .await;
 
         self.apply_journal_entries(&entries_to_apply).await?;
         let responses = self.responses_with_current_status(&responses).await;
-        for (sender, sequence) in &sequences {
-            self.record_sequence(*sender, *sequence).await;
-        }
         super::aleph_bft_latency::record(
             super::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
             responses.iter().map(|response| response.operation_id),

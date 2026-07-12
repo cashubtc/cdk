@@ -1978,7 +1978,6 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
-            aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             local_finality_test,
@@ -3524,7 +3523,7 @@ async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
     let sequences = receiver_state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     let sender_sequence = sequences
@@ -6874,7 +6873,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         melt_envelope.clone(),
     ] {
         peer_state
-            .submit_federation_envelope_with_sequence(envelope.clone(), None)
+            .submit_federation_envelope_to_consensus(envelope.clone())
             .await
             .expect("peer accepted operation");
         finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted operation");
@@ -7029,7 +7028,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     assert!(pending_change_signatures[0].is_none());
 
     peer_state
-        .submit_federation_envelope_with_sequence(melt_payment_envelope.clone(), None)
+        .submit_federation_envelope_to_consensus(melt_payment_envelope.clone())
         .await
         .expect("peer accepted delayed paid melt observation");
     finalize_test_operation(&mut peer_consensus, melt_payment_envelope)
@@ -7267,7 +7266,7 @@ async fn federation_runtime_startup_rejects_conflicting_public_config_snapshot()
 }
 
 #[tokio::test]
-async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
+async fn federation_runtime_state_replays_persisted_journal_and_dkg_sequences() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let peer_member = peer_private.member_id;
     let envelope = test_operation_envelope_for_config(
@@ -7279,9 +7278,9 @@ async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
         .await
         .expect("persist operation");
     state
-        .persist_federation_sequence(peer_member, 42)
+        .persist_federation_dkg_sequence(peer_member, 42)
         .await
-        .expect("persist sequence");
+        .expect("persist DKG sequence");
 
     let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
         .await
@@ -7301,7 +7300,7 @@ async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
             .operation_id,
         response.operation_id
     );
-    assert_eq!(sequences.sequences().get(&peer_member), Some(&42));
+    assert_eq!(sequences.dkg_sequences().get(&peer_member), Some(&42));
 }
 
 #[tokio::test]
@@ -10402,7 +10401,7 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("live AlephBFT operation response");
 
@@ -10515,7 +10514,7 @@ async fn aleph_bft_four_live_sessions_finalize_operation_over_private_rest_netwo
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = states[0]
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("four-member live AlephBFT operation response");
 
@@ -10609,7 +10608,7 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("live AlephBFT operation response without waiting for peer sync interval");
 
@@ -10698,7 +10697,7 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
     let first_envelope = mint_quote_envelope(&first_state, &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let first_response = first_state
-        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .submit_federation_envelope_to_consensus(first_envelope)
         .await
         .expect("session zero operation response");
     assert_eq!(first_response.operation_id, first_operation_id);
@@ -10766,7 +10765,7 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
     let second_envelope = mint_quote_envelope(&first_state, &second_quote_id);
     let second_operation_id = second_envelope.operation_id().expect("second operation id");
     let second_response = first_state
-        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .submit_federation_envelope_to_consensus(second_envelope)
         .await
         .expect("session one operation response");
     assert_eq!(second_response.operation_id, second_operation_id);
@@ -10916,7 +10915,7 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("session-one operation response");
     assert_eq!(response.operation_id, operation_id);
@@ -11024,7 +11023,7 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("live AlephBFT operation response under transport faults");
 
@@ -11161,7 +11160,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
         second_state
             .mint
             .localstore()
-            .get_federation_member_sequences()
+            .get_federation_dkg_member_sequences()
             .await
             .expect("sequences after malformed network message")
             .get(&first_private.member_id),
@@ -11173,7 +11172,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("live AlephBFT operation response after malformed message");
 
@@ -11214,7 +11213,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
         second_state
             .mint
             .localstore()
-            .get_federation_member_sequences()
+            .get_federation_dkg_member_sequences()
             .await
             .expect("durable sequences after valid finality")
             .is_empty(),
@@ -11294,7 +11293,7 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("live AlephBFT operation response before equivocation");
 
@@ -11355,7 +11354,7 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
         second_state
             .mint
             .localstore()
-            .get_federation_member_sequences()
+            .get_federation_dkg_member_sequences()
             .await
             .expect("durable sequences after equivocated network message")
             .get(&first_private.member_id),
@@ -11457,7 +11456,7 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
     let envelope = mint_quote_envelope(&first_state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("live AlephBFT operation response under reordered transport");
 
@@ -11574,7 +11573,7 @@ async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let response = states[0]
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("five-member AlephBFT operation response under combined transport faults");
 
@@ -11686,7 +11685,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     let first_envelope = mint_quote_envelope(&states[0], &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let response = states[0]
-        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .submit_federation_envelope_to_consensus(first_envelope)
         .await
         .expect("first five-member AlephBFT operation response");
 
@@ -11711,7 +11710,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     assert!(states[1]
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("durable sequences before equivocated network message")
         .is_empty());
@@ -11757,7 +11756,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     assert!(states[1]
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("durable sequences after equivocated network message")
         .is_empty());
@@ -11786,7 +11785,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     let second_envelope = mint_quote_envelope(&states[2], &second_quote_id);
     let second_operation_id = second_envelope.operation_id().expect("second operation id");
     let response = states[2]
-        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .submit_federation_envelope_to_consensus(second_envelope)
         .await
         .expect("second five-member AlephBFT operation response after equivocation");
 
@@ -11939,13 +11938,13 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
     let first_submit_state = session.states[0].clone();
     let first_submit = tokio::spawn(async move {
         first_submit_state
-            .submit_federation_envelope_with_sequence(first_envelope, None)
+            .submit_federation_envelope_to_consensus(first_envelope)
             .await
     });
     let fork_submit_state = fork_state.clone();
     let fork_submit = tokio::spawn(async move {
         fork_submit_state
-            .submit_federation_envelope_with_sequence(fork_envelope, None)
+            .submit_federation_envelope_to_consensus(fork_envelope)
             .await
     });
     let (first_unit_index, fork_unit_index) = tokio::join!(
@@ -12065,7 +12064,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
         .expect("follow-up operation id");
     let follow_up = time::timeout(
         Duration::from_secs(20),
-        session.states[1].submit_federation_envelope_with_sequence(follow_up_envelope, None),
+        session.states[1].submit_federation_envelope_to_consensus(follow_up_envelope),
     )
     .await
     .expect("honest follow-up must finish after fork")
@@ -12203,7 +12202,7 @@ async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_du
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let err = states[0]
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect_err("unavailable live member should leave operation pending");
 
@@ -12309,7 +12308,7 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let err = states[0]
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect_err("unavailable member should leave operation pending first");
     assert_pending_finalization_error(&err, operation_id, 250);
@@ -12338,7 +12337,7 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
     });
     let retry_envelope = mint_quote_envelope(&states[0], &quote_id);
     let response = states[0]
-        .submit_federation_envelope_with_sequence(retry_envelope, None)
+        .submit_federation_envelope_to_consensus(retry_envelope)
         .await
         .expect("returned member should allow live finality");
 
@@ -12390,13 +12389,13 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
     let quote_envelope = mint_quote_envelope(&session.states[0], &quote_id);
     let quote_operation_id = quote_envelope.operation_id().expect("quote operation id");
     session.states[0]
-        .submit_federation_envelope_with_sequence(quote_envelope, None)
+        .submit_federation_envelope_to_consensus(quote_envelope)
         .await
         .expect("baseline mint quote finality");
     let paid_envelope = paid_observation_envelope(&session.states[0], &quote_id);
     let paid_operation_id = paid_envelope.operation_id().expect("paid operation id");
     session.states[0]
-        .submit_federation_envelope_with_sequence(paid_envelope, None)
+        .submit_federation_envelope_to_consensus(paid_envelope)
         .await
         .expect("baseline paid observation finality");
     for state in &session.states {
@@ -12424,7 +12423,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
         ..session.sync_config
     });
     let err = session.states[4]
-        .submit_federation_envelope_with_sequence(mint_envelope.clone(), None)
+        .submit_federation_envelope_to_consensus(mint_envelope.clone())
         .await
         .expect_err("self-partitioned proposer must time out locally");
     assert_pending_finalization_error(&err, mint_operation_id, 250);
@@ -12508,7 +12507,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
     );
 
     let err = session.states[4]
-        .submit_federation_envelope_with_sequence(mint_envelope.clone(), None)
+        .submit_federation_envelope_to_consensus(mint_envelope.clone())
         .await
         .expect_err("restarted self-partitioned proposer must remain pending before heal");
     assert_pending_finalization_error(&err, mint_operation_id, 250);
@@ -12560,7 +12559,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
 
     session.states[4].federation.peer_sync_config = Some(session.sync_config);
     let duplicate = session.states[4]
-        .submit_federation_envelope_with_sequence(mint_envelope, None)
+        .submit_federation_envelope_to_consensus(mint_envelope)
         .await
         .expect("healed mint retry returns durable response");
     assert_eq!(duplicate.operation_id, mint_operation_id);
@@ -12599,7 +12598,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
         .operation_id()
         .expect("below-quorum operation id");
     let response = session.states[0]
-        .submit_federation_envelope_with_sequence(below_quorum_envelope, None)
+        .submit_federation_envelope_to_consensus(below_quorum_envelope)
         .await
         .expect("four connected members retain BFT finality");
     assert_eq!(response.operation_id, below_quorum_operation_id);
@@ -12706,7 +12705,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
         ..session.sync_config
     });
     let err = session.states[0]
-        .submit_federation_envelope_with_sequence(stalled_envelope.clone(), None)
+        .submit_federation_envelope_to_consensus(stalled_envelope.clone())
         .await
         .expect_err("two offline members must stall five-member finality");
     assert_pending_finalization_error(&err, stalled_operation_id, 250);
@@ -12816,7 +12815,7 @@ async fn aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_member
 
     session.states[4].federation.peer_sync_config = Some(session.sync_config);
     let duplicate = session.states[4]
-        .submit_federation_envelope_with_sequence(stalled_envelope, None)
+        .submit_federation_envelope_to_consensus(stalled_envelope)
         .await
         .expect("caught-up stalled operation retry");
     assert_eq!(duplicate.operation_id, stalled_operation_id);
@@ -13153,7 +13152,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         (2_usize, melt_envelope, melt_operation_id),
     ] {
         let err = session.states[index]
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
             .expect_err("below-finality operation must remain pending");
         assert_pending_finalization_error(&err, operation_id, 250);
@@ -14358,9 +14357,9 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
     let third_envelope = envelope.clone();
     let fourth_envelope = envelope;
     let (first, third, fourth) = tokio::join!(
-        states[0].submit_federation_envelope_with_sequence(first_envelope, None),
-        states[2].submit_federation_envelope_with_sequence(third_envelope, None),
-        states[3].submit_federation_envelope_with_sequence(fourth_envelope, None)
+        states[0].submit_federation_envelope_to_consensus(first_envelope),
+        states[2].submit_federation_envelope_to_consensus(third_envelope),
+        states[3].submit_federation_envelope_to_consensus(fourth_envelope)
     );
     let responses = [first, third, fourth];
     if responses.iter().any(Result::is_err) {
@@ -14538,7 +14537,7 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
         let envelope = mint_quote_envelope(&states[0], &quote_id);
         let operation_id = envelope.operation_id().expect("operation id");
         let err = states[0]
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
             .expect_err("long unavailable window should leave operation pending");
         assert_pending_finalization_error(&err, operation_id, 250);
@@ -14733,7 +14732,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let err = states[0]
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect_err("unavailable member should leave operation pending first");
     assert_pending_finalization_error(&err, operation_id, 250);
@@ -14978,7 +14977,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
     let first_envelope = mint_quote_envelope(&first_state, &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .submit_federation_envelope_to_consensus(first_envelope)
         .await
         .expect("first operation finality before restart");
     assert_eq!(response.operation_id, first_operation_id);
@@ -15039,7 +15038,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
     let second_envelope = mint_quote_envelope(&restarted_first_state, &second_quote_id);
     let second_operation_id = second_envelope.operation_id().expect("second operation id");
     let response = restarted_first_state
-        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .submit_federation_envelope_to_consensus(second_envelope)
         .await
         .expect("second operation finality after restart");
     assert_eq!(response.operation_id, second_operation_id);
@@ -15160,7 +15159,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let first_envelope = mint_quote_envelope(&first_state, &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let response = first_state
-        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .submit_federation_envelope_to_consensus(first_envelope)
         .await
         .expect("first operation finality before crash-window recovery");
     assert_eq!(response.operation_id, first_operation_id);
@@ -15304,7 +15303,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let second_envelope = mint_quote_envelope(&recovered_first_state, &second_quote_id);
     let second_operation_id = second_envelope.operation_id().expect("second operation id");
     let response = recovered_first_state
-        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .submit_federation_envelope_to_consensus(second_envelope)
         .await
         .expect("second operation finality after backup-only recovery");
     assert_eq!(response.operation_id, second_operation_id);
@@ -15436,7 +15435,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     let first_envelope = mint_quote_envelope(&states[0], &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let response = states[0]
-        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .submit_federation_envelope_to_consensus(first_envelope)
         .await
         .expect("first five-member operation finality before restart");
     assert_eq!(response.operation_id, first_operation_id);
@@ -15502,7 +15501,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     let second_envelope = mint_quote_envelope(&states[0], &second_quote_id);
     let second_operation_id = second_envelope.operation_id().expect("second operation id");
     let response = states[0]
-        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .submit_federation_envelope_to_consensus(second_envelope)
         .await
         .expect("second five-member operation finality after restart");
     assert_eq!(response.operation_id, second_operation_id);
@@ -15521,7 +15520,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     let third_envelope = mint_quote_envelope(&states[1], &third_quote_id);
     let third_operation_id = third_envelope.operation_id().expect("third operation id");
     let response = states[1]
-        .submit_federation_envelope_with_sequence(third_envelope, None)
+        .submit_federation_envelope_to_consensus(third_envelope)
         .await
         .expect("third five-member operation finality after restart");
     assert_eq!(response.operation_id, third_operation_id);
@@ -15652,8 +15651,6 @@ async fn replay_aleph_bft_runtime_after_test_process_restart(state: &mut MintSta
             .expect("replay AlephBFT runtime after test process restart");
     state.federation.consensus = replayed_consensus;
     state.federation.sequences = replayed_sequences;
-    state.federation.aleph_bft_pending_sequences =
-        Some(Arc::new(tokio::sync::Mutex::new(HashMap::new())));
 }
 
 async fn submit_live_operation_allowing_pending_timeout(
@@ -15662,7 +15659,7 @@ async fn submit_live_operation_allowing_pending_timeout(
 ) -> FederationOperationId {
     let operation_id = envelope.operation_id().expect("live operation id");
     match state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
     {
         Ok(response) => assert_eq!(response.operation_id, operation_id),
@@ -15958,7 +15955,7 @@ async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperati
     let submit_state = state.clone();
     let response = tokio::spawn(async move {
         submit_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
     })
     .await
@@ -15982,13 +15979,13 @@ async fn submit_duplicate_latency_probe_mint_quote(state: &MintState) -> Federat
     let first_envelope = envelope.clone();
     let first = tokio::spawn(async move {
         first_state
-            .submit_federation_envelope_with_sequence(first_envelope, None)
+            .submit_federation_envelope_to_consensus(first_envelope)
             .await
     });
     let second_state = state.clone();
     let second = tokio::spawn(async move {
         second_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
     });
 
@@ -17314,7 +17311,7 @@ async fn aleph_bft_submit_envelope_waits_for_finalization() {
     let submit_state = state.clone();
     let submit = tokio::spawn(async move {
         submit_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
             .expect("AlephBFT submit response")
     });
@@ -17341,8 +17338,8 @@ async fn aleph_bft_submit_envelope_waits_for_finalization() {
 }
 
 #[tokio::test]
-async fn aleph_bft_submit_envelope_persists_sequence_after_finalization() {
-    let (public_config, local_private, peer_private) = transport_config();
+async fn aleph_bft_submit_envelope_does_not_persist_dkg_sequence_state() {
+    let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let state = federation_route_state_for_private_with_db_and_aleph_bft(
@@ -17354,12 +17351,10 @@ async fn aleph_bft_submit_envelope_persists_sequence_after_finalization() {
     .await;
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
-    let sender_sequence = 42;
     let submit_state = state.clone();
-    let sender = peer_private.member_id;
     let submit = tokio::spawn(async move {
         submit_state
-            .submit_federation_envelope_with_sequence(envelope, Some((sender, sender_sequence)))
+            .submit_federation_envelope_to_consensus(envelope)
             .await
             .expect("AlephBFT submit response")
     });
@@ -17367,7 +17362,7 @@ async fn aleph_bft_submit_envelope_persists_sequence_after_finalization() {
     let sequences_before = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences before finalization");
     assert!(sequences_before.is_empty());
@@ -17381,12 +17376,12 @@ async fn aleph_bft_submit_envelope_persists_sequence_after_finalization() {
     let sequences_after = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences after finalization");
-    assert_eq!(
-        sequences_after.get(&peer_private.member_id).copied(),
-        Some(sender_sequence)
+    assert!(
+        sequences_after.is_empty(),
+        "operation finalization must not mutate durable DKG replay state"
     );
 }
 
@@ -17411,7 +17406,7 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
     let operation_id = envelope.operation_id().expect("operation id");
 
     let err = state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect_err("unfinalized submit should time out");
 
@@ -17453,7 +17448,7 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
     let operation_id = envelope.operation_id().expect("operation id");
 
     let err = state
-        .submit_federation_envelope_with_sequence(envelope.clone(), None)
+        .submit_federation_envelope_to_consensus(envelope.clone())
         .await
         .expect_err("unfinalized submit should time out");
     assert_pending_finalization_error(&err, operation_id, 10);
@@ -17471,7 +17466,7 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
     let retry_state = state.clone();
     let retry_submit = tokio::spawn(async move {
         retry_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
     });
     for _ in 0..50 {
@@ -17528,7 +17523,7 @@ async fn aleph_bft_submit_envelope_releases_response_waiter_after_timeout() {
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
 
     let first_err = state
-        .submit_federation_envelope_with_sequence(first_envelope, None)
+        .submit_federation_envelope_to_consensus(first_envelope)
         .await
         .expect_err("first unfinalized submit should time out");
     assert_pending_finalization_error(&first_err, first_operation_id, 10);
@@ -17537,7 +17532,7 @@ async fn aleph_bft_submit_envelope_releases_response_waiter_after_timeout() {
     let second_operation_id = second_envelope.operation_id().expect("second operation id");
 
     let second_err = state
-        .submit_federation_envelope_with_sequence(second_envelope, None)
+        .submit_federation_envelope_to_consensus(second_envelope)
         .await
         .expect_err("second unfinalized submit should time out after waiter cleanup");
     assert_pending_finalization_error(&second_err, second_operation_id, 10);
@@ -17564,10 +17559,10 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
     let first_state = state.clone();
     let first_submit = tokio::spawn(async move {
         first_state
-            .submit_federation_envelope_with_sequence(
-                mint_quote_envelope(&first_state, &QuoteId::new()),
-                None,
-            )
+            .submit_federation_envelope_to_consensus(mint_quote_envelope(
+                &first_state,
+                &QuoteId::new(),
+            ))
             .await
     });
     for _ in 0..50 {
@@ -17579,10 +17574,10 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
 
     let err = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &QuoteId::new()),
-            None,
-        )
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(
+            &state,
+            &QuoteId::new(),
+        ))
         .await
         .expect_err("full response waiter set should reject");
     assert!(
@@ -17631,7 +17626,7 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
     let first_envelope = envelope.clone();
     let first_submit = tokio::spawn(async move {
         first_state
-            .submit_federation_envelope_with_sequence(first_envelope, None)
+            .submit_federation_envelope_to_consensus(first_envelope)
             .await
     });
     for _ in 0..50 {
@@ -17645,7 +17640,7 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
     let second_state = state.clone();
     let second_submit = tokio::spawn(async move {
         second_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
     });
     for _ in 0..50 {
@@ -17732,7 +17727,7 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
     let duplicate_state = state.clone();
     let duplicate_submit = tokio::spawn(async move {
         duplicate_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
     });
     for _ in 0..50 {
@@ -17801,7 +17796,7 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
     let first_state = state.clone();
     let first_submit = tokio::spawn(async move {
         first_state
-            .submit_federation_envelope_with_sequence(first_envelope.clone(), None)
+            .submit_federation_envelope_to_consensus(first_envelope.clone())
             .await
     });
     let first_unit = wait_for_local_aleph_bft_unit(&state).await;
@@ -17822,7 +17817,7 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
     let second_state = state.clone();
     let second_submit = tokio::spawn(async move {
         second_state
-            .submit_federation_envelope_with_sequence(second_envelope, None)
+            .submit_federation_envelope_to_consensus(second_envelope)
             .await
     });
     let second_unit = wait_for_local_aleph_bft_unit(&state).await;
@@ -17838,10 +17833,10 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
     assert_eq!(state.federation_response_cache_entry_count(), 1);
 
     let duplicate_response = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &first_quote_id),
-            None,
-        )
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(
+            &state,
+            &first_quote_id,
+        ))
         .await
         .expect("duplicate submit after cache eviction");
     assert_eq!(duplicate_response.operation_id, first_operation_id);
@@ -17885,7 +17880,7 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
     let submit_state = state.clone();
     let submit = tokio::spawn(async move {
         submit_state
-            .submit_federation_envelope_with_sequence(envelope, None)
+            .submit_federation_envelope_to_consensus(envelope)
             .await
     });
     let unit = wait_for_local_aleph_bft_unit(&state).await;
@@ -17905,7 +17900,7 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
     assert_eq!(state.federation_response_cache_entry_count(), 0);
 
     let duplicate_response = state
-        .submit_federation_envelope_with_sequence(mint_quote_envelope(&state, &quote_id), None)
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(&state, &quote_id))
         .await
         .expect("duplicate submit after lost waiters");
     assert_eq!(duplicate_response.operation_id, operation_id);
@@ -17960,7 +17955,7 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let err = state
-        .submit_federation_envelope_with_sequence(envelope.clone(), None)
+        .submit_federation_envelope_to_consensus(envelope.clone())
         .await
         .expect_err("unfinalized submit should time out before response delivery");
     assert_pending_finalization_error(&err, operation_id, 10);
@@ -18025,7 +18020,7 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
         .is_some());
 
     let duplicate_response = restarted_state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("duplicate submit after SQLite restart");
     assert_eq!(duplicate_response.operation_id, operation_id);
@@ -18103,7 +18098,7 @@ async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
     let competing_envelope = envelope.clone();
     let competing_submit = tokio::spawn(async move {
         competing_state
-            .submit_federation_envelope_with_sequence(competing_envelope, None)
+            .submit_federation_envelope_to_consensus(competing_envelope)
             .await
     });
     let unit = wait_for_local_aleph_bft_unit(&state).await;
@@ -18118,7 +18113,7 @@ async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
     assert_eq!(accepted.operation_id, operation_id);
 
     let duplicate = state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("post-admission race submit should return duplicate");
     assert_eq!(duplicate.operation_id, operation_id);
@@ -18188,10 +18183,10 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let rejected_quote_id = QuoteId::new();
 
     let err = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &rejected_quote_id),
-            None,
-        )
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(
+            &state,
+            &rejected_quote_id,
+        ))
         .await
         .expect_err("full pending mempool should reject new operation");
 
@@ -18213,7 +18208,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     drop(consensus);
 
     let duplicate_err = state
-        .submit_federation_envelope_with_sequence(queued_envelope, None)
+        .submit_federation_envelope_to_consensus(queued_envelope)
         .await
         .expect_err("duplicate pending operation should wait on existing queue entry");
     assert_pending_finalization_error(&duplicate_err, queued_operation_id, 10);
@@ -18276,7 +18271,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
 
 #[tokio::test]
 async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeueing() {
-    let (public_config, local_private, peer_private) = transport_config();
+    let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let state = federation_route_state_for_private_with_db_and_aleph_bft(
@@ -18295,38 +18290,34 @@ async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuein
         .await
         .expect("apply finalized unit");
 
-    let duplicate_sequence = 24;
     let duplicate = state
-        .submit_federation_envelope_with_sequence(envelope, None)
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect("duplicate response");
-    let duplicate_with_sequence = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &quote_id),
-            Some((peer_private.member_id, duplicate_sequence)),
-        )
+    let second_duplicate = state
+        .submit_federation_envelope_to_consensus(mint_quote_envelope(&state, &quote_id))
         .await
-        .expect("duplicate response with sequence");
+        .expect("second duplicate response");
 
     assert_eq!(duplicate.operation_id, operation_id);
     assert!(matches!(
         duplicate.outcome,
         FederationJournalAppendOutcome::Duplicate(_)
     ));
-    assert_eq!(duplicate_with_sequence.operation_id, operation_id);
+    assert_eq!(second_duplicate.operation_id, operation_id);
     assert!(matches!(
-        duplicate_with_sequence.outcome,
+        second_duplicate.outcome,
         FederationJournalAppendOutcome::Duplicate(_)
     ));
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
-        .expect("persisted duplicate sequence");
-    assert_eq!(
-        sequences.get(&peer_private.member_id).copied(),
-        Some(duplicate_sequence)
+        .expect("durable DKG sequences after operation duplicates");
+    assert!(
+        sequences.is_empty(),
+        "operation duplicates must not mutate durable DKG replay state"
     );
     let stats = state.federation_operation_notification_stats();
     assert_eq!(stats.duplicate_submissions, 2);
@@ -18615,22 +18606,16 @@ async fn submit_mint_operation_rejects_invalid_admission_before_journal_append()
 }
 
 #[tokio::test]
-async fn submit_payment_observation_rejects_invalid_private_admission_before_sequence_persistence()
-{
-    let (state, _, peer_private) = federation_route_state().await;
+async fn submit_payment_observation_rejects_invalid_admission_without_dkg_sequence_mutation() {
+    let (state, _, _) = federation_route_state().await;
     let quote_id = QuoteId::new();
     let mut envelope = paid_observation_envelope(&state, &quote_id);
     let FederationOperation::MintQuotePayment(observation) = &mut envelope.operation else {
         panic!("expected mint quote payment observation");
     };
     observation.method = PaymentMethod::Custom("bad/method".to_string());
-    let sender_sequence = 33;
-
     let err = state
-        .submit_federation_envelope_with_sequence(
-            envelope,
-            Some((peer_private.member_id, sender_sequence)),
-        )
+        .submit_federation_envelope_to_consensus(envelope)
         .await
         .expect_err("invalid payment observation should fail before consensus");
 
@@ -18645,12 +18630,12 @@ async fn submit_payment_observation_rejects_invalid_private_admission_before_seq
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequence lookup");
     assert!(
         sequences.is_empty(),
-        "invalid private admission must not persist the sender sequence"
+        "invalid operation admission must not mutate durable DKG replay state"
     );
 }
 
@@ -19821,15 +19806,15 @@ async fn materialized_state_digest_ignores_member_local_signature_share_bytes() 
 
     for state in [&first_state, &second_state] {
         state
-            .submit_federation_envelope_with_sequence(quote_envelope.clone(), None)
+            .submit_federation_envelope_to_consensus(quote_envelope.clone())
             .await
             .expect("submit mint quote");
         state
-            .submit_federation_envelope_with_sequence(paid_envelope.clone(), None)
+            .submit_federation_envelope_to_consensus(paid_envelope.clone())
             .await
             .expect("submit paid observation");
         state
-            .submit_federation_envelope_with_sequence(mint_envelope.clone(), None)
+            .submit_federation_envelope_to_consensus(mint_envelope.clone())
             .await
             .expect("submit mint");
     }
@@ -20691,7 +20676,7 @@ async fn private_status_route_records_sequence_without_persisting_liveness_water
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("durable sequences");
     assert!(
@@ -20736,7 +20721,7 @@ async fn private_status_route_rejects_inbound_overflow_before_sequence_persisten
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(
@@ -21043,7 +21028,7 @@ async fn private_journal_route_returns_signed_catch_up_certificate() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("durable sequences");
     assert!(
@@ -21156,7 +21141,7 @@ async fn private_journal_route_rejects_wrong_message_kind_before_sequence_persis
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(

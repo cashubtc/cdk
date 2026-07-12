@@ -91,8 +91,10 @@ Every refactoring checkpoint must preserve the following invariants.
   operation contents.
 - Catch-up cannot append entries without validating the exact accepted range and
   required quorum evidence.
-- Gossip sequence watermarks remain liveness/authentication metadata and do not
-  become a substitute for consensus order.
+- Gossip sequence watermarks remain bounded in-memory
+  liveness/authentication metadata and do not become a substitute for consensus
+  order. Operation IDs provide operation idempotency; only effectful DKG replay
+  watermarks survive restart.
 
 ### Application and storage
 
@@ -1288,7 +1290,7 @@ statements and shared explicit decoding.
   - journal and application state;
   - AlephBFT backup/session data;
   - payment observations and quarantine;
-  - private sequence watermarks.
+  - effectful DKG replay watermarks.
 - Add migration tests only for deployed formats. Federation is undeployed, so
   squash experimental federation migrations after the retained schema is
   settled rather than testing every intermediate development schema.
@@ -1332,6 +1334,15 @@ classify each private message and remove the external finalized-unit route.
 Then share the common authenticated envelope boundary while keeping class-
 specific sequence persistence explicit. Avoid generic middleware that commits a
 watermark before the handler's intended acceptance point.
+
+**Implementation verdict: Message semantics classified; extractor deferred.**
+Effectful DKG mutations now share one durable replay stream, each read/liveness
+kind has an independent bounded in-memory window, and operation submission uses
+its canonical operation ID and durable pending/finalized records. The obsolete
+operation source-sequence map and finalization persistence were deleted. A
+generic typed extractor would not currently remove the distinct DKG atomic
+persistence and route-local liveness acceptance points, so adding one now would
+increase abstraction without reducing behavior or code.
 
 ### Target boundary
 

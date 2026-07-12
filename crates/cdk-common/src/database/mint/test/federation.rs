@@ -416,16 +416,16 @@ where
     )
     .await
     .expect("reject operation");
-    tx.set_federation_member_sequence(member_one, 7)
+    tx.set_federation_dkg_member_sequence(member_one, 7)
         .await
         .expect("sequence one");
-    tx.set_federation_member_sequence(member_two, 11)
+    tx.set_federation_dkg_member_sequence(member_two, 11)
         .await
         .expect("sequence two");
-    tx.set_federation_member_sequence(member_one, 9)
+    tx.set_federation_dkg_member_sequence(member_one, 9)
         .await
         .expect("sequence one update");
-    tx.set_federation_member_sequence(member_one, 5)
+    tx.set_federation_dkg_member_sequence(member_one, 5)
         .await
         .expect("sequence one stale update");
     tx.add_federation_catch_up_certificate(&first_catch_up_certificate)
@@ -502,7 +502,7 @@ where
     assert_eq!(catch_up_entries[0].rejection(), Some(&rejection));
 
     let sequences = db
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("sequences");
     assert_eq!(sequences.get(&member_one), Some(&9));
@@ -1943,7 +1943,7 @@ where
             let mut tx = Database::begin_transaction(db.as_ref())
                 .await
                 .expect("begin sequence transaction");
-            tx.set_federation_member_sequence(member, sequence)
+            tx.set_federation_dkg_member_sequence(member, sequence)
                 .await
                 .expect("persist sequence update");
             tx.commit().await.expect("commit sequence transaction");
@@ -2027,7 +2027,7 @@ where
 
     let sequences = db
         .as_ref()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("metadata sequences");
     assert_eq!(sequences.get(&member_one), Some(&5));

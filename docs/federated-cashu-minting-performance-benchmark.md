@@ -2542,7 +2542,7 @@ same finalized configuration.
 
 Decision: **Kept** as the final production failure-matrix checkpoint, with no
 speed claim. A disposable file-backed SQLite database installs an engine-level
-abort trigger on `federation_member_sequences`. The DKG commitment insert runs
+abort trigger on `federation_dkg_member_sequences`. The DKG commitment insert runs
 first inside the same transaction, the sequence write then fails, and explicit
 rollback leaves both the commitment table and sequence watermark unchanged.
 After removing the trigger, the exact same commitment and sequence retry commits

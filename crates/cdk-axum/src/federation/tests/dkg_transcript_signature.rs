@@ -46,7 +46,7 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&peer_private.member_id), Some(&5));
@@ -108,7 +108,7 @@ async fn private_dkg_transcript_signature_route_rejects_conflict_before_sequence
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&peer_private.member_id), Some(&4));
@@ -146,7 +146,7 @@ async fn private_dkg_transcript_signature_route_rejects_before_local_keyset_shar
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());
@@ -189,7 +189,7 @@ async fn private_dkg_transcript_signature_route_rejects_wrong_hash_before_sequen
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
@@ -237,7 +237,7 @@ async fn private_dkg_transcript_signature_route_rejects_bad_signature_before_seq
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());

@@ -30,12 +30,15 @@ async fn private_operation_route_accepts_signed_peer_request() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(persisted.len(), 1);
     assert_eq!(persisted[0].operation_id, response.0.operation_id);
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+    assert!(
+        sequences.is_empty(),
+        "operation IDs, not durable REST sequences, provide operation idempotency"
+    );
 }
 
 #[tokio::test]
@@ -58,7 +61,7 @@ async fn private_operation_route_rejects_oversized_request_before_mutation() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());
@@ -108,7 +111,7 @@ async fn private_operation_route_rejects_unknown_sender_before_mutation() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());
@@ -135,14 +138,43 @@ async fn private_operation_route_rejects_kind_mismatch_before_mutation() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());
 }
 
 #[tokio::test]
-async fn private_operation_route_rejects_stale_sequence_before_second_mutation() {
+async fn private_operation_route_replay_is_idempotent_by_operation_id() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let envelope = test_operation_envelope_for_state(&state, "replayed operation");
+    let request = signed_operation_request(
+        &public_config,
+        &peer_private,
+        1,
+        FederationRestMessageKind::SubmitOperation,
+        envelope,
+    );
+
+    let first = post_operation(State(state.clone()), Json(request.clone()))
+        .await
+        .expect("first operation accepted")
+        .0;
+    let replay = post_operation(State(state.clone()), Json(request))
+        .await
+        .expect("operation replay returns its durable outcome")
+        .0;
+
+    assert_eq!(replay.operation_id, first.operation_id);
+    assert!(matches!(
+        replay.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(consensus_operation_count(&state).await, 1);
+}
+
+#[tokio::test]
+async fn private_operation_route_sequence_reuse_does_not_alias_operation_ids() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let first = test_operation_envelope_for_state(&state, "first sequenced operation");
     let second = test_operation_envelope_for_state(&state, "stale sequenced operation");
@@ -161,13 +193,20 @@ async fn private_operation_route_rejects_stale_sequence_before_second_mutation()
         second,
     );
 
-    let _ = post_operation(State(state.clone()), Json(first_request))
+    let first_response = post_operation(State(state.clone()), Json(first_request))
         .await
         .expect("first operation accepted");
-    let response = post_operation(State(state.clone()), Json(second_request))
+    let second_response = post_operation(State(state.clone()), Json(second_request))
         .await
-        .expect_err("stale sequence must fail");
+        .expect("distinct signed operation accepted despite reused transport sequence");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(consensus_operation_count(&state).await, 1);
+    assert_ne!(second_response.0.operation_id, first_response.0.operation_id);
+    assert_eq!(consensus_operation_count(&state).await, 2);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_dkg_member_sequences()
+        .await
+        .expect("durable DKG sequences")
+        .is_empty());
 }

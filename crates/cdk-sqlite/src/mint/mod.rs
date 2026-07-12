@@ -273,8 +273,8 @@ mod test {
             let conn = rusqlite::Connection::open(&path).expect("SQLite fault connection");
             conn.execute_batch(
                 r#"
-                CREATE TRIGGER fail_federation_member_sequence
-                BEFORE INSERT ON federation_member_sequences
+                CREATE TRIGGER fail_federation_dkg_member_sequence
+                BEFORE INSERT ON federation_dkg_member_sequences
                 BEGIN
                     SELECT RAISE(ABORT, 'simulated SQLite write failure');
                 END;
@@ -290,7 +290,7 @@ mod test {
             .await
             .expect("first DKG write succeeds before injected failure");
         assert!(tx
-            .set_federation_member_sequence(commitment.member_id, 1)
+            .set_federation_dkg_member_sequence(commitment.member_id, 1)
             .await
             .is_err());
         tx.rollback()
@@ -302,14 +302,14 @@ mod test {
             .expect("commitments after rollback")
             .is_empty());
         assert!(db
-            .get_federation_member_sequences()
+            .get_federation_dkg_member_sequences()
             .await
             .expect("sequences after rollback")
             .is_empty());
 
         {
             let conn = rusqlite::Connection::open(&path).expect("SQLite recovery connection");
-            conn.execute_batch("DROP TRIGGER fail_federation_member_sequence;")
+            conn.execute_batch("DROP TRIGGER fail_federation_dkg_member_sequence;")
                 .expect("remove SQLite write-failure trigger");
         }
         let mut tx = Database::begin_transaction(&db)
@@ -318,7 +318,7 @@ mod test {
         tx.add_federation_dkg_commitment(&commitment)
             .await
             .expect("retry DKG commitment");
-        tx.set_federation_member_sequence(commitment.member_id, 1)
+        tx.set_federation_dkg_member_sequence(commitment.member_id, 1)
             .await
             .expect("retry member sequence");
         tx.commit().await.expect("commit recovered DKG transaction");
@@ -329,7 +329,7 @@ mod test {
             vec![commitment]
         );
         assert_eq!(
-            db.get_federation_member_sequences()
+            db.get_federation_dkg_member_sequences()
                 .await
                 .expect("recovered sequence")
                 .get(&commitment.member_id),
@@ -453,7 +453,7 @@ mod test {
             "saga_state",
             "completed_operations",
             "federation_journal_entries",
-            "federation_member_sequences",
+            "federation_dkg_member_sequences",
             "federation_catch_up_certificates",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",

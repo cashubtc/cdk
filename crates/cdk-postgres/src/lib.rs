@@ -717,7 +717,7 @@ mod test {
             "saga_state",
             "completed_operations",
             "federation_journal_entries",
-            "federation_member_sequences",
+            "federation_dkg_member_sequences",
             "federation_catch_up_certificates",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",

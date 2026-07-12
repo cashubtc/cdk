@@ -78,7 +78,7 @@ async fn private_dkg_setup_routes_accept_signed_peer_requests() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
@@ -129,7 +129,7 @@ async fn private_dkg_commitment_route_rejects_inactive_ceremony_before_persisten
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences")
         .is_empty());
@@ -166,7 +166,7 @@ async fn private_dkg_setup_route_rejects_when_no_ceremony_is_active() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences")
         .is_empty());
@@ -203,7 +203,7 @@ async fn private_dkg_reveal_route_rejects_inactive_keyset_policy_before_persiste
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences")
         .is_empty());
@@ -251,7 +251,7 @@ async fn private_dkg_router_rejects_oversized_signed_body_before_persistence() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences")
         .is_empty());
@@ -306,7 +306,7 @@ async fn saturated_dkg_member_admission_does_not_block_another_member() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences");
     assert!(!sequences.contains_key(&first_peer.member_id));
@@ -319,7 +319,7 @@ async fn saturated_dkg_member_admission_does_not_block_another_member() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences after retry");
     assert_eq!(sequences.get(&first_peer.member_id), Some(&1));
@@ -382,7 +382,7 @@ async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences before refill");
     assert_eq!(sequences.get(&first_peer.member_id), Some(&1));
@@ -395,7 +395,7 @@ async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences after refill");
     assert_eq!(sequences.get(&first_peer.member_id), Some(&2));
@@ -435,7 +435,7 @@ async fn active_dkg_route_fails_closed_without_member_admission() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("member sequences")
         .is_empty());
@@ -500,7 +500,7 @@ async fn private_dkg_setup_routes_accept_exact_duplicates_and_advance_sequence()
 
     let db = state.mint.localstore();
     assert_eq!(
-        db.get_federation_member_sequences()
+        db.get_federation_dkg_member_sequences()
             .await
             .expect("member sequences")
             .get(&peer_private.member_id),
@@ -565,7 +565,7 @@ async fn completed_secret_share_duplicate_skips_cpu_derivation() {
     drop(cpu_permit);
 
     assert_eq!(
-        db.get_federation_member_sequences()
+        db.get_federation_dkg_member_sequences()
             .await
             .expect("member sequences")
             .get(&peer_private.member_id),
@@ -604,7 +604,7 @@ async fn private_dkg_secret_share_route_rejects_wrong_receiver_before_sequence()
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());
@@ -645,7 +645,7 @@ async fn private_dkg_secret_share_route_rejects_cross_ceremony_before_sequence()
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
@@ -708,7 +708,7 @@ async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persist
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
@@ -795,7 +795,7 @@ async fn private_dkg_secret_share_route_acks_before_driver_keyset_derivation() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&local_member), Some(&3));
@@ -841,7 +841,7 @@ async fn private_dkg_secret_share_route_rejects_bad_share_before_persistence() {
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert_eq!(sequences.get(&local_member), Some(&2));
@@ -1027,7 +1027,7 @@ async fn private_dkg_setup_route_rejects_sender_body_mismatch_before_sequence_pe
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     assert!(sequences.is_empty());
@@ -1057,7 +1057,7 @@ async fn private_dkg_reveal_route_rejects_missing_commitment_before_sequence_per
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     let reveals = state
@@ -1106,7 +1106,7 @@ async fn private_dkg_commitment_route_rejects_conflict_before_sequence_persisten
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     let commitments = state
@@ -1160,7 +1160,7 @@ async fn private_dkg_reveal_route_rejects_conflict_before_sequence_persistence()
     let sequences = state
         .mint
         .localstore()
-        .get_federation_member_sequences()
+        .get_federation_dkg_member_sequences()
         .await
         .expect("persisted sequences");
     let reveals = state

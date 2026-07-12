@@ -18,7 +18,7 @@ CREATE TABLE federation_journal_entries (
 CREATE INDEX idx_federation_journal_operation_id
 ON federation_journal_entries (operation_id);
 
-CREATE TABLE federation_member_sequences (
+CREATE TABLE federation_dkg_member_sequences (
     member_id INTEGER PRIMARY KEY,
     last_sequence BIGINT NOT NULL
 );

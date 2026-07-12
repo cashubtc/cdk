@@ -1180,8 +1180,8 @@ keeps obsolete design decisions alive.
 `MintState` no longer owns 13 unrelated federation handles directly. One
 concrete `FederationNodeRuntime` now owns consensus, peer-sync policy, DKG
 admission/config, sequence tracking, readiness, notifications, private REST
-admission, invalid-operation alerts, pending Aleph sequence metadata, inbound
-network state, live-session state, and test finality controls. Standalone mints
+admission, invalid-operation alerts, inbound network state, live-session state,
+and test finality controls. Standalone mints
 inside a federation-enabled binary use one explicit inert runtime constructor.
 
 All production and test call sites now name the ownership boundary as
@@ -1206,12 +1206,13 @@ cache eviction, and operation-notification tests pass.
 
 ### Checkpoint 3: finalization coordination
 
-Pending source-sequence tracking, duplicate finalized-unit validation, and
-post-application response reconstruction now execute on
-`FederationNodeRuntime`. Durable journal/finalized-item persistence and mint
-state application remain explicit `MintState` boundary calls until that whole
-transactional group can move together. Five finalized-unit regressions and the
-source-sequence persistence-after-finalization regression pass.
+Duplicate finalized-unit validation and post-application response
+reconstruction now execute on `FederationNodeRuntime`. Durable
+journal/finalized-item persistence and mint state application remain explicit
+`MintState` boundary calls until that whole transactional group can move
+together. The temporary pending source-sequence tracking from this checkpoint
+was subsequently deleted by Item 32 because operation IDs provide durable
+idempotency.
 
 ### Checkpoint 4: readiness state machine
 
@@ -1243,8 +1244,8 @@ Axum regressions pass in both feature modes.
 ### Checkpoint 7: durable operation transactions
 
 The runtime now owns the atomic database transactions for journal/session
-outcome writes, source-sequence persistence, pending Aleph operations, finalized
-items plus pending removal, and catch-up session/finalized/journal/evidence
+outcome writes, pending Aleph operations, finalized items plus pending removal,
+and catch-up session/finalized/journal/evidence
 writes. `MintState` retains thin delegators and mint-state application ordering.
 All five finalized-unit and all 29 focused catch-up regressions pass after the
 transaction move.
@@ -1262,19 +1263,20 @@ mismatch, and accepted-on-startup replay regressions pass.
 
 Duplicate-finalization recovery, AlephBFT unit finalization, atomic finalized
 item and journal persistence, consensus-state replacement, mint application,
-source-sequence advancement, latency recording, and waiter notification now run
+latency recording, and waiter notification now run
 as one ordered method on `FederationNodeRuntime`. `MintState` retains only the
 thin adapter used by the Aleph session and tests. The existing operation order
 and failure boundaries are unchanged. All five focused finalized-unit tests,
-including duplicate replay with unmaterialized entries, durable sender sequence
-advancement, and recovery after lost waiters, pass.
+including duplicate replay with unmaterialized entries and recovery after lost
+waiters, pass. Durable sender-sequence advancement from the original checkpoint
+was subsequently removed by Item 32.
 
 ### Checkpoint 10: consensus submission ownership
 
 The ordered AlephBFT submission path now runs on `FederationNodeRuntime`:
 existing-journal and pending-operation duplicate handling, waiter registration,
 mempool admission and bounds, durable pending-operation persistence, activity
-wake-up, source-sequence retention, test-local finality, timeout reporting, and
+wake-up, test-local finality, timeout reporting, and
 submission metrics. `MintState` keeps public readiness/admission and final
 Cashu response validation as thin HTTP-facing adapters. Seven focused AlephBFT
 submission tests plus duplicate-pending, response-cache, operation-notification,
@@ -2130,7 +2132,7 @@ work and can restore stale operational labels.
 
 ## 32. Split private REST replay protection by message semantics
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2154,6 +2156,38 @@ administrative requests.
 - `docs/federated-cashu-refactoring-plan.md` section R13.
 - Test duplicate, reordered, replayed, restarted, and high-rate traffic for each
   class without weakening authenticated sender admission.
+
+### Resolution
+
+- Classified effectful DKG commitment, reveal, secret-share,
+  transcript-signature, and activation requests as one durable sender stream.
+  Renamed the undeployed SQL table and database API to
+  `federation_dkg_member_sequences` so this storage cannot be mistaken for a
+  generic private-REST ordering mechanism.
+- Split status, catch-up, DKG readiness, AlephBFT activity, and AlephBFT network
+  messages into independent per-kind in-memory replay windows. Each window
+  retains at most 4,096 recent sender sequences and rejects traffic older than
+  its bounded reorder history; high-rate gossip cannot advance or grow the
+  replay state of another message kind.
+- Removed the operation-to-source-sequence map, sequence writes during AlephBFT
+  finalization, finalized-unit sequence plumbing, and the generic
+  submit-with-sequence methods. Authenticated operation submissions use their
+  canonical operation ID plus durable pending/finalized records for idempotency,
+  including after restart; REST sequence numbers are not consensus order.
+- Kept signed sender, receiver, federation, kind, body-hash, request-size, and
+  operation admission validation unchanged. Exact signed operation replays
+  return the durable duplicate outcome, while two separately signed operations
+  cannot alias even when a sender reuses a transport sequence.
+- R13's proposed typed extractor remains deferred: the semantic split was
+  worthwhile, but adding a trait/extractor hierarchy now would add code without
+  removing the route-specific acceptance points that DKG and liveness traffic
+  require.
+- Verification passes all 332 `cdk-common` federation tests, all 156 SQLite
+  federation tests, all 417 non-ignored Axum federation tests in the serial
+  loopback-enabled gate, and all 28 standalone Axum tests; one manual benchmark
+  remains ignored. A parallel Axum run saturated the test host and missed three
+  live-session wall-clock bounds, but each passed in isolation and all three
+  passed again in the full serial gate.
 
 ## 33. Separate wallet-facing and member-facing protocol versions
 

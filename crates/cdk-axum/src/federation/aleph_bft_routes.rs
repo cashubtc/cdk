@@ -35,7 +35,11 @@ pub(super) async fn post_aleph_bft_activity(
         .await
         .map_err(cdk_error_response)?;
     state
-        .record_federation_sequence(verified.sender, verified.sequence)
+        .record_federation_sequence(
+            FederationRestMessageKind::AlephBftActivity,
+            verified.sender,
+            verified.sequence,
+        )
         .await;
 
     Ok(Json(FederationAlephBftActivityResponse::new(
@@ -82,7 +86,11 @@ pub(super) async fn post_aleph_bft_network_message(
         .map_err(cdk_error_response)?;
 
     state
-        .record_federation_sequence(verified.sender, verified.sequence)
+        .record_federation_sequence(
+            FederationRestMessageKind::AlephBftNetworkMessage,
+            verified.sender,
+            verified.sequence,
+        )
         .await;
 
     Ok(Json(FederationAlephBftNetworkMessageResponse::new(

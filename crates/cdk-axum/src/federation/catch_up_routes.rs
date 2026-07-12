@@ -26,7 +26,11 @@ pub(super) async fn post_journal(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
     state
-        .record_federation_sequence(verified.sender, verified.sequence)
+        .record_federation_sequence(
+            FederationRestMessageKind::CatchUp,
+            verified.sender,
+            verified.sequence,
+        )
         .await;
     let private_config = federation_runtime_config(&state)?.private_config().clone();
     tracing::debug!(

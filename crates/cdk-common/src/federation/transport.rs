@@ -39,7 +39,7 @@ const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-activation-signature-v1";
 
 /// Private federation REST message kind covered by member signatures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationRestMessageKind {
     /// Peer status request.
@@ -67,6 +67,17 @@ pub enum FederationRestMessageKind {
 }
 
 impl FederationRestMessageKind {
+    fn has_durable_replay_state(self) -> bool {
+        matches!(
+            self,
+            Self::DkgCommitment
+                | Self::DkgReveal
+                | Self::DkgSecretShare
+                | Self::DkgTranscriptSignature
+                | Self::DkgActivation
+        )
+    }
+
     fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Status => b"status",
@@ -508,10 +519,17 @@ where
 }
 
 const FEDERATION_REST_SEQUENCE_REORDER_WINDOW_NANOS: u64 = 600_000_000_000;
+const FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES: usize = 4096;
 
 /// In-memory replay tracker for authenticated federation REST requests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FederationRestSequenceTracker {
+    durable_dkg: FederationRestSequenceWindow,
+    volatile_by_kind: BTreeMap<FederationRestMessageKind, FederationRestSequenceWindow>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FederationRestSequenceWindow {
     highest_by_sender: BTreeMap<MemberId, u64>,
     recent_by_sender: BTreeMap<MemberId, BTreeSet<u64>>,
 }
@@ -525,17 +543,20 @@ impl FederationRestSequenceTracker {
 
     /// Rebuild a sequence tracker from persisted sender watermarks.
     #[must_use]
-    pub fn from_sequences(highest_by_sender: BTreeMap<MemberId, u64>) -> Self {
+    pub fn from_dkg_sequences(highest_by_sender: BTreeMap<MemberId, u64>) -> Self {
         Self {
-            highest_by_sender,
-            recent_by_sender: BTreeMap::new(),
+            durable_dkg: FederationRestSequenceWindow {
+                highest_by_sender,
+                recent_by_sender: BTreeMap::new(),
+            },
+            volatile_by_kind: BTreeMap::new(),
         }
     }
 
-    /// Return persisted sender watermarks known to this tracker.
+    /// Return durable effectful-DKG sender watermarks known to this tracker.
     #[must_use]
-    pub fn sequences(&self) -> &BTreeMap<MemberId, u64> {
-        &self.highest_by_sender
+    pub fn dkg_sequences(&self) -> &BTreeMap<MemberId, u64> {
+        &self.durable_dkg.highest_by_sender
     }
 
     /// Verify a request and record its sequence if it advances the sender stream.
@@ -549,7 +570,7 @@ impl FederationRestSequenceTracker {
         T: Serialize,
     {
         self.verify_next(request, public_config, expected_receiver)?;
-        self.record_sequence(request.sender, request.sequence);
+        self.record_sequence(request.kind, request.sender, request.sequence);
 
         Ok(())
     }
@@ -566,11 +587,50 @@ impl FederationRestSequenceTracker {
     {
         request.verify(public_config, expected_receiver)?;
 
-        self.ensure_sequence_advances(request.sender, request.sequence)
+        self.verify_next_sequence(request.kind, request.sender, request.sequence)
     }
 
     /// Record an already-verified sender sequence.
-    pub fn record_sequence(&mut self, sender: MemberId, sequence: u64) {
+    pub fn record_sequence(
+        &mut self,
+        kind: FederationRestMessageKind,
+        sender: MemberId,
+        sequence: u64,
+    ) {
+        self.window_mut(kind).record_sequence(sender, sequence);
+    }
+
+    /// Verify an already-authenticated sender sequence without rechecking the request signature.
+    pub fn verify_next_sequence(
+        &self,
+        kind: FederationRestMessageKind,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<()> {
+        self.window(kind)
+            .map_or(Ok(()), |window| window.ensure_sequence_advances(sender, sequence))
+    }
+
+    fn window(&self, kind: FederationRestMessageKind) -> Option<&FederationRestSequenceWindow> {
+        if kind.has_durable_replay_state() {
+            return Some(&self.durable_dkg);
+        }
+        self.volatile_by_kind.get(&kind)
+    }
+
+    fn window_mut(
+        &mut self,
+        kind: FederationRestMessageKind,
+    ) -> &mut FederationRestSequenceWindow {
+        if kind.has_durable_replay_state() {
+            return &mut self.durable_dkg;
+        }
+        self.volatile_by_kind.entry(kind).or_default()
+    }
+}
+
+impl FederationRestSequenceWindow {
+    fn record_sequence(&mut self, sender: MemberId, sequence: u64) {
         match self.highest_by_sender.get(&sender) {
             Some(last) if *last >= sequence => {}
             _ => {
@@ -582,11 +642,6 @@ impl FederationRestSequenceTracker {
             .or_default()
             .insert(sequence);
         self.prune_recent_sequences(sender);
-    }
-
-    /// Verify an already-authenticated sender sequence without rechecking the request signature.
-    pub fn verify_next_sequence(&self, sender: MemberId, sequence: u64) -> Result<()> {
-        self.ensure_sequence_advances(sender, sequence)
     }
 
     fn ensure_sequence_advances(&self, sender: MemberId, sequence: u64) -> Result<()> {
@@ -610,6 +665,18 @@ impl FederationRestSequenceTracker {
         if recent.is_some()
             && sequence.saturating_add(FEDERATION_REST_SEQUENCE_REORDER_WINDOW_NANOS) >= last
         {
+            if recent.is_some_and(|sequences| {
+                sequences.len() >= FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES
+                    && sequences
+                        .first()
+                        .is_some_and(|oldest_retained| sequence < *oldest_retained)
+            }) {
+                return Err(FederationError::RestStaleSequence {
+                    member_id: sender,
+                    last,
+                    found: sequence,
+                });
+            }
             return Ok(());
         }
 
@@ -632,6 +699,14 @@ impl FederationRestSequenceTracker {
             if first < cutoff {
                 *recent = recent.split_off(&cutoff);
             }
+        }
+        if recent.len() > FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES {
+            let keep_from = recent
+                .iter()
+                .nth(recent.len() - FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES)
+                .copied()
+                .expect("oversized replay set has a retention boundary");
+            *recent = recent.split_off(&keep_from);
         }
         if recent.is_empty() {
             self.recent_by_sender.remove(&sender);
@@ -3664,12 +3739,12 @@ mod tests {
         let second_member = roster_member_id(2);
         let mut tracker = FederationRestSequenceTracker::new();
 
-        tracker.record_sequence(first_member, 5);
+        tracker.record_sequence(FederationRestMessageKind::Status, first_member, 5);
         tracker
-            .verify_next_sequence(first_member, 6)
+            .verify_next_sequence(FederationRestMessageKind::Status, first_member, 6)
             .expect("higher authenticated sequence accepted");
         assert!(matches!(
-            tracker.verify_next_sequence(first_member, 5),
+            tracker.verify_next_sequence(FederationRestMessageKind::Status, first_member, 5),
             Err(FederationError::RestStaleSequence {
                 member_id,
                 last: 5,
@@ -3677,7 +3752,7 @@ mod tests {
             }) if member_id == first_member
         ));
         tracker
-            .verify_next_sequence(second_member, 1)
+            .verify_next_sequence(FederationRestMessageKind::Status, second_member, 1)
             .expect("independent sender sequence accepted");
     }
 
@@ -3726,26 +3801,20 @@ mod tests {
     }
 
     #[test]
-    fn sequence_tracker_rejects_persisted_stale_request_without_recent_window() {
-        let (config, first_private, _) = transport_config();
-        let receiver = roster_member_id(2);
+    fn sequence_tracker_restores_only_durable_dkg_replay_state() {
+        let (_, first_private, _) = transport_config();
         let last_sequence = 1_000_000_000_100;
         let stale_sequence = last_sequence - 50;
-        let stale = FederationSignedRequest::new_signed(
-            config.federation_id,
-            receiver,
-            stale_sequence,
-            FederationRestMessageKind::Status,
-            FederationPeerStatusRequest::default(),
-            &first_private,
-        )
-        .expect("stale request");
         let mut persisted = BTreeMap::new();
         persisted.insert(first_private.member_id, last_sequence);
-        let mut tracker = FederationRestSequenceTracker::from_sequences(persisted);
+        let mut tracker = FederationRestSequenceTracker::from_dkg_sequences(persisted);
 
         assert!(matches!(
-            tracker.verify_and_record(&stale, &config, receiver),
+            tracker.verify_next_sequence(
+                FederationRestMessageKind::DkgActivation,
+                first_private.member_id,
+                stale_sequence,
+            ),
             Err(FederationError::RestStaleSequence {
                 member_id,
                 last,
@@ -3754,5 +3823,120 @@ mod tests {
                 && last == last_sequence
                 && found == stale_sequence
         ));
+        for kind in [
+            FederationRestMessageKind::Status,
+            FederationRestMessageKind::CatchUp,
+            FederationRestMessageKind::DkgReadiness,
+            FederationRestMessageKind::SubmitOperation,
+            FederationRestMessageKind::AlephBftActivity,
+            FederationRestMessageKind::AlephBftNetworkMessage,
+        ] {
+            tracker
+                .verify_next_sequence(kind, first_private.member_id, 1)
+                .expect("volatile replay state starts empty after restart");
+        }
+        tracker.record_sequence(
+            FederationRestMessageKind::Status,
+            first_private.member_id,
+            last_sequence + 1,
+        );
+        assert_eq!(
+            tracker.dkg_sequences().get(&first_private.member_id),
+            Some(&last_sequence),
+            "volatile traffic must not alter the durable DKG watermark"
+        );
+    }
+
+    #[test]
+    fn sequence_tracker_isolates_volatile_kinds_and_shares_dkg_state() {
+        let member = roster_member_id(1);
+        let mut tracker = FederationRestSequenceTracker::new();
+
+        tracker.record_sequence(FederationRestMessageKind::Status, member, 10_000);
+        tracker
+            .verify_next_sequence(FederationRestMessageKind::CatchUp, member, 1)
+            .expect("status traffic must not advance catch-up replay state");
+        tracker
+            .verify_next_sequence(FederationRestMessageKind::SubmitOperation, member, 1)
+            .expect("status traffic must not advance operation replay state");
+        tracker
+            .verify_next_sequence(FederationRestMessageKind::DkgCommitment, member, 1)
+            .expect("status traffic must not advance durable DKG replay state");
+
+        tracker.record_sequence(FederationRestMessageKind::DkgCommitment, member, 1);
+        assert!(matches!(
+            tracker.verify_next_sequence(FederationRestMessageKind::DkgReveal, member, 1),
+            Err(FederationError::RestStaleSequence {
+                member_id,
+                last: 1,
+                found: 1,
+            }) if member_id == member
+        ));
+        tracker
+            .verify_next_sequence(FederationRestMessageKind::DkgSecretShare, member, 2)
+            .expect("effectful DKG kinds share one advancing durable stream");
+        assert_eq!(tracker.dkg_sequences().get(&member), Some(&1));
+    }
+
+    #[test]
+    fn sequence_tracker_bounds_high_rate_volatile_history() {
+        let member = roster_member_id(1);
+        let first = 1_000_000_000_000;
+        let count = FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES + 100;
+        let mut tracker = FederationRestSequenceTracker::new();
+
+        for offset in 0..count {
+            tracker.record_sequence(
+                FederationRestMessageKind::AlephBftNetworkMessage,
+                member,
+                first + u64::try_from(offset).expect("test offset fits u64"),
+            );
+        }
+
+        let window = tracker
+            .window(FederationRestMessageKind::AlephBftNetworkMessage)
+            .expect("network-message replay window");
+        assert_eq!(
+            window
+                .recent_by_sender
+                .get(&member)
+                .expect("member replay history")
+                .len(),
+            FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES
+        );
+        assert!(matches!(
+            tracker.verify_next_sequence(
+                FederationRestMessageKind::AlephBftNetworkMessage,
+                member,
+                first,
+            ),
+            Err(FederationError::RestStaleSequence { member_id, .. }) if member_id == member
+        ));
+        tracker
+            .verify_next_sequence(FederationRestMessageKind::AlephBftActivity, member, first)
+            .expect("high-rate network gossip must not advance activity replay state");
+    }
+
+    #[test]
+    fn only_effectful_dkg_messages_have_durable_replay_state() {
+        for kind in [
+            FederationRestMessageKind::Status,
+            FederationRestMessageKind::CatchUp,
+            FederationRestMessageKind::DkgReadiness,
+            FederationRestMessageKind::SubmitOperation,
+            FederationRestMessageKind::AlephBftActivity,
+            FederationRestMessageKind::AlephBftNetworkMessage,
+        ] {
+            assert!(!kind.has_durable_replay_state(), "unexpected durable kind");
+        }
+        for kind in [
+            FederationRestMessageKind::DkgCommitment,
+            FederationRestMessageKind::DkgReveal,
+            FederationRestMessageKind::DkgSecretShare,
+            FederationRestMessageKind::DkgTranscriptSignature,
+            FederationRestMessageKind::DkgActivation,
+        ] {
+            assert!(kind.has_durable_replay_state(), "DKG mutation must be durable");
+        }
     }
 }

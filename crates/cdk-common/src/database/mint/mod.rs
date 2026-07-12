@@ -689,8 +689,8 @@ pub trait FederationJournalTransaction {
         application: &FederationApplicationState,
     ) -> Result<(), Self::Err>;
 
-    /// Persist the highest accepted private REST sequence for one federation member.
-    async fn set_federation_member_sequence(
+    /// Persist the highest accepted effectful DKG sequence for one federation member.
+    async fn set_federation_dkg_member_sequence(
         &mut self,
         member_id: MemberId,
         sequence: u64,
@@ -865,8 +865,8 @@ pub trait FederationJournalDatabase {
         next_index: u64,
     ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
 
-    /// Get persisted private REST sequence watermarks by member.
-    async fn get_federation_member_sequences(&self) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
+    /// Get persisted effectful DKG sequence watermarks by member.
+    async fn get_federation_dkg_member_sequences(&self) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
 
     /// Get all persisted signed federation catch-up certificates.
     async fn get_federation_catch_up_certificates(
