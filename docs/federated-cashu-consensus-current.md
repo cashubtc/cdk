@@ -276,7 +276,7 @@ Private REST is the MVP transport because it is simple and fits existing CDK pat
 
 ### 10.5 Define Real Payment Backend Policy
 
-Current local smoke tests exercise minting and melting with the fakewallet backend as a normal CDK payment backend. Real Lightning or onchain backends need a written trust model before they handle funds. The federation must decide whether settlement is independently verifiable, shared backend based, origin-custodied with proof, or handled by a threshold payment processor. Payment observations must have clear quorum rules, conflict handling, retry behavior, timeout policy, and operator inspection.
+Current local smoke tests exercise minting and melting with the fakewallet backend as a normal CDK payment backend. The implemented real-backend policy enforces only a configured quorum of authenticated matching observations; it deliberately does not serialize labels for shared-backend, origin-proof, threshold-gateway, or onchain-proof models that CDK does not verify. Before handling real funds, a deployment needs a concrete evidence verifier with explicit admission, conflict, retry, timeout, and operator-inspection behavior.
 
 ### 10.6 Replace Trusted Dealer with DKG and Add Rotation
 

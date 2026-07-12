@@ -33,24 +33,19 @@ Each side can currently use one of two policy families:
 - `member_quorum`: production-oriented policy. A configured number of matching
   member observations is required before quote state can finalize.
 
-Legacy JSON configs using the old `fake_wallet` policy type still deserialize
-as `development_single_observation` for compatibility, but newly generated
-configs must use the backend-neutral name.
-
-The real policy also records a trust model:
-
-- `shared_backend_read_only`: members independently read settlement from the
-  same backend with read-only credentials.
-- `origin_member_proof`: the origin member proves settlement and other members
-  acknowledge the proof.
-- `threshold_gateway`: a threshold gateway or payment processor emits the
-  observation.
-- `onchain_proof`: members verify transaction proof observations against a
-  consensus block-height view.
+Federation config accepts only these current policy names; undeployed legacy
+aliases are rejected. The real policy deliberately records no descriptive
+backend trust-model label. CDK currently enforces authenticated matching member
+observations and their required count, but it does not verify that members use a
+shared read-only backend, origin proof, threshold gateway, or onchain proof.
+Such a model should be added to consensus config only together with its actual
+evidence verifier, admission rules, and failure tests.
 
 Quorum policies must require at least the configured consensus threshold and no
 more than the member count. This prevents a single malicious member from marking
-a quote paid or settled in a production configuration.
+a quote paid or settled in a production configuration, but it does not by
+itself prove that honest members observed the backend through independent trust
+paths.
 
 Payment observation operations now include the observing federation member ID.
 The journal conflict key is scoped by quote, state, and observer, so one member

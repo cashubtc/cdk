@@ -1591,9 +1591,9 @@ mod tests {
         FederationConsensusEngine, FederationConsensusRuntime, FederationJournalEntry,
         FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
         FederationOperation, FederationOperationEnvelope, FederationOperationId,
-        FederationPaymentObservationPolicy, FederationPaymentTrustModel,
-        InMemoryFederationConsensus, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
-        ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationPaymentObservationPolicy, InMemoryFederationConsensus, InMemoryFederationJournal,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk::mint::Mint;
@@ -8843,10 +8843,7 @@ mod tests {
         let member_urls = static_member_urls();
         let bundle = threshold_all_signers_bundle_with_payment_policy(
             &member_urls,
-            FederationPaymentObservationPolicy::member_quorum(
-                3,
-                FederationPaymentTrustModel::SharedBackendReadOnly,
-            ),
+            FederationPaymentObservationPolicy::member_quorum(3),
         );
         let (payment_processor, make_payment_calls) = CountingFakeWallet::new();
         let mut mints = Vec::new();

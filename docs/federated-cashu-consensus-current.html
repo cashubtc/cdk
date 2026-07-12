@@ -1459,12 +1459,13 @@ order_digest_i = sha256(
             <p>
               Current local smoke tests exercise minting and melting with the
               fakewallet backend as a normal CDK payment backend. Real Lightning
-              or onchain backends need a written trust model before they handle
-              funds. The federation must decide whether settlement is
-              independently verifiable, shared backend based, origin-custodied
-              with proof, or handled by a threshold payment processor. Payment
-              observations must have clear quorum rules, conflict handling,
-              retry behavior, timeout policy, and operator inspection.
+              or onchain backends currently enforce only a configured quorum
+              of authenticated matching observations. Public config no longer
+              serializes shared-backend, origin-proof, threshold-gateway, or
+              onchain-proof labels that CDK does not verify. Before handling
+              real funds, a deployment needs a concrete evidence verifier with
+              explicit admission, conflict, retry, timeout, and operator
+              inspection behavior.
             </p>
 
             <h3>10.6 Replace Trusted Dealer with DKG and Add Rotation</h3>

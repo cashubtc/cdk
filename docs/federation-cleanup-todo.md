@@ -112,7 +112,34 @@ This also mixes two independent concerns:
 
 ## 2. Remove unenforced payment trust-model claims
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed `FederationPaymentTrustModel`, the `MemberQuorum.trust_model` field,
+the DKG CLI argument and conversion layer, and every production/test fixture
+that supplied the unused label. `MemberQuorum` now contains only the enforced
+`required` observation count. Deserialization rejects unknown fields, so the
+undeployed old `trust_model` shape fails closed instead of being silently
+accepted by Serde.
+
+Documentation now distinguishes the implemented authenticated matching-member
+quorum from future backend evidence verifiers. Generated DKG public config is
+covered by a regression asserting that no `trust_model` field is emitted, and
+the removed CLI flag is covered by a parser rejection.
+
+Verification:
+
+- all 379 `cdk-common` tests with `federation` passed, covering canonical
+  operation/config encoding, DKG transcripts, config digests, invites, and
+  wallet/member metadata validation;
+- all 99 mint federation tests passed, including mint/melt payment quorum,
+  conflict, replay, catch-up, and signing paths;
+- focused DKG assembly/bind, DKG CLI parsing, and Axum materialized-state digest
+  tests passed;
+- standalone `cdk` and `cdk-mintd` with SQLite compiled without federation;
+- a fresh five-member, threshold-three AlephBFT fakewallet config contained no
+  trust-model field and completed mint, swap, melt, and restore successfully.
 
 ### Problem
 

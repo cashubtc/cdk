@@ -5,17 +5,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::federation::{
     FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationPaymentObservationPolicy, FederationPaymentTrustModel, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams, FEDERATION_MAX_DKG_MEMBERS,
+    FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, FEDERATION_MAX_DKG_MEMBERS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use url::Url;
 
-use crate::cli::{
-    FederationDkgBindArgs, FederationDkgMemberArgs, FederationDkgRosterArgs,
-    FederationPaymentTrustModelArg,
-};
+use crate::cli::{FederationDkgBindArgs, FederationDkgMemberArgs, FederationDkgRosterArgs};
 use crate::federation_files::{write_json_file, write_private_json_file, write_text_file};
 use crate::read_federation_json;
 
@@ -86,10 +83,8 @@ pub(crate) fn run_dkg_roster_command(args: &FederationDkgRosterArgs) -> Result<(
     let payment_threshold = args
         .payment_observation_threshold
         .unwrap_or(threshold_params.consensus_threshold);
-    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-        payment_threshold,
-        payment_trust_model(args.payment_trust_model),
-    );
+    public_config.payment_observation_policy =
+        FederationPaymentObservationPolicy::member_quorum(payment_threshold);
     public_config
         .validate()
         .context("invalid production payment-observation policy")?;
@@ -181,21 +176,6 @@ fn ensure_output_paths_available(paths: &[&std::path::PathBuf], force: bool) -> 
         }
     }
     Ok(())
-}
-
-fn payment_trust_model(value: FederationPaymentTrustModelArg) -> FederationPaymentTrustModel {
-    match value {
-        FederationPaymentTrustModelArg::SharedBackendReadOnly => {
-            FederationPaymentTrustModel::SharedBackendReadOnly
-        }
-        FederationPaymentTrustModelArg::OriginMemberProof => {
-            FederationPaymentTrustModel::OriginMemberProof
-        }
-        FederationPaymentTrustModelArg::ThresholdGateway => {
-            FederationPaymentTrustModel::ThresholdGateway
-        }
-        FederationPaymentTrustModelArg::OnchainProof => FederationPaymentTrustModel::OnchainProof,
-    }
 }
 
 fn new_ceremony_id(

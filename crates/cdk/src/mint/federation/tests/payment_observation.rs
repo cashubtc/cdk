@@ -63,10 +63,7 @@ fn runtime_config_builds_mint_payment_observation_operations() {
 
 #[tokio::test]
 async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
         federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
@@ -224,10 +221,7 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
 
 #[tokio::test]
 async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
         federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
@@ -297,10 +291,7 @@ async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
 
 #[tokio::test]
 async fn payment_quarantine_blocks_mint_signing() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
     let mut journal = InMemoryFederationJournal::new();

@@ -32,10 +32,10 @@ use cdk::federation::{
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationPaymentTrustModel,
-    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
-    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentObservationReportAction, FederationRestMessageKind,
+    FederationRestoreOperation, FederationSignedRequest, InMemoryFederationConsensus,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -12981,10 +12981,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         max_peer_deliveries_per_message: 256,
     };
     let live_options = FederationAlephBftLiveSessionOptions::new(pump_config);
-    let payment_policy = FederationPaymentObservationPolicy::member_quorum(
-        4,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let payment_policy = FederationPaymentObservationPolicy::member_quorum(4);
     let (mut session, make_payment_calls) =
         start_multi_member_aleph_bft_live_session_with_payment_policy(
             5,
@@ -13704,10 +13701,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         max_peer_deliveries_per_message: 256,
     };
     let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
-    let payment_policy = FederationPaymentObservationPolicy::member_quorum(
-        required_observations,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let payment_policy = FederationPaymentObservationPolicy::member_quorum(required_observations);
     let (mut session, make_payment_calls) =
         start_multi_member_aleph_bft_live_session_with_payment_policy(
             member_count,
@@ -20926,10 +20920,7 @@ async fn materialized_state_digest_ignores_local_mint_payment_metadata() {
 #[tokio::test]
 async fn materialized_state_digest_tracks_unfinalized_payment_observation_rows() {
     let (mut public_config, local_private, _) = transport_config();
-    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     let state = federation_route_state_for_private(public_config, local_private).await;
     let quote_id = QuoteId::new();
     state
@@ -21693,10 +21684,7 @@ async fn catch_up_replay_checkpoints_completed_operation_rows() {
 #[tokio::test]
 async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
     let (mut public_config, local_private, peer_private) = transport_config();
-    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     let state =
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
     let local_member = local_private.member_id;
@@ -22504,10 +22492,7 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
 #[tokio::test]
 async fn private_local_status_route_includes_unresolved_payment_observation_fingerprints() {
     let (mut public_config, local_private, peer_private) = transport_config();
-    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     let state =
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
     let local_member = local_private.member_id;
@@ -22737,10 +22722,7 @@ async fn private_local_status_route_reports_payment_observation_conflicts() {
 #[tokio::test]
 async fn private_local_status_route_reports_stale_payment_observations() {
     let (mut public_config, local_private, peer_private) = transport_config();
-    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     public_config
         .payment_observation_policy
         .stale_observation_secs = 1;

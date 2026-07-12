@@ -2120,10 +2120,12 @@ Implementation checklist:
 - [x] Add explicit payment ID and observed-time fields if optional payment proof plus journal ordering are insufficient.
 - [x] Mark quote paid only after the configured observation policy is satisfied.
 - [x] For fake wallet MVP, allow all members to observe paid deterministically.
-- [x] For real Lightning/onchain, define observation policies:
-  - [x] shared backend or independently verifiable settlement: threshold matching observations.
-  - [x] origin-custodied invoice: origin observation plus policy-defined quorum acknowledgement.
-  - [x] onchain: consensus block height plus transaction proof.
+- [x] For real Lightning/onchain, enforce a configured threshold of matching,
+  authenticated member observations without claiming an unimplemented backend
+  trust model.
+- [ ] Add method-specific shared-backend, origin-proof, threshold-gateway, or
+  onchain-proof policy only together with its concrete evidence verifier,
+  admission rules, and end-to-end failure tests.
 - [x] Make duplicate payment observations idempotent by payment ID.
 - [x] Ensure a malicious single member cannot mark a quote paid alone.
 
@@ -2694,12 +2696,11 @@ Objective: move beyond fake wallet without centralizing payment trust accidental
 Implementation checklist:
 
 - [x] Write a payment trust model document before enabling real funds.
-- [x] For mint quotes, decide whether payment verification is independently verifiable, shared-backend, or origin-custodied.
-- [x] For Lightning BOLT11/BOLT12, define how members verify invoice settlement:
-  - [x] shared node with read-only credentials for all members.
-  - [x] origin member proves settlement to other members.
-  - [x] threshold gateway or payment processor service.
-- [x] For onchain quotes, use consensus block height and transaction proof observations.
+- [x] Keep the implemented public policy limited to the required number of
+  authenticated, matching observations; do not serialize unenforced backend
+  trust-model labels.
+- [ ] Before real funds, implement and test the concrete Lightning or onchain
+  evidence verifier selected by operators.
 - [x] Define observation quorum and conflict handling for each method.
 - [x] Add limits for pending quotes and stale observations.
 - [x] Add admin tooling to inspect unresolved payment observations.

@@ -926,7 +926,7 @@
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>
-            <p>Fake-wallet testing keeps one-observation finality, while real-backend policies require a configured quorum, reject single-observation finality, and now have pure matching/conflicting observer evaluation ready for DB-backed persistence.</p>
+            <p>Fake-wallet testing keeps one-observation finality, while real-backend policies require a configured quorum and reject single-observation finality. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed.</p>
           </article>
           <article class="item">
             <h3>Feature-off compatibility</h3>

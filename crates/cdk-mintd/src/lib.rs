@@ -2670,9 +2670,8 @@ mod tests {
 
         use cdk::mint::{FederationMode, MintBuilder};
         use cdk_common::federation::{
-            generate_trusted_dealer_configs, FederationPaymentObservationPolicy,
-            FederationPaymentTrustModel, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-            TrustedDealerMember,
+            generate_trusted_dealer_configs, FederationPaymentObservationPolicy, MemberId,
+            ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
         };
         use cdk_common::mint_url::MintUrl;
         use cdk_common::nuts::nut01::BlsSecretKey;
@@ -2705,7 +2704,6 @@ mod tests {
         bundle.public_config.payment_observation_policy =
             FederationPaymentObservationPolicy::member_quorum(
                 bundle.public_config.threshold_params.consensus_threshold,
-                FederationPaymentTrustModel::SharedBackendReadOnly,
             );
         bundle.public_config.validate().expect("public config");
 

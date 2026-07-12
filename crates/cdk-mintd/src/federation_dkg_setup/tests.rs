@@ -25,7 +25,6 @@ fn roster_args(root: &Path, members: Vec<PathBuf>) -> FederationDkgRosterArgs {
         members,
         threshold: 2,
         payment_observation_threshold: None,
-        payment_trust_model: FederationPaymentTrustModelArg::SharedBackendReadOnly,
         unit: "sat".to_string(),
         amounts: vec![1, 2, 4],
         input_fee_ppk: 0,
@@ -60,6 +59,9 @@ fn independent_member_enrollments_assemble_and_bind() {
     let public_config: FederationConfig =
         read_federation_json(&roster_args.public_output, "test public config")
             .expect("read public config");
+    let public_config_json =
+        std::fs::read_to_string(&roster_args.public_output).expect("read public config JSON");
+    assert!(!public_config_json.contains("trust_model"));
     assert_eq!(public_config.members.len(), 3);
     assert!(public_config.keysets.is_empty());
     assert!(public_config.setup_transcript.is_none());

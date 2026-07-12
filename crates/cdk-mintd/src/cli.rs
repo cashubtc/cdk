@@ -113,19 +113,6 @@ pub struct FederationDkgMemberArgs {
 }
 
 #[cfg(feature = "federation")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum FederationPaymentTrustModelArg {
-    /// Every member independently reads settlement from the same backend.
-    SharedBackendReadOnly,
-    /// The origin member proves settlement and peers acknowledge it.
-    OriginMemberProof,
-    /// A threshold gateway emits payment observations.
-    ThresholdGateway,
-    /// Members verify onchain proofs against a consensus chain view.
-    OnchainProof,
-}
-
-#[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationDkgRosterArgs {
     /// Public member enrollment JSON. Repeat once for every member.
@@ -137,9 +124,6 @@ pub struct FederationDkgRosterArgs {
     /// Matching payment observations required; defaults to the BFT consensus threshold.
     #[arg(long)]
     pub payment_observation_threshold: Option<u16>,
-    /// External payment verification model committed to the public config.
-    #[arg(long, value_enum, default_value = "shared-backend-read-only")]
-    pub payment_trust_model: FederationPaymentTrustModelArg,
     /// Currency unit for the first DKG keyset.
     #[arg(long, default_value = "sat")]
     pub unit: String,
@@ -565,6 +549,23 @@ mod tests {
         };
         assert_eq!(roster.members.len(), 2);
         assert_eq!(roster.threshold, 2);
+
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "dkg-roster",
+            "--member",
+            "member-1-public.json",
+            "--threshold",
+            "1",
+            "--payment-trust-model",
+            "shared-backend-read-only",
+            "--public-output",
+            "dkg-setup-public.json",
+            "--ceremony-config-output",
+            "dkg-ceremony.toml",
+        ])
+        .is_err());
 
         let bind = CLIArgs::try_parse_from([
             "cdk-mintd",

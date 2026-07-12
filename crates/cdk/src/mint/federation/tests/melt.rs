@@ -595,10 +595,7 @@ async fn melt_federation_pending_quote_allows_same_operation_replay_without_paym
 
 #[tokio::test]
 async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_inputs() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore, make_payment_calls) =
         federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
@@ -683,10 +680,7 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_inputs() 
 
 #[tokio::test]
 async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_outputs() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore, make_payment_calls) =
         federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
@@ -786,10 +780,7 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
 
 #[tokio::test]
 async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore, make_payment_calls) =
         federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
@@ -1578,10 +1569,7 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
 
 #[tokio::test]
 async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let operation_id = operation_id_with_selector(1);
     assert_eq!(
@@ -1636,10 +1624,7 @@ async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() 
 
 #[test]
 fn melt_payment_actor_selection_is_deterministic_for_real_policies() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let real_policy_config = runtime_config_with_payment_policy(policy);
     let member_one_operation = operation_id_with_selector(0);
     let member_two_operation = operation_id_with_selector(1);
@@ -1777,10 +1762,7 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
 
 #[tokio::test]
 async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
         federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
@@ -1927,10 +1909,7 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
 
 #[tokio::test]
 async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore, make_payment_calls) =
         federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
@@ -2282,10 +2261,7 @@ async fn stale_pending_melt_observation_after_failed_rollback_is_idempotent() {
 
 #[tokio::test]
 async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(
-        2,
-        FederationPaymentTrustModel::SharedBackendReadOnly,
-    );
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
         federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;

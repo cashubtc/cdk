@@ -214,7 +214,6 @@ done
 "$MINTD" federation dkg-roster \
   "${ROSTER_ARGS[@]}" \
   --threshold "$THRESHOLD" \
-  --payment-trust-model shared-backend-read-only \
   --unit sat \
   --amounts 1,2,4,8,16,32,64,128 \
   --public-output "$SETUP_PUBLIC_CONFIG" \

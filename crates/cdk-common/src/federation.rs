@@ -1717,8 +1717,8 @@ impl FederationPaymentObservationPolicy {
 
     /// Create a real-backend policy requiring matching member observations.
     #[must_use]
-    pub fn member_quorum(required: u16, trust_model: FederationPaymentTrustModel) -> Self {
-        let policy = FederationPaymentVerificationPolicy::member_quorum(required, trust_model);
+    pub fn member_quorum(required: u16) -> Self {
+        let policy = FederationPaymentVerificationPolicy::member_quorum(required);
         Self {
             mint_quotes: policy,
             melt_quotes: policy,
@@ -1774,23 +1774,9 @@ impl FederationPaymentObservationPolicy {
     }
 }
 
-/// How members are expected to verify an external payment observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FederationPaymentTrustModel {
-    /// Every member can independently read settlement from the same backend.
-    SharedBackendReadOnly,
-    /// The origin member proves settlement and other members acknowledge it.
-    OriginMemberProof,
-    /// A threshold gateway or payment processor emits payment observations.
-    ThresholdGateway,
-    /// Members verify onchain proofs against a consensus block-height view.
-    OnchainProof,
-}
-
 /// Policy for one class of payment observations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FederationPaymentVerificationPolicy {
     /// Test/development policy where one accepted observation finalizes.
     #[serde(rename = "development_single_observation")]
@@ -1799,8 +1785,6 @@ pub enum FederationPaymentVerificationPolicy {
     MemberQuorum {
         /// Required number of matching member observations.
         required: u16,
-        /// Trust model describing how members verify the backend event.
-        trust_model: FederationPaymentTrustModel,
     },
 }
 
@@ -1813,11 +1797,8 @@ impl FederationPaymentVerificationPolicy {
 
     /// Create a real-backend member-quorum policy.
     #[must_use]
-    pub fn member_quorum(required: u16, trust_model: FederationPaymentTrustModel) -> Self {
-        Self::MemberQuorum {
-            required,
-            trust_model,
-        }
+    pub fn member_quorum(required: u16) -> Self {
+        Self::MemberQuorum { required }
     }
 
     /// Return true when one accepted observation may finalize quote state.
@@ -6170,6 +6151,20 @@ mod tests {
     }
 
     #[test]
+    fn federation_payment_policy_rejects_removed_trust_model_field() {
+        let json = serde_json::json!({
+            "type": "member_quorum",
+            "required": 2,
+            "trust_model": "shared_backend_read_only"
+        });
+
+        assert!(
+            serde_json::from_value::<FederationPaymentVerificationPolicy>(json).is_err(),
+            "undeployed federation configs must not retain removed trust-model fields"
+        );
+    }
+
+    #[test]
     fn production_federation_modules_do_not_import_fakewallet_backend() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -7187,10 +7182,8 @@ mod tests {
         let (keyset, _) = test_keyset(&members);
         let mut config = FederationConfig::new(params, members, vec![keyset]).expect("config");
 
-        config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-            params.consensus_threshold,
-            FederationPaymentTrustModel::SharedBackendReadOnly,
-        );
+        config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(params.consensus_threshold);
         config.validate().expect("consensus quorum policy");
 
         assert!(matches!(
@@ -7204,10 +7197,8 @@ mod tests {
             }) if required == params.consensus_threshold
         ));
 
-        config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-            params.consensus_threshold - 1,
-            FederationPaymentTrustModel::OriginMemberProof,
-        );
+        config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(params.consensus_threshold - 1);
         assert!(matches!(
             config.validate(),
             Err(FederationError::InvalidPaymentObservationQuorum {
@@ -7219,10 +7210,8 @@ mod tests {
                 && consensus_threshold == params.consensus_threshold
         ));
 
-        config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
-            params.member_count + 1,
-            FederationPaymentTrustModel::ThresholdGateway,
-        );
+        config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(params.member_count + 1);
         assert!(matches!(
             config.validate(),
             Err(FederationError::InvalidPaymentObservationQuorum {
@@ -7238,10 +7227,7 @@ mod tests {
     fn federation_payment_policy_evaluates_observation_quorum() {
         let development =
             FederationPaymentVerificationPolicy::development_single_observation_for_testing();
-        let real = FederationPaymentVerificationPolicy::member_quorum(
-            2,
-            FederationPaymentTrustModel::SharedBackendReadOnly,
-        );
+        let real = FederationPaymentVerificationPolicy::member_quorum(2);
         let single = FederationPaymentObservationQuorum {
             context: FederationPaymentObservationContext::MintQuote,
             required: 2,
