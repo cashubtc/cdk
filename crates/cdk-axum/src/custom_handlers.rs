@@ -2952,6 +2952,7 @@ mod tests {
         let catch_up_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
             peer_consensus.status().federation_id,
             peer_consensus.journal(),
+            cdk::federation::FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,

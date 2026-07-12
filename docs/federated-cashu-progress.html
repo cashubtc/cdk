@@ -738,7 +738,7 @@
         <div class="stack">
           <article class="item">
             <h3>Consensus and replay</h3>
-            <p>Federation operations have canonical IDs, ordered journal entries, conflict keys, state digests, signed session outcomes, quorum-certified catch-up, restart replay, and fail-closed lag handling.</p>
+            <p>Federation operations have canonical IDs, ordered journal entries, conflict keys, distinct order and materialized-state digests, signed session outcomes, quorum-certified catch-up, restart replay, and fail-closed lag handling. Finalized AlephBFT items are the sole replayable catch-up history; compact catch-up operation projections retain only order commitments, application status, and standard Cashu rejection metadata, and are checked against reconstructed journal entries before state application is trusted.</p>
           </article>
           <article class="item">
             <h3>Mint, swap, melt, restore</h3>

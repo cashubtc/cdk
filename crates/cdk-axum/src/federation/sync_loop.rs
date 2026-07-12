@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationPeerStatus, FederationSessionOutcome,
-    MemberConfigPublic, MemberId,
+    FederationCatchUpOperation, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalEntry, FederationMaterializedStateDigest, FederationPeerStatus,
+    FederationSessionOutcome, MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -412,9 +412,13 @@ pub(super) async fn persist_local_session_outcome_evidence_chunks(
 ) -> usize {
     let mut persisted = 0;
     for chunk in entries.chunks(chunk_size) {
+        let operations = chunk
+            .iter()
+            .map(FederationCatchUpOperation::from)
+            .collect::<Vec<_>>();
         let outcome = match FederationSessionOutcome::new_signed(
             runtime_config.federation_id(),
-            chunk,
+            &operations,
             latest_order_digest,
             materialized_state_digest,
             runtime_config.private_config(),
@@ -566,7 +570,8 @@ where
                 continue;
             }
         };
-        if let Err(err) = verify_session_outcome_evidence_entries(&response.entries, &peer_response)
+        if let Err(err) =
+            super::verify_catch_up_operation_evidence(&response.entries, &peer_response)
         {
             tracing::warn!(
                 member_id = %peer.member_id,

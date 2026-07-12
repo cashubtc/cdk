@@ -17,8 +17,8 @@ use crate::federation::{
     FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -372,6 +372,7 @@ where
     let first_session_outcome = FederationJournalCatchUpResponse::from_journal(
         federation_id(),
         &journal,
+        FederationMaterializedStateDigest::genesis(),
         &FederationJournalCatchUpRequest::new(0),
         50,
         100,
@@ -383,6 +384,7 @@ where
     let second_session_outcome = FederationJournalCatchUpResponse::from_journal(
         federation_id(),
         &journal,
+        FederationMaterializedStateDigest::genesis(),
         &FederationJournalCatchUpRequest::new(1),
         50,
         100,
@@ -1867,6 +1869,7 @@ where
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(0),
             50,
             100,
@@ -1878,6 +1881,7 @@ where
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(0),
             50,
             100,
@@ -1889,6 +1893,7 @@ where
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(1),
             50,
             100,
@@ -1900,6 +1905,7 @@ where
         FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(2),
             50,
             100,

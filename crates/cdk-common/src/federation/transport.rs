@@ -23,6 +23,7 @@ use super::{
     FederationOperationStatus, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
     MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
+use crate::error::ErrorResponse;
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
 
@@ -1685,6 +1686,43 @@ pub struct FederationSessionOutcome {
     pub signature: FederationRestSignature,
 }
 
+/// Compact operation commitment and post-consensus application metadata for catch-up.
+///
+/// The finalized AlephBFT items in a catch-up response are the authoritative
+/// replayable history. This projection deliberately does not duplicate the
+/// operation envelope, conflict keys, or consensus evidence that replay derives
+/// from those finalized items.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCatchUpOperation {
+    /// Zero-based accepted-operation index.
+    pub index: u64,
+    /// Stable operation ID committed by the accepted-order digest chain.
+    pub operation_id: FederationOperationId,
+    /// Digest before this operation was appended.
+    pub previous_order_digest: FederationJournalDigest,
+    /// Digest after this operation was appended.
+    pub order_digest: FederationJournalDigest,
+    /// Local post-consensus application status reported by the serving member.
+    pub status: FederationOperationStatus,
+    /// Standard Cashu rejection retained for deterministic wallet error recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<ErrorResponse>,
+}
+
+impl From<&FederationJournalEntry> for FederationCatchUpOperation {
+    fn from(entry: &FederationJournalEntry) -> Self {
+        Self {
+            index: entry.index,
+            operation_id: entry.operation_id,
+            previous_order_digest: entry.previous_order_digest,
+            order_digest: entry.order_digest,
+            status: entry.status,
+            rejection: entry.rejection.clone(),
+        }
+    }
+}
+
 /// Verified quorum of signed session outcomes over one catch-up range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationSessionOutcomeQuorum {
@@ -1703,10 +1741,10 @@ pub struct FederationSessionOutcomeQuorum {
 }
 
 impl FederationSessionOutcome {
-    /// Sign a contiguous range of accepted journal entries.
+    /// Sign a contiguous range of accepted operation commitments.
     pub fn new_signed(
         federation_id: FederationId,
-        entries: &[FederationJournalEntry],
+        entries: &[FederationCatchUpOperation],
         latest_order_digest: FederationJournalDigest,
         materialized_state_digest: FederationMaterializedStateDigest,
         private_config: &MemberConfigPrivate,
@@ -1751,13 +1789,13 @@ impl FederationSessionOutcome {
         })
     }
 
-    /// Verify this outcome against returned catch-up entries and a roster member.
+    /// Verify this outcome against returned operation commitments and a roster member.
     pub fn verify(
         &self,
         member: &MemberConfigPublic,
         federation_id: FederationId,
         from_index: u64,
-        entries: &[FederationJournalEntry],
+        entries: &[FederationCatchUpOperation],
         latest_order_digest: FederationJournalDigest,
         materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Result<()> {
@@ -1828,7 +1866,7 @@ impl FederationSessionOutcome {
     }
 }
 
-/// Catch-up response containing accepted journal entries.
+/// Catch-up response containing finalized history and compact application metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationJournalCatchUpResponse {
     /// Private REST payload version.
@@ -1837,8 +1875,8 @@ pub struct FederationJournalCatchUpResponse {
     pub federation_id: FederationId,
     /// First requested index.
     pub from_index: u64,
-    /// Journal entries returned in ascending order.
-    pub entries: Vec<FederationJournalEntry>,
+    /// Compact operation commitments returned in ascending order.
+    pub entries: Vec<FederationCatchUpOperation>,
     /// Highest local operation index, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_index: Option<u64>,
@@ -1858,16 +1896,62 @@ pub struct FederationJournalCatchUpResponse {
 }
 
 impl FederationJournalCatchUpResponse {
-    /// Create a catch-up response from an in-memory journal.
+    fn validate_entries(&self) -> Result<()> {
+        let mut expected_index = self.from_index;
+        let mut expected_previous = self
+            .entries
+            .first()
+            .map_or(self.latest_order_digest, |entry| {
+                entry.previous_order_digest
+            });
+        for entry in &self.entries {
+            if entry.index != expected_index {
+                return Err(FederationError::CatchUpIndexMismatch {
+                    expected: expected_index,
+                    found: entry.index,
+                });
+            }
+            if entry.previous_order_digest != expected_previous {
+                return Err(FederationError::CatchUpDigestMismatch {
+                    index: entry.index,
+                    expected: expected_previous,
+                    found: entry.previous_order_digest,
+                });
+            }
+            let expected_order_digest = entry
+                .previous_order_digest
+                .append(entry.index, entry.operation_id);
+            if entry.order_digest != expected_order_digest {
+                return Err(FederationError::CatchUpDigestMismatch {
+                    index: entry.index.saturating_add(1),
+                    expected: expected_order_digest,
+                    found: entry.order_digest,
+                });
+            }
+            if entry.rejection.is_some() && entry.status != FederationOperationStatus::Rejected {
+                return Err(FederationError::JournalRejectionStateMismatch { index: entry.index });
+            }
+            expected_previous = entry.order_digest;
+            expected_index = expected_index.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Create a compact catch-up response from an in-memory journal.
     #[must_use]
     pub fn from_journal(
         federation_id: FederationId,
         journal: &InMemoryFederationJournal,
+        materialized_state_digest: FederationMaterializedStateDigest,
         request: &FederationJournalCatchUpRequest,
         default_limit: u16,
         max_limit: u16,
     ) -> Self {
-        let mut entries = journal.entries_from(request.next_index);
+        let mut entries = journal
+            .entries_from(request.next_index)
+            .iter()
+            .map(FederationCatchUpOperation::from)
+            .collect::<Vec<_>>();
         let limit = request.effective_limit(default_limit, max_limit);
         let complete = entries.len() <= limit;
         entries.truncate(limit);
@@ -1878,7 +1962,7 @@ impl FederationJournalCatchUpResponse {
             entries,
             latest_index: journal.entries().last().map(|entry| entry.index),
             latest_order_digest: journal.latest_order_digest(),
-            materialized_state_digest: FederationMaterializedStateDigest::genesis(),
+            materialized_state_digest,
             session_outcome: None,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
@@ -1918,6 +2002,7 @@ impl FederationJournalCatchUpResponse {
 
     /// Verify the signed session outcome for this response.
     pub fn verify_session_outcome(&self, member: &MemberConfigPublic) -> Result<()> {
+        self.validate_entries()?;
         match (self.entries.is_empty(), &self.session_outcome) {
             (true, None) => Ok(()),
             (true, Some(_)) => Err(session_outcome_mismatch(
@@ -1943,6 +2028,7 @@ impl FederationJournalCatchUpResponse {
         config: &FederationConfig,
         additional_outcomes: &[FederationSessionOutcome],
     ) -> Result<FederationSessionOutcomeQuorum> {
+        self.validate_entries()?;
         let required = config.threshold_params.consensus_threshold;
         if self.entries.is_empty() {
             return Ok(FederationSessionOutcomeQuorum {
@@ -2381,6 +2467,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2412,12 +2499,26 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(0),
             50,
             100,
         )
         .with_aleph_bft_finalized_items(Vec::new(), false);
         let encoded_response = serde_json::to_value(&response).expect("response json");
+        let operation = encoded_response["entries"][0]
+            .as_object()
+            .expect("compact catch-up operation");
+        assert!(operation.contains_key("operation_id"));
+        assert!(operation.contains_key("status"));
+        assert!(!operation.contains_key("envelope"));
+        assert!(!operation.contains_key("conflict_keys"));
+        assert!(!operation.contains_key("consensus_evidence"));
+        let mut obsolete_response = encoded_response.clone();
+        obsolete_response["entries"][0]["envelope"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<FederationJournalCatchUpResponse>(obsolete_response).is_err()
+        );
         assert!(encoded_response["aleph_bft_finalized_items"]
             .as_array()
             .expect("finalized items array")
@@ -2459,6 +2560,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(0),
             50,
             100,
@@ -2515,6 +2617,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2532,7 +2635,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_response_rejects_tampered_session_outcome() {
+    fn catch_up_response_rejects_tampered_operation_commitment() {
         let (config, _, second_private) = transport_config();
         let member = config
             .member(second_private.member_id)
@@ -2543,6 +2646,7 @@ mod tests {
         let mut response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2553,7 +2657,7 @@ mod tests {
 
         assert!(matches!(
             response.verify_session_outcome(member),
-            Err(FederationError::SessionOutcomeMismatch { .. })
+            Err(FederationError::CatchUpDigestMismatch { .. })
         ));
     }
 
@@ -2575,6 +2679,7 @@ mod tests {
         let mut response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2601,6 +2706,7 @@ mod tests {
         let mut response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2635,6 +2741,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2644,6 +2751,7 @@ mod tests {
         let second_outcome = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2674,6 +2782,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2699,6 +2808,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &request,
             50,
             100,
@@ -2734,6 +2844,7 @@ mod tests {
         let response = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(0),
             50,
             100,
@@ -2743,6 +2854,7 @@ mod tests {
         let mismatched_outcome = FederationJournalCatchUpResponse::from_journal(
             federation_id(),
             &journal,
+            FederationMaterializedStateDigest::genesis(),
             &FederationJournalCatchUpRequest::new(1),
             50,
             100,

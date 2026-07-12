@@ -767,7 +767,7 @@ fn catch_up_response_suffix_for_local_journal(
 #[cfg(feature = "federation")]
 fn ensure_catch_up_overlap_matches(
     local_entry: &FederationJournalEntry,
-    peer_entry: &FederationJournalEntry,
+    peer_entry: &cdk::federation::FederationCatchUpOperation,
 ) -> Result<(), cdk::Error> {
     if local_entry.index != peer_entry.index {
         return Err(cdk::Error::Federation(
@@ -1918,8 +1918,12 @@ impl MintState {
         &self,
         peer_entries: &[FederationJournalEntry],
     ) -> Result<(), cdk::Error> {
+        let peer_entries = peer_entries
+            .iter()
+            .map(cdk::federation::FederationCatchUpOperation::from)
+            .collect::<Vec<_>>();
         self.federation
-            .verify_catch_up_rejections(peer_entries)
+            .verify_catch_up_rejections(&peer_entries)
             .await
     }
 

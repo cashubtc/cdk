@@ -78,7 +78,7 @@ impl FederationJournalDigest {
         Self(Sha256Hash::hash(FEDERATION_JOURNAL_GENESIS_VERSION).to_byte_array())
     }
 
-    fn append(self, index: u64, operation_id: FederationOperationId) -> Self {
+    pub(crate) fn append(self, index: u64, operation_id: FederationOperationId) -> Self {
         let mut transcript = Vec::new();
         append_hash_bytes(&mut transcript, FEDERATION_JOURNAL_ENTRY_VERSION);
         append_hash_bytes(&mut transcript, &self.to_bytes());

@@ -1556,7 +1556,39 @@ already represented by journal application status and rejection metadata.
 
 ## 22. Use one authoritative representation for catch-up history
 
-**Status:** Todo
+**Status:** Complete
+
+### Review and result
+
+Finalized AlephBFT items are now the sole authoritative replayable catch-up
+history. The response no longer duplicates full journal envelopes, conflict
+keys, and journal consensus evidence. Instead, `FederationCatchUpOperation`
+carries only the operation index and ID, order-chain links, local application
+status, and retained standard Cashu rejection needed to bind range evidence and
+verify post-replay application results.
+
+The compact projection validates contiguous indexes, every order-digest link,
+and rejection/status consistency before certificate or quorum verification.
+The receiver reconstructs full journal entries exclusively from finalized
+AlephBFT items, compares the compact projection with that reconstruction, then
+applies mint state and verifies rejected `ErrorResponse` equality. Independent
+operation and finalized-item cursors remain because non-operation and duplicate
+Aleph items do not have a one-to-one journal row.
+
+Catch-up response construction now requires an explicit materialized-state
+digest; the production route computes the real digest before signing rather
+than constructing a placeholder genesis value and overwriting it later. The
+test-only adapter that fabricated Aleph units from duplicated journal envelopes
+was deleted, so catch-up tests exercise the same finalized-item reconstruction
+boundary as production.
+
+Verification passes all 327 `cdk-common` tests, all 420 federation-enabled Axum
+tests, all 155 SQLite tests, and all 28 standalone Axum tests. PostgreSQL and
+mintd federation compile gates are clean. Coverage includes compact-wire shape
+and obsolete full-entry rejection, commitment tampering, missing, incomplete,
+and reordered finalized evidence, stale overlap, deterministic rejection
+equality, mint/swap/melt materialization, restart, live partitions, and digest
+divergence.
 
 ### Problem
 

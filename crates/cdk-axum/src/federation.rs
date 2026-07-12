@@ -9,15 +9,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationError, FederationJournalCatchUpResponse, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateDigest, FederationMaterializedStateRow,
-    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
-    FederationOperation, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationRecord, FederationPeerStatus, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
-    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    FederatedKeyset, FederationCatchUpOperation, FederationError, FederationJournalCatchUpResponse,
+    FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationRecord, FederationPeerStatus,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
+    InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use serde::Serialize;
@@ -475,7 +475,10 @@ async fn session_outcome_quorum_status(
             version: FEDERATION_REST_API_VERSION,
             federation_id: runtime_config.public_config().federation_id,
             from_index: range.from_index,
-            entries,
+            entries: entries
+                .iter()
+                .map(FederationCatchUpOperation::from)
+                .collect(),
             latest_index: Some(range.latest_index),
             latest_order_digest: range.latest_order_digest,
             materialized_state_digest: range.materialized_state_digest,
@@ -1069,7 +1072,18 @@ fn verify_session_outcome_evidence_entries(
     local_entries: &[FederationJournalEntry],
     response: &FederationJournalCatchUpResponse,
 ) -> anyhow::Result<()> {
-    let first = local_entries
+    let expected = local_entries
+        .iter()
+        .map(FederationCatchUpOperation::from)
+        .collect::<Vec<_>>();
+    verify_catch_up_operation_evidence(&expected, response)
+}
+
+fn verify_catch_up_operation_evidence(
+    expected: &[FederationCatchUpOperation],
+    response: &FederationJournalCatchUpResponse,
+) -> anyhow::Result<()> {
+    let first = expected
         .first()
         .ok_or_else(|| anyhow::anyhow!("missing local entries for evidence response"))?;
     if response.from_index != first.index {
@@ -1079,19 +1093,17 @@ fn verify_session_outcome_evidence_entries(
             first.index
         );
     }
-    if response.entries.len() != local_entries.len() {
+    if response.entries.len() != expected.len() {
         anyhow::bail!(
             "evidence response carried {} entries, expected {}",
             response.entries.len(),
-            local_entries.len()
+            expected.len()
         );
     }
 
-    for (local, peer) in local_entries.iter().zip(&response.entries) {
-        let peer_operation_id = peer.envelope.operation_id()?;
+    for (local, peer) in expected.iter().zip(&response.entries) {
         if peer.index != local.index
             || peer.operation_id != local.operation_id
-            || peer_operation_id != local.operation_id
             || peer.previous_order_digest != local.previous_order_digest
             || peer.order_digest != local.order_digest
         {

@@ -2133,6 +2133,7 @@ fn aleph_bft_catch_up_response(
     FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         request,
         50,
         100,
@@ -2156,6 +2157,7 @@ fn test_catch_up_response(
     FederationJournalCatchUpResponse::from_journal(
         status.federation_id,
         adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         request,
         50,
         100,
@@ -7533,6 +7535,7 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
     let base_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -7699,6 +7702,7 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
     let base_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -7834,6 +7838,7 @@ async fn aleph_bft_catch_up_advances_recovered_active_session() {
     let base_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -7943,6 +7948,7 @@ async fn aleph_bft_catch_up_applies_rejected_trailing_entry() {
     let base_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -8042,6 +8048,7 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
     let mut response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -8140,6 +8147,7 @@ async fn aleph_bft_catch_up_rejects_journal_entries_without_finalized_item_evide
     let base_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -8231,6 +8239,7 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
     let mut response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         1,
         100,
@@ -8336,6 +8345,7 @@ async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation()
     let mut response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         peer_adapter.journal(),
+        FederationMaterializedStateDigest::genesis(),
         &request,
         50,
         100,
@@ -18884,14 +18894,14 @@ async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
     let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
-    let before_digest = materialized_state_digest(&state, &catch_up_response.entries)
+    let before_digest = materialized_state_digest(&state, peer_consensus.journal().entries())
         .await
         .expect("before digest");
     state
         .apply_federation_catch_up_response(&catch_up_response)
         .await
         .expect("apply catch-up");
-    let after_digest = materialized_state_digest(&state, &catch_up_response.entries)
+    let after_digest = materialized_state_digest(&state, peer_consensus.journal().entries())
         .await
         .expect("after digest");
 
@@ -19357,7 +19367,7 @@ async fn catch_up_replay_materializes_completed_operation_rows() {
     let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
-    let before_snapshot = materialized_state_snapshot(&state, &catch_up_response.entries)
+    let before_snapshot = materialized_state_snapshot(&state, peer_consensus.journal().entries())
         .await
         .expect("before snapshot");
     assert!(
@@ -19789,14 +19799,14 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
     let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
-    let before_digest = materialized_state_digest(&state, &catch_up_response.entries)
+    let before_digest = materialized_state_digest(&state, peer_consensus.journal().entries())
         .await
         .expect("before digest");
     state
         .apply_federation_catch_up_response(&catch_up_response)
         .await
         .expect("apply catch-up");
-    let after_digest = materialized_state_digest(&state, &catch_up_response.entries)
+    let after_digest = materialized_state_digest(&state, peer_consensus.journal().entries())
         .await
         .expect("after digest");
 
@@ -20361,9 +20371,13 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
     let materialized_state_digest = peer_status
         .materialized_state_digest
         .expect("local status has materialized-state digest");
+    let operations = entries
+        .iter()
+        .map(FederationCatchUpOperation::from)
+        .collect::<Vec<_>>();
     let local_outcome = FederationSessionOutcome::new_signed(
         public_config.federation_id,
-        &entries,
+        &operations,
         peer_status.latest_order_digest,
         materialized_state_digest,
         &local_private,
@@ -20371,7 +20385,7 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
     .expect("local session outcome");
     let peer_outcome = FederationSessionOutcome::new_signed(
         public_config.federation_id,
-        &entries,
+        &operations,
         peer_status.latest_order_digest,
         materialized_state_digest,
         &peer_private,
@@ -20769,6 +20783,7 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
     let mut response = FederationJournalCatchUpResponse::from_journal(
         public_config.federation_id,
         &journal,
+        FederationMaterializedStateDigest::genesis(),
         &FederationJournalCatchUpRequest::new(0),
         100,
         100,

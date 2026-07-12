@@ -12,12 +12,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use super::{
     FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPeerStatus, FederationProtocolVersions,
-    FederationRestMessageKind, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
+    FederationProtocolVersions, FederationRestMessageKind, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -1999,6 +1999,7 @@ impl FederationConsensusRuntime {
         FederationJournalCatchUpResponse::from_journal(
             self.federation_id(),
             self.journal(),
+            FederationMaterializedStateDigest::genesis(),
             request,
             DEFAULT_CATCH_UP_LIMIT,
             MAX_CATCH_UP_LIMIT,

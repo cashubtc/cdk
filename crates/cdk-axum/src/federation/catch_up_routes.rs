@@ -2,8 +2,7 @@ use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationError, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationRestMessageKind,
-    FederationSignedRequest,
+    FederationJournalCatchUpResponse, FederationRestMessageKind, FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -35,10 +34,7 @@ pub(super) async fn post_journal(
         limit = ?payload.payload.limit,
         "Received federation journal catch-up request"
     );
-    let (mut response, entries) = durable_catch_up_response(&state, &payload.payload).await?;
-    response.materialized_state_digest = materialized_state_digest(&state, &entries)
-        .await
-        .map_err(anyhow_response)?;
+    let response = durable_catch_up_response(&state, &payload.payload).await?;
     let response = response
         .with_signed_session_outcome(&private_config)
         .map_err(federation_error_response)?;
@@ -48,13 +44,7 @@ pub(super) async fn post_journal(
 async fn durable_catch_up_response(
     state: &MintState,
     request: &FederationJournalCatchUpRequest,
-) -> Result<
-    (
-        FederationJournalCatchUpResponse,
-        Vec<FederationJournalEntry>,
-    ),
-    Response,
-> {
+) -> Result<FederationJournalCatchUpResponse, Response> {
     let runtime_config = federation_runtime_config(state)?;
     let journal = durable_federation_journal(state)
         .await
@@ -74,9 +64,14 @@ async fn durable_catch_up_response(
         }
     }
 
+    let entries = journal.entries().to_vec();
+    let state_digest = materialized_state_digest(state, &entries)
+        .await
+        .map_err(anyhow_response)?;
     let response = FederationJournalCatchUpResponse::from_journal(
         runtime_config.federation_id(),
         &journal,
+        state_digest,
         request,
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
@@ -84,9 +79,7 @@ async fn durable_catch_up_response(
     let response = maybe_attach_aleph_bft_finalized_items(state, request, response)
         .await
         .map_err(anyhow_response)?;
-    let entries = journal.entries().to_vec();
-
-    Ok((response, entries))
+    Ok(response)
 }
 
 async fn maybe_attach_aleph_bft_finalized_items(
