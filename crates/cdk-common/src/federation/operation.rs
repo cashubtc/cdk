@@ -245,12 +245,6 @@ pub struct FederationMintQuotePaymentObservation {
     /// Optional method-specific proof or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_proof: Option<String>,
-    /// Optional observer-local Unix time when this payment state was observed.
-    ///
-    /// This is audit metadata only; quorum matching intentionally ignores it
-    /// because honest members can observe the same payment at different times.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_time: Option<u64>,
 }
 
 impl FederationMintQuotePaymentObservation {
@@ -358,12 +352,6 @@ pub struct FederationMeltQuotePaymentObservation {
     /// Optional method-specific proof, preimage, outpoint, or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_proof: Option<String>,
-    /// Optional observer-local Unix time when this payment state was observed.
-    ///
-    /// This is audit metadata only; quorum matching intentionally ignores it
-    /// because honest members can observe the same payment at different times.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_time: Option<u64>,
 }
 
 impl FederationMeltQuotePaymentObservation {
@@ -1408,40 +1396,6 @@ impl FederationOperationEnvelope {
         canonical_json_bytes(self)
     }
 
-    /// Return canonical JSON bytes covered by the operation ID.
-    ///
-    /// Payment observation timestamps are observer-local audit metadata. They
-    /// are intentionally excluded from payment-evidence matching, so they must
-    /// also be excluded from the operation ID to keep identical evidence
-    /// idempotent across retries and delayed observers.
-    fn operation_id_canonical_bytes(&self) -> Result<Vec<u8>> {
-        match &self.operation {
-            FederationOperation::MintQuotePayment(observation)
-                if observation.observed_time.is_some() =>
-            {
-                let mut normalized = self.clone();
-                if let FederationOperation::MintQuotePayment(observation) =
-                    &mut normalized.operation
-                {
-                    observation.observed_time = None;
-                }
-                canonical_json_bytes(&normalized)
-            }
-            FederationOperation::MeltQuotePayment(observation)
-                if observation.observed_time.is_some() =>
-            {
-                let mut normalized = self.clone();
-                if let FederationOperation::MeltQuotePayment(observation) =
-                    &mut normalized.operation
-                {
-                    observation.observed_time = None;
-                }
-                canonical_json_bytes(&normalized)
-            }
-            _ => self.canonical_bytes(),
-        }
-    }
-
     /// Return the canonical operation envelope size in bytes.
     pub fn canonical_size(&self) -> Result<usize> {
         Ok(self.canonical_bytes()?.len())
@@ -1469,7 +1423,7 @@ impl FederationOperationEnvelope {
     /// Compute the domain-separated operation ID.
     pub fn operation_id(&self) -> Result<FederationOperationId> {
         self.ensure_supported_version()?;
-        let canonical = self.operation_id_canonical_bytes()?;
+        let canonical = self.canonical_bytes()?;
         Ok(operation_id_from_canonical(&canonical))
     }
 
@@ -2303,7 +2257,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                observed_time: None,
             },
         ));
         let paid = envelope(FederationOperation::MeltQuotePayment(
@@ -2316,7 +2269,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
-                observed_time: None,
             },
         ));
         let conflicting_paid = envelope(FederationOperation::MeltQuotePayment(
@@ -2329,7 +2281,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("different-preimage".to_string()),
-                observed_time: None,
             },
         ));
 
@@ -2350,11 +2301,9 @@ mod tests {
             amount_issued: Amount::ZERO,
             payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
             payment_proof: Some("settled".to_string()),
-            observed_time: Some(11),
         };
         let matching_second = FederationMintQuotePaymentObservation {
             observer: member_id(2),
-            observed_time: Some(22),
             ..first.clone()
         };
         let conflicting_third = FederationMintQuotePaymentObservation {
@@ -2417,7 +2366,7 @@ mod tests {
     }
 
     #[test]
-    fn payment_observation_operation_ids_ignore_observed_time() {
+    fn payment_observation_operation_ids_track_exact_evidence() {
         let first_mint = FederationMintQuotePaymentObservation {
             quote: "mint-quote".to_string(),
             observer: member_id(1),
@@ -2427,40 +2376,36 @@ mod tests {
             amount_issued: Amount::ZERO,
             payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
             payment_proof: Some("settled".to_string()),
-            observed_time: Some(11),
         };
-        let delayed_mint = FederationMintQuotePaymentObservation {
-            observed_time: Some(22),
-            ..first_mint.clone()
-        };
+        let duplicate_mint = first_mint.clone();
         let conflicting_mint = FederationMintQuotePaymentObservation {
             payment_proof: Some("different-settlement".to_string()),
-            observed_time: Some(33),
             ..first_mint.clone()
         };
 
         let first_mint_envelope = envelope(FederationOperation::MintQuotePayment(first_mint));
-        let delayed_mint_envelope = envelope(FederationOperation::MintQuotePayment(delayed_mint));
+        let duplicate_mint_envelope =
+            envelope(FederationOperation::MintQuotePayment(duplicate_mint));
         let conflicting_mint_envelope =
             envelope(FederationOperation::MintQuotePayment(conflicting_mint));
 
-        assert_ne!(
+        assert_eq!(
             first_mint_envelope
                 .canonical_bytes()
                 .expect("first mint canonical bytes"),
-            delayed_mint_envelope
+            duplicate_mint_envelope
                 .canonical_bytes()
-                .expect("delayed mint canonical bytes")
+                .expect("duplicate mint canonical bytes")
         );
         assert_eq!(
             first_mint_envelope.operation_id().expect("first mint id"),
-            delayed_mint_envelope
+            duplicate_mint_envelope
                 .operation_id()
-                .expect("delayed mint id")
+                .expect("duplicate mint id")
         );
         assert!(!first_mint_envelope
-            .conflicts_with(&delayed_mint_envelope)
-            .expect("delayed mint conflict check"));
+            .conflicts_with(&duplicate_mint_envelope)
+            .expect("duplicate mint conflict check"));
         assert_ne!(
             first_mint_envelope.operation_id().expect("first mint id"),
             conflicting_mint_envelope
@@ -2478,8 +2423,8 @@ mod tests {
             .entry()
             .clone();
         let duplicate_entry = journal
-            .append(delayed_mint_envelope)
-            .expect("append delayed mint observation")
+            .append(duplicate_mint_envelope)
+            .expect("append duplicate mint observation")
             .entry()
             .clone();
 
@@ -2495,40 +2440,36 @@ mod tests {
             fee_reserve: Amount::from(1),
             payment_id: Some(PaymentIdentifier::CustomId("payment-b".to_string())),
             payment_proof: Some("preimage".to_string()),
-            observed_time: Some(44),
         };
-        let delayed_melt = FederationMeltQuotePaymentObservation {
-            observed_time: Some(55),
-            ..first_melt.clone()
-        };
+        let duplicate_melt = first_melt.clone();
         let conflicting_melt = FederationMeltQuotePaymentObservation {
             payment_proof: Some("different-preimage".to_string()),
-            observed_time: Some(66),
             ..first_melt.clone()
         };
 
         let first_melt_envelope = envelope(FederationOperation::MeltQuotePayment(first_melt));
-        let delayed_melt_envelope = envelope(FederationOperation::MeltQuotePayment(delayed_melt));
+        let duplicate_melt_envelope =
+            envelope(FederationOperation::MeltQuotePayment(duplicate_melt));
         let conflicting_melt_envelope =
             envelope(FederationOperation::MeltQuotePayment(conflicting_melt));
 
-        assert_ne!(
+        assert_eq!(
             first_melt_envelope
                 .canonical_bytes()
                 .expect("first melt canonical bytes"),
-            delayed_melt_envelope
+            duplicate_melt_envelope
                 .canonical_bytes()
-                .expect("delayed melt canonical bytes")
+                .expect("duplicate melt canonical bytes")
         );
         assert_eq!(
             first_melt_envelope.operation_id().expect("first melt id"),
-            delayed_melt_envelope
+            duplicate_melt_envelope
                 .operation_id()
-                .expect("delayed melt id")
+                .expect("duplicate melt id")
         );
         assert!(!first_melt_envelope
-            .conflicts_with(&delayed_melt_envelope)
-            .expect("delayed melt conflict check"));
+            .conflicts_with(&duplicate_melt_envelope)
+            .expect("duplicate melt conflict check"));
         assert_ne!(
             first_melt_envelope.operation_id().expect("first melt id"),
             conflicting_melt_envelope
@@ -2553,7 +2494,6 @@ mod tests {
                 amount_issued: Amount::ZERO,
                 payment_id: None,
                 payment_proof: Some("settled".to_string()),
-                observed_time: None,
             }),
         );
         let matching_second = payment_record(
@@ -2567,7 +2507,6 @@ mod tests {
                 amount_issued: Amount::ZERO,
                 payment_id: None,
                 payment_proof: Some("settled".to_string()),
-                observed_time: None,
             }),
         );
         let conflicting_third = payment_record(
@@ -2581,7 +2520,6 @@ mod tests {
                 amount_issued: Amount::ZERO,
                 payment_id: None,
                 payment_proof: Some("different-settlement".to_string()),
-                observed_time: None,
             }),
         );
 
@@ -2709,7 +2647,6 @@ mod tests {
                 amount_issued: Amount::ZERO,
                 payment_id: None,
                 payment_proof: None,
-                observed_time: None,
             }),
         );
         let paid = payment_record(
@@ -2723,7 +2660,6 @@ mod tests {
                 amount_issued: Amount::ZERO,
                 payment_id: None,
                 payment_proof: Some("settled".to_string()),
-                observed_time: None,
             }),
         );
 
@@ -2754,7 +2690,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                observed_time: None,
             }),
         );
         let paid = payment_record(
@@ -2768,7 +2703,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
-                observed_time: None,
             }),
         );
         let failed = payment_record(
@@ -2782,7 +2716,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: None,
-                observed_time: None,
             }),
         );
 
@@ -2841,7 +2774,6 @@ mod tests {
                 amount_issued: Amount::ZERO,
                 payment_id: None,
                 payment_proof: Some("settled".to_string()),
-                observed_time: None,
             });
         let mint = mint_operation(
             "mint-quote",
@@ -2934,7 +2866,6 @@ mod tests {
                 amount_issued: Amount::from(4),
                 payment_id: None,
                 payment_proof: Some("settled".to_string()),
-                observed_time: None,
             });
         let audit = mint_payment.balance_audit().expect("mint payment audit");
         assert_eq!(
@@ -2986,7 +2917,6 @@ mod tests {
                 fee_reserve: Amount::from(1),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
-                observed_time: None,
             });
         let audit = melt_payment.balance_audit().expect("melt payment audit");
         assert_eq!(
@@ -3009,7 +2939,6 @@ mod tests {
                 amount_issued: Amount::from(5),
                 payment_id: None,
                 payment_proof: Some("settled".to_string()),
-                observed_time: None,
             });
 
         assert!(matches!(

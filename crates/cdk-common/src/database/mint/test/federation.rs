@@ -87,7 +87,6 @@ fn payment_observation_envelope_for_member(
             amount_issued: Amount::ZERO,
             payment_id: None,
             payment_proof: Some(payment_proof.to_string()),
-            observed_time: None,
         }),
     )
 }

@@ -17,7 +17,6 @@ fn mint_payment_observation_envelope(
             amount_issued: Amount::ZERO,
             payment_id: None,
             payment_proof: Some(payment_proof.to_string()),
-            observed_time: None,
         },
     ))
 }
@@ -218,7 +217,7 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
 }
 
 #[tokio::test]
-async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
+async fn mint_payment_observation_uses_payment_id_and_consensus_logical_time() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
@@ -249,7 +248,6 @@ async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
                 amount_issued: Amount::ZERO,
                 payment_id: Some(payment_id.clone()),
                 payment_proof: None,
-                observed_time: Some(111),
             },
         )),
     );
@@ -267,7 +265,6 @@ async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
                 amount_issued: Amount::ZERO,
                 payment_id: Some(payment_id.clone()),
                 payment_proof: None,
-                observed_time: Some(222),
             },
         )),
     );
@@ -284,7 +281,7 @@ async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
         stored_quote.payments[0].payment_id,
         "custom:metadata-payment"
     );
-    assert_eq!(stored_quote.payments[0].time, 222);
+    assert_eq!(stored_quote.payments[0].time, 3);
 }
 
 #[tokio::test]

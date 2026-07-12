@@ -1744,7 +1744,6 @@ mod tests {
                     fee_reserve: Amount::from(1),
                     payment_id: None,
                     payment_proof: Some("preimage".to_string()),
-                    observed_time: None,
                 },
             ),
         );
@@ -1778,7 +1777,6 @@ mod tests {
                     fee_reserve: Amount::from(1),
                     payment_id: None,
                     payment_proof: Some("preimage".to_string()),
-                    observed_time: None,
                 },
             ),
         );

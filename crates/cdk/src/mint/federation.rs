@@ -286,7 +286,6 @@ impl FederationRuntimeConfig {
             amount_issued,
             payment_proof,
             None,
-            None,
         )
     }
 
@@ -303,7 +302,6 @@ impl FederationRuntimeConfig {
         amount_issued: Amount,
         payment_proof: Option<String>,
         payment_id: Option<PaymentIdentifier>,
-        observed_time: Option<u64>,
     ) -> FederationOperationEnvelope
     where
         Q: ToString,
@@ -318,7 +316,6 @@ impl FederationRuntimeConfig {
                 amount_issued,
                 payment_id,
                 payment_proof,
-                observed_time,
             },
         ))
     }
@@ -404,7 +401,6 @@ impl FederationRuntimeConfig {
             fee_reserve,
             payment_proof,
             None,
-            None,
         )
     }
 
@@ -421,7 +417,6 @@ impl FederationRuntimeConfig {
         fee_reserve: Amount,
         payment_proof: Option<String>,
         payment_id: Option<PaymentIdentifier>,
-        observed_time: Option<u64>,
     ) -> FederationOperationEnvelope
     where
         Q: ToString,
@@ -436,7 +431,6 @@ impl FederationRuntimeConfig {
                 fee_reserve,
                 payment_id,
                 payment_proof,
-                observed_time,
             },
         ))
     }
@@ -1512,11 +1506,7 @@ impl Mint {
                 quote.add_payment(
                     additional_amount,
                     payment_id,
-                    Some(
-                        observation
-                            .observed_time
-                            .unwrap_or_else(|| record.operation_index.saturating_add(1)),
-                    ),
+                    Some(record.operation_index.saturating_add(1)),
                 )?;
                 tx.update_mint_quote(quote).await?;
                 paid_notification = Some(quote.amount_paid());

@@ -374,10 +374,12 @@ federation smoke helper supplied static text, without reading it later.
 This is a direct schema deletion because federation mode is undeployed. It does
 not change canonical bytes or operation IDs for real observations: the removed
 field was optional, `None` was omitted during serialization, and every
-production producer used `None`. Payment IDs, proofs, observation times, and
-all paid/failed/unpaid/pending/unknown transitions remain intact. The adjacent
-federation fuzz target was repaired to enable its required `cdk-common/mint`
-feature and initialize the current journal/observation fields.
+production producer used `None`. Payment IDs, proofs, and all
+paid/failed/unpaid/pending/unknown transitions remain intact. Observer-local
+times were intentionally left for the separate audit in Item 12 and were later
+removed from consensus there. The adjacent federation fuzz target was repaired
+to enable its required `cdk-common/mint` feature and initialize the current
+journal/observation fields.
 
 Verification:
 
@@ -413,7 +415,8 @@ defined interpretation adds schema and conflict surface without functionality.
   backend-neutral value with explicit semantics instead of preserving an
   unused free-form string.
 - Do not remove payment IDs, observed times, or payment proofs as part of this
-  task; those fields have current state-transition or reconciliation uses.
+  task. Item 12 subsequently audited and removed only the observer-local time;
+  payment IDs and proofs remain consensus evidence.
 
 ### Known locations
 
@@ -876,7 +879,37 @@ and SQL column allow inconsistent representations and enlarge codecs and tests.
 
 ## 12. Remove observation wall-clock time from consensus operations
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed `observed_time` from mint and melt payment-observation structs,
+runtime-config builders, Axum backend-observer submission, wallet/local test
+connectors, smoke tooling, journal/database fixtures, and all canonical test
+data. Deleted the special operation-ID normalization that cloned observations
+and stripped the timestamp: operation IDs now hash exactly the same canonical
+bytes that consensus orders and the journal persists.
+
+Mint payment application now records the deterministic accepted logical time
+`operation_index + 1` when an observation quorum adds payment to a quote. It no
+longer chooses one member's backend timestamp. Existing standalone payment
+backend timing remains untouched and local; no federation consumer needed a
+separate diagnostic observation timestamp after submission.
+
+Verification:
+
+- a full federation Rust-source search finds no `observed_time` producer,
+  field, normalization branch, or consumer;
+- all 29 operation tests and all 216 `cdk-common` federation tests pass; exact
+  duplicate evidence has identical canonical bytes and IDs, while changed
+  payment proof material has different bytes/IDs and conflicts normally;
+- all 99 mint federation tests pass, including a focused two-observer quorum
+  regression proving the durable payment time is consensus logical time;
+- five focused Axum observer tests and all 423 Axum federation tests pass,
+  including stale-status reporting, materialized digests, paid/failed/unknown
+  observations, catch-up, SQLite restart, live AlephBFT, and DKG;
+- federation-enabled common/core/Axum/mintd checks and standalone
+  core/Axum/mintd checks pass.
 
 ### Problem
 

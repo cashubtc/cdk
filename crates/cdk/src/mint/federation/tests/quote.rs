@@ -75,7 +75,6 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
         amount_issued: Amount::ZERO,
         payment_id: None,
         payment_proof: Some("settled".to_string()),
-        observed_time: None,
     };
     runtime_config
         .validate_federated_mint_payment_observation_submission(&mint_observation)
@@ -132,7 +131,6 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
         fee_reserve: Amount::from(1),
         payment_id: None,
         payment_proof: Some("preimage".to_string()),
-        observed_time: None,
     };
     runtime_config
         .validate_federated_melt_payment_observation_submission(&melt_observation)

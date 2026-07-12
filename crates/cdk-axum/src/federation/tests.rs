@@ -2738,7 +2738,6 @@ fn payment_observation_envelope(federation_id: FederationId) -> FederationOperat
             amount_issued: Amount::ZERO,
             payment_id: None,
             payment_proof: Some("fake-wallet-paid".to_string()),
-            observed_time: None,
         }),
     )
 }
@@ -2875,7 +2874,6 @@ fn mint_payment_observation_envelope_for_member(
             amount_issued: Amount::ZERO,
             payment_id: None,
             payment_proof: Some(payment_proof.to_string()),
-            observed_time: None,
         }),
     )
 }

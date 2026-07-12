@@ -941,6 +941,10 @@
             <p>Journal entries and SQL rows now store only the complete typed conflict-key vector; the ambiguous first-key field, helper, SQL column, codec, migration baggage, and fixtures are gone. Pending consensus and Aleph finalization track typed keys directly instead of serializing each key into JSON for every map lookup. Zero-, one-, and multi-key conflict behavior passes common, SQLite, mint, and the complete 423-test Axum federation suites.</p>
           </article>
           <article class="item">
+            <h3>Payment evidence has no wall clock</h3>
+            <p>Mint and melt payment-observation operations no longer carry an observer-local timestamp. Their operation ID now hashes exactly the canonical bytes ordered by consensus and persisted in the journal, eliminating byte-distinct operations with one identity. Mint payment records use accepted logical journal order for deterministic time, while standalone backend timing remains local and unchanged. Common, mint, focused observer, and all 423 Axum federation tests pass.</p>
+          </article>
+          <article class="item">
             <h3>Real payment observations fail closed</h3>
             <p>General federation config construction derives member-quorum finality from the consensus threshold. Fake-wallet testing keeps one-observation finality only through an explicit trusted-dealer/test policy, while production startup rejects that policy without the local development override. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed. Melt observations no longer carry unused free-form failure text that could split otherwise matching failed-payment evidence.</p>
           </article>

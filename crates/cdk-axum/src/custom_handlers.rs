@@ -403,7 +403,6 @@ async fn submit_federation_mint_quote_payment_observation(
         amount_issued,
         payment_id: None,
         payment_proof: None,
-        observed_time: None,
     };
     let recorded_observations = state
         .mint
@@ -422,18 +421,12 @@ async fn submit_federation_mint_quote_payment_observation(
         .localstore()
         .get_mint_quote(response.quote())
         .await?;
-    let payment_metadata = stored_quote.as_ref().and_then(|quote| {
-        quote.payments.last().map(|payment| {
-            (
-                federation_payment_identifier_from_stored_label(&payment.payment_id),
-                payment.time,
-            )
-        })
+    observation.payment_id = stored_quote.as_ref().and_then(|quote| {
+        quote
+            .payments
+            .last()
+            .map(|payment| federation_payment_identifier_from_stored_label(&payment.payment_id))
     });
-    observation.payment_id = payment_metadata
-        .as_ref()
-        .map(|(payment_id, _)| payment_id.clone());
-    observation.observed_time = payment_metadata.map(|(_, observed_time)| observed_time);
     if has_satisfied_mint_payment_observation_quorum(config, &recorded_observations, &observation) {
         return Ok(false);
     }
@@ -446,7 +439,6 @@ async fn submit_federation_mint_quote_payment_observation(
         observation.amount_issued,
         observation.payment_proof.clone(),
         observation.payment_id.clone(),
-        observation.observed_time,
     );
     state
         .submit_federation_payment_observation_envelope(envelope)
@@ -556,7 +548,6 @@ async fn submit_federation_melt_quote_payment_observation(
         fee_reserve: response.fee_reserve(),
         payment_id: None,
         payment_proof: response.payment_proof().map(str::to_string),
-        observed_time: None,
     };
     let recorded_observations = state
         .mint
@@ -578,7 +569,6 @@ async fn submit_federation_melt_quote_payment_observation(
     observation.payment_id = stored_quote
         .as_ref()
         .and_then(|quote| quote.request_lookup_id.clone());
-    observation.observed_time = stored_quote.as_ref().and_then(|quote| quote.paid_time);
     if has_satisfied_melt_payment_observation_quorum(config, &recorded_observations, &observation) {
         return Ok(());
     }
@@ -591,7 +581,6 @@ async fn submit_federation_melt_quote_payment_observation(
         observation.fee_reserve,
         observation.payment_proof.clone(),
         observation.payment_id.clone(),
-        observation.observed_time,
     );
     state
         .submit_federation_payment_observation_envelope(envelope)
@@ -1874,7 +1863,6 @@ mod tests {
             amount_issued: Amount::ZERO,
             payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
             payment_proof: None,
-            observed_time: Some(100),
         };
         let matching_record = payment_observation_record(
             1,
@@ -1922,7 +1910,6 @@ mod tests {
             fee_reserve: Amount::ZERO,
             payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
             payment_proof: Some("preimage-a".to_string()),
-            observed_time: Some(100),
         };
         let matching_record = payment_observation_record(
             1,
@@ -3170,7 +3157,6 @@ mod tests {
             amount_issued,
             None,
             None,
-            None,
         );
         let operation_id = envelope.operation_id().expect("payment operation id");
         let FederationOperation::MintQuotePayment(observation) = envelope.operation else {
@@ -3776,7 +3762,6 @@ mod tests {
                         fee_reserve,
                         payment_id: None,
                         payment_proof: Some(String::new()),
-                        observed_time: None,
                     }),
                 );
 

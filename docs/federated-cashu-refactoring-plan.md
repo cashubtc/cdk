@@ -1493,9 +1493,9 @@ The safest sequence is:
 3. R4: remove the in-memory backend, legacy primary forwarding, external-
    finalization driver and route, duplicate consensus abstractions, and tests
    whose behavior was deliberately removed.
-4. Complete the remaining cleanup decisions for observation wall-clock fields
-   and hash semantics before reorganizing their types. Consensus restore,
-   request transcripts, and singular conflict keys are already removed.
+4. Complete the remaining cleanup decisions for hash semantics before
+   reorganizing their types. Consensus restore, request transcripts, singular
+   conflict keys, and observation wall-clock fields are already removed.
 5. R1 phase B: split the surviving Axum federation suites without preserving a
    framework for deleted behavior.
 6. R9: introduce validated setup and active configuration types early so later

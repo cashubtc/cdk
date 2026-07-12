@@ -119,7 +119,6 @@ impl LocalFederatedMemberConnector {
             Amount::ZERO,
             payment_proof,
             None,
-            Some(unix_time()),
         );
         self.append_and_apply_to_federation(envelope).await?;
 

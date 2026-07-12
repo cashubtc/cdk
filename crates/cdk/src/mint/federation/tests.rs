@@ -765,7 +765,6 @@ fn melt_payment_observation_envelope(
             fee_reserve: fixture.fee_reserve,
             payment_id: fixture.payment_id,
             payment_proof: fixture.payment_proof.map(str::to_string),
-            observed_time: None,
         },
     ))
 }

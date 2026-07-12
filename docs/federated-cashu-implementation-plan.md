@@ -1119,11 +1119,13 @@ Federated public API checklist:
   threshold visibility, route-level conflicting payload rejection, and HTTP
   query serialization.
 - [x] Payment observation submission is idempotent by payment ID, quote ID,
-  observer, method, amount, state, and proof material. Operation IDs now
-  exclude observer-local `observed_time` metadata for mint and melt payment
-  observations, while changed payment proof material still produces a distinct
-  conflicting operation ID. Covered by
-  `payment_observation_operation_ids_ignore_observed_time`.
+  observer, method, amount, state, and proof material. Federation observation
+  payloads carry no observer-local wall clock, so canonical consensus bytes and
+  operation-ID bytes are identical; changed proof material produces a distinct
+  conflicting operation ID. Durable mint payment time is derived from accepted
+  logical journal order. Covered by
+  `payment_observation_operation_ids_track_exact_evidence` and
+  `mint_payment_observation_uses_payment_id_and_consensus_logical_time`.
 - [x] Restore and check-state remain read-only, but they must refuse
   authoritative answers from lagging members and must only return shares or
   states derived from accepted consensus-visible state. Public Axum restore and
