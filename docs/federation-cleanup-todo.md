@@ -2584,7 +2584,13 @@ business errors and federation infrastructure failures.
 
 ## 40. Split oversized federation test modules by subsystem
 
-**Status:** Todo
+**Status:** Skipped (2026-07-12)
+
+This organizational refactor is intentionally skipped. Splitting the existing
+test files would create substantial test-only churn without simplifying the
+production federation or improving its behavior. The current subsystem tests
+remain in place; Item 42 targets the higher-value test reliability work by
+replacing timing-dependent synchronization without first relocating the suites.
 
 ### Problem
 
