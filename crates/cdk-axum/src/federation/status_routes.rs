@@ -59,7 +59,7 @@ pub(super) async fn post_local_status(
         )
     };
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
-    let session_outcome_quorum = session_outcome_quorum_status(&state)
+    let session_outcome_quorum = session_outcome_quorum_status(&state.mint)
         .await
         .map_err(cdk_error_response)?;
     let payment_observation_reports = payment_observation_report_summaries(&state)

@@ -4480,7 +4480,7 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
     let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
 
-    assert!(session_outcome_quorum_status(&state)
+    assert!(session_outcome_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .is_none());
@@ -4504,7 +4504,7 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
 
     assert_eq!(synced, 1);
     assert_eq!(transport.catch_up_requests().len(), 1);
-    let quorum = session_outcome_quorum_status(&state)
+    let quorum = session_outcome_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .expect("quorum evidence");
@@ -4578,7 +4578,7 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
             .all(|outcome| outcome.signer != peer_private.member_id),
         "mismatched peer evidence must never be persisted"
     );
-    assert!(session_outcome_quorum_status(&state)
+    assert!(session_outcome_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .is_none());
@@ -4652,7 +4652,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
     assert_eq!(requests[0].payload.limit, Some(chunk_size as u16));
     assert_eq!(requests[1].payload.next_index, chunk_size as u64);
     assert_eq!(requests[1].payload.limit, Some(1));
-    let quorum = session_outcome_quorum_status(&state)
+    let quorum = session_outcome_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .expect("chunked quorum evidence");
@@ -4720,7 +4720,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
         .await
         .expect("persist first peer session outcome");
 
-    let prefix = session_outcome_quorum_status(&state)
+    let prefix = session_outcome_quorum_status(&state.mint)
         .await
         .expect("prefix quorum status")
         .expect("prefix quorum evidence");
@@ -4755,7 +4755,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].payload.next_index, chunk_size as u64);
     assert_eq!(requests[0].payload.limit, Some(1));
-    let quorum = session_outcome_quorum_status(&state)
+    let quorum = session_outcome_quorum_status(&state.mint)
         .await
         .expect("quorum status")
         .expect("complete quorum evidence");

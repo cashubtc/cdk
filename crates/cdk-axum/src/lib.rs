@@ -1579,11 +1579,6 @@ pub struct MintState {
 
 #[cfg(feature = "federation")]
 impl MintState {
-    #[cfg(feature = "prometheus")]
-    fn federation_metric_member_label(&self) -> Option<String> {
-        self.federation.metric_member_label()
-    }
-
     pub(crate) async fn federation_pending_mempool_len(&self) -> usize {
         self.federation.pending_mempool_len().await
     }
@@ -2188,141 +2183,11 @@ impl MintState {
     }
 
     pub(crate) async fn restore_federation_sync_status(&self) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let Some(config) = self.mint.federation_config() else {
-            return;
-        };
-        let current_status = sync.lock().await.status();
-        let startup_halt = current_status.is_aleph_bft_startup_halt();
-        if startup_halt && !self.aleph_bft_live_session_available().await {
-            self.persist_federation_sync_status(&current_status).await;
-            return;
-        }
-
-        match self
-            .mint
-            .localstore()
-            .get_federation_member_status(config.member_id())
-            .await
-        {
-            Ok(Some(snapshot)) => {
-                match FederationSyncStatus::try_from_member_status_snapshot(snapshot) {
-                    Ok(status) => sync.lock().await.status = status,
-                    Err(err) => {
-                        tracing::warn!("Could not restore persisted federation sync status: {err}");
-                        return;
-                    }
-                }
-            }
-            Ok(None) => {
-                if startup_halt {
-                    let status = {
-                        let mut sync = sync.lock().await;
-                        sync.update_status(|sync| sync.mark_healthy())
-                    };
-                    if let Some(status) = status {
-                        self.persist_federation_sync_status(&status).await;
-                    }
-                }
-            }
-            Err(err) => {
-                tracing::warn!("Could not load persisted federation sync status: {err}");
-            }
-        }
+        self.federation.restore_sync_status().await;
     }
 
     pub(crate) async fn restore_federation_startup_readiness(&self) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let Some(config) = self.mint.federation_config() else {
-            return;
-        };
-        let current_status = sync.lock().await.status();
-        match current_status {
-            FederationSyncStatus::Healthy
-            | FederationSyncStatus::VerifyingSessionOutcome { .. } => {}
-            FederationSyncStatus::Lagging { .. }
-            | FederationSyncStatus::CatchingUp { .. }
-            | FederationSyncStatus::MaterializedStateMismatch { .. }
-            | FederationSyncStatus::Halted { .. } => return,
-        }
-
-        let entries = match self
-            .mint
-            .localstore()
-            .get_federation_journal_entries()
-            .await
-        {
-            Ok(entries) => entries,
-            Err(err) => {
-                self.mark_federation_halted(format!(
-                    "could not inspect federation startup journal for quorum evidence: {err}"
-                ))
-                .await;
-                return;
-            }
-        };
-        let operation_count = entries.len() as u64;
-        if operation_count == 0 {
-            return;
-        }
-
-        let verified_operation_count =
-            match crate::federation::session_outcome_quorum_operation_count(self).await {
-                Ok(Some(count)) => count,
-                Ok(None) => 0,
-                Err(err) => {
-                    self.mark_federation_halted(format!(
-                        "could not inspect federation startup session outcome quorum: {err}"
-                    ))
-                    .await;
-                    return;
-                }
-            };
-        if verified_operation_count >= operation_count {
-            self.mark_federation_healthy_if_session_outcome_verified(verified_operation_count)
-                .await;
-            return;
-        }
-
-        let peer = config
-            .public_config()
-            .members
-            .values()
-            .find(|member| member.member_id != config.member_id())
-            .map(|member| member.member_id)
-            .unwrap_or_else(|| config.member_id());
-        self.mark_federation_verifying_session_outcome(peer, operation_count)
-            .await;
-    }
-
-    async fn persist_federation_sync_status(&self, status: &FederationSyncStatus) {
-        let Some(config) = self.mint.federation_config() else {
-            return;
-        };
-        let snapshot =
-            status.to_member_status_snapshot(config.member_id(), federation_status_unix_time());
-        let db = self.mint.localstore();
-        let mut tx = match db.begin_transaction().await {
-            Ok(tx) => tx,
-            Err(err) => {
-                tracing::warn!("Could not begin federation sync status transaction: {err}");
-                return;
-            }
-        };
-
-        if let Err(err) = tx.set_federation_member_status(&snapshot).await {
-            tracing::warn!("Could not persist federation sync status: {err}");
-            let _ = tx.rollback().await;
-            return;
-        }
-
-        if let Err(err) = tx.commit().await {
-            tracing::warn!("Could not commit federation sync status transaction: {err}");
-        }
+        self.federation.restore_startup_readiness().await;
     }
 
     #[cfg(test)]
@@ -2345,19 +2210,13 @@ impl MintState {
         local_operation_count: u64,
         peer_operation_count: u64,
     ) {
-        if let Some(status) = self
-            .federation
+        self.federation
             .mark_lagging(peer, local_operation_count, peer_operation_count)
-            .await
-        {
-            self.persist_federation_sync_status(&status).await;
-        }
+            .await;
     }
 
     pub(crate) async fn mark_federation_catching_up(&self, peer: MemberId) {
-        if let Some(status) = self.federation.mark_catching_up(peer).await {
-            self.persist_federation_sync_status(&status).await;
-        }
+        self.federation.mark_catching_up(peer).await;
     }
 
     pub(crate) async fn mark_federation_verifying_session_outcome(
@@ -2365,13 +2224,9 @@ impl MintState {
         peer: MemberId,
         operation_count: u64,
     ) {
-        if let Some(status) = self
-            .federation
+        self.federation
             .mark_verifying_session_outcome(peer, operation_count)
-            .await
-        {
-            self.persist_federation_sync_status(&status).await;
-        }
+            .await;
     }
 
     pub(crate) async fn mark_federation_materialized_state_mismatch(
@@ -2379,59 +2234,36 @@ impl MintState {
         peer: MemberId,
         operation_count: u64,
     ) {
-        #[cfg(feature = "prometheus")]
-        {
-            if let Some(member) = self.federation_metric_member_label() {
-                cdk_prometheus::METRICS
-                    .record_federation_state_digest_mismatch(&member, &peer.to_string());
-            }
-        }
-        if let Some(status) = self
-            .federation
+        self.federation
             .mark_materialized_state_mismatch(peer, operation_count)
-            .await
-        {
-            self.persist_federation_sync_status(&status).await;
-        }
+            .await;
     }
 
     pub(crate) async fn mark_federation_healthy_if_session_outcome_verified(
         &self,
         verified_operation_count: u64,
     ) {
-        if let Some(status) = self
-            .federation
+        self.federation
             .mark_healthy_if_session_outcome_verified(verified_operation_count)
-            .await
-        {
-            self.persist_federation_sync_status(&status).await;
-        }
+            .await;
     }
 
     #[cfg(test)]
     pub(crate) async fn mark_federation_healthy(&self) {
-        if let Some(status) = self.federation.mark_healthy().await {
-            self.persist_federation_sync_status(&status).await;
-        }
+        self.federation.mark_healthy().await;
     }
 
     pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {
-        if let Some(status) = self
-            .federation
+        self.federation
             .mark_healthy_if_caught_up(local_operation_count)
-            .await
-        {
-            self.persist_federation_sync_status(&status).await;
-        }
+            .await;
     }
 
     pub(crate) async fn mark_federation_halted<S>(&self, reason: S)
     where
         S: Into<String>,
     {
-        if let Some(status) = self.federation.mark_halted(reason.into()).await {
-            self.persist_federation_sync_status(&status).await;
-        }
+        self.federation.mark_halted(reason.into()).await;
     }
 
     pub(crate) async fn ensure_federation_ready_for_public_submit(&self) -> Result<(), cdk::Error> {
@@ -2442,10 +2274,6 @@ impl MintState {
         &self,
     ) -> Result<(), cdk::Error> {
         self.federation.ensure_ready_for_authoritative_read().await
-    }
-
-    async fn aleph_bft_live_session_available(&self) -> bool {
-        self.federation.live_session_available().await
     }
 }
 

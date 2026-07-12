@@ -209,7 +209,11 @@ Resolved blocking bugs:
   on the runtime through atomic persistence, mint replay, and post-replay
   rejection verification. All 29 focused catch-up regressions pass, including
   malformed evidence, digest divergence, stale-overlap retry, rejected-entry
-  continuation, and mint/swap/melt materialization.
+  continuation, and mint/swap/melt materialization. Readiness transitions now
+  persist directly from the runtime, and startup sync restoration plus the
+  replayed-journal quorum gate no longer depend on Axum state. Sixteen startup,
+  two status-persistence, four quorum-prefix, two lagging-readiness, and one
+  materialized-state-mismatch regressions pass.
 
 ## Recent performance checkpoint
 

@@ -1292,6 +1292,18 @@ reordered evidence; digest divergence; rejected-entry continuation; stale local
 overlap retries; and mint, swap, melt, payment-observation, and quarantine
 materialization.
 
+### Checkpoint 12: durable readiness ownership
+
+Every readiness transition now persists its member-status snapshot inside
+`FederationNodeRuntime`, including lagging, catching up, quorum verification,
+materialized-state mismatch, healthy, and halted states. Startup restoration and
+the replayed-journal quorum gate also run there. The session-outcome helper now
+accepts only `&Mint`, the dependency it actually reads, instead of all of Axum
+`MintState`. Sixteen startup, two status-persistence, four quorum-prefix, two
+lagging-readiness, and one materialized-state-mismatch tests pass, including the
+Prometheus-enabled compile gate. DKG persistence and live task lifecycle remain
+before Item 17 can close.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

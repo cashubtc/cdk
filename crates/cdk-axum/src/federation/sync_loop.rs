@@ -263,7 +263,7 @@ where
         return 0;
     };
     let operation_count = entries.len() as u64;
-    let mut quorum_status = match session_outcome_quorum_status(state).await {
+    let mut quorum_status = match session_outcome_quorum_status(&state.mint).await {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
@@ -305,7 +305,7 @@ where
         }
     };
 
-    quorum_status = match session_outcome_quorum_status(state).await {
+    quorum_status = match session_outcome_quorum_status(&state.mint).await {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
@@ -352,7 +352,7 @@ where
                 backoff.record_failure(peer.member_id, client.sync_config, Instant::now());
             }
         }
-        quorum_status = match session_outcome_quorum_status(state).await {
+        quorum_status = match session_outcome_quorum_status(&state.mint).await {
             Ok(Some(quorum)) if quorum.from_index == 0 => Some(quorum),
             Ok(_) => None,
             Err(err) => {
@@ -597,7 +597,7 @@ where
 }
 
 async fn mark_healthy_after_session_outcome_quorum(state: &MintState, operation_count: u64) {
-    match session_outcome_quorum_status(state).await {
+    match session_outcome_quorum_status(&state.mint).await {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)

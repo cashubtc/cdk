@@ -19,6 +19,7 @@ use cdk::federation::{
     FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
     InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
+use cdk::mint::Mint;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tracing::instrument;
@@ -440,12 +441,12 @@ impl From<&FederationSessionOutcome> for SessionOutcomeRangeKey {
 }
 
 async fn session_outcome_quorum_status(
-    state: &MintState,
+    mint: &Mint,
 ) -> Result<Option<SessionOutcomeQuorumStatus>, cdk::Error> {
-    let Some(runtime_config) = state.mint.federation_config() else {
+    let Some(runtime_config) = mint.federation_config() else {
         return Ok(None);
     };
-    let db = state.mint.localstore();
+    let db = mint.localstore();
     let entries = db.get_federation_journal_entries().await?;
     let outcomes = db.get_federation_session_outcomes().await?;
     if entries.is_empty() || outcomes.is_empty() {
@@ -498,14 +499,6 @@ async fn session_outcome_quorum_status(
     }
 
     Ok(contiguous_session_outcome_quorum_prefix(&quorums_by_start))
-}
-
-pub(crate) async fn session_outcome_quorum_operation_count(
-    state: &MintState,
-) -> Result<Option<u64>, cdk::Error> {
-    Ok(session_outcome_quorum_status(state)
-        .await?
-        .map(|quorum| quorum.operation_count))
 }
 
 fn contiguous_session_outcome_quorum_prefix(
