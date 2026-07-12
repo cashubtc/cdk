@@ -627,7 +627,6 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
   export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
   wait_for_cli_smoke_status() {
     local attempt
@@ -721,7 +720,6 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
   export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
   wait_for_fast_status() {
     local attempt
@@ -909,7 +907,6 @@ fed-regtest-cli-smoke-insufficient-threshold dir="target/cdk-fed-regtest-cli-ins
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
   export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-8}"
   wait_for_cli_smoke_status() {
     local attempt
@@ -966,7 +963,6 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
   export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
   bad_port_start=$(({{port_start}} + 100))
   wait_for_honest_status() {
@@ -1056,7 +1052,6 @@ fed-regtest-cli-smoke-insufficient-valid-advertisements dir="target/cdk-fed-regt
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
   export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
   bad_port_start=$(({{port_start}} + 100))
   wait_for_member_info() {
@@ -1133,7 +1128,6 @@ fed-regtest-cli-smoke-missing-metadata dir="target/cdk-fed-regtest-cli-missing-m
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  export CDK_MINTD_FEDERATION_CONSENSUS_BACKEND="${CDK_MINTD_FEDERATION_CONSENSUS_BACKEND:-aleph_bft}"
   export CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-60}"
   wait_for_member_info() {
     local member="$1"
@@ -1252,7 +1246,6 @@ fed-regtest-aleph-rotation dir="target/cdk-fed-regtest-aleph-rotation" members="
     cd {{invocation_directory()}}
   fi
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
-  FEDERATION_CONSENSUS_BACKEND=aleph_bft \
     ALEPH_BFT_AUTO_ROTATION_MAX_ROUND="{{max_round}}" \
     ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION="{{target_session}}" \
     LONG_PARTITION_OPERATION_BATCHES="{{offline_batches}}" \
@@ -1287,7 +1280,6 @@ fed-regtest-live-dkg dir="target/cdk-fed-regtest-live-dkg" members="5" threshold
     cd {{invocation_directory()}}
   fi
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
-  FEDERATION_CONSENSUS_BACKEND=aleph_bft \
     CDK_MINTD_BIN=target/debug/cdk-mintd \
     bash "{{dir}}/smoke-live-dkg-federation.sh"
 
@@ -1412,7 +1404,6 @@ fed-regtest-postgres-live-dkg dir="target/cdk-fed-regtest-postgres-live-dkg" mem
   just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
   RESET_POSTGRES_SCHEMAS=1 \
-    FEDERATION_CONSENSUS_BACKEND=aleph_bft \
     CDK_MINTD_BIN=target/debug/cdk-mintd \
     bash "{{dir}}/smoke-live-dkg-federation.sh"
 

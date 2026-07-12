@@ -5,8 +5,6 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-#[cfg(feature = "federation")]
-use cdk_common::federation::FederationConsensusBackendKind;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -1054,13 +1052,11 @@ pub struct Prometheus {
 /// Federation startup configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[cfg(feature = "federation")]
+#[serde(deny_unknown_fields)]
 pub struct Federation {
     /// Enable federation member mode for this mint.
     #[serde(default)]
     pub enabled: bool,
-    /// Consensus backend selected for ordering federation operations.
-    #[serde(default)]
-    pub consensus_backend: FederationConsensusBackend,
     /// Permit development-only payment observation policies such as
     /// `development_single_observation` for local smoke/regtest setups.
     #[serde(default)]
@@ -1169,10 +1165,6 @@ fn default_federation_dkg_member_request_burst() -> usize {
 fn default_federation_dkg_member_request_refill_ms() -> u64 {
     250
 }
-
-/// Federation consensus backend selected by mintd runtime configuration.
-#[cfg(feature = "federation")]
-pub type FederationConsensusBackend = FederationConsensusBackendKind;
 
 /// Private federation peer synchronization settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2619,4 +2611,21 @@ max_melt = 500000
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);
     }
+}
+#[cfg(feature = "federation")]
+#[test]
+fn federation_config_rejects_removed_consensus_backend() {
+    let mut value = serde_json::to_value(Federation::default()).expect("federation config");
+    value
+        .as_object_mut()
+        .expect("federation config object")
+        .insert(
+            "consensus_backend".to_string(),
+            serde_json::Value::String("in_memory".to_string()),
+        );
+
+    let err = serde_json::from_value::<Federation>(value)
+        .expect_err("removed consensus backend must fail closed");
+
+    assert!(err.to_string().contains("consensus_backend"));
 }

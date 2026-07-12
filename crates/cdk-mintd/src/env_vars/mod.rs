@@ -155,8 +155,6 @@ impl Settings {
             if federation.enabled
                 || federation.public_config_path.is_some()
                 || federation.private_config_path.is_some()
-                || federation.consensus_backend
-                    != crate::config::FederationConsensusBackend::default()
             {
                 self.federation = Some(federation);
             }

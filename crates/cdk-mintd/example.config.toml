@@ -356,8 +356,7 @@ max_delay_time = 3
 # Set to true to run this mint as a federation member.
 # The public/private JSON files are produced by the trusted-dealer setup path.
 # enabled = false
-# Supported values are "in_memory" and "aleph_bft".
-# consensus_backend = "in_memory"
+# Federation consensus always uses AlephBFT.
 # Keep false for production. Set true only for local smoke/regtest configs
 # whose public federation config uses development_single_observation finality,
 # for example generated local development smoke tests.

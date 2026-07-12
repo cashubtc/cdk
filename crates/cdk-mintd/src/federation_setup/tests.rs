@@ -281,7 +281,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES=1"));
     assert!(smoke_script.contains("dkg setup route probe passed"));
     assert!(smoke_script.contains("CDK_FEDERATION_DISABLE_PEER_SYNC=1"));
-    assert!(smoke_script.contains("CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=in_memory"));
+    assert!(!smoke_script.contains("FEDERATION_CONSENSUS_BACKEND"));
     assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
     assert!(smoke_script.contains("member_mint_url()"));
     assert!(smoke_script.contains("member_federation_url()"));
@@ -400,7 +400,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("--final-config-dir"));
     assert!(live_dkg_smoke_script.contains("compare_final_public_configs"));
     assert!(live_dkg_smoke_script.contains("DKG_SETUP_PHASE=0"));
-    assert!(live_dkg_smoke_script.contains("FEDERATION_CONSENSUS_BACKEND:-aleph_bft"));
+    assert!(!live_dkg_smoke_script.contains("FEDERATION_CONSENSUS_BACKEND"));
     assert!(live_dkg_smoke_script.contains("wait_for_runtime_keysets"));
     assert!(live_dkg_smoke_script.contains("federation smoke-operations"));
     assert!(live_dkg_smoke_script.contains("--scenario standard"));
@@ -1081,14 +1081,10 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
     assert!(smoke_script
         .contains("ALEPH_BFT_AUTO_ROTATION_MAX_ROUND=\"${ALEPH_BFT_AUTO_ROTATION_MAX_ROUND:-}\""));
-    assert!(
-        smoke_script.contains("FEDERATION_CONSENSUS_BACKEND=\"${FEDERATION_CONSENSUS_BACKEND:-}\"")
-    );
+    assert!(!smoke_script.contains("FEDERATION_CONSENSUS_BACKEND"));
     assert!(smoke_script.contains(
         "FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=\"${FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-}\""
     ));
-    assert!(smoke_script
-        .contains("CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=\"$FEDERATION_CONSENSUS_BACKEND\""));
     assert!(smoke_script.contains(
         "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=\"$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS\""
     ));
@@ -1171,15 +1167,11 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains(
         "ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES=\"${ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES:-1}\""
     ));
-    assert!(smoke_script.contains("FEDERATION_CONSENSUS_BACKEND=\"aleph_bft\""));
     assert!(smoke_script.contains(
         "FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=\"$SMOKE_OPERATION_TIMEOUT_SECONDS\""
     ));
     assert!(smoke_script
         .contains("require_positive_integer FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS"));
-    assert!(smoke_script.contains(
-        "ALEPH_BFT_AUTO_ROTATION_MAX_ROUND requires FEDERATION_CONSENSUS_BACKEND=aleph_bft"
-    ));
     assert!(smoke_script.contains(
         "STANDARD_SEED_OFFSET must be after the AlephBFT auto-rotation warm-up seed range"
     ));

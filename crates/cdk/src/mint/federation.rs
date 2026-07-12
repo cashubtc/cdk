@@ -77,7 +77,7 @@ impl FederationRuntimeConfig {
         Self::new_with_consensus_backend(
             public_config,
             private_config,
-            FederationConsensusBackendKind::InMemory,
+            FederationConsensusBackendKind::AlephBft,
         )
     }
 

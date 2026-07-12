@@ -630,13 +630,6 @@ fn configure_federation(
         return Ok(mint_builder);
     }
 
-    if !federation.consensus_backend.is_available() {
-        bail!(
-            "federation consensus backend `{}` is not available in this build; supported backends: in_memory, aleph_bft",
-            federation.consensus_backend
-        );
-    }
-
     let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
         anyhow!("federation.public_config_path must be set when federation is enabled")
     })?;
@@ -653,18 +646,13 @@ fn configure_federation(
     validate_private_federation_config_file(private_config_path)?;
     let private_config: MemberConfigPrivate =
         read_federation_json(private_config_path, "private federation config")?;
-    let runtime_config = FederationRuntimeConfig::new_with_consensus_backend(
-        public_config,
-        private_config,
-        federation.consensus_backend,
-    )
-    .context("invalid federation runtime config")?;
+    let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
+        .context("invalid federation runtime config")?;
 
     tracing::info!(
-        "Loaded federation {} as member {} using {} consensus backend",
+        "Loaded federation {} as member {} using AlephBFT consensus",
         runtime_config.federation_id(),
-        runtime_config.member_id(),
-        federation.consensus_backend
+        runtime_config.member_id()
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
@@ -916,12 +904,8 @@ async fn reconcile_federation_dkg_ceremony(
     let public_config = read_public_federation_config(public_config_path)?;
     let private_config: MemberConfigPrivate =
         read_federation_json(private_config_path, "private federation config")?;
-    let runtime_config = FederationRuntimeConfig::new_with_consensus_backend(
-        public_config,
-        private_config,
-        federation.consensus_backend,
-    )
-    .context("invalid federation runtime config for DKG lifecycle")?;
+    let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
+        .context("invalid federation runtime config for DKG lifecycle")?;
     let replaces_ceremony_id = federation
         .dkg
         .replaces_ceremony_id
@@ -2664,7 +2648,7 @@ mod tests {
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
-    async fn configure_federation_loads_runtime_config_for_available_backends() {
+    async fn configure_federation_loads_aleph_bft_runtime_config() {
         use std::collections::BTreeMap;
         use std::str::FromStr;
 
@@ -2725,42 +2709,28 @@ mod tests {
             .expect("private config json"),
         );
 
-        for consensus_backend in [
-            config::FederationConsensusBackend::InMemory,
-            config::FederationConsensusBackend::AlephBft,
-        ] {
-            let settings = config::Settings {
-                federation: Some(config::Federation {
-                    enabled: true,
-                    consensus_backend,
-                    allow_development_payment_observation_policy: false,
-                    public_config_path: Some(public_config_path.clone()),
-                    private_config_path: Some(private_config_path.clone()),
-                    peer_sync: config::FederationPeerSync::default(),
-                    dkg: config::FederationDkg::default(),
-                }),
-                ..Default::default()
-            };
-            let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
-            let builder = MintBuilder::new(localstore);
-            let builder = configure_federation(&settings, builder).expect("federation config");
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                allow_development_payment_observation_policy: false,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let builder = configure_federation(&settings, builder).expect("federation config");
 
-            assert_eq!(builder.federation_mode(), FederationMode::Member);
-            assert_eq!(
-                builder
-                    .federation_config()
-                    .expect("runtime config")
-                    .member_id(),
-                member_id
-            );
-            assert_eq!(
-                builder
-                    .federation_config()
-                    .expect("runtime config")
-                    .consensus_backend(),
-                consensus_backend
-            );
-        }
+        assert_eq!(builder.federation_mode(), FederationMode::Member);
+        let runtime_config = builder.federation_config().expect("runtime config");
+        assert_eq!(runtime_config.member_id(), member_id);
+        assert_eq!(
+            runtime_config.consensus_backend(),
+            cdk_common::federation::FederationConsensusBackendKind::AlephBft
+        );
 
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
@@ -2772,7 +2742,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
@@ -2846,7 +2815,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
@@ -3244,7 +3212,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
@@ -3291,7 +3258,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
@@ -3314,7 +3280,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: true,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
@@ -3360,7 +3325,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: true,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
@@ -3393,7 +3357,6 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                consensus_backend: config::FederationConsensusBackend::InMemory,
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
@@ -3518,7 +3481,6 @@ mod tests {
             let settings = config::Settings {
                 federation: Some(config::Federation {
                     enabled: true,
-                    consensus_backend: config::FederationConsensusBackend::InMemory,
                     allow_development_payment_observation_policy: true,
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),

@@ -544,9 +544,12 @@ Implementation checklist:
   response-waiter registry, finalized-item stream, and catch-up interface supply
   the exact boundaries used by Axum without introducing another workspace crate.
 - [x] Add `ConsensusItem::{Operation(FederatedMintOperation), ModuleFact(...), SessionSignature(...), Default(...)}`.
-- [x] Add an in-memory single-node consensus engine for deterministic unit tests.
-- [x] Add an in-memory multi-node test engine that can reorder, duplicate, and delay messages.
-- [x] Add AlephBFT backend selector/configuration and an explicit `UnsupportedConsensusBackend` error.
+- [x] Retire the early in-memory single-node engine after replacing its useful
+  coverage with direct journal tests and the AlephBFT runtime.
+- [x] Retire the early in-memory multi-node simulator and its unused parallel
+  adapter runtime after real AlephBFT fault and process coverage superseded it.
+- [x] Make AlephBFT the mandatory mintd federation backend; remove backend
+  selection from config, environment variables, generated scripts, and recipes.
 - [x] Implement the AlephBFT-backed engine for multi-member BFT ordering.
   `FederationAlephBftConsensusAdapter` owns canonical pending/finalized state,
   while router startup wires the adapter through upstream `aleph_bft::run_session`,
@@ -847,19 +850,15 @@ Architecture checklist:
   mutation. Live pre-backup, post-backup, finalized-before-local-apply, and
   five-member restart tests plus SQLite/Postgres process smokes cover restart,
   reorder, offline catch-up, and readiness reopening after convergence.
-- [x] If a configured consensus backend is unavailable, fail startup or keep
-  federation routes in a not-ready state; never silently fall back to local
-  signing or single-member processing. `cdk-mintd` now accepts both available
-  backends, `in_memory` and `aleph_bft`, and passes the selected backend through
-  to the mint runtime instead of rejecting AlephBFT before startup. Axum-created
+- [x] Never silently fall back to local signing or single-member processing.
+  `cdk-mintd` always constructs the AlephBFT runtime and rejects the removed
+  `consensus_backend` config field. Axum-created
   AlephBFT federation state starts `halted`/not-ready until the live AlephBFT
   session installs network finality, so public wallet submissions fail before
   queue admission if finality is not actually available. Startup restore
   preserves that backend-imposed halt over stale persisted healthy snapshots,
   and Axum rechecks the finality mode before authoritative public routes even
-  when sync state is healthy. The network-finality activation hook rejects
-  non-AlephBFT runtimes instead of silently enabling the public queue for the
-  in-memory backend.
+  when sync state is healthy.
 - [x] Add backpressure and admission limits for pending wallet submissions,
   consensus messages, catch-up ranges, and response waiters. The AlephBFT submit
   path now enforces a configurable `pending_mempool_item_limit` before committing
@@ -1205,9 +1204,7 @@ AlephBFT and consensus unit tests:
 - [x] Runtime-level AlephBFT session rollover has focused unit coverage.
   `consensus_runtime_begin_aleph_bft_session_rotates_empty_session`,
   `consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality`,
-  `consensus_runtime_begin_aleph_bft_session_rejects_in_memory_backend`,
-  `backend_adapter_runtime_begin_aleph_bft_session_rotates_empty_session`, and
-  `backend_adapter_runtime_rejects_begin_aleph_bft_session_for_in_memory_backend`
+  and `consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality`
   pass under
   `cargo test -p cdk-common --features federation begin_aleph_bft_session -- --test-threads 1`.
 - [x] Durable empty-session AlephBFT recovery has focused storage and Axum
@@ -4161,7 +4158,6 @@ just fed-regtest-cli-smoke-slow-member
 Manual local CLI smoke command shape:
 
 ```bash
-CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=aleph_bft \
 CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=60 \
 just fed-regtest-start target/cdk-cli-fed-smoke-aleph-live 5 3 62705
 

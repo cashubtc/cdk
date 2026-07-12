@@ -3,12 +3,11 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 
-use crate::config::{Federation, FederationConsensusBackend};
+use crate::config::Federation;
 
 pub const ENV_FEDERATION_ENABLED: &str = "CDK_MINTD_FEDERATION_ENABLED";
 pub const ENV_FEDERATION_PUBLIC_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH";
 pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH";
-pub const ENV_FEDERATION_CONSENSUS_BACKEND: &str = "CDK_MINTD_FEDERATION_CONSENSUS_BACKEND";
 pub const ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS: &str =
     "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
@@ -20,12 +19,6 @@ impl Federation {
     pub fn from_env(mut self) -> Result<Self> {
         if let Ok(enabled_str) = env::var(ENV_FEDERATION_ENABLED) {
             self.enabled = enabled_str.parse::<bool>().unwrap_or(false);
-        }
-
-        if let Ok(backend) = env::var(ENV_FEDERATION_CONSENSUS_BACKEND) {
-            self.consensus_backend = backend
-                .parse::<FederationConsensusBackend>()
-                .map_err(|err| anyhow!(err))?;
         }
 
         if let Ok(path) = env::var(ENV_FEDERATION_PUBLIC_CONFIG_PATH) {
@@ -92,7 +85,6 @@ mod tests {
         env::remove_var(ENV_FEDERATION_ENABLED);
         env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
-        env::remove_var(ENV_FEDERATION_CONSENSUS_BACKEND);
         env::remove_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT);
@@ -119,48 +111,6 @@ mod tests {
             config.private_config_path,
             Some(PathBuf::from("/tmp/private-fed.json"))
         );
-        assert_eq!(
-            config.consensus_backend,
-            FederationConsensusBackend::InMemory
-        );
-
-        clear_federation_env();
-    }
-
-    #[test]
-    fn federation_env_overrides_consensus_backend() {
-        let _guard = env_lock();
-        clear_federation_env();
-        env::set_var(ENV_FEDERATION_CONSENSUS_BACKEND, "aleph_bft");
-
-        let config = Federation::default()
-            .from_env()
-            .expect("federation env config");
-
-        assert_eq!(
-            config.consensus_backend,
-            FederationConsensusBackend::AlephBft
-        );
-
-        clear_federation_env();
-    }
-
-    #[test]
-    fn federation_env_rejects_unknown_consensus_backend() {
-        let _guard = env_lock();
-        clear_federation_env();
-        env::set_var(ENV_FEDERATION_CONSENSUS_BACKEND, "raft");
-
-        let err = Federation::default()
-            .from_env()
-            .expect_err("unknown consensus backend should fail");
-
-        assert!(
-            err.to_string()
-                .contains("Unknown federation consensus backend"),
-            "error should mention unknown backend: {err}"
-        );
-
         clear_federation_env();
     }
 

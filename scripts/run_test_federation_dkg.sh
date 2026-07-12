@@ -305,7 +305,6 @@ for member in $(seq 1 "$MEMBERS"); do
   env \
     CDK_MINTD_PROMETHEUS_ENABLED=false \
     CDK_FEDERATION_DISABLE_PEER_SYNC=1 \
-    CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=in_memory \
     "$MINTD" \
       --work-dir "$member_dir/work" \
       --config "$member_dir/config.toml" \
@@ -348,7 +347,6 @@ for member in $(seq 1 "$MEMBERS"); do
 
   env \
     CDK_MINTD_PROMETHEUS_ENABLED=false \
-    CDK_MINTD_FEDERATION_CONSENSUS_BACKEND=aleph_bft \
     CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 \
     "$MINTD" \
       --work-dir "$member_dir/work" \

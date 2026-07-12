@@ -460,6 +460,16 @@ tests still remain and must be migrated or removed. `InMemoryFederationJournal`
 also remains intentionally untouched pending the separate journal-view naming
 decision.
 
+The production selection surface is now removed: mintd has no consensus
+backend config field or environment variable, old `consensus_backend` config
+keys fail closed, generated smoke/DKG scripts and just recipes contain no
+backend switch, and `FederationRuntimeConfig::new` selects AlephBFT. A fresh
+five-member, threshold-three dealer-free DKG smoke completed interrupted-member
+setup recovery, finalized-config export, active AlephBFT startup, mint, swap,
+melt, and restore without a local-backend setup phase. The remaining work is
+the internal enum/local engine and its Axum test callers, plus status fields and
+dispatch branches that become constant once that engine is gone.
+
 ### Problem
 
 Federation mode still exposes two selectable consensus backends even though
