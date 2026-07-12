@@ -1039,15 +1039,24 @@ logic.
 Represent full federation configuration validation and its computed digest as a
 construction invariant rather than a caller promise.
 
-### Review verdict: Strongly worthwhile, with phase-specific validated types
+### Review verdict: Rejected after current-state and benchmark review
 
-This addresses a demonstrated hot path and removes unsafe method-name promises
-such as accepting a raw config in an `already_validated` path. Prefer a raw
-deserialized type followed by `ValidatedSetupFederationConfig` and
-`ValidatedActiveFederationConfig`, because DKG setup and active runtime have
-different legal fields. Cache the config digest, aggregate keys, member indexes,
-and thresholds in the active representation. Keep member advertisement and
-active-keyset checks cheap and dynamic.
+The demonstrated hot path has already been removed without phase wrappers.
+Full threshold BLS and transcript validation now occurs at external import,
+startup, checked constructors, and DKG record assembly. Mint runtime and wallet
+connectors cache the config digest, aggregate keys already live in validated
+keysets, and the DKG finalized-config cache supplies the validated activation
+path. Milestone 20A measured the retained 20-of-14/eight-denomination activation
+path at about 1.527 milliseconds versus 1.300 seconds for complete validation.
+
+The mint deliberately holds a setup config while authenticated DKG is active,
+then replaces it only after durable transcript signatures and all-member
+activation records verify. Adding raw, validated-setup, and validated-active
+wrappers would preserve that lifecycle while spreading conversion and ownership
+code through common DKG, transport, mint runtime, Axum, mintd, CLI persistence,
+wallet activation, and tests. It would be more code and another configuration
+model, not a cleanup. Keep the existing checked boundaries and cached values;
+revisit only for a demonstrated bypass or a long-lived config-cache design.
 
 ### Target type
 

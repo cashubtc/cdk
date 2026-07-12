@@ -1841,7 +1841,7 @@ still requires the repository's external PostgreSQL test service.
 
 ## 27. Split federation configuration into setup and active phases
 
-**Status:** Todo
+**Status:** Rejected
 
 ### Problem
 
@@ -1865,6 +1865,41 @@ mint construction, wallet activation, keyset checks, and digest calculation.
 - `docs/federated-cashu-refactoring-plan.md` section R9.
 - Prove invalid and non-v3 configurations cannot cross the active boundary and
   benchmark removal of repeated BLS aggregation and digest work.
+
+### Review record
+
+The performance premise was valid earlier in development but is obsolete in
+the current runtime. Full config validation, including threshold BLS
+interpolation and transcript checks, is now confined to trust boundaries such
+as external import, mint startup, DKG record assembly, and checked public
+constructors. `FederationRuntimeConfig` retains the fully checked public and
+private configs plus a precomputed digest. `FederatedMintConnector` retains its
+digest and member maps after construction. Aggregate keys are already stored in
+each `FederatedKeyset`; request paths do not reconstruct them.
+
+Milestone 20A measured why those boundaries matter. At 20-of-14 with eight
+denominations, complete activation validation took about 1.300 seconds while
+the retained validated-config activation path took about 1.527 milliseconds,
+an 851x improvement. That optimized path is already in use after the fallible
+finalized-config cache has performed full validation. Mint-info likewise uses
+the startup-validated cached digest rather than rerunning interpolation.
+
+A setup config is intentionally installed in the mint before keysets and a
+signed transcript exist so the authenticated DKG runtime has the roster,
+identity keys, thresholds, and payment policy it needs. Durable transcript
+signatures and all-member activation records govern replacement with the final
+config. Separate raw, validated-setup, and validated-active wrappers would not
+remove this lifecycle or any current branch; they would add conversions and
+ownership plumbing across common DKG, transport, mint builder/runtime, Axum,
+mintd, CLI registry persistence, wallet connector construction, and a large
+fixture surface.
+
+This is therefore not a simplifying cleanup in the current codebase. Keep the
+existing checked trust boundaries, cached runtime values, DKG finalized-config
+cache, exact activation checks, and v3/BLS admission tests. Reconsider a common
+active-config wrapper only if a concrete bypass bug appears or CDK gains a
+long-lived wallet-config cache that can consume it without adding another
+parallel configuration model.
 
 ## 28. Centralize federation payment observation in one service
 
