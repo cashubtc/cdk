@@ -340,6 +340,134 @@ async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
 }
 
 #[tokio::test]
+async fn apply_federation_mint_rejects_locally_paid_quote_without_consensus_observation() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let mut tx = localstore.begin_transaction().await.expect("begin");
+    let mut stored_quote = tx
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    stored_quote
+        .add_payment(
+            Amount::new(1, CurrencyUnit::Sat),
+            "local-only-payment".to_string(),
+            None,
+        )
+        .expect("mark quote locally paid");
+    tx.update_mint_quote(&mut stored_quote)
+        .await
+        .expect("persist local payment");
+    tx.commit().await.expect("commit local payment");
+
+    let output = output_for_runtime(&runtime_config, b"local-only paid mint output");
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote,
+                outputs: vec![output.clone()],
+                signature: None,
+            }))
+            .expect("mint operation"),
+    );
+    persist_journal_entry(&localstore, &mint_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+            .await,
+        Err(Error::UnpaidQuote)
+    ));
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup"),
+        vec![None]
+    );
+    assert!(localstore
+        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .await
+        .expect("share lookup")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn later_mint_payment_quorum_does_not_retroactively_authorize_older_mint() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let output = output_for_runtime(&runtime_config, b"pre-payment-quorum mint output");
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote: quote.clone(),
+                outputs: vec![output.clone()],
+                signature: None,
+            }))
+            .expect("mint operation"),
+    );
+    persist_journal_entry(&localstore, &mint_entry).await;
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+            .await,
+        Err(Error::UnpaidQuote)
+    ));
+
+    let paid_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_payment_observation(
+            quote,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintQuoteState::Paid,
+            Amount::from(1),
+            Amount::ZERO,
+            Some("later-payment".to_string()),
+        ),
+    );
+    assert!(paid_entry.index > mint_entry.index);
+    persist_and_apply_entry(&mint, &paid_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+            .await,
+        Err(Error::UnpaidQuote)
+    ));
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup"),
+        vec![None]
+    );
+}
+
+#[tokio::test]
 async fn apply_federation_mint_rejects_expired_quote_before_signing() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

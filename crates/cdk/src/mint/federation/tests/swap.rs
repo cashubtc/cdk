@@ -624,6 +624,66 @@ async fn apply_federation_swap_rejects_sig_all_output_mutation_before_signing() 
 }
 
 #[tokio::test]
+async fn apply_federation_swap_rejects_signed_output_reuse_before_spending_fresh_input() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let first_input = proof_for_runtime(&runtime_config, "signed-output first swap input");
+    let reused_output =
+        output_for_runtime(&runtime_config, b"signed output reused by another swap");
+    let first_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(SwapRequest::new(
+                vec![first_input],
+                vec![reused_output.clone()],
+            ))
+            .expect("first swap operation"),
+    );
+    persist_and_apply_entry(&mint, &first_entry).await;
+
+    let fresh_input = proof_for_runtime(&runtime_config, "signed-output fresh swap input");
+    let fresh_input_y = fresh_input.y().expect("fresh input y");
+    let second_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(SwapRequest::new(
+                vec![fresh_input],
+                vec![reused_output.clone()],
+            ))
+            .expect("second swap operation"),
+    );
+    assert_ne!(first_entry.operation_id, second_entry.operation_id);
+    persist_journal_entry(&localstore, &second_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&second_entry))
+            .await,
+        Err(Error::BlindedMessageAlreadySigned)
+    ));
+    assert_eq!(
+        localstore
+            .get_proofs_states(&[fresh_input_y])
+            .await
+            .expect("fresh input state"),
+        vec![None]
+    );
+    assert!(localstore
+        .get_federation_signature_shares_for_output(second_entry.operation_id, 0)
+        .await
+        .expect("second operation share lookup")
+        .is_empty());
+    assert_eq!(
+        localstore
+            .get_federation_signature_shares_for_output(first_entry.operation_id, 0)
+            .await
+            .expect("first operation share lookup")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn apply_federation_swap_rejects_sliding_window_input_reuse_attack() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

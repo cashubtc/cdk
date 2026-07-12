@@ -1460,6 +1460,39 @@ impl Mint {
         }
     }
 
+    fn federation_mint_payment_quorum_covers_amount_at_or_before(
+        &self,
+        quote: &MintQuote,
+        required_amount: &Amount<CurrencyUnit>,
+        observations: &[FederationPaymentObservationRecord],
+        max_operation_index: u64,
+    ) -> Result<bool, Error> {
+        for record in observations
+            .iter()
+            .filter(|record| record.operation_index <= max_operation_index)
+        {
+            let FederationPaymentObservation::MintQuote(observation) = &record.observation else {
+                continue;
+            };
+            if observation.quote != quote.id.to_string()
+                || observation.method != quote.payment_method
+                || observation.state != MintQuoteState::Paid
+                || observation.amount_paid < required_amount.clone().into()
+            {
+                continue;
+            }
+            if self.federation_payment_observation_can_finalize_at_or_before(
+                &record.observation,
+                observations,
+                max_operation_index,
+            )? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     async fn apply_federation_mint_quote(
         &self,
         entry: &FederationJournalEntry,
@@ -1745,6 +1778,27 @@ impl Mint {
 
             validate_federation_mint_quote_signatures(&input, &quotes)?;
 
+            for (quote, amount_issued) in quotes.iter().zip(&expected_amounts) {
+                let required_amount = quote
+                    .amount_issued()
+                    .checked_add(amount_issued)
+                    .map_err(|_| Error::AmountOverflow)?;
+                let observations = tx
+                    .get_federation_payment_observations(
+                        FederationPaymentObservationContext::MintQuote,
+                        &quote.id.to_string(),
+                    )
+                    .await?;
+                if !self.federation_mint_payment_quorum_covers_amount_at_or_before(
+                    quote,
+                    &required_amount,
+                    &observations,
+                    entry.index,
+                )? {
+                    return Err(Error::UnpaidQuote);
+                }
+            }
+
             let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
             let signatures_present = existing_signatures
                 .iter()
@@ -1889,6 +1943,11 @@ impl Mint {
             Some(federation_accepted_logical_time(entry)),
             None,
         );
+        let completed_swap = self
+            .localstore
+            .get_completed_operation(operation_record.id())
+            .await?
+            .is_some_and(|operation| operation.kind() == OperationKind::Swap);
 
         let mut tx = self.localstore.begin_transaction().await?;
         let outcome = async {
@@ -1910,8 +1969,21 @@ impl Mint {
                 .count();
 
             match proofs.state {
-                State::Unspent => {}
-                State::Spent if signatures_present == existing_signatures.len() => {
+                State::Unspent if signatures_present == 0 => {}
+                State::Unspent if signatures_present == existing_signatures.len() => {
+                    return Err(Error::BlindedMessageAlreadySigned)
+                }
+                State::Unspent => {
+                    return Err(Error::Custom(
+                        "federation swap found partially persisted signatures for fresh inputs"
+                            .to_string(),
+                    ))
+                }
+                State::Spent
+                    if signatures_present == existing_signatures.len()
+                        && signatures_present > 0
+                        && completed_swap =>
+                {
                     let share_set =
                         config.swap_signature_shares(operation_id, &operation.request)?;
                     let signature_share_records =
@@ -1928,12 +2000,6 @@ impl Mint {
                 State::Pending | State::Reserved | State::PendingSpent => {
                     return Err(Error::TokenPending);
                 }
-            }
-
-            if signatures_present != 0 && signatures_present != existing_signatures.len() {
-                return Err(Error::Custom(
-                    "federation swap replay found partially persisted signatures".to_string(),
-                ));
             }
 
             Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
