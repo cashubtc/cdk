@@ -1169,7 +1169,7 @@ keeps obsolete design decisions alive.
 
 ## 17. Extract a FederationNodeRuntime from Axum MintState
 
-**Status:** In progress
+**Status:** Complete
 
 ### Checkpoint 1: explicit runtime ownership
 
@@ -1326,8 +1326,8 @@ all fallible construction succeeds. Shutdown and rotation abort and join the
 session, activity broadcaster, network pump, apply loop, completion watcher,
 and every upstream Aleph child task. Focused supervisor, upstream spawn, start,
 manual rotation, automatic rotation, backup restart, and idle-cadence tests
-pass. Item 17 awaits the final complete federation and standalone gates while
-the remaining failure-state work continues in Item 18.
+pass. The final complete gates pass all 420 federation-enabled Axum tests and
+all 28 standalone Axum tests, so Item 17 is complete.
 
 ### Problem
 
@@ -1353,7 +1353,7 @@ lifecycle, making ownership and shutdown dependencies difficult to follow.
 
 ## 18. Introduce an explicit AlephBFT session supervisor
 
-**Status:** In progress
+**Status:** Complete
 
 ### Checkpoint 1: deterministic task ownership and shutdown
 
@@ -1378,6 +1378,14 @@ halted readiness state; panic also takes the supervisor, joins the remaining
 tasks, and clears inbound admission. Test-only fault injection proves a partial
 startup publishes no task or inbound state and a root panic reaches Stopped plus
 durable Halted. Automatic rotation success remains green.
+
+### Completion
+
+The full 420-test federation Axum suite passes across live multi-member
+finality, one-offline windows, partitions, equivocation, restart before and
+after backup, manual and automatic rotation, DKG, catch-up, and all value
+operations. All 28 standalone Axum tests pass unchanged. The federation library
+also compiles warning-free after removing the final test-only dead-code noise.
 
 ### Problem
 

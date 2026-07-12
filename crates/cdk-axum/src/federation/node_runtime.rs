@@ -52,6 +52,7 @@ pub(crate) struct FederationNodeRuntime {
 
 impl FederationNodeRuntime {
     /// Build the inert runtime stored by a standalone mint in a federation-enabled binary.
+    #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
             mint: None,

@@ -166,13 +166,11 @@ Resolved blocking bugs:
   and every current index. Verification passes 21 SQLite and 19 PostgreSQL
   federation tests, 29 catch-up and 8 SQLite restart tests, plus 134 SQLite and
   125 PostgreSQL standalone tests.
-- Axum federation runtime ownership extraction has started with a verified
+- Axum federation runtime ownership extraction is complete with a verified
   behavior-neutral boundary: `MintState` now contains one concrete
   `FederationNodeRuntime` instead of 13 consensus, sync, DKG, admission,
   notification, and live-session fields. Every call site explicitly names the
-  runtime owner; no trait or event bus was added. All 332 Axum federation and
-  28 standalone Axum tests pass. Submission, finalization/catch-up, recovery,
-  and task lifecycle methods remain to move in coherent checkpoints. Operation
+  runtime owner; no trait or event bus was added. Operation
   waiter registration, response-cache policy/statistics, and notification
   delivery are the first methods moved onto the runtime; focused saturation,
   timeout, eviction, cache-bound, and notification tests pass. Pending source
@@ -225,7 +223,9 @@ Resolved blocking bugs:
   fallible construction now precedes task spawn and state publication. A root
   task panic is caught, stops and joins the supervisor, clears inbound
   admission, and durably halts readiness; partial-start and panic fault tests
-  pass.
+  pass. The final complete gates pass all 420 federation-enabled Axum tests and
+  all 28 standalone Axum tests, and the federation library compiles without
+  warnings.
 
 ## Recent performance checkpoint
 
