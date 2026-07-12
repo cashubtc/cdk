@@ -49,7 +49,7 @@ use cdk::nuts::{
 };
 use cdk::types::FeeReserve;
 use cdk::Amount;
-use cdk_common::database::mint::CompletedOperationsDatabase;
+use cdk_common::database::mint::{CompletedOperationsDatabase, FederationApplicationDatabase};
 use cdk_common::database::MintFederationJournalDatabase;
 use cdk_common::mint::Operation;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};

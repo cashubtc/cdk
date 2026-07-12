@@ -2283,7 +2283,7 @@ direction and make unsafe cross-layer coupling easy.
 
 ## 35. Split federation database traits and centralize row codecs
 
-**Status:** Todo
+**Status:** Completed
 
 ### Problem
 
@@ -2307,6 +2307,48 @@ different ownership and lifecycle requirements.
 - `docs/federated-cashu-refactoring-plan.md` section R12.
 - Run backend parity, transaction rollback, restart, and catch-up tests against
   both SQL implementations.
+
+### Review decision
+
+- The ownership problem still existed, but splitting every query into a narrow
+  trait would have increased public API surface without narrowing production
+  dependencies. All mint callers use the composite mint database, and SQL is
+  the only federation persistence implementation. The retained split therefore
+  has exactly three coherent families: ordered journal/runtime state,
+  post-consensus mint application data, and DKG ceremony state.
+- `FederationJournalTransaction` and `FederationJournalDatabase` now contain
+  only config, ordered journal, catch-up certificate, AlephBFT, pending proposal,
+  and durable effectful-DKG replay state. New application and DKG transaction
+  and read traits own their respective methods, while the existing composite
+  mint `Transaction` and `Database` traits preserve the caller-facing API.
+- The generic SQL implementation is divided into `federation/journal.rs`,
+  `federation/application.rs`, and `federation/dkg.rs`. Shared validation and
+  row decoders remain in the parent module, so SQLite and PostgreSQL cannot
+  acquire separate conversion behavior.
+- The fragile nine-column journal row and ten-column finalized-Aleph-item row
+  each have one compile-time static SELECT shape paired with one typed decoder.
+  All retrieval variants reuse those shapes. Simpler one-column and JSON-only
+  queries remain explicit; no dynamic SQL builder or duplicate
+  `FederationJournalRow` mirror was added because either would increase code
+  without strengthening the current typed `FederationJournalEntry` decoder.
+
+### Verification
+
+- `cargo test -p cdk-sqlite --features federation -- --test-threads 1`: all
+  156 tests passed, including the 22 config, journal, concurrent-write,
+  application-state, payment, signature-share, DKG, rollback/recovery,
+  fresh-schema, and query-plan federation tests plus the established mint and
+  wallet storage regressions.
+- `cargo test -p cdk-axum --features federation catch_up -- --test-threads 1`:
+  all 41 catch-up, restart-readiness, rejection-metadata, and materialized-state
+  verification tests passed with loopback permission.
+- `cargo test -p cdk-axum --features federation dkg_driver -- --test-threads 1`:
+  all 21 authenticated DKG partition, retry, durable-phase restart, and
+  activation tests passed with loopback permission.
+- Federation-enabled SQLite and PostgreSQL checks pass, the full PostgreSQL
+  test target compiles, and standalone SQLite compiles without the
+  federation feature. A live PostgreSQL persistence test was attempted but the
+  local test server was not running, so no live PostgreSQL result is claimed.
 
 ## 36. Consolidate duplicate federation status DTOs
 

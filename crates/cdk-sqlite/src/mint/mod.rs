@@ -259,7 +259,9 @@ mod test {
     #[cfg(feature = "federation")]
     #[tokio::test]
     async fn federation_dkg_write_failure_rolls_back_and_recovers() {
-        use cdk_common::database::mint::{Database, FederationJournalDatabase};
+        use cdk_common::database::mint::{
+            Database, FederationDkgDatabase, FederationJournalDatabase,
+        };
 
         let path = std::env::temp_dir().join(format!(
             "cdk-test-dkg-write-failure-{}.sqlite",

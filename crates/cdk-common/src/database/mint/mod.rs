@@ -744,6 +744,14 @@ pub trait FederationJournalTransaction {
         &mut self,
         operation_id: FederationOperationId,
     ) -> Result<(), Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation post-consensus mint application transaction trait.
+pub trait FederationApplicationTransaction {
+    /// Federation application database error.
+    type Err: Into<Error> + From<Error>;
 
     /// Persist one payment observation extracted from an accepted federation operation.
     async fn add_federation_payment_observation(
@@ -768,6 +776,21 @@ pub trait FederationJournalTransaction {
 
         Ok(())
     }
+
+    /// Get payment observations for one quote and context inside this transaction.
+    async fn get_federation_payment_observations(
+        &mut self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation DKG ceremony transaction trait.
+pub trait FederationDkgTransaction {
+    /// Federation DKG database error.
+    type Err: Into<Error> + From<Error>;
 
     /// Persist one active DKG ceremony lifecycle record idempotently.
     async fn add_federation_dkg_ceremony(
@@ -823,13 +846,6 @@ pub trait FederationJournalTransaction {
         &mut self,
         activation: &FederationDkgActivationRequest,
     ) -> Result<(), Self::Err>;
-
-    /// Get payment observations for one quote and context inside this transaction.
-    async fn get_federation_payment_observations(
-        &mut self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
 }
 
 #[cfg(feature = "federation")]
@@ -866,7 +882,9 @@ pub trait FederationJournalDatabase {
     ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
 
     /// Get persisted effectful DKG sequence watermarks by member.
-    async fn get_federation_dkg_member_sequences(&self) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
+    async fn get_federation_dkg_member_sequences(
+        &self,
+    ) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
 
     /// Get all persisted signed federation catch-up certificates.
     async fn get_federation_catch_up_certificates(
@@ -904,6 +922,14 @@ pub trait FederationJournalDatabase {
         &self,
         session: u64,
     ) -> Result<Vec<FederationAlephBftPendingOperationRecord>, Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation post-consensus mint application database trait.
+pub trait FederationApplicationDatabase {
+    /// Federation application database error.
+    type Err: Into<Error> + From<Error>;
 
     /// Get payment observations for one quote and context in consensus order.
     async fn get_federation_payment_observations(
@@ -935,6 +961,14 @@ pub trait FederationJournalDatabase {
         &self,
         blinded_message: PublicKey,
     ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation DKG ceremony database trait.
+pub trait FederationDkgDatabase {
+    /// Federation DKG database error.
+    type Err: Into<Error> + From<Error>;
 
     /// Get all persisted DKG pre-reveal commitments.
     async fn get_federation_dkg_commitments(
@@ -1001,6 +1035,8 @@ pub trait Transaction<Error>:
     + SagaTransaction<Err = Error>
     + CompletedOperationsTransaction<Err = Error>
     + FederationJournalTransaction<Err = Error>
+    + FederationApplicationTransaction<Err = Error>
+    + FederationDkgTransaction<Err = Error>
 {
 }
 
@@ -1030,6 +1066,8 @@ pub trait Database<Error>:
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
     + FederationJournalDatabase<Err = Error>
+    + FederationApplicationDatabase<Err = Error>
+    + FederationDkgDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

@@ -5,6 +5,7 @@ use cdk::federation::{
     FederationDkgDriverPhase, FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
     ValidatedFederationDkgParticipantState,
 };
+use cdk_common::database::mint::FederationDkgDatabase;
 
 use super::*;
 

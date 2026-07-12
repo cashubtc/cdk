@@ -1268,7 +1268,7 @@ crates/cdk-common/src/federation/
 
 Prevent query column lists, row decoding, and migrations from drifting apart.
 
-### Review verdict: Worthwhile after schema cleanup
+### Review verdict: Implemented with three storage families
 
 A single typed journal row codec and grouped storage families will reduce real
 column-order and nullable-field risk. The singular conflict key is already
@@ -1276,6 +1276,16 @@ removed; perform this after deciding the remaining digest-checkpoint, durable
 gossip-retry, and experimental columns, then squash undeployed federation
 migrations. Do not build a dynamic SQL abstraction; retain static parameterized
 statements and shared explicit decoding.
+
+Item 35 implemented the useful portion after the federation schema was
+consolidated. The common persistence surface now has journal/runtime,
+post-consensus application, and DKG families, composed behind the existing mint
+database traits. SQL implementations are split along the same boundaries. The
+complex journal and finalized-Aleph SELECT shapes are compile-time static and
+shared by every retrieval path, paired with one decoder each. A separate row
+mirror and a general SQL builder were rejected as extra machinery: the existing
+decoder already constructs the typed domain record and validates nullable JSON,
+IDs, digests, status, and redundant finalized-item columns.
 
 ### Work
 

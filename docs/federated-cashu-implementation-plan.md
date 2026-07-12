@@ -4052,6 +4052,14 @@ Tests and success criteria:
 - [x] Fake-wallet regtest still passes through the normal CDK payment backend interface.
 - [x] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
 - [x] Module split/refactor keeps focused federation tests passing without behavioral changes. `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed 33 tests after extracting the consensus test module, `cargo test -p cdk --features federation runtime_config_ -- --test-threads 1` passed 23 tests after extracting the mint federation runtime/admission test module, `cargo test -p cdk --features federation mint::federation::tests::melt -- --test-threads 1` passed 22 tests after extracting the stateful melt test module, and `cargo test -p cdk --features federation mint::federation::tests::swap -- --test-threads 1` passed 12 tests after extracting the stateful swap test module.
+- [x] Federation persistence is grouped into journal/runtime, post-consensus
+  application, and DKG trait and SQL-module families. Complex journal and
+  finalized-Aleph row shapes use one compile-time static SELECT definition and
+  one shared decoder each. All 156 SQLite tests, including 22 federation
+  persistence cases, plus 41 catch-up/restart tests and 21 authenticated DKG
+  driver tests pass; the full
+  PostgreSQL federation test target compiles, while live execution still needs
+  a running local PostgreSQL test service.
 - [x] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
 - [x] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
 - [x] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.
