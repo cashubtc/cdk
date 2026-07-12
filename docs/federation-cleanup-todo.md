@@ -2475,7 +2475,13 @@ review.
 
 ## 38. Add a federation production build profile
 
-**Status:** Todo
+**Status:** Skipped
+
+**Decision:** Do not add a dedicated federation production build profile in
+this cleanup pass. The existing explicit `--no-default-features` federation
+build remains the supported way to inspect a minimal binary, while deployment
+feature selection stays with the operator. No Cargo feature aliases, compile
+guards, command-surface changes, or CI jobs are required for this item.
 
 ### Problem
 
