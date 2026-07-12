@@ -4,9 +4,8 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
-    FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationError, FederationRestMessageKind, FederationSignedRequest,
+    FederationRestMessageKind, FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -44,48 +43,6 @@ pub(super) async fn post_aleph_bft_activity(
         payload.payload.session_id,
         payload.payload.operation_id,
     )))
-}
-
-#[instrument(skip_all)]
-pub(super) async fn post_aleph_bft_finalized_unit(
-    State(state): State<MintState>,
-    Json(payload): Json<FederationSignedRequest<FederationAlephBftFinalizedUnitRequest>>,
-) -> Result<Json<FederationAlephBftFinalizedUnitResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::AlephBftFinalizedUnit)?;
-    let verified = verify_federation_request(
-        &state,
-        &payload,
-        FederationRestMessageKind::AlephBftFinalizedUnit,
-    )
-    .await?;
-    if payload.payload.unit.submitting_member != verified.sender {
-        return Err(federation_error_response(
-            FederationError::MemberIdMismatch {
-                expected: verified.sender,
-                found: payload.payload.unit.submitting_member,
-            },
-        ));
-    }
-    payload
-        .payload
-        .ensure_admissible_size()
-        .map_err(federation_error_response)?;
-    let responses = state
-        .apply_federation_aleph_bft_finalized_unit(payload.payload.unit.clone())
-        .await
-        .map_err(cdk_error_response)?;
-    state
-        .record_federation_sequence(verified.sender, verified.sequence)
-        .await;
-    let runtime_config = federation_runtime_config(&state)?;
-    let response = FederationAlephBftFinalizedUnitResponse::new(
-        runtime_config.federation_id(),
-        &payload.payload.unit,
-        responses,
-    );
-
-    Ok(Json(response))
 }
 
 #[instrument(skip_all)]

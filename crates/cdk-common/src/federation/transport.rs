@@ -14,10 +14,10 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationAlephBftFinalizedItem, FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload,
-    FederationConfig, FederationConfigDigest, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationAlephBftFinalizedItem, FederationConfig, FederationConfigDigest,
+    FederationDkgCeremonyId, FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
@@ -62,8 +62,6 @@ pub enum FederationRestMessageKind {
     AlephBftActivity,
     /// Deliver one opaque AlephBFT network message to a peer.
     AlephBftNetworkMessage,
-    /// Deliver one AlephBFT unit that has already been finalized.
-    AlephBftFinalizedUnit,
     /// Request missing journal entries from a peer.
     CatchUp,
 }
@@ -81,7 +79,6 @@ impl FederationRestMessageKind {
             Self::SubmitOperation => b"submit_operation",
             Self::AlephBftActivity => b"aleph_bft_activity",
             Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
-            Self::AlephBftFinalizedUnit => b"aleph_bft_finalized_unit",
             Self::CatchUp => b"catch_up",
         }
     }
@@ -1431,27 +1428,6 @@ impl FederationSubmitOperationResponse {
     }
 }
 
-/// Request to deliver one already-finalized AlephBFT unit to a federation peer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FederationAlephBftFinalizedUnitRequest {
-    /// Unit payload produced by the AlephBFT ordering layer.
-    pub unit: FederationAlephBftUnitPayload,
-}
-
-impl FederationAlephBftFinalizedUnitRequest {
-    /// Create a finalized-unit delivery request.
-    #[must_use]
-    pub fn new(unit: FederationAlephBftUnitPayload) -> Self {
-        Self { unit }
-    }
-
-    /// Reject this request if the unit payload is malformed or too large.
-    pub fn ensure_admissible_size(&self) -> super::Result<usize> {
-        self.unit
-            .ensure_within_size_limit(FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES)
-    }
-}
-
 /// Signed control request that wakes one idle AlephBFT live session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationAlephBftActivityRequest {
@@ -1634,81 +1610,6 @@ impl FederationAlephBftNetworkMessageResponse {
                 expected: expected_session_id,
                 found: self.session_id,
             });
-        }
-
-        Ok(())
-    }
-}
-
-/// Response to a finalized AlephBFT unit delivery request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FederationAlephBftFinalizedUnitResponse {
-    /// Private REST payload version.
-    pub version: u16,
-    /// Federation addressed by this response.
-    pub federation_id: FederationId,
-    /// Body hash of the finalized unit accepted by the peer.
-    pub unit_body_hash: FederationAlephBftUnitBodyHash,
-    /// Operation IDs derived from the accepted unit body.
-    pub operation_ids: Vec<FederationOperationId>,
-    /// Submit responses produced for operation items in the accepted unit.
-    pub responses: Vec<FederationSubmitOperationResponse>,
-}
-
-impl FederationAlephBftFinalizedUnitResponse {
-    /// Create a response from an accepted finalized unit and its operation responses.
-    #[must_use]
-    pub fn new(
-        federation_id: FederationId,
-        unit: &FederationAlephBftUnitPayload,
-        responses: Vec<FederationSubmitOperationResponse>,
-    ) -> Self {
-        Self {
-            version: FEDERATION_REST_API_VERSION,
-            federation_id,
-            unit_body_hash: unit.body_hash,
-            operation_ids: unit.operation_ids.clone(),
-            responses,
-        }
-    }
-
-    /// Verify this response belongs to the expected federation and unit body.
-    pub fn validate(
-        &self,
-        expected_federation_id: FederationId,
-        unit: &FederationAlephBftUnitPayload,
-    ) -> Result<()> {
-        if self.version != FEDERATION_REST_API_VERSION {
-            return Err(FederationError::RestVersionMismatch {
-                expected: FEDERATION_REST_API_VERSION,
-                found: self.version,
-            });
-        }
-        if self.federation_id != expected_federation_id {
-            return Err(FederationError::RestFederationMismatch {
-                expected: expected_federation_id,
-                found: self.federation_id,
-            });
-        }
-        if self.unit_body_hash != unit.body_hash {
-            return Err(FederationError::AlephBftUnitBodyHashMismatch {
-                expected: unit.body_hash.to_hex(),
-                found: self.unit_body_hash.to_hex(),
-            });
-        }
-        if self.operation_ids != unit.operation_ids {
-            return Err(FederationError::AlephBftUnitOperationIdsMismatch);
-        }
-        let response_operation_ids = self
-            .responses
-            .iter()
-            .map(|response| response.operation_id)
-            .collect::<Vec<_>>();
-        if response_operation_ids != self.operation_ids {
-            return Err(FederationError::AlephBftUnitOperationIdsMismatch);
-        }
-        for (expected_operation_id, response) in self.operation_ids.iter().zip(&self.responses) {
-            response.validate(*expected_operation_id)?;
         }
 
         Ok(())
@@ -2195,10 +2096,9 @@ mod tests {
     use std::str::FromStr;
 
     use super::super::{
-        FederationConfig, FederationConsensusItem, FederationDkgKeysetSpec, FederationError,
-        MemberConfigPrivate, MemberConfigPublic, ThresholdParams,
-        FEDERATION_MAX_DKG_KEYSET_AMOUNTS, FEDERATION_MAX_DKG_MEMBERS,
-        FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
+        FederationConfig, FederationDkgKeysetSpec, FederationError, MemberConfigPrivate,
+        MemberConfigPublic, ThresholdParams, FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
+        FEDERATION_MAX_DKG_MEMBERS, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
     };
     use super::*;
     use crate::{
@@ -2922,61 +2822,6 @@ mod tests {
     }
 
     #[test]
-    fn signed_aleph_bft_finalized_unit_request_verifies_and_response_validates() {
-        let (config, first_private, _) = transport_config();
-        let receiver = roster_member_id(2);
-        let envelope = mint_quote_envelope();
-        let operation_id = envelope.operation_id().expect("operation id");
-        let unit = FederationAlephBftUnitPayload::new(
-            config.federation_id,
-            first_private.member_id,
-            0,
-            0,
-            vec![FederationConsensusItem::operation(envelope.clone())],
-        )
-        .expect("AlephBFT unit");
-        let payload = FederationAlephBftFinalizedUnitRequest::new(unit.clone());
-        let request = FederationSignedRequest::new_signed(
-            config.federation_id,
-            receiver,
-            7,
-            FederationRestMessageKind::AlephBftFinalizedUnit,
-            payload,
-            &first_private,
-        )
-        .expect("signed AlephBFT finalized-unit request");
-
-        request.verify(&config, receiver).expect("verified request");
-        request
-            .payload
-            .ensure_admissible_size()
-            .expect("admissible finalized unit");
-        let decoded: FederationSignedRequest<FederationAlephBftFinalizedUnitRequest> =
-            serde_json::from_str(
-                &serde_json::to_string(&request).expect("AlephBFT finalized-unit json"),
-            )
-            .expect("decoded request");
-        assert_eq!(
-            decoded.kind,
-            FederationRestMessageKind::AlephBftFinalizedUnit
-        );
-        decoded.verify(&config, receiver).expect("decoded verifies");
-
-        let mut journal = InMemoryFederationJournal::new();
-        let response = FederationAlephBftFinalizedUnitResponse::new(
-            config.federation_id,
-            &unit,
-            vec![FederationSubmitOperationResponse::from_outcome(
-                journal.append(envelope).expect("journal append"),
-            )],
-        );
-        response
-            .validate(config.federation_id, &unit)
-            .expect("response validates");
-        assert_eq!(response.operation_ids, vec![operation_id]);
-    }
-
-    #[test]
     fn signed_aleph_bft_network_message_request_verifies_and_response_validates() {
         let (config, first_private, _) = transport_config();
         let receiver = roster_member_id(2);
@@ -3071,44 +2916,6 @@ mod tests {
 
         assert!(matches!(
             response.validate(expected_operation_id),
-            Err(FederationError::SubmitOperationResponseMismatch { expected, found })
-                if expected == expected_operation_id && found == found_operation_id
-        ));
-    }
-
-    #[test]
-    fn finalized_unit_response_validation_rejects_mismatched_outcome_operation_id() {
-        let (config, first_private, _) = transport_config();
-        let expected = mint_quote_envelope();
-        let expected_operation_id = expected.operation_id().expect("expected operation id");
-        let unit = FederationAlephBftUnitPayload::new(
-            config.federation_id,
-            first_private.member_id,
-            0,
-            0,
-            vec![FederationConsensusItem::operation(expected)],
-        )
-        .expect("AlephBFT unit");
-        let other = mint_envelope(
-            "quote-2",
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        );
-        let mut journal = InMemoryFederationJournal::new();
-        let mut submit_response = FederationSubmitOperationResponse::from_outcome(
-            journal.append(other).expect("journal append"),
-        );
-        let found_operation_id = submit_response.operation_id;
-        assert_ne!(expected_operation_id, found_operation_id);
-
-        submit_response.operation_id = expected_operation_id;
-        let response = FederationAlephBftFinalizedUnitResponse::new(
-            config.federation_id,
-            &unit,
-            vec![submit_response],
-        );
-
-        assert!(matches!(
-            response.validate(config.federation_id, &unit),
             Err(FederationError::SubmitOperationResponseMismatch { expected, found })
                 if expected == expected_operation_id && found == found_operation_id
         ));

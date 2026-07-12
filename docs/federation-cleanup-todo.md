@@ -601,7 +601,23 @@ should be retained or renamed according to its actual remaining responsibility.
 
 ## 7. Remove the legacy external-finalization Aleph driver
 
-**Status:** Todo
+**Status:** In progress (external driver and REST protocol removed 2026-07-12)
+
+### Progress
+
+Deleted the periodic external-finalization driver, its router startup task,
+quorum-broadcast policy, private `/aleph-bft/finalized-units` route, signed
+request/response DTOs, REST message kind, peer-client method, mock transport
+surface, and driver/route-only tests. Submission, timeout, waiter, cache,
+duplicate, restart, and mempool tests now drain the next unit exactly as the
+upstream Aleph data provider does and feed upstream-finalized units through the
+normal durable application path.
+
+All 331 remaining federation-enabled `cdk-common` tests, seven focused submit
+tests, seven focused duplicate tests, and the Axum federation test build pass.
+The remaining work is to remove the redundant finality-mode field and
+preview/exact-drain APIs, then make readiness track the real live session
+directly.
 
 ### Problem
 

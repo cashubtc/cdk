@@ -26,7 +26,6 @@ use uuid::Uuid;
 
 use crate::MintState;
 
-mod aleph_bft_driver;
 pub(crate) mod aleph_bft_latency;
 mod aleph_bft_network;
 mod aleph_bft_routes;
@@ -41,20 +40,8 @@ mod status_routes;
 mod sync_config;
 mod sync_loop;
 
-#[cfg(test)]
-use self::aleph_bft_driver::broadcast_next_aleph_bft_finalized_unit_round_with_config;
-#[cfg(test)]
-use self::aleph_bft_driver::{
-    broadcast_next_aleph_bft_finalized_unit_round, federation_aleph_bft_driver_startup_decision,
-    run_federation_aleph_bft_driver_tick, FederationAlephBftDriverStartupDecision,
-};
-pub(crate) use self::aleph_bft_driver::{
-    spawn_federation_aleph_bft_driver_loop_with_config, FederationAlephBftDriverTickConfig,
-};
 pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
-use self::aleph_bft_routes::{
-    post_aleph_bft_activity, post_aleph_bft_finalized_unit, post_aleph_bft_network_message,
-};
+use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_message};
 #[cfg(test)]
 use self::aleph_bft_session::{
     federation_aleph_bft_live_session_startup_decision,
@@ -138,10 +125,6 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))
         .route("/operations", post(post_operation))
-        .route(
-            "/aleph-bft/finalized-units",
-            post(post_aleph_bft_finalized_unit),
-        )
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
         .route("/journal", post(post_journal))
