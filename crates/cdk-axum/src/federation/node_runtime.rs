@@ -551,6 +551,76 @@ impl FederationNodeRuntime {
         }
     }
 
+    pub(crate) async fn apply_finalized_unit(
+        &self,
+        payload: FederationAlephBftUnitPayload,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        let consensus = self.consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        if let Some(responses) = Self::duplicate_finalized_unit_responses(&consensus, &payload)? {
+            drop(consensus);
+            if let Some(sequence) = sequence {
+                self.persist_journal_entries(&[], &[], Some(sequence))
+                    .await?;
+                self.record_sequence(sequence.0, sequence.1).await;
+            }
+            let entries = responses
+                .iter()
+                .map(|response| response.outcome.entry().clone())
+                .collect::<Vec<_>>();
+            let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
+            self.apply_journal_entries(&entries_to_apply).await?;
+            return Ok(self.responses_with_current_status(&responses).await);
+        }
+
+        let mut next_consensus = consensus.clone();
+        let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
+        let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
+        let finalized_items =
+            next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
+        let outcome_entries = responses
+            .iter()
+            .map(|response| response.outcome.entry().clone())
+            .collect::<Vec<_>>();
+        let entries = responses
+            .iter()
+            .filter_map(|response| match &response.outcome {
+                FederationJournalAppendOutcome::Appended(entry) => Some(entry.clone()),
+                FederationJournalAppendOutcome::Duplicate(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
+        let mut sequences = self.pending_sequences_for_entries(&outcome_entries).await;
+        if let Some(sequence) = sequence {
+            sequences.push(sequence);
+        }
+
+        self.persist_finalization(&finalized_items, &entries, &sequences)
+            .await?;
+        *consensus = next_consensus;
+        drop(consensus);
+        self.clear_pending_sequences_for_entries(&outcome_entries)
+            .await;
+
+        self.apply_journal_entries(&entries_to_apply).await?;
+        let responses = self.responses_with_current_status(&responses).await;
+        for (sender, sequence) in &sequences {
+            self.record_sequence(*sender, *sequence).await;
+        }
+        super::aleph_bft_latency::record(
+            super::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
+            responses.iter().map(|response| response.operation_id),
+        );
+        for response in &responses {
+            self.notify_operation(response.clone());
+        }
+
+        Ok(responses)
+    }
+
     pub(crate) async fn apply_journal_entries(
         &self,
         entries: &[FederationJournalEntry],

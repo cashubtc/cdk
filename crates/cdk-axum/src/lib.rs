@@ -1973,10 +1973,12 @@ impl MintState {
         self.federation.operation_notification_stats()
     }
 
+    #[cfg(test)]
     async fn notify_federation_operation(&self, response: FederationSubmitOperationResponse) {
         self.federation.notify_operation(response);
     }
 
+    #[cfg(test)]
     async fn federation_submit_responses_with_current_status(
         &self,
         responses: &[FederationSubmitOperationResponse],
@@ -1984,13 +1986,6 @@ impl MintState {
         self.federation
             .responses_with_current_status(responses)
             .await
-    }
-
-    fn aleph_bft_duplicate_finalized_unit_responses(
-        consensus: &FederationConsensusRuntime,
-        payload: &FederationAlephBftUnitPayload,
-    ) -> Result<Option<Vec<FederationSubmitOperationResponse>>, cdk::Error> {
-        federation::FederationNodeRuntime::duplicate_finalized_unit_responses(consensus, payload)
     }
 
     async fn remember_federation_aleph_bft_pending_sequence(
@@ -2002,28 +1997,6 @@ impl MintState {
         self.federation
             .remember_pending_sequence(operation_id, sender, sequence)
             .await;
-    }
-
-    async fn pending_federation_aleph_bft_sequences_for_entries(
-        &self,
-        entries: &[FederationJournalEntry],
-    ) -> Vec<(MemberId, u64)> {
-        self.federation.pending_sequences_for_entries(entries).await
-    }
-
-    async fn clear_federation_aleph_bft_pending_sequences_for_entries(
-        &self,
-        entries: &[FederationJournalEntry],
-    ) {
-        self.federation
-            .clear_pending_sequences_for_entries(entries)
-            .await;
-    }
-
-    async fn record_federation_sequences(&self, sequences: &[(MemberId, u64)]) {
-        for (sender, sequence) in sequences {
-            self.record_federation_sequence(*sender, *sequence).await;
-        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2041,82 +2014,9 @@ impl MintState {
         payload: FederationAlephBftUnitPayload,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
-        let consensus = self.federation.consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
-        let mut consensus = consensus.lock().await;
-        if let Some(responses) =
-            Self::aleph_bft_duplicate_finalized_unit_responses(&consensus, &payload)?
-        {
-            drop(consensus);
-            if let Some(sequence) = sequence {
-                self.persist_federation_journal_entries(&[], None, Some(sequence))
-                    .await?;
-                self.record_federation_sequence(sequence.0, sequence.1)
-                    .await;
-            }
-            let entries = responses
-                .iter()
-                .map(|response| response.outcome.entry().clone())
-                .collect::<Vec<_>>();
-            let entries_to_apply = accepted_federation_journal_entries(&entries);
-            self.apply_federation_journal_entries(&entries_to_apply)
-                .await?;
-            let responses = self
-                .federation_submit_responses_with_current_status(&responses)
-                .await;
-            return Ok(responses);
-        }
-        let mut next_consensus = consensus.clone();
-        let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
-        let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
-        let finalized_items =
-            next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
-        let outcome_entries = responses
-            .iter()
-            .map(|response| response.outcome.entry().clone())
-            .collect::<Vec<_>>();
-        let entries = responses
-            .iter()
-            .filter_map(|response| match &response.outcome {
-                FederationJournalAppendOutcome::Appended(entry) => Some(entry.clone()),
-                FederationJournalAppendOutcome::Duplicate(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let entries_to_apply = accepted_federation_journal_entries(&entries);
-        let mut sequences = self
-            .pending_federation_aleph_bft_sequences_for_entries(&outcome_entries)
-            .await;
-        if let Some(sequence) = sequence {
-            sequences.push(sequence);
-        }
-
-        self.persist_federation_aleph_bft_finalization_with_sequences(
-            &finalized_items,
-            &entries,
-            &sequences,
-        )
-        .await?;
-        *consensus = next_consensus;
-        drop(consensus);
-        self.clear_federation_aleph_bft_pending_sequences_for_entries(&outcome_entries)
-            .await;
-
-        self.apply_federation_journal_entries(&entries_to_apply)
-            .await?;
-        let responses = self
-            .federation_submit_responses_with_current_status(&responses)
-            .await;
-        self.record_federation_sequences(&sequences).await;
-        crate::federation::aleph_bft_latency::record(
-            crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
-            responses.iter().map(|response| response.operation_id),
-        );
-        for response in &responses {
-            self.notify_federation_operation(response.clone()).await;
-        }
-
-        Ok(responses)
+        self.federation
+            .apply_finalized_unit(payload, sequence)
+            .await
     }
 
     #[cfg(test)]
@@ -2798,17 +2698,6 @@ impl MintState {
         operation: FederationAlephBftPendingOperationRecord,
     ) -> Result<(), cdk::Error> {
         self.federation.persist_pending_operation(operation).await
-    }
-
-    async fn persist_federation_aleph_bft_finalization_with_sequences(
-        &self,
-        finalized_items: &[FederationAlephBftFinalizedItem],
-        entries: &[FederationJournalEntry],
-        sequences: &[(MemberId, u64)],
-    ) -> Result<(), cdk::Error> {
-        self.federation
-            .persist_finalization(finalized_items, entries, sequences)
-            .await
     }
 
     async fn persist_federation_aleph_bft_catch_up(

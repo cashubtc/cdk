@@ -1255,6 +1255,17 @@ application-state overlay, and catch-up rejection equality checks now execute on
 unchanged. Failed mint/swap replay, rejected-swap response, catch-up rejection
 mismatch, and accepted-on-startup replay regressions pass.
 
+### Checkpoint 9: authoritative finalized-unit application
+
+Duplicate-finalization recovery, AlephBFT unit finalization, atomic finalized
+item and journal persistence, consensus-state replacement, mint application,
+source-sequence advancement, latency recording, and waiter notification now run
+as one ordered method on `FederationNodeRuntime`. `MintState` retains only the
+thin adapter used by the Aleph session and tests. The existing operation order
+and failure boundaries are unchanged. All five focused finalized-unit tests,
+including duplicate replay with unmaterialized entries, durable sender sequence
+advancement, and recovery after lost waiters, pass.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

@@ -192,7 +192,13 @@ Resolved blocking bugs:
   runtime; five finalized-unit and all 29 focused catch-up tests pass. Replay,
   lock retry/backoff, durable application/rejection state, standard
   `ErrorResponse` persistence, and catch-up rejection verification now also run
-  there, with failed mint/swap and startup replay regressions green.
+  there, with failed mint/swap and startup replay regressions green. The complete
+  authoritative finalized-unit path now runs as one runtime-owned ordered
+  method: duplicate recovery, finalization, atomic persistence, consensus-state
+  replacement, mint application, source-sequence advancement, latency recording,
+  and waiter notification. Five finalized-unit tests pass, including duplicate
+  replay with unmaterialized entries, durable sequence advancement, and recovery
+  after lost waiters.
 
 ## Recent performance checkpoint
 
