@@ -1587,10 +1587,10 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
         FederationAlephBftFinalityMode, FederationAlephBftUnitPayload, FederationConfig,
-        FederationConsensusItem, FederationConsensusRuntime, FederationJournalEntry,
-        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
-        FederationOperation, FederationOperationEnvelope, FederationOperationId,
-        FederationPaymentObservationPolicy, InMemoryFederationConsensus, InMemoryFederationJournal,
+        FederationConsensusItem, FederationConsensusRuntime, FederationError,
+        FederationJournalEntry, FederationKeysetRotationOperation,
+        FederationMeltQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+        FederationOperationId, FederationPaymentObservationPolicy, InMemoryFederationJournal,
         MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
         TrustedDealerKeysetSpec, TrustedDealerMember,
     };
@@ -2942,14 +2942,63 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
-    async fn apply_peer_catch_up(state: &MintState, peer_consensus: &InMemoryFederationConsensus) {
+    fn test_aleph_bft_peer(
+        federation_id: cdk::federation::FederationId,
+        member_id: MemberId,
+    ) -> FederationAlephBftConsensusAdapter {
+        FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0)
+    }
+
+    #[cfg(feature = "federation")]
+    fn finalize_test_operation(
+        peer: &mut FederationAlephBftConsensusAdapter,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<cdk::federation::FederationSubmitOperationResponse, FederationError> {
+        let status = peer.status();
+        let unit_index = peer
+            .finalized_items()
+            .last()
+            .map_or(0, |item| item.unit_index.saturating_add(1));
+        let unit = FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            unit_index,
+            vec![FederationConsensusItem::operation(envelope)],
+        )
+        .expect("peer finalized unit");
+        let mut responses = peer.finalize_unit(unit)?;
+        Ok(responses
+            .pop()
+            .expect("one finalized response for one test operation"))
+    }
+
+    #[cfg(feature = "federation")]
+    async fn apply_peer_catch_up(
+        state: &MintState,
+        peer_consensus: &FederationAlephBftConsensusAdapter,
+    ) {
         let local_consensus = state
             .federation_consensus
             .as_ref()
             .expect("federation consensus");
-        let catch_up_response = peer_consensus
-            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-            .expect("peer catch-up response");
+        let request = local_consensus.lock().await.catch_up_request();
+        let finalized_from = usize::try_from(request.aleph_bft_next_item_index).unwrap_or_default();
+        let catch_up_response = cdk::federation::FederationJournalCatchUpResponse::from_journal(
+            peer_consensus.status().federation_id,
+            peer_consensus.journal(),
+            &request,
+            50,
+            100,
+        )
+        .with_aleph_bft_finalized_items(
+            peer_consensus
+                .finalized_items()
+                .get(finalized_from..)
+                .unwrap_or_default()
+                .to_vec(),
+            true,
+        );
 
         state
             .apply_federation_catch_up_response(&catch_up_response)
@@ -6538,27 +6587,25 @@ mod tests {
             .mint_operation(mint_input.clone())
             .expect("mint operation envelope");
         let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
-        let mut peer_consensus =
-            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
-        peer_consensus
-            .submit_envelope(config.mint_quote_operation(
-                quote_id.clone(),
-                quote_request,
-                quote_response,
-            ))
-            .expect("peer accepted mint quote");
-        peer_consensus
-            .submit_envelope(config.mint_quote_payment_observation(
+        let mut peer_consensus = test_aleph_bft_peer(config.federation_id(), config.member_id());
+        finalize_test_operation(
+            &mut peer_consensus,
+            config.mint_quote_operation(quote_id.clone(), quote_request, quote_response),
+        )
+        .expect("peer accepted mint quote");
+        finalize_test_operation(
+            &mut peer_consensus,
+            config.mint_quote_payment_observation(
                 quote_id,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintQuoteState::Paid,
                 Amount::from(2),
                 Amount::ZERO,
                 Some("mint-catch-up-payment-proof".to_string()),
-            ))
-            .expect("peer accepted mint quote payment");
-        peer_consensus
-            .submit_envelope(mint_envelope)
+            ),
+        )
+        .expect("peer accepted mint quote payment");
+        finalize_test_operation(&mut peer_consensus, mint_envelope)
             .expect("peer accepted mint operation");
 
         apply_peer_catch_up(&state, &peer_consensus).await;
@@ -7447,10 +7494,8 @@ mod tests {
             .swap_operation(request.clone())
             .expect("swap operation envelope");
         let swap_operation_id = swap_envelope.operation_id().expect("swap operation id");
-        let mut peer_consensus =
-            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
-        peer_consensus
-            .submit_envelope(swap_envelope)
+        let mut peer_consensus = test_aleph_bft_peer(config.federation_id(), config.member_id());
+        finalize_test_operation(&mut peer_consensus, swap_envelope)
             .expect("peer accepted swap operation");
 
         apply_peer_catch_up(&state, &peer_consensus).await;
@@ -8720,10 +8765,8 @@ mod tests {
         let melt_envelope = config
             .melt_operation(request.clone())
             .expect("melt operation envelope");
-        let mut peer_consensus =
-            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
-        peer_consensus
-            .submit_envelope(melt_envelope)
+        let mut peer_consensus = test_aleph_bft_peer(config.federation_id(), config.member_id());
+        finalize_test_operation(&mut peer_consensus, melt_envelope)
             .expect("peer accepted melt operation");
 
         apply_peer_catch_up(&state, &peer_consensus).await;
@@ -10314,10 +10357,8 @@ mod tests {
         let melt_envelope = config
             .melt_operation(request.clone())
             .expect("melt operation envelope");
-        let mut peer_consensus =
-            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
-        peer_consensus
-            .submit_envelope(melt_envelope)
+        let mut peer_consensus = test_aleph_bft_peer(config.federation_id(), config.member_id());
+        finalize_test_operation(&mut peer_consensus, melt_envelope)
             .expect("peer accepted failed melt operation");
 
         apply_peer_catch_up(&state, &peer_consensus).await;

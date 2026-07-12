@@ -1,11 +1,15 @@
-# Federated Cashu Consensus in CDK
+# Federated Cashu Consensus in CDK (Historical Snapshot)
 
-A technical paper on what has already been implemented in CDK's federated Cashu branch: federation configuration, threshold BLS share material, operation envelopes, signed private REST, the in-memory consensus journal, durable replay, backend-neutral eCash flows exercised with local development payment backends, and wallet-side threshold aggregation. The final section separates that current state from the remaining production plan.
+This archived paper records the pre-AlephBFT federation scaffold. It is retained
+as development history and does **not** describe the current implementation.
+For current architecture and verified status, use
+`docs/federated-cashu-implementation-plan.md` and
+`docs/federated-cashu-progress.html`.
 
-- **Status:** Federation MVP in progress
-- **Current checkpoint:** Signed REST, replay, core flows
-- **Decision source:** Local deterministic journal
-- **Production target:** Future BFT ordering engine
+- **Status:** Archived pre-AlephBFT snapshot
+- **Historical checkpoint:** Signed REST, replay, core flows
+- **Historical decision source:** Local deterministic journal (removed)
+- **Current implementation:** AlephBFT-only federation runtime
 
 ## Abstract
 
@@ -34,7 +38,11 @@ Finally, the public eCash paths now cross this boundary in federation mode. Mint
 > [!WARNING]
 > ### Important status distinction
 >
-> The code currently records operations into `InMemoryFederationConsensus`. It persists and replays the accepted operation journal, but it does not yet run AlephBFT, does not yet use Fedimint's consensus code, does not yet attach quorum-signed session outcomes to catch-up data, and does not yet compute materialized state digests. Those are future milestones, documented separately in the Future Outlook section.
+> At this historical checkpoint, the code recorded operations into
+> `InMemoryFederationConsensus`. It persisted and replayed the accepted
+> operation journal, but did not yet run AlephBFT, attach quorum-signed session
+> outcomes, or compute materialized-state digests. That scaffold has since been
+> removed.
 
 ## 2. Cryptographic Foundation
 

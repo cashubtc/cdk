@@ -47,10 +47,10 @@ pub use self::consensus::{
     FederationAlephBftUnitPayload, FederationConsensusDefaultItem, FederationConsensusItem,
     FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
     FederationConsensusRuntime, FederationQuorumVerifiedCatchUp,
-    FederationVerifiedOperationAdmission, InMemoryFederationConsensus,
-    FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationVerifiedOperationAdmission, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
+    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,

@@ -436,7 +436,7 @@ defined interpretation adds schema and conflict surface without functionality.
 
 ## 6. Remove the production in-memory consensus backend
 
-**Status:** In progress (production/runtime dispatch removed 2026-07-12)
+**Status:** Completed (2026-07-12)
 
 ### Progress
 
@@ -454,11 +454,12 @@ unit data provider, finalization handler, runtime recovery, duplicate/conflict
 handling, direct journal behavior, and catch-up validation. Federation-enabled
 `cdk`, Axum, and mintd compile successfully.
 
-Item 6 is not complete yet. `InMemoryFederationConsensus`, the backend enum and
-runtime dispatch, mintd selector/environment/config fields, and local-finality
-tests still remain and must be migrated or removed. `InMemoryFederationJournal`
-also remains intentionally untouched pending the separate journal-view naming
-decision.
+`InMemoryFederationConsensus`, the backend enum, runtime dispatch, mintd
+selector/environment/config fields, and local-finality simulator tests are now
+removed. `InMemoryFederationJournal` remains intentionally: despite its old
+name, it is the deterministic finalized-journal reconstruction and validation
+type, not a selectable consensus backend. Renaming that journal view is a
+separate naming decision and does not leave a local-finality path.
 
 The production selection surface is now removed: mintd has no consensus
 backend config field or environment variable, old `consensus_backend` config
@@ -512,10 +513,17 @@ The now-single-implementation `FederationConsensusEngine` trait and
 `FederationConsensusBackendKind` enum are deleted. `FederationConsensusRuntime`
 exposes its real Aleph queue/finality and finalized-journal operations directly;
 the impossible synchronous local-submit API and its backend-specific errors are
-gone. Axum compiles with the direct runtime API and all 350 remaining
-federation-enabled `cdk-common` tests pass. The remaining Item 6 work is removal
-of the test-only `InMemoryFederationConsensus` and migration of its peer
-fixtures to finalized Aleph evidence or direct journal tests.
+gone. The test-only `InMemoryFederationConsensus` is also deleted. Peer,
+catch-up, handler, restart, and materialization fixtures now finalize actual
+Aleph adapter units and carry finalized-item evidence; direct journal tests
+continue to test journal behavior at the narrower boundary.
+
+Final verification passes all 333 remaining federation-enabled `cdk-common`
+tests, 94 custom-handler tests, 30 catch-up tests, 22 private REST peer-client
+tests, and the complete 456-test Axum federation suite, including partitions,
+session rotation, restart, catch-up, DKG, and mint/swap/melt flows. A workspace
+code search finds no in-memory consensus engine, backend enum, consensus-engine
+trait, backend selector, or local append-finality path.
 
 ### Problem
 

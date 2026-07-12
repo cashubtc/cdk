@@ -739,6 +739,7 @@ impl FederationOperationNotifications {
         }
     }
 
+    #[cfg(test)]
     async fn wait_for(
         &self,
         operation_id: FederationOperationId,
@@ -1991,6 +1992,7 @@ impl MintState {
         Ok(response)
     }
 
+    #[cfg(test)]
     pub(crate) async fn wait_for_federation_operation_acceptance(
         &self,
         operation_id: FederationOperationId,
@@ -2001,6 +2003,7 @@ impl MintState {
             .flatten()
     }
 
+    #[cfg(test)]
     async fn wait_for_federation_operation_acceptance_with_limit(
         &self,
         operation_id: FederationOperationId,

@@ -33,8 +33,8 @@ use cdk::federation::{
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
     FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
-    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -2207,6 +2207,13 @@ where
     adapter
 }
 
+fn test_aleph_bft_peer(
+    federation_id: cdk::federation::FederationId,
+    member_id: MemberId,
+) -> FederationAlephBftConsensusAdapter {
+    FederationAlephBftConsensusAdapter::new(federation_id, member_id, 0)
+}
+
 fn aleph_bft_catch_up_response(
     public_config: &FederationConfig,
     adapter: &FederationAlephBftConsensusAdapter,
@@ -2228,6 +2235,48 @@ fn aleph_bft_catch_up_response(
             .to_vec(),
         true,
     )
+}
+
+fn test_catch_up_response(
+    adapter: &FederationAlephBftConsensusAdapter,
+    request: &FederationJournalCatchUpRequest,
+) -> FederationJournalCatchUpResponse {
+    let status = adapter.status();
+    let finalized_from = usize::try_from(request.aleph_bft_next_item_index).unwrap_or_default();
+    FederationJournalCatchUpResponse::from_journal(
+        status.federation_id,
+        adapter.journal(),
+        request,
+        50,
+        100,
+    )
+    .with_aleph_bft_finalized_items(
+        adapter
+            .finalized_items()
+            .get(finalized_from..)
+            .unwrap_or_default()
+            .to_vec(),
+        true,
+    )
+}
+
+fn checked_test_catch_up_response(
+    adapter: &FederationAlephBftConsensusAdapter,
+    request: &FederationJournalCatchUpRequest,
+) -> Result<FederationJournalCatchUpResponse, FederationError> {
+    if let Some(known_order_digest) = request.known_order_digest {
+        if let Some(expected_digest) = adapter.journal().order_digest_before(request.next_index) {
+            if expected_digest != known_order_digest {
+                return Err(FederationError::CatchUpDigestMismatch {
+                    index: request.next_index,
+                    expected: expected_digest,
+                    found: known_order_digest,
+                });
+            }
+        }
+    }
+
+    Ok(test_catch_up_response(adapter, request))
 }
 
 fn dkg_reveal(
@@ -2582,9 +2631,11 @@ async fn activate_local_test_finality(state: &MintState) {
 
 async fn peer_status_with_materialized_digest(
     state: &MintState,
-    consensus: &InMemoryFederationConsensus,
+    consensus: &FederationAlephBftConsensusAdapter,
 ) -> FederationPeerStatus {
-    let mut status = consensus.peer_status();
+    let adapter_status = consensus.status();
+    let mut status =
+        consensus.peer_status(adapter_status.federation_id, adapter_status.local_member);
     status.state_digest = materialized_state_digest(state, consensus.journal().entries())
         .await
         .expect("materialized peer status digest");
@@ -2593,12 +2644,10 @@ async fn peer_status_with_materialized_digest(
 
 async fn catch_up_response_with_materialized_digest(
     state: &MintState,
-    consensus: &InMemoryFederationConsensus,
+    consensus: &FederationAlephBftConsensusAdapter,
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
-    let mut response = consensus
-        .catch_up_checked(request)
-        .expect("peer catch-up response");
+    let mut response = test_catch_up_response(consensus, request);
     response.state_digest = materialized_state_digest(state, consensus.journal().entries())
         .await
         .expect("materialized catch-up state digest");
@@ -2631,13 +2680,35 @@ async fn aleph_bft_catch_up_response_with_materialized_digest(
     response
 }
 
-fn accept_test_journal_entry(
-    consensus: &mut InMemoryFederationConsensus,
+fn finalize_test_operation(
+    consensus: &mut FederationAlephBftConsensusAdapter,
+    envelope: FederationOperationEnvelope,
+) -> Result<FederationSubmitOperationResponse, FederationError> {
+    let status = consensus.status();
+    let unit_index = consensus
+        .finalized_items()
+        .last()
+        .map_or(0, |item| item.unit_index.saturating_add(1));
+    let unit = FederationAlephBftUnitPayload::new(
+        status.federation_id,
+        status.local_member,
+        status.session,
+        unit_index,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("test AlephBFT finalized unit");
+    let mut responses = consensus.finalize_unit(unit)?;
+    Ok(responses
+        .pop()
+        .expect("one finalized response for one test operation"))
+}
+
+fn finalize_test_entry(
+    consensus: &mut FederationAlephBftConsensusAdapter,
     envelope: FederationOperationEnvelope,
 ) -> FederationJournalEntry {
-    consensus
-        .submit_envelope(envelope)
-        .expect("accept test operation")
+    finalize_test_operation(consensus, envelope)
+        .expect("finalize test journal entry")
         .outcome
         .entry()
         .clone()
@@ -3647,10 +3718,9 @@ async fn rest_peer_client_submits_payment_observation_operations() {
     let member = public_config.member(member_id(2)).expect("peer member");
     let envelope = payment_observation_envelope(federation_id);
     let request = FederationSubmitOperationRequest::new(envelope.clone());
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, member.member_id);
-    let submit_response = peer_consensus
-        .submit_operation(FederationSubmitOperationRequest::new(envelope))
-        .expect("peer submit response");
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, member.member_id);
+    let submit_response =
+        finalize_test_operation(&mut peer_consensus, envelope).expect("peer submit response");
     let transport =
         MockFederationTransport::default().with_submit_response(submit_response.clone());
     let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
@@ -3685,14 +3755,13 @@ async fn rest_peer_client_rejects_submit_response_with_mismatched_outcome_operat
     let envelope = payment_observation_envelope(federation_id);
     let request = FederationSubmitOperationRequest::new(envelope);
     let expected_operation_id = request.operation_id().expect("expected operation id");
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, member.member_id);
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, member.member_id);
     let other_envelope = restore_envelope(
         federation_id,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let mut mismatched_response = peer_consensus
-        .submit_operation(FederationSubmitOperationRequest::new(other_envelope))
-        .expect("peer submit response");
+    let mut mismatched_response =
+        finalize_test_operation(&mut peer_consensus, other_envelope).expect("peer submit response");
     let found_operation_id = mismatched_response.outcome.entry().operation_id;
     assert_ne!(expected_operation_id, found_operation_id);
     mismatched_response.operation_id = expected_operation_id;
@@ -4029,21 +4098,19 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         &public_config,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     state
         .submit_federation_envelope(first.clone())
         .await
         .expect("local first operation");
-    peer_consensus
-        .submit_envelope(first)
-        .expect("peer first operation");
-    peer_consensus
-        .submit_envelope(second)
-        .expect("peer second operation");
+    finalize_test_operation(&mut peer_consensus, first).expect("peer first operation");
+    finalize_test_operation(&mut peer_consensus, second).expect("peer second operation");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("peer catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("peer catch-up response");
     assert!(catch_up_response.session_outcome.is_none());
     let transport = MockFederationTransport::default().with_catch_up_response(catch_up_response);
     let client =
@@ -4496,7 +4563,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     let operation_count = 3;
     for index in 0..operation_count {
         let entry = indexed_restore_envelope_for_config(&public_config, index);
@@ -4504,9 +4571,7 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
             .submit_federation_envelope(entry.clone())
             .await
             .expect("local accepted operation");
-        peer_consensus
-            .submit_envelope(entry)
-            .expect("peer accepted operation");
+        finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     }
     state
         .mark_federation_verifying_session_outcome(peer_member.member_id, operation_count)
@@ -4577,10 +4642,8 @@ async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
         .submit_federation_envelope(entry.clone())
         .await
         .expect("local accepted operation");
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(entry)
-        .expect("peer accepted operation");
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
 
     assert!(session_outcome_quorum_status(&state)
         .await
@@ -4630,10 +4693,8 @@ async fn peer_sync_rejects_mismatched_session_outcome_without_persisting_it() {
         .submit_federation_envelope(entry.clone())
         .await
         .expect("local accepted operation");
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(entry)
-        .expect("peer accepted operation");
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     state
         .mark_federation_verifying_session_outcome(peer_member.member_id, 1)
         .await;
@@ -4698,7 +4759,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     let chunk_size = 2;
     let operation_count = chunk_size + 1;
     for index in 0..operation_count as u64 {
@@ -4707,9 +4768,7 @@ async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() 
             .submit_federation_envelope(entry.clone())
             .await
             .expect("local accepted operation");
-        peer_consensus
-            .submit_envelope(entry)
-            .expect("peer accepted operation");
+        finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     }
     state
         .mark_federation_verifying_session_outcome(peer_member.member_id, operation_count as u64)
@@ -4779,7 +4838,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+    let mut peer_consensus = test_aleph_bft_peer(federation_id, peer_member.member_id);
     let chunk_size = 2;
     let operation_count = chunk_size + 1;
     for index in 0..operation_count as u64 {
@@ -4788,9 +4847,7 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
             .submit_federation_envelope(entry.clone())
             .await
             .expect("local accepted operation");
-        peer_consensus
-            .submit_envelope(entry)
-            .expect("peer accepted operation");
+        finalize_test_operation(&mut peer_consensus, entry).expect("peer accepted operation");
     }
 
     let entries = state
@@ -5068,14 +5125,14 @@ async fn catch_up_applies_mint_quote_operation_to_local_store() {
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted quote");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted quote");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -5145,21 +5202,21 @@ async fn catch_up_applies_payment_quarantine_and_local_status_reports_it() {
     );
     let quarantine_operation_id = quarantine.operation_id().expect("quarantine operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     for envelope in [
         mint_quote_envelope(&state, &quote_id),
         first_observation,
         conflicting_observation,
         quarantine,
     ] {
-        peer_consensus
-            .submit_envelope(envelope)
-            .expect("peer accepted operation");
+        finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted operation");
     }
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     let applied = state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -5235,14 +5292,14 @@ async fn catch_up_applies_melt_quote_operation_to_local_store() {
     let envelope = config.melt_quote_operation(quote_id.clone(), request);
     let operation_id = envelope.operation_id().expect("operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted melt quote");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt quote");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -5304,14 +5361,14 @@ async fn catch_up_applies_swap_operation_to_local_store() {
         .expect("swap envelope");
     let operation_id = envelope.operation_id().expect("operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted swap");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted swap");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -5399,16 +5456,17 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
     let later_operation_id = later_envelope.operation_id().expect("later operation id");
 
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     for envelope in [first_envelope, conflicting_envelope, later_envelope] {
-        peer_consensus
-            .submit_envelope(envelope)
+        finalize_test_operation(&mut peer_consensus, envelope)
             .expect("peer accepted swap operation");
     }
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
     assert_eq!(catch_up_response.entries.len(), 3);
 
     let applied = state
@@ -5516,14 +5574,14 @@ async fn catch_up_applies_melt_operation_to_local_store() {
     let envelope = config.melt_operation(request).expect("melt envelope");
     let operation_id = envelope.operation_id().expect("operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted melt");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -5628,17 +5686,17 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
     );
     let paid_operation_id = paid_envelope.operation_id().expect("paid operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
-    peer_consensus
-        .submit_envelope(paid_envelope)
+    finalize_test_operation(&mut peer_consensus, paid_envelope)
         .expect("peer accepted paid observation");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -5754,15 +5812,16 @@ async fn catch_up_resolves_pending_melt_after_later_paid_observation() {
         Some("late-paid-observation-preimage".to_string()),
     );
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let pending_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("pending catch-up response");
+    let pending_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("pending catch-up response");
     state
         .apply_federation_catch_up_response(&pending_response)
         .await
@@ -5797,12 +5856,13 @@ async fn catch_up_resolves_pending_melt_after_later_paid_observation() {
         .expect("pending change signature lookup")[0]
         .is_none());
 
-    peer_consensus
-        .submit_envelope(paid_envelope)
+    finalize_test_operation(&mut peer_consensus, paid_envelope)
         .expect("peer accepted paid observation");
-    let paid_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("paid catch-up response");
+    let paid_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("paid catch-up response");
     state
         .apply_federation_catch_up_response(&paid_response)
         .await
@@ -5887,15 +5947,16 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
     let failed_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let pending_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("pending catch-up response");
+    let pending_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("pending catch-up response");
     state
         .apply_federation_catch_up_response(&pending_response)
         .await
@@ -5923,12 +5984,13 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
         ]
     );
 
-    peer_consensus
-        .submit_envelope(failed_envelope)
+    finalize_test_operation(&mut peer_consensus, failed_envelope)
         .expect("peer accepted failed observation");
-    let failed_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("failed catch-up response");
+    let failed_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("failed catch-up response");
     state
         .apply_federation_catch_up_response(&failed_response)
         .await
@@ -6014,15 +6076,16 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
         Some("restart-paid-observation-preimage".to_string()),
     );
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let pending_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("pending catch-up response");
+    let pending_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("pending catch-up response");
     state
         .apply_federation_catch_up_response(&pending_response)
         .await
@@ -6068,16 +6131,17 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
     assert_eq!(replayed_pending_quote.state(), MeltQuoteState::Pending);
     assert!(replayed_pending_quote.change().is_none());
 
-    peer_consensus
-        .submit_envelope(paid_envelope)
+    finalize_test_operation(&mut peer_consensus, paid_envelope)
         .expect("peer accepted paid observation");
     let replayed_consensus = state
         .federation_consensus
         .as_ref()
         .expect("replayed consensus");
-    let paid_response = peer_consensus
-        .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
-        .expect("paid catch-up response after replay");
+    let paid_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &replayed_consensus.lock().await.catch_up_request(),
+    )
+    .expect("paid catch-up response after replay");
     state
         .apply_federation_catch_up_response(&paid_response)
         .await
@@ -6169,15 +6233,16 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
     let failed_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let pending_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("pending catch-up response");
+    let pending_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("pending catch-up response");
     state
         .apply_federation_catch_up_response(&pending_response)
         .await
@@ -6223,16 +6288,17 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
     assert_eq!(replayed_pending_quote.state(), MeltQuoteState::Pending);
     assert!(replayed_pending_quote.change().is_none());
 
-    peer_consensus
-        .submit_envelope(failed_envelope)
+    finalize_test_operation(&mut peer_consensus, failed_envelope)
         .expect("peer accepted failed observation");
     let replayed_consensus = state
         .federation_consensus
         .as_ref()
         .expect("replayed consensus");
-    let failed_response = peer_consensus
-        .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
-        .expect("failed catch-up response after replay");
+    let failed_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &replayed_consensus.lock().await.catch_up_request(),
+    )
+    .expect("failed catch-up response after replay");
     state
         .apply_federation_catch_up_response(&failed_response)
         .await
@@ -6340,16 +6406,17 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
         Some("sqlite-restart-paid-observation-preimage".to_string()),
     );
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
     let pending_response = {
         let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-        peer_consensus
-            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-            .expect("pending catch-up response")
+        checked_test_catch_up_response(
+            &peer_consensus,
+            &local_consensus.lock().await.catch_up_request(),
+        )
+        .expect("pending catch-up response")
     };
     state
         .apply_federation_catch_up_response(&pending_response)
@@ -6418,17 +6485,18 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
         .expect("saga lookup after sqlite restart")
         .is_some());
 
-    peer_consensus
-        .submit_envelope(paid_envelope)
+    finalize_test_operation(&mut peer_consensus, paid_envelope)
         .expect("peer accepted paid observation");
     let paid_response = {
         let replayed_consensus = restarted_state
             .federation_consensus
             .as_ref()
             .expect("replayed consensus");
-        peer_consensus
-            .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
-            .expect("paid catch-up response after sqlite restart")
+        checked_test_catch_up_response(
+            &peer_consensus,
+            &replayed_consensus.lock().await.catch_up_request(),
+        )
+        .expect("paid catch-up response after sqlite restart")
     };
     restarted_state
         .apply_federation_catch_up_response(&paid_response)
@@ -6537,16 +6605,17 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
     let failed_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
     let pending_response = {
         let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-        peer_consensus
-            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-            .expect("pending catch-up response")
+        checked_test_catch_up_response(
+            &peer_consensus,
+            &local_consensus.lock().await.catch_up_request(),
+        )
+        .expect("pending catch-up response")
     };
     state
         .apply_federation_catch_up_response(&pending_response)
@@ -6615,17 +6684,18 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
         .expect("saga lookup after sqlite restart")
         .is_some());
 
-    peer_consensus
-        .submit_envelope(failed_envelope)
+    finalize_test_operation(&mut peer_consensus, failed_envelope)
         .expect("peer accepted failed observation");
     let failed_response = {
         let replayed_consensus = restarted_state
             .federation_consensus
             .as_ref()
             .expect("replayed consensus");
-        peer_consensus
-            .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
-            .expect("failed catch-up response after sqlite restart")
+        checked_test_catch_up_response(
+            &peer_consensus,
+            &replayed_consensus.lock().await.catch_up_request(),
+        )
+        .expect("failed catch-up response after sqlite restart")
     };
     restarted_state
         .apply_federation_catch_up_response(&failed_response)
@@ -6711,17 +6781,17 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
     let unpaid_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Unpaid, None);
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(melt_envelope)
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
-    peer_consensus
-        .submit_envelope(unpaid_envelope)
+    finalize_test_operation(&mut peer_consensus, unpaid_envelope)
         .expect("peer accepted unpaid observation");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("catch-up response");
+    let catch_up_response = checked_test_catch_up_response(
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .expect("catch-up response");
 
     state
         .apply_federation_catch_up_response(&catch_up_response)
@@ -6783,7 +6853,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         .member(peer_private.member_id)
         .expect("peer member");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
 
     let mint_quote_id = QuoteId::new();
     let minted_output = mint_output(&state, &mint_quote_id);
@@ -6864,9 +6934,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
             .submit_federation_envelope_with_sequence(envelope.clone(), None)
             .await
             .expect("peer accepted operation");
-        peer_consensus
-            .submit_envelope(envelope)
-            .expect("peer accepted operation");
+        finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted operation");
     }
 
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
@@ -6893,7 +6961,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
             .await
             .peer_status()
             .latest_order_digest,
-        peer_consensus.peer_status().latest_order_digest
+        peer_consensus.journal().latest_order_digest()
     );
 
     let (replayed_consensus, replayed_sequences) =
@@ -7021,8 +7089,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         .submit_federation_envelope_with_sequence(melt_payment_envelope.clone(), None)
         .await
         .expect("peer accepted delayed paid melt observation");
-    peer_consensus
-        .submit_envelope(melt_payment_envelope)
+    finalize_test_operation(&mut peer_consensus, melt_payment_envelope)
         .expect("peer accepted delayed paid melt observation");
     let delayed_paid_response = catch_up_response_with_materialized_digest(
         &peer_state,
@@ -7160,10 +7227,8 @@ async fn diverged_member_rejects_peer_catch_up_digest_mismatch() {
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(peer_entry)
-        .expect("peer accepted operation");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, peer_entry).expect("peer accepted operation");
     state
         .submit_federation_envelope(local_entry)
         .await
@@ -7173,11 +7238,11 @@ async fn diverged_member_rejects_peer_catch_up_digest_mismatch() {
     let request = local_consensus.lock().await.catch_up_request();
     assert_eq!(request.next_index, 1);
     assert!(matches!(
-        peer_consensus.catch_up_checked(&request),
+        checked_test_catch_up_response(&peer_consensus, &request),
         Err(FederationError::CatchUpDigestMismatch { .. })
     ));
 
-    let unchecked_response = peer_consensus.catch_up(&request);
+    let unchecked_response = test_catch_up_response(&peer_consensus, &request);
     let apply = state
         .apply_federation_catch_up_response(&unchecked_response)
         .await;
@@ -8503,9 +8568,8 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     .expect("AlephBFT finalized unit");
     adapter.finalize_unit(unit).expect("finalize unit");
     let mut mismatched_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
-    let mismatched_entry = mismatched_consensus
-        .submit_envelope(mismatched_envelope)
+        test_aleph_bft_peer(public_config.federation_id, local_private.member_id);
+    let mismatched_entry = finalize_test_operation(&mut mismatched_consensus, mismatched_envelope)
         .expect("mismatched journal entry")
         .outcome
         .entry()
@@ -20823,14 +20887,11 @@ async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
     let request = cdk::nuts::SwapRequest::new(vec![input], vec![output.clone()]);
     let envelope = config.swap_operation(request).expect("swap envelope");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted swap");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted swap");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     let before_digest = materialized_state_digest(&state, &catch_up_response.entries)
@@ -20876,12 +20937,10 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
         &seed,
     )
     .await;
-    let mut consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+    let mut consensus = test_aleph_bft_peer(public_config.federation_id, local_private.member_id);
     let quote_id = QuoteId::new();
 
-    let quote_entry =
-        accept_test_journal_entry(&mut consensus, mint_quote_envelope(&state, &quote_id));
+    let quote_entry = finalize_test_entry(&mut consensus, mint_quote_envelope(&state, &quote_id));
     persist_test_journal_entry(&state, &quote_entry).await;
     state
         .mint
@@ -20889,7 +20948,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
         .await
         .expect("apply mint quote");
     let payment_entry =
-        accept_test_journal_entry(&mut consensus, paid_observation_envelope(&state, &quote_id));
+        finalize_test_entry(&mut consensus, paid_observation_envelope(&state, &quote_id));
     persist_test_journal_entry(&state, &payment_entry).await;
     state
         .mint
@@ -20899,7 +20958,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
 
     let (mint_envelope, output) =
         mint_operation_envelope(&state, &quote_id, b"atomic mint apply output");
-    let mint_entry = accept_test_journal_entry(&mut consensus, mint_envelope);
+    let mint_entry = finalize_test_entry(&mut consensus, mint_envelope);
     add_blinded_message_conflict(&state, Some(&quote_id), &output).await;
     persist_test_journal_entry(&state, &mint_entry).await;
     let before_entries = db
@@ -21022,8 +21081,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
         &seed,
     )
     .await;
-    let mut consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+    let mut consensus = test_aleph_bft_peer(public_config.federation_id, local_private.member_id);
     let input = proof_for_amount(&state, 1, "atomic-swap-apply-input");
     let input_y = input.y().expect("swap input y");
     let output = swap_output(&state, "atomic-swap-apply-output");
@@ -21034,7 +21092,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
             vec![output.clone()],
         ))
         .expect("swap envelope");
-    let swap_entry = accept_test_journal_entry(&mut consensus, envelope);
+    let swap_entry = finalize_test_entry(&mut consensus, envelope);
     add_blinded_message_conflict(&state, None, &output).await;
     persist_test_journal_entry(&state, &swap_entry).await;
     let before_entries = db
@@ -21309,10 +21367,8 @@ async fn catch_up_replay_records_state_digest_checkpoint() {
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted mint quote");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted mint quote");
     let catch_up_request = state
         .federation_consensus
         .as_ref()
@@ -21320,8 +21376,7 @@ async fn catch_up_replay_records_state_digest_checkpoint() {
         .lock()
         .await
         .catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     assert!(state
@@ -21388,16 +21443,15 @@ async fn catch_up_replay_checkpoints_completed_operation_rows() {
     let mint_envelope = config.mint_operation(mint_input).expect("mint envelope");
     let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(mint_quote_envelope(&state, &quote_id))
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, mint_quote_envelope(&state, &quote_id))
         .expect("peer accepted mint quote");
-    peer_consensus
-        .submit_envelope(paid_observation_envelope(&state, &quote_id))
-        .expect("peer accepted paid observation");
-    peer_consensus
-        .submit_envelope(mint_envelope)
-        .expect("peer accepted mint");
+    finalize_test_operation(
+        &mut peer_consensus,
+        paid_observation_envelope(&state, &quote_id),
+    )
+    .expect("peer accepted paid observation");
+    finalize_test_operation(&mut peer_consensus, mint_envelope).expect("peer accepted mint");
     let catch_up_request = state
         .federation_consensus
         .as_ref()
@@ -21405,8 +21459,7 @@ async fn catch_up_replay_checkpoints_completed_operation_rows() {
         .lock()
         .await
         .catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     let before_snapshot = materialized_state_snapshot(&state, &catch_up_response.entries)
@@ -21473,12 +21526,10 @@ async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
         .operation_id()
         .expect("observation operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(mint_quote_envelope(&state, &quote_id))
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, mint_quote_envelope(&state, &quote_id))
         .expect("peer accepted mint quote");
-    peer_consensus
-        .submit_envelope(observation)
+    finalize_test_operation(&mut peer_consensus, observation)
         .expect("peer accepted unresolved payment observation");
     let catch_up_request = state
         .federation_consensus
@@ -21487,8 +21538,7 @@ async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
         .lock()
         .await
         .catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     let applied = state
@@ -21601,19 +21651,14 @@ async fn catch_up_replay_checkpoints_payment_observation_quarantine_rows() {
     );
     let quarantine_id = quarantine.operation_id().expect("quarantine operation id");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(mint_quote_envelope(&state, &quote_id))
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, mint_quote_envelope(&state, &quote_id))
         .expect("peer accepted mint quote");
-    peer_consensus
-        .submit_envelope(first_observation)
+    finalize_test_operation(&mut peer_consensus, first_observation)
         .expect("peer accepted first payment observation");
-    peer_consensus
-        .submit_envelope(second_observation)
+    finalize_test_operation(&mut peer_consensus, second_observation)
         .expect("peer accepted conflicting payment observation");
-    peer_consensus
-        .submit_envelope(quarantine)
-        .expect("peer accepted quarantine");
+    finalize_test_operation(&mut peer_consensus, quarantine).expect("peer accepted quarantine");
     let catch_up_request = state
         .federation_consensus
         .as_ref()
@@ -21621,8 +21666,7 @@ async fn catch_up_replay_checkpoints_payment_observation_quarantine_rows() {
         .lock()
         .await
         .catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     let applied = state
@@ -21932,14 +21976,11 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
         cdk::nuts::MeltRequest::new(quote_id.clone(), inputs, Some(vec![change_output.clone()]));
     let envelope = config.melt_operation(request).expect("melt envelope");
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(envelope)
-        .expect("peer accepted melt");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     let before_digest = materialized_state_digest(&state, &catch_up_response.entries)
@@ -22011,14 +22052,11 @@ async fn materialized_state_digest_tracks_restore_output_share_rows() {
         }),
     );
     let mut peer_consensus =
-        InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
-    peer_consensus
-        .submit_envelope(restore_envelope)
-        .expect("peer accepted restore");
+        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    finalize_test_operation(&mut peer_consensus, restore_envelope).expect("peer accepted restore");
     let local_consensus = state.federation_consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&catch_up_request)
+    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
 
     let missing_digest = materialized_state_digest(&state, &catch_up_response.entries)

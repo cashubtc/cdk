@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Federated Cashu Consensus: Current Implementation and Outlook</title>
+  <title>Federated Cashu Consensus: Historical Pre-AlephBFT Snapshot</title>
   <style>
     :root {
       color-scheme: light;
@@ -522,33 +522,30 @@
   <div class="page">
     <article class="article">
       <header>
-        <div class="kicker">Current implementation note</div>
-        <h1>Federated Cashu Consensus in CDK</h1>
+        <div class="kicker">Archived implementation note</div>
+        <h1>Federated Cashu Consensus in CDK: Historical Snapshot</h1>
         <p class="subtitle">
-          A technical paper on what has already been implemented in CDK's
-          federated Cashu branch: federation configuration, threshold BLS share
-          material, operation envelopes, signed private REST, the in-memory
-          consensus journal, durable replay, backend-neutral eCash flows
-          exercised with local development payment backends, and wallet-side
-          threshold aggregation. The final section separates that current state
-          from the remaining production plan.
+          This archived paper records the pre-AlephBFT federation scaffold. It
+          is retained as development history and does not describe the current
+          implementation. See the implementation plan and progress report for
+          current architecture and verified status.
         </p>
         <div class="metadata" aria-label="Document metadata">
           <div>
             <strong>Status</strong>
-            <span>Federation MVP in progress</span>
+            <span>Archived pre-AlephBFT snapshot</span>
           </div>
           <div>
-            <strong>Current checkpoint</strong>
+            <strong>Historical checkpoint</strong>
             <span>Signed REST, replay, core flows</span>
           </div>
           <div>
-            <strong>Decision source</strong>
-            <span>Local deterministic journal</span>
+            <strong>Historical decision source</strong>
+            <span>Local deterministic journal (removed)</span>
           </div>
           <div>
-            <strong>Production target</strong>
-            <span>Future BFT ordering engine</span>
+            <strong>Current implementation</strong>
+            <span>AlephBFT-only federation runtime</span>
           </div>
         </div>
       </header>
@@ -716,16 +713,14 @@
             </div>
 
             <div class="warning">
-              <h3>Important status distinction</h3>
+              <h3>Historical status distinction</h3>
               <p>
-                The code currently records operations into
-                <code>InMemoryFederationConsensus</code>. It persists and
-                replays the accepted operation journal, but it does not yet run
-                AlephBFT, does not yet use Fedimint's consensus code, does not
-                yet attach quorum-signed session outcomes to catch-up data, and
-                does not yet compute materialized state digests. Those are
-                future milestones, documented separately in the Future Outlook
-                section.
+                At this historical checkpoint, the code recorded operations
+                into <code>InMemoryFederationConsensus</code>. It persisted and
+                replayed the accepted operation journal, but did not yet run
+                AlephBFT, attach quorum-signed session outcomes, or compute
+                materialized-state digests. That scaffold has since been
+                removed.
               </p>
             </div>
           </section>
