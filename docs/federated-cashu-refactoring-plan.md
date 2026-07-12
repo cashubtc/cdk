@@ -18,22 +18,26 @@ Two project decisions are fixed for this plan:
 1. AlephBFT is the only federation consensus backend. The in-memory consensus
    backend was a development harness and must be removed rather than maintained
    as a second production abstraction.
-2. Mint federation implementation files belong under
-   `crates/cdk/src/mint/federation/`. The current monolithic
-   `crates/cdk/src/mint/federation.rs` should become
-   `crates/cdk/src/mint/federation/mod.rs` plus focused submodules.
+2. Mint federation implementation should move from the monolithic
+   `crates/cdk/src/mint/federation.rs` into focused modules under
+   `crates/cdk/src/mint/federation/`, after dead protocol paths have been
+   removed. The final module boundaries should follow the surviving
+   responsibilities rather than a preselected one-file-per-operation layout.
 
 ## Executive assessment
 
 The implementation has a strong protocol foundation:
 
 - Federation operations have canonical, versioned envelopes.
-- Operation IDs, request transcripts, conflict keys, and balance audits are
-  explicit and deterministic.
+- Operation IDs, canonical envelopes, complete conflict-key sets, and balance
+  audits are explicit and deterministic. The separate request-transcript layer
+  and singular conflict key are cleanup candidates rather than foundations to
+  preserve automatically.
 - Accepted order, application status, consensus evidence, and materialized-state
   digests are modeled and persisted.
-- Minting, swapping, melting, restoration, quote payment observations, and
-  keyset rotation pass through explicit federation operations.
+- State-mutating mint, swap, melt, quote payment-observation, and keyset-rotation
+  paths pass through explicit federation operations. Restore and check-state are
+  threshold reads and should not be ordered merely for symmetry.
 - The wallet validates member advertisements and aggregates threshold BLS shares.
 - Private member REST requests are authenticated and sequence checked.
 - Catch-up verifies accepted ranges and quorum session-outcome evidence.
@@ -59,6 +63,19 @@ different abstractions and orchestration responsibilities overlap:
 The best refactors therefore establish one owner for each invariant and remove
 parallel ways of expressing the same lifecycle.
 
+## Review guidance
+
+The checkpoint designs below are implementation guidance, not contracts. Each
+checkpoint includes a current verdict based on the code after AlephBFT,
+federated wallet error recovery, DKG performance work, and the broader cleanup
+audit. A verdict may narrow, defer, combine, or reject a sketched abstraction
+while retaining the checkpoint's useful outcome.
+
+The dominant sequencing rule is deletion before reorganization. Do not move,
+wrap, or generalize the in-memory backend, external-finalization driver,
+consensus restore machinery, redundant transcript/conflict fields, or obsolete
+tests before deciding whether they should simply be removed.
+
 ## Safety invariants
 
 Every refactoring checkpoint must preserve the following invariants.
@@ -66,8 +83,10 @@ Every refactoring checkpoint must preserve the following invariants.
 ### Consensus and ordering
 
 - AlephBFT is the sole source of federation operation order.
-- No mint, swap, melt, restore, payment-observation, or keyset-rotation operation
-  may bypass consensus in federation mode.
+- No state-mutating mint, swap, melt, payment-observation, or keyset-rotation
+  operation may bypass consensus in federation mode. Restore and check-state
+  remain authenticated, readiness-gated threshold reads and do not require a
+  no-op consensus operation.
 - A finalized operation has one stable operation ID and one stable order index.
 - Conflict detection remains deterministic and is evaluated against canonical
   operation contents.
@@ -152,7 +171,7 @@ The intended ownership boundaries are:
 | Concern | Sole owner |
 |---|---|
 | HTTP parsing and response conversion | Axum handlers |
-| Member authentication and private request admission | Private federation request extractor |
+| Member authentication and common private request admission | Typed authenticated request boundary, with message-class-specific sequence handling |
 | Node task lifecycle and request coordination | `FederationNodeRuntime` |
 | Ordering and finality | AlephBFT consensus service |
 | Operation admission rules | Mint federation admission module |
@@ -160,27 +179,27 @@ The intended ownership boundaries are:
 | Application transaction lifecycle | Federation apply transaction/context |
 | Durable row encoding | Database backend federation codecs |
 | Materialized-state effects and digest inputs | Mint federation projection module |
-| Wallet member fanout and threshold decisions | Typed wallet quorum collector |
+| Wallet member fanout and threshold decisions | Typed member outcomes plus explicit endpoint quorum policies |
 | Wallet recovery policy | Existing wallet sagas and `Error` classification |
 
 ## Ranked opportunity matrix
 
-| Rank | Refactor | Value | Risk | Main result |
+| Rank | Refactor | Verdict | Risk | Main result |
 |---:|---|---|---|---|
-| 1 | Extract `FederationNodeRuntime` from `MintState` | Very high | Medium | Axum becomes a thin transport boundary |
-| 2 | Remove in-memory consensus and collapse consensus abstractions | Very high | High | One AlephBFT runtime model and no dead backend branches |
-| 3 | Introduce a typed wallet quorum collector | Very high | Medium | One implementation of threshold success, rejection, and ambiguity |
-| 4 | Move mint implementation into `mint/federation/` | High | Low | Operation-focused modules matching the domain and tests |
-| 5 | Centralize federation apply transactions | High | Medium | Atomic status/domain lifecycle cannot be forgotten |
-| 6 | Move materialized-state projection into the mint domain | High | Medium-high | Application and digest effects cannot drift apart |
-| 7 | Model journal application state explicitly | Medium-high | Medium | Clear order/application boundary in types and persistence |
-| 8 | Introduce `ValidatedFederationConfig` | High | Medium | Expensive validity and config digest become construction invariants |
-| 9 | Add an AlephBFT session supervisor | High | Medium-high | Explicit task, rotation, recovery, and shutdown lifecycle |
-| 10 | Replace the giant test file with a cluster harness and suites | High | Low | Faster diagnosis and reusable fault scenarios |
-| 11 | Split federation common types by domain | Medium-high | Low | Smaller public modules and clearer dependencies |
-| 12 | Centralize SQL journal row encoding | Medium | Low-medium | Less migration and column-order drift |
-| 13 | Add a typed private federation request extractor | Medium | Medium | Uniform authentication, admission, and sequence handling |
-| 14 | Replace broad internal string errors with structured runtime errors | Medium | Medium | Better retry decisions and diagnostics without new business-error policy |
+| 1 | Remove in-memory consensus, external finalization, and backend dispatch | Do first | High | One AlephBFT runtime model and no dead backend branches |
+| 2 | Extract `FederationNodeRuntime` from `MintState` | Strongly worthwhile | Medium | Axum becomes a thin transport boundary |
+| 3 | Add validated setup/active federation config types | Strongly worthwhile | Medium | Validation, aggregate keys, and digest become construction invariants |
+| 4 | Add an AlephBFT session supervisor under the node runtime | Strongly worthwhile | Medium-high | Explicit task, rotation, recovery, and shutdown lifecycle |
+| 5 | Centralize federation apply transactions | Worthwhile, narrow scope | Medium | Atomic status/domain lifecycle cannot be forgotten |
+| 6 | Model journal application state explicitly | Worthwhile after hash review | Medium | Clear order/application boundary in types and persistence |
+| 7 | Move materialized-state projection into the mint domain | Worthwhile, benchmark first | Medium-high | Axum stops duplicating mint database ownership |
+| 8 | Finish typed wallet quorum collection | Finish existing partial work | Medium | Shared scheduling and explicit endpoint decisions |
+| 9 | Move mint implementation into `mint/federation/` | Worthwhile after deletion | Low | Focused modules matching surviving responsibilities |
+| 10 | Split the giant test file | Worthwhile around R4 | Low | Faster diagnosis without preserving obsolete tests |
+| 11 | Add a typed private request boundary | Conditional on message classification | Medium | Shared authentication without hidden sequence side effects |
+| 12 | Centralize SQL journal row encoding | Worthwhile after schema cleanup | Low-medium | Less schema and column-order drift |
+| 13 | Split federation common types by domain | Defer | Low | Smaller modules after protocol shape stabilizes |
+| 14 | Structure runtime errors | Apply selectively | Medium | Typed retry and readiness decisions without error-type proliferation |
 
 ## Refactoring checkpoints
 
@@ -192,6 +211,15 @@ Mechanical moves should not be combined with semantic changes.
 ### Objective
 
 Create a reproducible baseline before moving runtime or consensus code.
+
+### Review verdict: Keep, but keep it lightweight
+
+This is necessary because the following changes affect ordering, restart, and
+wallet recovery invariants. Reuse the implementation plan, existing benchmark
+documents, and established test commands instead of creating another large
+baseline artifact. A separate commit is useful only when R0 adds durable test
+fixtures or harness behavior; documentation-only repetition is not a valuable
+checkpoint by itself.
 
 ### Work
 
@@ -236,6 +264,16 @@ Create a reproducible baseline before moving runtime or consensus code.
 Turn the 22,000-line test module into navigable suites and establish a reusable
 multi-member harness before production code moves.
 
+### Review verdict: Worthwhile, but split around deletion work
+
+The file size is a real maintenance problem, but moving every current test
+before R4 would carefully preserve a large body of in-memory-backend and
+external-finalization coverage that should be deleted. First extract only the
+minimal AlephBFT cluster and deterministic wait/shutdown fixtures needed for R4.
+After obsolete production paths and tests are removed, split the surviving
+suites physically. Avoid a single feature-rich cluster harness that becomes a
+new test framework with hidden operation ordering.
+
 ### Target layout
 
 ```text
@@ -266,7 +304,9 @@ crates/cdk-axum/src/federation/tests/
 
 ### Work
 
-- Move tests without changing assertions or timing first.
+- Move surviving tests without changing assertions or timing during each pure
+  relocation commit. Delete tests for removed behavior in the corresponding
+  production-deletion commit instead of relocating them first.
 - Extract a `FederationTestCluster` that owns member states, transport handles,
   configured thresholds, fake payment backends, and shutdown behavior.
 - Give the harness explicit operations:
@@ -284,7 +324,9 @@ crates/cdk-axum/src/federation/tests/
 
 ### Tests
 
-- The moved suite must preserve the original test count.
+- Pure relocation commits must preserve their test count. The completed R1/R4
+  sequence should preserve behavioral coverage, not the raw count of tests for
+  deliberately removed behavior.
 - Run each new test module independently.
 - Run the complete federation-enabled Axum suite once after all moves.
 - Confirm harness shutdown leaves no live AlephBFT or HTTP tasks.
@@ -306,6 +348,15 @@ crates/cdk-axum/src/federation/tests/
 
 Make operation ownership visible while preserving every existing public method
 and behavior.
+
+### Review verdict: Worthwhile after protocol cleanup, with fewer prescribed modules
+
+The production file remains large and should be split, while its test suite is
+already partly organized under `mint/federation/tests/`. Perform this after
+removing consensus restore and other dead fields so code is not moved and then
+deleted. The target layout below is illustrative: create a module only when a
+surviving responsibility has enough behavior to justify it, and do not force a
+one-file-per-operation structure for small appliers.
 
 ### Target layout
 
@@ -334,8 +385,11 @@ crates/cdk/src/mint/federation/
     keyset.rs
 ```
 
-The existing `crates/cdk/src/mint/federation.rs` must become
-`crates/cdk/src/mint/federation/mod.rs`; do not retain both module forms.
+When the production move is complete, the existing
+`crates/cdk/src/mint/federation.rs` should become
+`crates/cdk/src/mint/federation/mod.rs`; do not retain both production module
+forms. The existing directory used by split tests is only a partial completion
+of this checkpoint.
 
 ### Responsibility map
 
@@ -385,6 +439,16 @@ The existing `crates/cdk/src/mint/federation.rs` must become
 
 Make Axum a transport adapter and give federation node orchestration one explicit
 owner.
+
+### Review verdict: Strongly worthwhile
+
+This remains one of the highest-value boundaries. `MintState` directly owns a
+large set of consensus, synchronization, admission, notification, finalization,
+and session handles, so lifecycle correctness is difficult to inspect. Start
+with a concrete `FederationNodeRuntime`; add a trait only if a real test boundary
+cannot be expressed with narrow transport, storage, clock, or finalization
+dependencies. Coordinate this checkpoint with R10 so node and session lifecycle
+ownership are not modeled twice.
 
 ### Target layout
 
@@ -487,6 +551,15 @@ Do not add dynamic dispatch by default.
 Delete the development-only in-memory consensus backend and leave one coherent
 AlephBFT production architecture.
 
+### Review verdict: Highest-priority refactor
+
+This produces the largest immediate reduction in branches, test scaffolding,
+configuration, and misleading abstractions. Expand the checkpoint to remove the
+legacy external-finalization driver, private finalized-unit route, finality-mode
+dispatch, and mint-to-mint primary forwarding that AlephBFT already bypasses.
+Do not preserve these paths as test features. Keep only narrow fakes at actual
+proposal, finalized-stream, transport, clock, or storage boundaries.
+
 ### Important distinction
 
 `InMemoryFederationJournal` is an in-process representation of a journal used by
@@ -506,6 +579,8 @@ or `FederationJournalView` if the old name is misleading.
   AlephBFT;
 - configuration, CLI, and environment values that select `in_memory`;
 - compatibility aliases for the undeployed development backend.
+- the external-finalization driver and private finalized-unit delivery protocol;
+- mint-to-mint primary forwarding used only by the non-Aleph backend.
 
 ### Target consensus boundary
 
@@ -549,8 +624,9 @@ a different name.
 4. Collapse `FederationConsensusRuntime` and
    `FederationConsensusBackendAdapterRuntime` into the surviving AlephBFT service.
 5. Delete in-memory network simulation types and their production exports.
-6. Remove dead errors such as unsupported-backend and external-finalization
-   branches that can no longer occur.
+6. Remove dead errors, routes, transport messages, driver loops, and status such
+   as unsupported-backend and external-finalization branches that can no longer
+   occur.
 7. Rename remaining types that still imply multiple backends.
 8. Run unused-dependency and dead-code checks.
 
@@ -587,6 +663,15 @@ a different name.
 Centralize member scheduling, typed outcomes, threshold decisions, and ambiguity
 while keeping endpoint-specific validation explicit.
 
+### Review verdict: Finish the existing partial implementation; do not rebuild it
+
+Milestone 26 already retains typed member failures and implements threshold
+agreement on standard Cashu rejections. The remaining value is consolidating
+duplicated endpoint scheduling, cancellation, matching-view, and ambiguity
+logic. The `QuorumPolicy` trait sketch is optional and probably unnecessary:
+prefer concrete policy functions or enums until multiple implementations prove
+a trait useful. Preserve the existing wallet error and saga authority exactly.
+
 ### Current duplication
 
 The wallet has one low-level concurrent member collector followed by separate
@@ -602,8 +687,9 @@ quote status, and check-state. Each repeats some combination of:
 - failure formatting;
 - insufficient-response errors.
 
-The low-level collector also converts errors into strings too early, which loses
-typed information needed for threshold agreement on standard Cashu rejections.
+The low-level collector now retains typed errors and threshold rejection
+metadata, but endpoint-specific collectors still duplicate terminal-decision and
+response-policy logic and eventually collapse ambiguous diagnostics to strings.
 
 ### Target types
 
@@ -689,6 +775,15 @@ member outcomes and operation policies decide what constitutes agreement.
 
 Make atomic domain mutation and journal application state a structural guarantee.
 
+### Review verdict: Worthwhile as a narrow lifecycle consolidation
+
+Several appliers already update `Applied` status inside the same transaction as
+domain mutations, and deterministic rejection persistence already has a focused
+atomic path. R6 should consolidate repeated begin/status/commit sequences and
+make rollback deterministic rather than redesigning mint business logic. The
+self-consuming wrapper below is illustrative, not required; a scoped helper or
+transaction callback that follows existing database conventions may be simpler.
+
 ### Target abstraction
 
 Introduce a narrow transaction context around the existing mint database
@@ -752,6 +847,15 @@ helper must not hide quote, proof, signature, or payment business logic.
 Make the difference between immutable consensus order and mutable post-consensus
 application metadata obvious in the type system.
 
+### Review verdict: Worthwhile, but use legal states rather than grouped options
+
+The current `status` plus optional rejection can express invalid combinations.
+Use an enum or an equivalently constrained representation for pending, applied,
+and rejected-with-standard-response states. Do not implement the struct sketch
+literally because it still permits `Applied` with a rejection. First resolve the
+precise semantics and continued need for journal `state_digest` and
+`operation_outcome_hash`; do not cement redundant hash fields into the new type.
+
 ### Target model
 
 ```rust
@@ -769,11 +873,17 @@ struct FederationJournalEntry {
     application: FederationApplicationState,
 }
 
-struct FederationApplicationState {
-    status: FederationOperationStatus,
-    rejection: Option<ErrorResponse>,
-    state_digest: Option<FederationStateDigest>,
-    operation_outcome_hash: Option<FederationOperationOutcomeHash>,
+enum FederationApplicationState {
+    Pending,
+    Applied {
+        state_digest: Option<FederationStateDigest>,
+        operation_outcome_hash: Option<FederationOperationOutcomeHash>,
+    },
+    Rejected {
+        response: ErrorResponse,
+        state_digest: Option<FederationStateDigest>,
+        operation_outcome_hash: Option<FederationOperationOutcomeHash>,
+    },
 }
 ```
 
@@ -823,6 +933,15 @@ from their precise hash semantics. The minimum required grouping is `status` and
 
 Eliminate the second description of operation effects currently maintained by
 the Axum layer.
+
+### Review verdict: Correct ownership, but benchmark and avoid another effect model
+
+Axum should not understand mint rows, so moving snapshot ownership is valuable.
+However, a large exhaustive `FederationMaterializedEffects` mapping can remain a
+second description of application semantics even when placed nearby. Begin with
+a mint-owned, batched snapshot API and benchmark growing journals to remove the
+current N+1 query pattern. Add an incremental fingerprint/projection model only
+if measurements require it and full recomputation can continuously verify it.
 
 ### Target design
 
@@ -895,16 +1014,26 @@ logic.
 Represent full federation configuration validation and its computed digest as a
 construction invariant rather than a caller promise.
 
+### Review verdict: Strongly worthwhile, with phase-specific validated types
+
+This addresses a demonstrated hot path and removes unsafe method-name promises
+such as accepting a raw config in an `already_validated` path. Prefer a raw
+deserialized type followed by `ValidatedSetupFederationConfig` and
+`ValidatedActiveFederationConfig`, because DKG setup and active runtime have
+different legal fields. Cache the config digest, aggregate keys, member indexes,
+and thresholds in the active representation. Keep member advertisement and
+active-keyset checks cheap and dynamic.
+
 ### Target type
 
 ```rust
 #[derive(Debug, Clone)]
-pub struct ValidatedFederationConfig {
+pub struct ValidatedActiveFederationConfig {
     config: Arc<FederationConfig>,
     digest: FederationConfigDigest,
 }
 
-impl ValidatedFederationConfig {
+impl ValidatedActiveFederationConfig {
     pub fn try_new(config: FederationConfig) -> Result<Self>;
     pub fn config(&self) -> &FederationConfig;
     pub fn digest(&self) -> FederationConfigDigest;
@@ -950,6 +1079,15 @@ impl ValidatedFederationConfig {
 
 Give AlephBFT task ownership, activity, rotation, recovery, and shutdown one
 explicit lifecycle state machine.
+
+### Review verdict: Strongly worthwhile as a child of R3
+
+The live session currently owns several manually managed tasks, so explicit
+cancellation, joining, rotation, and failure state are justified. Build the
+supervisor as a concrete component owned by `FederationNodeRuntime`, not as a
+second peer runtime or general task framework. R3 should define who owns it and
+R10 should define the owned session lifecycle. Preserve event-driven idle
+behavior and Aleph backup recovery.
 
 ### Target states
 
@@ -1004,6 +1142,15 @@ Halted(reason)
 ### Objective
 
 Reduce the 5,900-line common facade and make dependency direction visible.
+
+### Review verdict: Useful but defer until protocol deletion stabilizes
+
+Mechanical organization has low behavioral risk, but doing it before removing
+obsolete consensus, restore, transcript, conflict, and transport types creates
+needless movement and merge noise. Start with a few coarse ownership modules,
+such as config/DKG, ordered operations, journal/application state, and private
+transport. Do not force every small identity, threshold, keyset, or error type
+into its own file unless that establishes a real dependency boundary.
 
 ### Target layout
 
@@ -1072,6 +1219,15 @@ crates/cdk-common/src/federation/
 
 Prevent query column lists, row decoding, and migrations from drifting apart.
 
+### Review verdict: Worthwhile after schema cleanup
+
+A single typed journal row codec and grouped storage families will reduce real
+column-order and nullable-field risk. Perform this after deciding whether to
+remove singular conflict keys, digest checkpoints, durable gossip retries, and
+other experimental columns, then squash undeployed federation migrations. Do
+not build a dynamic SQL abstraction; retain static parameterized statements and
+shared explicit decoding.
+
 ### Work
 
 - Introduce a `FederationJournalRow` storage representation with explicit
@@ -1086,9 +1242,9 @@ Prevent query column lists, row decoding, and migrations from drifting apart.
   - AlephBFT backup/session data;
   - payment observations and quarantine;
   - member status, sequences, and network retry records.
-- Add migration tests that decode rows created before and after each schema
-  migration that applies to deployed formats. Undeployed experimental federation
-  compatibility should be removed rather than expanded.
+- Add migration tests only for deployed formats. Federation is undeployed, so
+  squash experimental federation migrations after the retained schema is
+  settled rather than testing every intermediate development schema.
 - Keep SQLite and PostgreSQL behavior equivalent.
 
 ### Tests
@@ -1097,7 +1253,8 @@ Prevent query column lists, row decoding, and migrations from drifting apart.
 - Nullable rejection and consensus-evidence fields.
 - Every journal retrieval method uses the same codec.
 - SQLite and PostgreSQL query parity where test infrastructure permits.
-- Migration from the current development schema.
+- Fresh-schema parity for the final undeployed federation schema; do not require
+  migration from discarded experimental federation schemas.
 - Corrupt enum, digest, JSON, and operation ID fields fail with structured
   storage errors.
 
@@ -1118,6 +1275,16 @@ Prevent query column lists, row decoding, and migrations from drifting apart.
 
 Make authentication, admission control, message-kind validation, and sequence
 handling uniform across private REST routes.
+
+### Review verdict: Conditionally worthwhile after classifying message semantics
+
+Shared signature, federation, sender, and message-kind verification are useful.
+Sequence durability and consumption are not uniform: DKG or effectful control
+requests differ from idempotent reads and high-frequency Aleph gossip. First
+classify each private message and remove the external finalized-unit route.
+Then share the common authenticated envelope boundary while keeping class-
+specific sequence persistence explicit. Avoid generic middleware that commits a
+watermark before the handler's intended acceptance point.
 
 ### Target boundary
 
@@ -1174,6 +1341,15 @@ needed by the handler.
 
 Reduce broad `Custom(String)` and `anyhow` plumbing in federation runtime code
 without creating a federation-specific Cashu business-error policy.
+
+### Review verdict: Apply selectively, not as a broad taxonomy project
+
+Typed errors are valuable where retryability, HTTP status, readiness, or test
+control flow currently depends on display text. They are not valuable merely to
+replace every diagnostic string with another wrapper enum. Add structured
+variants at proven decision boundaries while doing R3, R4, R6, and R13, and
+leave leaf diagnostics simple when nobody classifies them. Never duplicate or
+reinterpret standard Cashu business errors.
 
 ### Error boundaries
 
@@ -1286,18 +1462,21 @@ The refactoring program is complete when all of the following are true:
 - `MintState` no longer implements federation consensus, finalization, catch-up,
   or recovery algorithms directly.
 - Mint federation production code lives under
-  `crates/cdk/src/mint/federation/` and is organized by operation.
-- Wallet fanout preserves typed member outcomes and has one threshold decision
-  framework.
+  `crates/cdk/src/mint/federation/` and is organized by surviving domain
+  responsibility.
+- Wallet fanout preserves typed member outcomes and shares scheduling without
+  hiding endpoint-specific threshold decisions.
 - Mint application paths share an atomic application transaction lifecycle.
 - Journal order and post-consensus application state are explicitly separated in
   types and hash documentation.
 - Materialized-state projection is owned by the mint federation domain, not Axum.
-- Runtime components accept a `ValidatedFederationConfig` or equivalent
-  invariant-bearing type.
+- Runtime components accept phase-appropriate validated setup or active
+  federation configuration types.
 - AlephBFT session tasks have one supervisor and deterministic shutdown.
-- Private REST handlers share one authenticated admission boundary.
-- Federation test suites are split and use a reusable cluster harness.
+- Private REST handlers share authenticated envelope verification while keeping
+  message-class-specific sequence semantics explicit.
+- Federation test suites are split and use focused reusable fixtures rather
+  than one mandatory all-purpose cluster framework.
 - SQL row codecs are centralized enough that schema changes cannot silently
   reorder journal decoding.
 - Full fakewallet mint, swap, melt, restore, partition, restart, and catch-up
@@ -1308,23 +1487,38 @@ The refactoring program is complete when all of the following are true:
 
 The safest sequence is:
 
-1. R0: freeze the behavioral baseline.
-2. R1: extract the test cluster and split test suites.
-3. R2: move mint federation code into the required directory structure.
-4. R3: extract the node runtime from Axum.
-5. R4: convert tests to AlephBFT, collapse consensus abstractions, and delete the
-   in-memory backend.
-6. R5: introduce typed wallet fanout and quorum decisions.
-7. R6: centralize application transactions.
-8. R7: model journal application state explicitly.
-9. R8: move materialized-state projection into the mint domain.
-10. R9: introduce validated configuration.
-11. R10: add the AlephBFT session supervisor.
-12. R11-R14: finish common-module, SQL, private-route, and structured-error
-    cleanup.
-13. Run the complete verification matrix and update the federation architecture
-    and progress documentation.
+1. R0: record a lightweight behavioral baseline using existing commands and
+   benchmark documents.
+2. R1 phase A: extract only the minimal real-Aleph cluster, deterministic wait,
+   and shutdown fixtures needed to perform deletion safely.
+3. R4: remove the in-memory backend, legacy primary forwarding, external-
+   finalization driver and route, duplicate consensus abstractions, and tests
+   whose behavior was deliberately removed.
+4. Complete the related cleanup decisions for consensus restore, request
+   transcripts, singular conflict keys, observation wall-clock fields, and hash
+   semantics before reorganizing their types.
+5. R1 phase B: split the surviving Axum federation suites without preserving a
+   framework for deleted behavior.
+6. R9: introduce validated setup and active configuration types early so later
+   runtime moves use the final invariant-bearing boundary.
+7. R2: move the surviving mint federation production code into focused modules.
+8. R3 and R10: extract the concrete node runtime and its owned Aleph session
+   supervisor together.
+9. R6 and R7: consolidate application transactions and introduce legal typed
+   application states after digest/outcome semantics are settled.
+10. R8: move batched materialized-state projection into the mint domain, using
+    benchmarks before adding incremental projection machinery.
+11. R5: finish consolidation of the existing typed wallet member outcomes and
+    endpoint quorum policies.
+12. R13 and R12: classify private message sequence semantics, consolidate the
+    authenticated request boundary, settle the schema, squash undeployed
+    federation migrations, and centralize retained row codecs.
+13. R11 and R14: split common modules and add structured errors opportunistically
+    where the preceding work establishes a clear boundary.
+14. Run the complete verification matrix and update federation architecture and
+    progress documentation.
 
-This order front-loads test clarity and mechanical moves, then removes duplicate
-architecture, and only afterward introduces invariant-bearing helpers. It keeps
-each commit reconstructable and gives failures a narrow likely cause.
+This order deletes obsolete behavior before moving it, introduces validated
+configuration before runtime extraction, and combines lifecycle refactors that
+must share one owner. Each coherent checkpoint remains independently testable
+and reconstructable in Git.

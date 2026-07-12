@@ -362,3 +362,971 @@ should be retained or renamed according to its actual remaining responsibility.
 - Search all production code, tests, generated tooling, examples, and docs for
   backend-selection assumptions and stale in-memory terminology before marking
   this item complete.
+
+## 7. Remove the legacy external-finalization Aleph driver
+
+**Status:** Todo
+
+### Problem
+
+The upstream AlephBFT session already finalizes units locally, but CDK still
+starts a second driver that previews adapter units, broadcasts them through a
+private finalized-unit REST route, waits for remote delivery, and drains them
+into the journal. The driver describes itself as not being a production BFT
+ordering engine and becomes idle when network finality is available.
+
+### Cleanup
+
+- Remove the external-finalization driver loop and finality-mode dispatch.
+- Remove the finalized-unit private route, transport messages, peer-client
+  methods, preview/drain APIs, errors, configuration, metrics, and tests that
+  exist solely for that path.
+- Preserve finalization through the real Aleph session and prove that no
+  startup, recovery, or test path still depends on externally delivered units.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/federation/aleph_bft_driver.rs`.
+- `crates/cdk-axum/src/federation/aleph_bft_routes.rs`,
+  `peer_client.rs`, `aleph_bft_session.rs`, and Axum startup wiring.
+- `crates/cdk-common/src/federation/transport.rs` and consensus adapter APIs.
+- Verify proposal, finalization, partition/heal, restart, and catch-up using only
+  upstream AlephBFT finality, then search for finalized-unit terminology.
+
+## 8. Remove legacy mint-to-mint primary forwarding
+
+**Status:** Todo
+
+### Problem
+
+Non-primary members can forward operations to the first member, synchronize
+from it, and collect range evidence. AlephBFT explicitly bypasses this path, so
+it survives only for the in-memory consensus backend and adds an unnecessary
+private submission path and single-ingress assumption.
+
+### Cleanup
+
+- Complete this together with, or immediately after, section 6.
+- Remove `submit_operation_to_primary_if_needed`, its transport abstraction,
+  forwarding-specific readiness logic, and tests.
+- Keep wallet quote coordination separate; wallet primary-member behavior has
+  payment semantics and must not be removed as part of this task.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/federation/sync_loop.rs` and
+  `crates/cdk-axum/src/federation.rs`.
+- `crates/cdk-axum/src/lib.rs` public and payment-observation submission paths.
+- Prove every Aleph member can submit an identical operation, duplicate
+  operation IDs remain idempotent, and no forwarding route remains.
+
+## 9. Remove restore from the consensus operation model
+
+**Status:** Todo
+
+### Problem
+
+Federated restore is a threshold read of already persisted signature shares.
+It does not sign new outputs or mutate mint state, and the consensus apply path
+returns without applying a state transition. Keeping a restore operation type
+expands canonical serialization, conflict analysis, replay, projection, and
+catch-up without providing ordering safety.
+
+### Cleanup
+
+- Remove `FederationRestoreOperation`, its operation kind and enum variant,
+  transcript handling, conflict/balance analysis, projection, and fixtures.
+- Keep authoritative-read readiness checks and wallet threshold share
+  validation and aggregation.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/operation.rs`.
+- `crates/cdk/src/mint/federation.rs`, public restore handlers, and
+  `crates/cdk/src/wallet/federation.rs`.
+- Prove restore is read-only, interrupted receive still recovers through
+  restore/check-state, and no production caller constructs a restore envelope.
+
+## 10. Remove the unused request-transcript abstraction
+
+**Status:** Todo
+
+### Problem
+
+`FederationRequestTranscript` and its hash duplicate the canonical operation
+envelope and operation ID. The initial audit found meaningful use in tests but
+not in production admission, ordering, application, or catch-up.
+
+### Cleanup
+
+- Reconfirm there is no external audit or protocol consumer.
+- Remove transcript types, builders, hashes, exports, test fixtures, and
+  documentation while retaining the canonical operation-ID commitment.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/operation.rs` and its tests.
+- Search for `request_transcript`, `has_request_transcript`, and transcript hash
+  consumers across feature-gated builds.
+- Prove operation IDs still bind every consensus-relevant request field and
+  preserve mix-and-match protection.
+
+## 11. Remove the singular journal conflict key
+
+**Status:** Todo
+
+### Problem
+
+Journal entries persist both `conflict_key` and `conflict_keys`, with the former
+representing only the first element of the complete vector. The duplicate field
+and SQL column allow inconsistent representations and enlarge codecs and tests.
+
+### Cleanup
+
+- Keep only the typed `conflict_keys` collection.
+- Remove the singular field, operation helper, SQL column, row codec, migration
+  history, fixtures, and assertions.
+- Prefer ordering typed conflict keys directly instead of repeatedly converting
+  them to canonical JSON strings for in-memory maps.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/journal.rs` and `operation.rs`.
+- `crates/cdk-sql-common/src/mint/federation.rs` and federation migrations.
+- Prove conflict detection and deterministic replay produce identical results
+  for zero, one, and multiple conflict keys.
+
+## 12. Remove observation wall-clock time from consensus operations
+
+**Status:** Todo
+
+### Problem
+
+Mint and melt payment observations serialize `observed_time`, but operation-ID
+derivation intentionally strips it. Two byte-distinct operations can therefore
+share an identity. Application also has a deterministic consensus acceptance
+time available.
+
+### Cleanup
+
+- Remove `observed_time` from canonical consensus observation payloads.
+- Derive durable payment transition time from accepted logical time.
+- Keep local backend observation timing only as non-consensus operational
+  metadata if it remains useful for diagnostics.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/operation.rs` operation-ID normalization.
+- `crates/cdk/src/mint/federation.rs` payment-observation application.
+- Regenerate canonical fixtures and prove operation identity, replay, matching,
+  stale-status reporting, and materialized digests remain deterministic.
+
+## 13. Remove unused materialized-state digest checkpoints
+
+**Status:** Todo
+
+### Problem
+
+The runtime writes and prunes state-digest checkpoint rows after application,
+but the initial audit found no production reader. This imposes extra writes and
+schema/configuration surface without contributing to current verification.
+
+### Cleanup
+
+- Reconfirm that status, catch-up, monitoring, and operator tooling do not read
+  checkpoint history.
+- Remove the checkpoint table, retention setting, database methods, writes,
+  pruning, migrations, and tests if it remains write-only.
+- Keep the current materialized-state digest needed by catch-up verification.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/lib.rs` finalization and checkpoint recording.
+- Federation database traits, SQL codecs, SQLite/PostgreSQL migrations, and
+  state-digest tests.
+- Compare pre/post cleanup status and catch-up digests and measure reduced write
+  work during sustained operation batches.
+
+## 14. Replace durable Aleph gossip retries with bounded runtime queues
+
+**Status:** Todo
+
+### Problem
+
+Failed Aleph network-message deliveries are stored as database retry rows and
+restored at startup. Gossip is transient liveness traffic, while Aleph backup
+state should contain the durable information required to resume the protocol.
+Persisting each failed delivery increases write contention and recovery code.
+
+### Cleanup
+
+- First prove from the Aleph protocol and CDK backup implementation that a node
+  can regenerate or request all required traffic after restart.
+- If proven, replace database retry rows with bounded per-peer in-memory queues,
+  backoff, expiry, and metrics.
+- Do not remove Aleph session backup persistence.
+
+### Known locations and completion checks
+
+- Aleph network pump/session runtime and federation retry database methods.
+- `crates/cdk-sql-common/src/mint/federation.rs` and federation migrations.
+- Test peer outage, queue saturation, restart during failed delivery, heal, and
+  final convergence without message loss or unbounded retry amplification.
+
+## 15. Remove undeployed federation wire-compatibility defaults
+
+**Status:** Todo
+
+### Problem
+
+Private REST, status, journal, and catch-up structures contain defaults and
+optional fields that accept obsolete experimental shapes, including missing
+materialized-state information. Federation has not been deployed, so these
+branches hide malformed current messages rather than protecting users.
+
+### Cleanup
+
+- Make every current protocol field required unless absence has a real current
+  semantic meaning, such as optional pagination or optional evidence.
+- Remove legacy aliases, genesis fallbacks, compatibility fixtures, and negative
+  tests for obsolete shapes.
+- Retain explicit protocol-version rejection for genuinely different versions.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/transport.rs`, `journal.rs`, and
+  `operation.rs`.
+- Axum private routes, wallet federation metadata, and setup/config parsing.
+- Regenerate all current fixtures and prove malformed or incomplete current
+  messages fail closed.
+
+## 16. Squash undeployed federation database migrations
+
+**Status:** Todo
+
+### Problem
+
+SQLite and PostgreSQL carry a long sequence of migrations for experimental
+federation tables, columns, and corrections that have never been deployed.
+Maintaining this history makes the intended schema difficult to understand and
+keeps obsolete design decisions alive.
+
+### Cleanup
+
+- Perform this after the other federation schema removals stabilize.
+- Replace experimental federation migration chains with one clean initial
+  federation schema per database backend.
+- Preserve all standalone CDK migration history and behavior.
+- Replace migration-source string tests with schema parity and behavior tests.
+
+### Known locations and completion checks
+
+- SQLite and PostgreSQL migration directories and migration-registration code.
+- SQL federation codecs and database tests.
+- Create fresh databases for both backends, compare schemas and constraints,
+  run federation restart/catch-up tests, and verify standalone upgrades remain
+  unchanged.
+
+## 17. Extract a FederationNodeRuntime from Axum MintState
+
+**Status:** Todo
+
+### Problem
+
+`MintState` directly owns consensus, synchronization, DKG, sequence tracking,
+notifications, finalization, admission, pending operations, network inbound,
+and live-session state. Its implementation also contains much of the federation
+lifecycle, making ownership and shutdown dependencies difficult to follow.
+
+### Cleanup
+
+- Introduce one `FederationNodeRuntime` with explicit construction, startup,
+  readiness, submission, synchronization, and shutdown responsibilities.
+- Keep HTTP handlers as adapters and mint business logic in `cdk`.
+- Avoid a mechanical mega-struct move; split services behind narrow methods and
+  preserve standalone `MintState` construction.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/lib.rs`, `federation.rs`, and the federation submodules.
+- `docs/federated-cashu-refactoring-plan.md` section R3.
+- Prove runtime task ownership, startup failure cleanup, graceful shutdown,
+  restart, and non-federated router behavior.
+
+## 18. Introduce an explicit AlephBFT session supervisor
+
+**Status:** Todo
+
+### Problem
+
+A live Aleph session owns several task handles for the session, activity,
+network pump, application, and completion watcher and aborts them manually.
+Rotation and failure handling are spread across startup and runtime paths.
+
+### Cleanup
+
+- Create a supervisor with explicit states and one cancellation mechanism.
+- Centralize session start, completion, automatic rotation, error propagation,
+  task joining, and shutdown.
+- Ensure an idle session sleeps without reintroducing periodic empty units.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs`,
+  `aleph_bft_runtime.rs`, and Axum startup wiring.
+- `docs/federated-cashu-refactoring-plan.md` section R10.
+- Test partial startup failure, task panic/error, idle wake, rotation, restart,
+  and shutdown with no detached tasks.
+
+## 19. Collapse duplicate consensus abstraction layers
+
+**Status:** Todo
+
+### Problem
+
+CDK models data providers, finalization handlers, adapters, engines, runtimes,
+backend runtimes, and in-memory variants in common code, while the upstream
+Aleph integration has another provider/finalizer/runtime stack. Much of this
+exists to support multiple backends or the retired external driver.
+
+### Cleanup
+
+- Complete after sections 6 and 7.
+- Reduce the production boundary to proposal input, finalized ordered output,
+  durable Aleph backup, and journal application.
+- Remove one-implementation traits, wrapper enums, aliases, conversions, and
+  errors that no longer provide a test or ownership boundary.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/consensus.rs` and its tests.
+- `crates/cdk-axum/src/federation/aleph_bft_runtime.rs` and session code.
+- Prove direct unit-test boundaries remain available without constructing a
+  second fake consensus engine.
+
+## 20. Give order and materialized-state digests distinct semantics
+
+**Status:** Todo
+
+### Problem
+
+The journal order digest and a journal state digest both chain operation IDs by
+index under different domains, while the same state-digest type is also used
+for a full materialized database snapshot. This obscures which invariant each
+hash proves and may duplicate work without adding a commitment.
+
+### Cleanup
+
+- Specify the exact threat model and input set of every retained digest.
+- Keep one immutable ordering commitment and a distinctly typed
+  materialized-state commitment.
+- Remove a redundant journal hash only after proving no certificate, catch-up,
+  tamper check, or operator comparison relies on an independent commitment.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/journal.rs`.
+- Axum materialized digest computation, catch-up transport, range evidence, and
+  status comparison.
+- Add golden vectors and tamper tests for reorder, omission, altered outcome,
+  altered rejection, and altered materialized rows before changing hashes.
+
+## 21. Evaluate and remove a derivable operation outcome hash
+
+**Status:** Todo
+
+### Problem
+
+`operation_outcome_hash` is constructed, stored, validated, and compared, but
+the initial audit did not find an independent production consumer beyond data
+already represented by journal application status and rejection metadata.
+
+### Cleanup
+
+- Document its current security property and every reader before removal.
+- If it is fully derivable from retained canonical fields and commitments,
+  remove the field, SQL column, codecs, catch-up checks, and fixtures.
+- Keep it if the proof shows it independently binds application outcome in a
+  way no retained digest provides.
+
+### Known locations and completion checks
+
+- Federation journal types, application finalization, SQL federation storage,
+  catch-up verification, and materialized digest construction.
+- Use golden and mutation tests to prove any removal does not permit outcome or
+  rejection substitution.
+
+## 22. Use one authoritative representation for catch-up history
+
+**Status:** Todo
+
+### Problem
+
+Catch-up responses carry full journal entries and full finalized Aleph items,
+plus digests, completion flags, and signed range evidence. The receiver rebuilds
+one representation and compares it with the other, creating substantial code
+and multiple mismatch modes.
+
+### Cleanup
+
+- Design one authoritative ordered history representation.
+- Carry only the additional post-consensus application metadata, rejection,
+  materialized commitment, and quorum evidence needed to verify and apply it.
+- Do not weaken ordering, range continuity, quorum certification, or state
+  verification in pursuit of a smaller payload.
+
+### Known locations and completion checks
+
+- Federation catch-up transport structures in `cdk-common`.
+- Catch-up creation, verification, replay, and synchronization in `cdk-axum`.
+- Test truncation, duplication, reordered items, altered application metadata,
+  stale evidence, partial ranges, restart, and partition recovery.
+
+## 23. Rename session outcome evidence to catch-up range certificates
+
+**Status:** Todo
+
+### Problem
+
+`FederationSessionOutcome` signs arbitrary contiguous journal ranges rather
+than describing the output of one Aleph session. The current name collides with
+actual Aleph session lifecycle terminology and makes catch-up diagnostics hard
+to interpret.
+
+### Cleanup
+
+- Rename the concept, routes, tables, status fields, errors, and documentation
+  to `FederationCatchUpCertificate` or another precise range-proof name.
+- After renaming, remove fields that are provably derivable without weakening
+  signed-domain separation or validation.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation/transport.rs`.
+- Axum evidence collection, sync status/readiness, SQL storage, metrics, and
+  progress documentation.
+- Confirm logs clearly distinguish Aleph session completion from certified
+  journal-range evidence.
+
+## 24. Make materialized-state digest computation scalable
+
+**Status:** Todo
+
+### Problem
+
+Materialized digest construction scans journal history and performs repeated
+database lookups for quotes, proofs, blinded messages, completed operations,
+shares, and observations. Recomputing this after operations and during status
+or catch-up risks O(n-squared) lifetime work and N+1 database access.
+
+### Cleanup
+
+- Benchmark first with growing journal and materialized-state sizes.
+- Move projection ownership to the mint domain and batch database reads.
+- If still needed, maintain deterministic durable row fingerprints or another
+  incremental projection, with periodic full recomputation as an audit.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/federation.rs` materialized digest builder.
+- Mint federation application and database projection APIs.
+- `docs/federated-cashu-refactoring-plan.md` section R8.
+- Prove incremental and full digests agree under apply, rejection, restart,
+  catch-up, and deliberate row tampering; record performance measurements.
+
+## 25. Centralize consensus-application transaction ownership
+
+**Status:** Todo
+
+### Problem
+
+Federation mint application opens and commits transactions in many operation
+branches, while Axum separately coordinates journal application status,
+rejections, digests, and notifications. It is difficult to see which state is
+atomic and which failures leave an operation retryable.
+
+### Cleanup
+
+- Introduce one application transaction lifecycle with explicit operation
+  context, commit, deterministic rejection, retryable failure, and rollback.
+- Keep all operation-specific business decisions in existing mint logic.
+- Ensure failed transactions roll back synchronously before their connection is
+  released or reused.
+
+### Known locations and completion checks
+
+- `crates/cdk/src/mint/federation.rs` and mint operation modules.
+- `crates/cdk-axum/src/lib.rs` journal finalization/application.
+- `docs/federated-cashu-refactoring-plan.md` section R6.
+- Test injected failure at each write boundary, duplicate apply, lock recovery,
+  restart, and catch-up convergence.
+
+## 26. Model journal application state as one explicit enum
+
+**Status:** Todo
+
+### Problem
+
+Status, persisted rejection, and related application metadata are loose fields
+that can theoretically represent invalid combinations. Callers repeatedly
+interpret these fields to determine replay and response behavior.
+
+### Cleanup
+
+- Introduce an explicit application-state type such as pending, applied,
+  rejected with `ErrorResponse`, or retryable failure.
+- Encode only states the runtime can actually produce and preserve atomic
+  rejected-response persistence from Milestone 26.
+- Keep rejected operations out of completed operations.
+
+### Known locations and completion checks
+
+- Federation journal types, SQL codecs, catch-up transport, state digest, and
+  public response reconstruction.
+- `docs/federated-cashu-refactoring-plan.md` section R7.
+- Add serialization and database constraints that reject impossible states and
+  verify replay of every valid state.
+
+## 27. Split federation configuration into setup and active phases
+
+**Status:** Todo
+
+### Problem
+
+One `FederationConfig` represents both an incomplete setup/DKG ceremony and a
+fully active federation. Validation is repeated across DKG, mintd startup,
+mint construction, wallet activation, keyset checks, and digest calculation.
+
+### Cleanup
+
+- Deserialize into a raw type, then validate into separate setup and active
+  configuration types.
+- Cache the canonical config digest, aggregate BLS keys, threshold parameters,
+  and validated member indexes in the active type.
+- Make APIs accept the validated phase they require instead of rerunning partial
+  checks or relying on empty keysets/transcripts.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation.rs`, common DKG modules, mintd DKG setup,
+  mint builder/startup, and wallet federation connector.
+- `docs/federated-cashu-refactoring-plan.md` section R9.
+- Prove invalid and non-v3 configurations cannot cross the active boundary and
+  benchmark removal of repeated BLS aggregation and digest work.
+
+## 28. Centralize federation payment observation in one service
+
+**Status:** Todo
+
+### Problem
+
+Mint payment observations can be triggered by quote creation, periodic scans,
+mint submissions, and status requests, while melt observation follows a
+different request-driven path. HTTP handlers currently participate in backend
+polling and consensus-observation side effects.
+
+### Cleanup
+
+- Create a backend-neutral `FederationPaymentObserver` service for both mint and
+  melt quotes.
+- Consume normal CDK payment notifications where available and use bounded
+  polling only as repair or for backends without notifications.
+- Let handlers notify or query the service without duplicating observation
+  submission rules.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/custom_handlers.rs` and federation payment-observation
+  modules.
+- Mint payment processor abstractions and mint federation observation builders.
+- Test success, failure, unknown, delayed backend, duplicate notification,
+  restart, offline observer, and eventual catch-up with fake and real-shaped
+  backend mocks.
+
+## 29. Build one typed wallet quorum collector
+
+**Status:** Todo
+
+### Problem
+
+Wallet federation code repeats member scheduling, retries, timeouts, threshold
+matching, primary fallback, error agreement, response validation, and failure
+summaries for mint, swap, melt, restore, and state queries.
+
+### Cleanup
+
+- Introduce a shared scheduler returning typed member IDs, successes, standard
+  Cashu errors, transport failures, timeouts, and invalid responses.
+- Keep endpoint-specific quorum and validation policies explicit.
+- Preserve the standard `ErrorResponse -> Error -> saga -> CLI` pipeline and do
+  not add a federation-specific business-error classifier.
+
+### Known locations and completion checks
+
+- `crates/cdk/src/wallet/federation.rs` and its test module.
+- `docs/federated-cashu-refactoring-plan.md` section R5.
+- Cover threshold success, matching rejection, mixed responses, timeout,
+  invalid share, fallback, cancellation, and below-threshold ambiguity for each
+  policy family.
+
+## 30. Separate payment quote coordination from generic wallet primary behavior
+
+**Status:** Todo
+
+### Problem
+
+The wallet's `primary_member_id` controls quote creation ordering, single-member
+fallbacks, some quote status behavior, and connector ordering. This conflates a
+payment coordinator with a general federation authority and can allow one view
+to substitute for threshold evidence in paths that deserve separate policy.
+
+### Cleanup
+
+- Inventory every primary-member shortcut and classify it as quote creation,
+  payment ownership, availability fallback, or unsafe consensus-view fallback.
+- Introduce narrowly named quote/payment coordinator policy where one member is
+  genuinely required.
+- Remove single-member fallbacks from consensus-dependent reads unless the
+  wallet saga explicitly treats the result as provisional or ambiguous.
+
+### Known locations and completion checks
+
+- `crates/cdk/src/wallet/federation.rs`, CLI federation registry/config, and
+  wallet federation tests.
+- Coordinate this with real payment-member election and failover design.
+- Test coordinator outage, delayed responses, quote recovery, status polling,
+  and prevention of one-member state or rejection decisions.
+
+## 31. Derive transient federation readiness instead of persisting it
+
+**Status:** Todo
+
+### Problem
+
+Healthy, lagging, catching-up, and evidence-verification states are persisted
+and restored even though startup independently verifies journal, Aleph backup,
+range evidence, and materialized state. Frequent status writes add database
+work and can restore stale operational labels.
+
+### Cleanup
+
+- Identify which status is durable safety state and which is a derived runtime
+  projection.
+- Derive transient readiness from journal position, verified certificates,
+  session state, peer observations, and current faults.
+- Persist only durable operator halt/quarantine reasons if required.
+
+### Known locations and completion checks
+
+- Federation member-status database methods, Axum startup recovery, sync loop,
+  status routes, and readiness gates.
+- Test restart from each readiness condition, stale persisted state removal,
+  partition/heal, mismatch quarantine, and reduced database writes.
+
+## 32. Split private REST replay protection by message semantics
+
+**Status:** Todo
+
+### Problem
+
+One sequence tracker and database table cover status, activity, Aleph gossip,
+finalization, catch-up, DKG, and operation submission. High-frequency liveness
+traffic does not have the same durability needs as effectful ceremony or
+administrative requests.
+
+### Cleanup
+
+- Classify every private message as effectful, durable control, idempotent data
+  fetch, or transient liveness/gossip.
+- Keep durable replay protection only where restart must remember it.
+- Use bounded in-memory replay windows for authenticated gossip/activity/status
+  and operation IDs for operation idempotency.
+
+### Known locations and completion checks
+
+- Federation REST sequence tracker, transport message kinds, private route
+  admission, SQL sequence storage, and peer client.
+- `docs/federated-cashu-refactoring-plan.md` section R13.
+- Test duplicate, reordered, replayed, restarted, and high-rate traffic for each
+  class without weakening authenticated sender admission.
+
+## 33. Separate wallet-facing and member-facing protocol versions
+
+**Status:** Todo
+
+### Problem
+
+Public federation metadata advertises operation, consensus-item, private REST,
+and range-evidence versions together. A wallet may reject an otherwise
+compatible Cashu federation because members changed an internal transport or
+catch-up protocol the wallet never uses.
+
+### Cleanup
+
+- Define the wallet-visible federation/Cashu contract separately from private
+  member protocol versions.
+- Keep internal versions in member configuration or the payloads they govern.
+- Remove duplicated or meaningless cross-layer compatibility checks.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation.rs`, transport payloads, wallet config
+  validation, mint info, setup/DKG transcript, and startup checks.
+- Test independent wallet-protocol and member-protocol incompatibility and
+  confirm failures occur only at the relevant boundary.
+
+## 34. Split the cdk-common federation module by domain
+
+**Status:** Todo
+
+### Problem
+
+Federation configuration, member identity, thresholds, payment policy, DKG,
+operations, journal, transport, consensus, and validation are exposed through a
+broad common facade. Large modules and re-export surfaces obscure dependency
+direction and make unsafe cross-layer coupling easy.
+
+### Cleanup
+
+- Establish modules for identity/configuration, DKG, ordered operations,
+  journal/application state, private transport, certificates, and wallet-facing
+  metadata.
+- Minimize re-exports and keep transport/Axum concerns out of mint business
+  types.
+- Perform mechanical moves separately from behavior changes.
+
+### Known locations and completion checks
+
+- `crates/cdk-common/src/federation.rs` and the `federation/` submodules.
+- `docs/federated-cashu-refactoring-plan.md` section R11.
+- Use compile-time visibility and dependency boundaries to prevent modules from
+  regaining inappropriate ownership.
+
+## 35. Split federation database traits and centralize row codecs
+
+**Status:** Todo
+
+### Problem
+
+Federation persistence spans a large method surface and a large SQL
+implementation with repeated select lists and conversions. Runtime journal,
+Aleph state, payment/signing application, and DKG ceremony storage have
+different ownership and lifecycle requirements.
+
+### Cleanup
+
+- Split storage interfaces by coherent owner without creating tiny traits for
+  every query.
+- Define shared typed row codecs and canonical column lists once.
+- Keep transaction-scoped mint application APIs distinct from runtime
+  consensus and DKG persistence.
+
+### Known locations and completion checks
+
+- Federation database traits in `cdk-common`.
+- `crates/cdk-sql-common/src/mint/federation.rs`, SQLite, and PostgreSQL.
+- `docs/federated-cashu-refactoring-plan.md` section R12.
+- Run backend parity, transaction rollback, restart, and catch-up tests against
+  both SQL implementations.
+
+## 36. Consolidate duplicate federation status DTOs
+
+**Status:** Todo
+
+### Problem
+
+Local status responses and invalid-alert summaries are duplicated between Axum
+and mintd. Duplicated serialization types can drift and require repeated
+defaults and conversion code.
+
+### Cleanup
+
+- Give the private status wire format one owner and import it in status CLI
+  code.
+- Separate wire DTOs from display-only mintd structures.
+- Remove undeployed compatibility defaults while consolidating the types.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/federation/status_routes.rs` and
+  `crates/cdk-axum/src/lib.rs`.
+- `crates/cdk-mintd/src/federation_status.rs`.
+- Add one serialization fixture and prove status output remains complete for
+  healthy, lagging, catching-up, quarantined, and halted members.
+
+## 37. Move generated federation smoke programs out of Rust source
+
+**Status:** Todo
+
+### Problem
+
+Mintd federation setup contains large embedded shell programs, configuration
+templates, and smoke-flow text alongside typed setup logic. This inflates Rust
+modules and makes shell behavior hard to lint, execute independently, and
+review.
+
+### Cleanup
+
+- Move stable scripts/templates into an explicit development tooling directory
+  or use `include_str!` with small typed substitutions.
+- Keep secret-safe file creation and validated parameter rendering in Rust.
+- Ensure generated artifacts remain deterministic and test-only helpers stay
+  behind explicit development features.
+
+### Known locations and completion checks
+
+- `crates/cdk-mintd/src/federation_setup.rs`, `federation_smoke.rs`, justfile,
+  and generated local federation scripts.
+- Shell-check or execute generated scripts, test paths containing spaces, and
+  verify no private key or local identifying path reaches committed fixtures.
+
+## 38. Add a federation production build profile
+
+**Status:** Todo
+
+### Problem
+
+Fakewallet, trusted-dealer commands, smoke generators, latency recorders, and
+local setup helpers are feature-gated inconsistently or included by convenient
+defaults. It is difficult to prove which development machinery ships in a
+production federation binary.
+
+### Cleanup
+
+- Define and continuously build a production federation feature set that
+  excludes fakewallet, trusted dealer, smoke commands, test recorders, and
+  generated local ceremony helpers.
+- Keep fakewallet available to standalone development and explicit federation
+  test builds.
+- Add CI checks for both production-minimal and development-complete builds.
+
+### Known locations and completion checks
+
+- Workspace and mintd Cargo features, CLI subcommands, fakewallet backend setup,
+  DKG test utilities, and Aleph latency instrumentation.
+- Inspect the production command surface and dependency tree and run a real
+  backend-shaped startup test without development features.
+
+## 39. Replace free-form federation infrastructure errors with typed errors
+
+**Status:** Todo
+
+### Problem
+
+Consensus, synchronization, storage, catch-up, and private transport paths use
+`Custom(String)`, generic context, and string-based assertions. This weakens
+retry classification, observability, tests, and the boundary between Cashu
+business errors and federation infrastructure failures.
+
+### Cleanup
+
+- Define structured internal errors with operation/member/session identifiers
+  and deterministic sources.
+- Preserve standard Cashu `Error` and `ErrorResponse` conversion and wallet saga
+  authority for business failures.
+- Map typed infrastructure errors to stable HTTP status and operator diagnostics
+  without exposing sensitive internals.
+
+### Known locations and completion checks
+
+- Axum federation submission/sync/runtime code, mint federation application,
+  wallet federation connector, and SQL adapters.
+- `docs/federated-cashu-refactoring-plan.md` section R14.
+- Remove string matching from tests and verify retryable, ambiguous, rejected,
+  unavailable, and internal failures remain correctly separated.
+
+## 40. Split oversized federation test modules by subsystem
+
+**Status:** Todo
+
+### Problem
+
+The Axum federation test module exceeds twenty thousand lines, while handler,
+wallet, common consensus, and setup modules also contain very large inline test
+suites. Shared fixtures and unrelated scenarios are difficult to locate and
+parallel test behavior is hard to understand.
+
+### Cleanup
+
+- Split tests into admission, Aleph runtime, journal application, catch-up,
+  payment observation, wallet quorum, DKG, storage, and end-to-end suites.
+- Create focused harness modules with explicit capabilities rather than one
+  global fixture collection.
+- Keep real-network and multi-process tests out of fast deterministic unit
+  suites.
+
+### Known locations and completion checks
+
+- `crates/cdk-axum/src/federation/tests.rs`, `custom_handlers.rs`, wallet
+  federation tests, common consensus tests, and mintd federation setup tests.
+- `docs/federated-cashu-refactoring-plan.md` section R1.
+- Preserve test count/coverage, document suite commands, and prove tests pass in
+  isolation and under normal parallel execution.
+
+## 41. Replace source-text architecture tests with enforceable boundaries
+
+**Status:** Todo
+
+### Problem
+
+Some tests inspect Rust or migration source using `include_str!`, source slices,
+and substring assertions. These tests are formatting-sensitive and can pass or
+fail without proving runtime behavior or type-level architecture.
+
+### Cleanup
+
+- Replace source inspection with module visibility, feature-compilation tests,
+  schema introspection, typed API tests, and behavioral integration tests.
+- Keep text checks only for generated user-facing artifacts where exact text is
+  itself the contract.
+
+### Known locations and completion checks
+
+- Search federation tests and migration tests for `include_str!`,
+  `source_slice`, and `.contains` assertions over implementation source.
+- Verify forbidden production features fail to compile or are absent from the
+  built command surface rather than merely absent as text.
+
+## 42. Replace sleep-driven federation tests with deterministic synchronization
+
+**Status:** Todo
+
+### Problem
+
+Many consensus, session, catch-up, observer, and networking tests depend on
+wall-clock sleeps and generous timeouts. They are slow, amplify sandbox/network
+variability, and can conceal missed wakeups or ordering races.
+
+### Cleanup
+
+- Use paused Tokio time for timers and explicit notifications, barriers,
+  finalized-index waits, or instrumented test transports for state changes.
+- Retain a smaller integration layer with real sockets and wall-clock deadlines
+  for behavior that cannot be simulated faithfully.
+- Do not change production timing solely to make tests pass.
+
+### Known locations and completion checks
+
+- Aleph session/runtime tests, Axum federation tests, payment observer tests,
+  wallet HTTP tests, DKG harnesses, and multi-member smoke tests.
+- Compare runtime and flake rate before and after, run each suite repeatedly,
+  and retain at least one real partition/heal and restart convergence test.
+
+## Cleanup safety guardrails
+
+The following mechanisms may look similar to cleanup candidates but carry
+active safety or recovery responsibilities. Do not remove them without a new,
+reviewed design that proves the same invariants:
+
+- AlephBFT backup persistence, which provides consensus restart safety.
+- Quarantine, quorum range evidence, completed-operation tracking, signature
+  share provenance, pending-operation persistence, and durable payment
+  observations.
+- Separate signature and consensus thresholds.
+- `InMemoryFederationJournal` while it remains a deterministic journal view;
+  distinguish it from the removable in-memory consensus backend.
+- Confidential authenticated DKG transport requirements for secret shares.
+
+When implementing any section above, search beyond the listed locations,
+revalidate the cleanup premise against the current code, and update or remove
+the entry if later implementation has already changed its assumptions.
