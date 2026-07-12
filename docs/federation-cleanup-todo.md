@@ -1112,7 +1112,37 @@ branches hide malformed current messages rather than protecting users.
 
 ## 16. Squash undeployed federation database migrations
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Replaced the 20-file experimental federation migration chain in each backend
+with one direct final-schema migration:
+`20260712000000_create_federation_schema.sql`. The migration adds the one
+federation field on standalone saga rows, creates all 18 current federation
+tables, defines journal outcome/state hashes as required from the start, and
+creates the complete current index set. Every standalone migration predating
+federation is unchanged.
+
+Deleted the 368-line test that searched individual migration source strings for
+column names. SQLite and PostgreSQL now open fresh real databases and inspect
+the resulting catalog instead: both require exactly one federation migration,
+all standalone and federation tables, all current DKG tables, the saga column,
+the complete index set, required journal hashes/conflict keys, and nullable
+consensus-evidence/rejection metadata. Existing CRUD, concurrency, restart, and
+catch-up tests exercise the schema through the database APIs.
+
+Verification:
+
+- all 21 SQLite federation schema, persistence, concurrency, and index tests
+  pass;
+- all 19 PostgreSQL federation schema, persistence, and concurrency tests pass
+  against the repository's local PostgreSQL test instance;
+- all 29 focused Axum catch-up tests and all 8 SQLite restart tests pass;
+- all 134 standalone SQLite and 125 standalone PostgreSQL tests pass, including
+  the existing SQLite legacy-upgrade regression;
+- the backend-Unknown melt status remains transient and its schema regression
+  still passes.
 
 ### Problem
 

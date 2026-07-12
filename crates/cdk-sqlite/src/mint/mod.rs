@@ -16,7 +16,7 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 #[cfg(test)]
 mod test {
     #[cfg(feature = "federation")]
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs::remove_file;
     use std::sync::Arc;
     use std::time::Duration;
@@ -459,6 +459,8 @@ mod test {
             "federation_dkg_member_keyset_shares",
             "federation_dkg_secret_share_contributions",
             "federation_dkg_transcript_signatures",
+            "federation_dkg_activations",
+            "federation_dkg_ceremonies",
         ] {
             assert!(
                 table_names.contains(table),
@@ -469,6 +471,58 @@ mod test {
             !table_names.contains("federation_aleph_bft_network_retries"),
             "AlephBFT gossip retries must remain runtime-only"
         );
+
+        let federation_migrations = query(
+            r#"
+            SELECT name
+            FROM migrations
+            WHERE name LIKE '%federation%'
+            "#,
+        )
+        .expect("federation migration query")
+        .fetch_all(&*conn)
+        .await
+        .expect("federation migration rows")
+        .into_iter()
+        .map(|row| text_column(&row, 0))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            federation_migrations,
+            vec!["20260712000000_create_federation_schema.sql".to_owned()]
+        );
+
+        let journal_columns = query("PRAGMA table_info(federation_journal_entries)")
+            .expect("journal column query")
+            .fetch_all(&*conn)
+            .await
+            .expect("journal column rows")
+            .into_iter()
+            .map(|row| {
+                let name = text_column(&row, 1);
+                let required = matches!(row.get(3), Some(Value::Integer(1)));
+                (name, required)
+            })
+            .collect::<BTreeMap<_, _>>();
+        for column in [
+            "operation_outcome_hash",
+            "state_digest",
+            "conflict_keys_json",
+        ] {
+            assert_eq!(journal_columns.get(column), Some(&true));
+        }
+        for column in ["consensus_evidence_json", "rejection_json"] {
+            assert_eq!(journal_columns.get(column), Some(&false));
+        }
+
+        let saga_columns = query("PRAGMA table_info(saga_state)")
+            .expect("saga column query")
+            .fetch_all(&*conn)
+            .await
+            .expect("saga column rows")
+            .into_iter()
+            .map(|row| text_column(&row, 1))
+            .collect::<BTreeSet<_>>();
+        assert!(saga_columns.contains("federation_operation_id"));
 
         drop(conn);
         drop(pool);
@@ -512,6 +566,7 @@ mod test {
                   'federation_journal_entries',
                   'federation_session_outcomes',
                   'federation_aleph_bft_finalized_items',
+                  'federation_aleph_bft_pending_operations',
                   'federation_payment_observations',
                   'federation_signature_shares',
                   'federation_dkg_setup_messages',
@@ -519,6 +574,7 @@ mod test {
                   'federation_dkg_member_keyset_shares',
                   'federation_dkg_secret_share_contributions',
                   'federation_dkg_transcript_signatures',
+                  'federation_dkg_activations',
                   'blind_signature'
               )
             "#,
@@ -546,6 +602,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_aleph_bft_finalized_items_operation_id"),
             "missing federation AlephBFT finalized-item operation-id index"
+        );
+        assert!(
+            index_names.contains("idx_federation_aleph_bft_pending_operations_session"),
+            "missing federation AlephBFT pending-operation session index"
         );
         assert!(
             index_names.contains("idx_federation_payment_observations_member_state"),
@@ -582,6 +642,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_dkg_transcript_signatures_member"),
             "missing federation DKG transcript-signature member index"
+        );
+        assert!(
+            index_names.contains("idx_federation_dkg_activations_member"),
+            "missing federation DKG activation member index"
         );
         assert!(
             index_names.contains("blind_signature_quote_id_index"),

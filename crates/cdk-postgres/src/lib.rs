@@ -407,7 +407,7 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 #[cfg(test)]
 mod test {
     #[cfg(feature = "federation")]
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use cdk_common::{mint_db_test, wallet_db_test};
 
@@ -709,6 +709,7 @@ mod test {
             "federation_session_outcomes",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
+            "federation_aleph_bft_pending_operations",
             "federation_aleph_bft_session_state",
             "federation_payment_observations",
             "federation_member_status",
@@ -719,6 +720,8 @@ mod test {
             "federation_dkg_member_keyset_shares",
             "federation_dkg_secret_share_contributions",
             "federation_dkg_transcript_signatures",
+            "federation_dkg_activations",
+            "federation_dkg_ceremonies",
         ] {
             assert!(
                 table_names.contains(table),
@@ -751,6 +754,7 @@ mod test {
             "idx_federation_session_outcomes_from_index",
             "idx_federation_aleph_bft_finalized_items_session_unit",
             "idx_federation_aleph_bft_finalized_items_operation_id",
+            "idx_federation_aleph_bft_pending_operations_session",
             "idx_federation_payment_observations_member_state",
             "idx_federation_payment_observations_quote",
             "idx_federation_signature_shares_operation_output",
@@ -760,6 +764,7 @@ mod test {
             "idx_federation_dkg_member_keyset_shares_member",
             "idx_federation_dkg_secret_share_contributions_receiver",
             "idx_federation_dkg_transcript_signatures_member",
+            "idx_federation_dkg_activations_member",
             "blind_signature_quote_id_index",
         ] {
             assert!(
@@ -767,6 +772,72 @@ mod test {
                 "missing migrated index {index}"
             );
         }
+
+        let journal_column_rows = client
+            .query(
+                r#"
+                SELECT column_name, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = $1
+                  AND table_name = 'federation_journal_entries'
+                "#,
+                &[&schema],
+            )
+            .await
+            .expect("postgres journal column rows");
+        let journal_columns = journal_column_rows
+            .into_iter()
+            .map(|row| {
+                let name = row.get::<_, String>(0);
+                let required = row.get::<_, String>(1) == "NO";
+                (name, required)
+            })
+            .collect::<BTreeMap<_, _>>();
+        for column in [
+            "operation_outcome_hash",
+            "state_digest",
+            "conflict_keys_json",
+        ] {
+            assert_eq!(journal_columns.get(column), Some(&true));
+        }
+        for column in ["consensus_evidence_json", "rejection_json"] {
+            assert_eq!(journal_columns.get(column), Some(&false));
+        }
+
+        let saga_column_count = client
+            .query_one(
+                r#"
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_schema = $1
+                  AND table_name = 'saga_state'
+                  AND column_name = 'federation_operation_id'
+                "#,
+                &[&schema],
+            )
+            .await
+            .expect("postgres saga federation column")
+            .get::<_, i64>(0);
+        assert_eq!(saga_column_count, 1);
+
+        let federation_migration_query = format!(
+            r#"
+            SELECT name
+            FROM "{schema}".migrations
+            WHERE name LIKE '%federation%'
+            "#
+        );
+        let federation_migrations = client
+            .query(&federation_migration_query, &[])
+            .await
+            .expect("postgres federation migration rows")
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            federation_migrations,
+            vec!["20260712000000_create_federation_schema.sql".to_owned()]
+        );
 
         connection_handle.abort();
     }

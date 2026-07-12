@@ -158,6 +158,14 @@ Resolved blocking bugs:
   SQLite federation, 11 CLI registry, 99 mint federation, 41 mintd status, and
   332 Axum federation tests pass alongside 28 standalone Axum and 134
   standalone SQLite tests; PostgreSQL and mintd federation checks are clean.
+- The undeployed federation SQL history is squashed from 20 incremental files
+  per backend to one direct final-schema migration for SQLite and PostgreSQL.
+  No pre-federation migration changed. Real catalog tests require exactly one
+  federation migration, all 18 federation tables, the saga operation ID,
+  required journal hashes/conflict keys, nullable evidence/rejection metadata,
+  and every current index. Verification passes 21 SQLite and 19 PostgreSQL
+  federation tests, 29 catch-up and 8 SQLite restart tests, plus 134 SQLite and
+  125 PostgreSQL standalone tests.
 
 ## Recent performance checkpoint
 
