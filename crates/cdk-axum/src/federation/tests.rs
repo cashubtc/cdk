@@ -75,6 +75,7 @@ use super::aleph_bft_runtime::CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE;
 use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
 };
+use super::aleph_bft_session::AlephBftSessionSupervisorState;
 use super::*;
 
 mod aleph_bft_routes;
@@ -9426,6 +9427,79 @@ async fn aleph_bft_live_session_start_installs_inbound_queue() {
         .await
         .expect("journal")
         .is_empty());
+}
+
+#[tokio::test]
+async fn aleph_bft_session_supervisor_partial_startup_failure_publishes_no_tasks_or_inbound() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let options =
+        FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
+            .with_pre_spawn_failure();
+
+    start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut state,
+        FederationPeerSyncConfig::default(),
+        options,
+        RouterFederationTransportRegistry::default(),
+    )
+    .await
+    .expect_err("injected startup failure");
+
+    assert!(!state.federation_aleph_bft_live_session_active().await);
+    assert!(!state.federation_aleph_bft_network_inbound_active().await);
+}
+
+#[tokio::test]
+async fn aleph_bft_session_supervisor_halts_and_cleans_up_after_root_task_panic() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let options =
+        FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
+            .with_panicking_session_task();
+    let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut state,
+        FederationPeerSyncConfig::default(),
+        options,
+        RouterFederationTransportRegistry::default(),
+    )
+    .await
+    .expect("start panicking live session")
+    .expect("live session supervisor");
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            ) && !state.federation_aleph_bft_live_session_active().await
+                && !state.federation_aleph_bft_network_inbound_active().await
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("panicking session cleanup");
+
+    assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
 }
 
 #[tokio::test]

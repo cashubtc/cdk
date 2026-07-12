@@ -221,7 +221,11 @@ Resolved blocking bugs:
   handle is now an explicit `AlephBftSessionSupervisor` with a single owned
   task set and Running/Stopping/Stopped state. Shutdown and rotation join all
   CDK tasks and tracked upstream Aleph children; focused supervisor, start,
-  manual/automatic rotation, backup restart, and idle-cadence tests pass.
+  manual/automatic rotation, backup restart, and idle-cadence tests pass. All
+  fallible construction now precedes task spawn and state publication. A root
+  task panic is caught, stops and joins the supervisor, clears inbound
+  admission, and durably halts readiness; partial-start and panic fault tests
+  pass.
 
 ## Recent performance checkpoint
 

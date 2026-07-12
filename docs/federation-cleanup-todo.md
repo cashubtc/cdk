@@ -1367,6 +1367,18 @@ publishes neither the inbound queue nor the supervisor until construction is
 complete. New tests prove all five CDK tasks and pending upstream tasks are
 joined, and existing start/rotation/restart/idle tests pass.
 
+### Checkpoint 2: partial-start and root-failure cleanup
+
+All fallible Aleph configuration and peer-client construction now completes
+before the first task spawn, and live supervisor/inbound state is published only
+after the complete task set exists. The always-present completion watcher
+distinguishes normal completion from a caught root-session panic. Panic,
+completion without enabled rotation, and failed automatic rotation persist a
+halted readiness state; panic also takes the supervisor, joins the remaining
+tasks, and clears inbound admission. Test-only fault injection proves a partial
+startup publishes no task or inbound state and a root panic reaches Stopped plus
+durable Halted. Automatic rotation success remains green.
+
 ### Problem
 
 A live Aleph session owns several task handles for the session, activity,
