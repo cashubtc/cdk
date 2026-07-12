@@ -933,6 +933,10 @@
             <p>Restore has been removed from the consensus operation model because it neither signs new outputs nor mutates mint state. Healthy members read signature shares persisted by accepted mint, swap, or melt-change operations; lagging members fail closed, non-v3 placeholders are rejected before lookup, and the wallet requires matching threshold views before aggregating BLS shares. The no-op operation kind, envelope, replay branch, projection branch, and synthetic fixtures are gone. Full common, mint, wallet, standalone restore, and 423-test Axum federation suites pass, including live one-member-offline value windows.</p>
           </article>
           <article class="item">
+            <h3>One canonical request commitment</h3>
+            <p>The unused request-transcript type and second hash have been deleted. Consensus, duplicate detection, conflicts, signing provenance, persistence, and catch-up use the domain-separated operation ID computed from the complete canonical envelope. Mutation tests still prove that NUT-20 outputs, witnesses, P2PK/HTLC data, and SIG_ALL output sets change the operation ID, while canonical key sorting and the golden vector remain stable.</p>
+          </article>
+          <article class="item">
             <h3>Real payment observations fail closed</h3>
             <p>General federation config construction derives member-quorum finality from the consensus threshold. Fake-wallet testing keeps one-observation finality only through an explicit trusted-dealer/test policy, while production startup rejects that policy without the local development override. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed. Melt observations no longer carry unused free-form failure text that could split otherwise matching failed-payment evidence.</p>
           </article>

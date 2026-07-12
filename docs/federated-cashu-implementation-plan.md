@@ -522,7 +522,8 @@ Implementation checklist:
   - [x] swap: input proof Ys and output blinded messages.
   - [x] melt reserve: quote ID plus input proof Ys.
   - [x] restore: blinded messages only.
-- [x] Define a canonical `RequestTranscript` for NUT-20 and SIG_ALL verification.
+- [x] Bind NUT-20 and SIG_ALL verification to the canonical operation envelope
+  and its domain-separated operation ID.
 
 Tests and success criteria:
 

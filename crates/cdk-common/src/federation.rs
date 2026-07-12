@@ -74,8 +74,7 @@ pub use self::operation::{
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationQuorum,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
     FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationRequestTranscript,
-    FederationRequestTranscriptHash, FederationSwapOperation,
+    FederationPaymentObservationReportSummary, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{
@@ -335,14 +334,6 @@ pub enum FederationError {
     /// A federation operation outcome hash must be exactly 32 bytes.
     #[error("Invalid federation operation outcome hash size: expected={expected}, found={found}")]
     InvalidOperationOutcomeHashSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation request transcript hash must be exactly 32 bytes.
-    #[error("Invalid federation request transcript hash size: expected={expected}, found={found}")]
-    InvalidRequestTranscriptHashSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.

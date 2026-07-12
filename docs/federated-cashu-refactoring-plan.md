@@ -30,9 +30,9 @@ The implementation has a strong protocol foundation:
 
 - Federation operations have canonical, versioned envelopes.
 - Operation IDs, canonical envelopes, complete conflict-key sets, and balance
-  audits are explicit and deterministic. The separate request-transcript layer
-  and singular conflict key are cleanup candidates rather than foundations to
-  preserve automatically.
+  audits are explicit and deterministic. The redundant request-transcript
+  layer has been removed; the singular conflict key remains a cleanup
+  candidate rather than a foundation to preserve automatically.
 - Accepted order, application status, consensus evidence, and materialized-state
   digests are modeled and persisted.
 - State-mutating mint, swap, melt, quote payment-observation, and keyset-rotation

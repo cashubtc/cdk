@@ -1,7 +1,7 @@
 # Federated Cashu Formal Review
 
 This document records the current formal review of threshold choice, BFT
-assumptions, canonical operation encoding, and request transcript binding for
+assumptions, canonical operation encoding, and operation-ID binding for
 CDK federated Cashu. It complements `docs/federated-cashu-review-checklist.md`,
 which is the per-PR checklist.
 
@@ -13,15 +13,15 @@ Reviewed code and design surfaces:
   `crates/cdk-common/src/federation.rs`.
 - Consensus item admission and local consensus boundaries in
   `crates/cdk-common/src/federation/consensus.rs`.
-- Operation envelopes, operation IDs, conflict keys, balance audits, and request
-  transcripts in `crates/cdk-common/src/federation/operation.rs`.
+- Operation envelopes, operation IDs, conflict keys, and balance audits in
+  `crates/cdk-common/src/federation/operation.rs`.
 - Mint-side federation apply/signing paths in `crates/cdk/src/mint/federation.rs`.
 - Current design notes in `docs/federated-cashu-consensus-current.md` and the
   review checklist in `docs/federated-cashu-review-checklist.md`.
 
 ## Review Outcome
 
-The current threshold and transcript design is acceptable for continued
+The current threshold and operation-ID design is acceptable for continued
 development behind the federation feature gate, with one hard production
 condition: CDK must not treat the current local deterministic consensus driver as
 a Byzantine-fault-tolerant decision source. Production federation mode still
@@ -115,7 +115,7 @@ without trusting any caller-supplied operation ID.
 
 Decision:
 
-- Keep sorted canonical JSON for federation operation version 1.
+- Keep sorted canonical JSON for the current federation operation version.
 - Treat the existing golden vectors as compatibility fixtures.
 - If CDK later needs a deterministic binary format for cross-language protocol
   stability, introduce a new operation version and new domain separator instead
@@ -126,15 +126,16 @@ Decision:
 This decision favors CDK simplicity today while preserving an explicit upgrade
 path for a stricter binary format later.
 
-## Transcript Binding Review
+## Operation-ID Binding Review
 
-`FederationOperationEnvelope::request_transcript()` returns a transcript only
-for wallet request operations that can authorize signing: mint, melt, swap, and
-restore. The transcript hash is domain-separated and commits to the accepted
-operation ID plus canonical envelope bytes.
+`FederationOperationEnvelope::operation_id()` computes a domain-separated hash
+of the complete canonical operation envelope. Consensus, the journal, signing
+share provenance, duplicate detection, conflicts, catch-up, and persisted
+responses use this operation ID directly. There is no second request-transcript
+hash over the same bytes.
 
-This means the transcript changes when any signed wallet request detail changes,
-including:
+This means the operation ID changes when any consensus-relevant wallet request
+detail changes, including:
 
 - Quote IDs.
 - Input proofs and witnesses.
@@ -143,9 +144,10 @@ including:
 - Blinded output messages, keyset IDs, and amounts.
 - NUT-20 mint request signatures.
 
-The existing tests cover NUT-20 output mutations, input witness mutations,
-P2PK/HTLC witness mutations, exact SIG_ALL output binding, canonical key
-sorting, operation-size limits, and golden vector stability.
+The tests cover NUT-20 output mutations, input witness mutations, P2PK/HTLC
+witness mutations, exact SIG_ALL output binding, canonical key sorting,
+operation-size limits, and golden vector stability. Restore is intentionally
+absent because it is a threshold read, not a consensus operation.
 
 ## Open Risks
 

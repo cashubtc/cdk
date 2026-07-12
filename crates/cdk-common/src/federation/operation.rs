@@ -26,7 +26,6 @@ use crate::{
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v2";
-const FEDERATION_REQUEST_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-request-transcript-v1";
 
 /// Version of the federation operation envelope format.
 pub const FEDERATION_OPERATION_VERSION: u16 = 2;
@@ -113,138 +112,6 @@ impl<'de> Deserialize<'de> for FederationOperationId {
     {
         let value = String::deserialize(deserializer)?;
         Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Stable hash of the canonical wallet request transcript inside a federation operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FederationRequestTranscriptHash([u8; 32]);
-
-impl FederationRequestTranscriptHash {
-    /// Create a request transcript hash from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a request transcript hash from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidRequestTranscriptHashSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a request transcript hash from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this request transcript hash as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this request transcript hash as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-}
-
-impl fmt::Display for FederationRequestTranscriptHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationRequestTranscriptHash {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationRequestTranscriptHash {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationRequestTranscriptHash {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Canonical consensus transcript for a wallet request that can authorize signing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FederationRequestTranscript {
-    operation_kind: FederationOperationKind,
-    operation_id: FederationOperationId,
-    transcript_hash: FederationRequestTranscriptHash,
-    canonical_envelope: Vec<u8>,
-}
-
-impl FederationRequestTranscript {
-    fn new(
-        operation_kind: FederationOperationKind,
-        operation_id: FederationOperationId,
-        canonical_envelope: Vec<u8>,
-    ) -> Self {
-        let mut transcript = Vec::new();
-        append_hash_bytes(&mut transcript, FEDERATION_REQUEST_TRANSCRIPT_HASH_VERSION);
-        append_hash_bytes(&mut transcript, &operation_id.to_bytes());
-        append_hash_bytes(&mut transcript, &canonical_envelope);
-        Self {
-            operation_kind,
-            operation_id,
-            transcript_hash: FederationRequestTranscriptHash::from_bytes(
-                Sha256Hash::hash(&transcript).to_byte_array(),
-            ),
-            canonical_envelope,
-        }
-    }
-
-    /// Return the operation kind carried by this request transcript.
-    #[must_use]
-    pub fn operation_kind(&self) -> FederationOperationKind {
-        self.operation_kind
-    }
-
-    /// Return the consensus operation ID this request transcript is bound to.
-    #[must_use]
-    pub fn operation_id(&self) -> FederationOperationId {
-        self.operation_id
-    }
-
-    /// Return the domain-separated hash of this request transcript.
-    #[must_use]
-    pub fn transcript_hash(&self) -> FederationRequestTranscriptHash {
-        self.transcript_hash
-    }
-
-    /// Return the canonical envelope bytes covered by this request transcript.
-    #[must_use]
-    pub fn canonical_envelope(&self) -> &[u8] {
-        &self.canonical_envelope
     }
 }
 
@@ -1416,12 +1283,6 @@ impl FederationOperation {
         }
     }
 
-    /// Return true when this operation carries a wallet request that can authorize signing.
-    #[must_use]
-    pub fn has_request_transcript(&self) -> bool {
-        matches!(self, Self::Mint(_) | Self::Melt(_) | Self::Swap(_))
-    }
-
     /// Compute the operation-local balance audit for this consensus payload.
     ///
     /// This audit intentionally only checks value scopes available in the
@@ -1618,21 +1479,6 @@ impl FederationOperationEnvelope {
         Ok(operation_id_from_canonical(&canonical))
     }
 
-    /// Return the canonical request transcript for operations that can authorize signing.
-    pub fn request_transcript(&self) -> Result<Option<FederationRequestTranscript>> {
-        self.ensure_supported_version()?;
-        if !self.operation.has_request_transcript() {
-            return Ok(None);
-        }
-
-        let canonical = self.canonical_bytes()?;
-        Ok(Some(FederationRequestTranscript::new(
-            self.operation.kind(),
-            operation_id_from_canonical(&canonical),
-            canonical,
-        )))
-    }
-
     /// Return true when another envelope has the same conflict key but different contents.
     pub fn conflicts_with(&self, other: &Self) -> Result<bool> {
         let left_keys = self.operation.conflict_keys();
@@ -1786,16 +1632,6 @@ mod tests {
             preimage: crate::util::hex::encode([preimage_byte; 32]),
             signatures: Some(vec![marker.repeat(64)]),
         })
-    }
-
-    fn request_transcript_hash(
-        envelope: &FederationOperationEnvelope,
-    ) -> FederationRequestTranscriptHash {
-        envelope
-            .request_transcript()
-            .expect("request transcript")
-            .expect("wallet request transcript")
-            .transcript_hash()
     }
 
     fn p2pk_locked_proof(amount: u64, sig_flag: SigFlag) -> (Proof, SecretKey) {
@@ -1983,70 +1819,7 @@ mod tests {
     }
 
     #[test]
-    fn request_transcript_is_available_for_wallet_request_operations() {
-        let mint_envelope = envelope(mint_operation(
-            "quote-transcript",
-            vec![output(
-                1,
-                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-            )],
-        ));
-        let transcript = mint_envelope
-            .request_transcript()
-            .expect("request transcript")
-            .expect("mint request has transcript");
-
-        assert_eq!(transcript.operation_kind(), FederationOperationKind::Mint);
-        assert_eq!(
-            transcript.operation_id(),
-            mint_envelope.operation_id().expect("operation id")
-        );
-        assert_eq!(
-            transcript.canonical_envelope(),
-            mint_envelope
-                .canonical_bytes()
-                .expect("canonical envelope")
-                .as_slice()
-        );
-
-        let encoded_hash = serde_json::to_string(&transcript.transcript_hash()).expect("hash json");
-        assert_eq!(encoded_hash.len(), 66);
-        assert_eq!(
-            serde_json::from_str::<FederationRequestTranscriptHash>(&encoded_hash)
-                .expect("request transcript hash"),
-            transcript.transcript_hash()
-        );
-        let short_hash = FederationRequestTranscriptHash::from_slice(&[0u8; 31])
-            .expect_err("short request transcript hash should fail");
-        assert!(matches!(
-            short_hash,
-            FederationError::InvalidRequestTranscriptHashSize {
-                expected: 32,
-                found: 31
-            }
-        ));
-
-        let quote_envelope = envelope(FederationOperation::MintQuote(
-            FederationMintQuoteOperation {
-                quote: "quote-no-transcript".to_string(),
-                request_lookup_id: PaymentIdentifier::CustomId("quote-no-transcript".to_string()),
-                request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
-                    amount: Amount::from(1),
-                    unit: CurrencyUnit::Sat,
-                    description: None,
-                    pubkey: None,
-                }),
-                response: bolt11_quote_response("quote-no-transcript", 1),
-            },
-        ));
-        assert!(quote_envelope
-            .request_transcript()
-            .expect("quote transcript check")
-            .is_none());
-    }
-
-    #[test]
-    fn request_transcript_tracks_nut20_mint_outputs() {
+    fn operation_id_tracks_nut20_mint_outputs() {
         let signing_key = identity_secret(member_id(9));
         let first_outputs = vec![output(
             1,
@@ -2081,22 +1854,13 @@ mod tests {
         let second = envelope(FederationOperation::Mint(FederationMintOperation {
             request: FederationMintRequest::Single(second_request),
         }));
-        let first_transcript = first
-            .request_transcript()
-            .expect("first request transcript")
-            .expect("first mint request transcript");
-        let second_transcript = second
-            .request_transcript()
-            .expect("second request transcript")
-            .expect("second mint request transcript");
-
         assert_ne!(
-            first_transcript.transcript_hash(),
-            second_transcript.transcript_hash()
+            first.operation_id().expect("first operation id"),
+            second.operation_id().expect("second operation id")
         );
         assert_ne!(
-            first_transcript.canonical_envelope(),
-            second_transcript.canonical_envelope()
+            first.canonical_bytes().expect("first canonical bytes"),
+            second.canonical_bytes().expect("second canonical bytes")
         );
     }
 
@@ -2424,18 +2188,6 @@ mod tests {
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
         );
-        assert_ne!(
-            first
-                .request_transcript()
-                .expect("first request transcript")
-                .expect("first swap request transcript")
-                .transcript_hash(),
-            second
-                .request_transcript()
-                .expect("second request transcript")
-                .expect("second swap request transcript")
-                .transcript_hash()
-        );
     }
 
     #[test]
@@ -2464,10 +2216,6 @@ mod tests {
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
         );
-        assert_ne!(
-            request_transcript_hash(&first),
-            request_transcript_hash(&second)
-        );
     }
 
     #[test]
@@ -2495,10 +2243,6 @@ mod tests {
         assert_ne!(
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
-        );
-        assert_ne!(
-            request_transcript_hash(&first),
-            request_transcript_hash(&second)
         );
     }
 
@@ -2550,10 +2294,6 @@ mod tests {
         assert_ne!(
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
-        );
-        assert_ne!(
-            request_transcript_hash(&first),
-            request_transcript_hash(&second)
         );
     }
 

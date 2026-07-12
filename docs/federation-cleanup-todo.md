@@ -773,7 +773,30 @@ catch-up without providing ordering safety.
 
 ## 10. Remove the unused request-transcript abstraction
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Confirmed that `FederationRequestTranscript`, its hash, constructor, envelope
+method, operation predicate, and size error had no production consumer in
+admission, signing, ordering, persistence, catch-up, wallet code, HTTP, CLI, or
+operator tooling. Deleted the complete abstraction and its public exports.
+
+The useful mutation coverage now asserts the actual consensus commitment
+directly: canonical envelope bytes and `FederationOperationId`. NUT-20 mint
+outputs, input witnesses, P2PK/HTLC witnesses, and SIG_ALL output sets still
+produce different operation IDs, while sorted custom JSON produces the same
+ID and the canonical operation golden vector remains unchanged.
+
+Verification:
+
+- a full Rust-source search finds no request-transcript type, method, hash,
+  predicate, error, or domain separator;
+- all 29 operation tests and all 216 focused `cdk-common` federation tests
+  pass;
+- federation-enabled `cdk`, `cdk-axum`, and `cdk-mintd` checks pass;
+- standalone `cdk-common` still checks without the federation feature;
+- the removal changes no serialized operation envelope or operation-ID bytes.
 
 ### Problem
 
