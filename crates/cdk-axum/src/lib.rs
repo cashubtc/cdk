@@ -1736,10 +1736,7 @@ impl MintState {
         &self,
         envelope: &FederationOperationEnvelope,
     ) -> Result<(), cdk::Error> {
-        let Some(config) = self.mint.effective_federation_config().await? else {
-            return Ok(());
-        };
-        config.validate_federated_operation_submission(&envelope.operation)
+        self.federation.validate_envelope_admission(envelope).await
     }
 
     async fn submit_aleph_bft_federation_envelope_with_sequence(
@@ -3599,10 +3596,11 @@ async fn create_mint_router_with_custom_cache_inner(
         .and_then(|_| mint.federation_config())
         .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::for_aleph_bft())));
     let mut state = MintState {
-        mint,
+        mint: Arc::clone(&mint),
         cache: Arc::new(cache),
         #[cfg(feature = "federation")]
         federation: federation::FederationNodeRuntime {
+            mint: federation_consensus.as_ref().map(|_| Arc::clone(&mint)),
             consensus: federation_consensus.clone(),
             peer_sync_config: federation_consensus
                 .as_ref()

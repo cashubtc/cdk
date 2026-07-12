@@ -2777,10 +2777,12 @@ mod tests {
             Vec::new(),
         )
         .expect("AlephBFT consensus runtime");
+        let mint = Arc::new(mint);
         MintState {
-            mint: Arc::new(mint),
+            mint: Arc::clone(&mint),
             cache: Arc::new(HttpCache::default()),
             federation: crate::federation::FederationNodeRuntime {
+                mint: Some(mint),
                 consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
                 peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
                 dkg_auto_start_config: None,
@@ -3593,9 +3595,10 @@ mod tests {
                 .expect("federation runtime state");
         let is_federated = federation_consensus.is_some();
         MintState {
-            mint,
+            mint: Arc::clone(&mint),
             cache: Arc::new(HttpCache::default()),
             federation: crate::federation::FederationNodeRuntime {
+                mint: is_federated.then(|| Arc::clone(&mint)),
                 consensus: federation_consensus,
                 peer_sync_config: is_federated.then(crate::FederationPeerSyncConfig::default),
                 dkg_auto_start_config: None,

@@ -16,11 +16,13 @@ use cdk::federation::{
     FederationError, FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationId,
     FederationSubmitOperationResponse, MemberId,
 };
+use cdk::mint::Mint;
 
 /// Runtime-owned handles for one active federation member.
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub(crate) struct FederationNodeRuntime {
+    pub(crate) mint: Option<Arc<Mint>>,
     pub(crate) consensus: Option<FederationConsensusHandle>,
     pub(crate) peer_sync_config: Option<FederationPeerSyncConfig>,
     pub(crate) dkg_auto_start_config: Option<Arc<FederationDkgAutoStartConfig>>,
@@ -43,6 +45,7 @@ impl FederationNodeRuntime {
     /// Build the inert runtime stored by a standalone mint in a federation-enabled binary.
     pub(crate) fn disabled() -> Self {
         Self {
+            mint: None,
             consensus: None,
             peer_sync_config: None,
             dkg_auto_start_config: None,
@@ -60,6 +63,19 @@ impl FederationNodeRuntime {
             #[cfg(test)]
             manual_finality_test: false,
         }
+    }
+
+    pub(crate) async fn validate_envelope_admission(
+        &self,
+        envelope: &cdk::federation::FederationOperationEnvelope,
+    ) -> Result<(), cdk::Error> {
+        let Some(mint) = &self.mint else {
+            return Ok(());
+        };
+        let Some(config) = mint.effective_federation_config().await? else {
+            return Ok(());
+        };
+        config.validate_federated_operation_submission(&envelope.operation)
     }
 
     #[cfg(test)]

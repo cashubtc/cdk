@@ -1228,6 +1228,15 @@ and the local status adapter-counter regression pass. Startup recovery remains
 at the mint/database boundary by design; live task ownership moves with the
 session supervisor in Item 18.
 
+### Checkpoint 6: mint application dependency
+
+An active runtime now holds an `Arc` to the same `cdk::Mint` application used
+by Axum; the inert standalone runtime holds no mint. This avoids a new one-use
+trait and avoids threading a mint argument through every submission/replay
+method. Effective-keyset admission validation is the first mint-dependent
+method moved onto the runtime. Rotated-keyset admission and all 28 standalone
+Axum regressions pass in both feature modes.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

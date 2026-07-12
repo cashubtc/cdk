@@ -1934,10 +1934,12 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         Vec::new(),
     )
     .expect("AlephBFT consensus runtime");
+    let mint = Arc::new(mint);
     MintState {
-        mint: Arc::new(mint),
+        mint: Arc::clone(&mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
         federation: crate::federation::FederationNodeRuntime {
+            mint: Some(mint),
             consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
             peer_sync_config: Some(FederationPeerSyncConfig::default()),
             dkg_auto_start_config: Some(Arc::new(FederationDkgAutoStartConfig {

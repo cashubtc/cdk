@@ -183,7 +183,11 @@ Resolved blocking bugs:
   transitions; status restoration/persistence and public-submit gating tests
   pass. Aleph status/mempool reads and local/peer activity signaling now run on
   the runtime as well; all 11 activity-wake tests and status-counter coverage
-  pass.
+  pass. Active runtimes now depend directly on the same `Arc<Mint>` used by
+  Axum, while inert standalone runtimes hold none; this avoids a one-use trait
+  and enables intact submission/replay moves. Effective-keyset admission is the
+  first mint-dependent method moved and passes rotated-keyset plus all 28
+  standalone Axum regressions.
 
 ## Recent performance checkpoint
 
