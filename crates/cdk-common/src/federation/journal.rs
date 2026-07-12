@@ -1700,6 +1700,45 @@ mod tests {
     }
 
     #[test]
+    fn order_and_materialized_state_digest_golden_vectors() {
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append vector operation")
+            .entry()
+            .clone();
+        let snapshot = FederationMaterializedStateSnapshot::from_rows([
+            FederationMaterializedStateRow::new("mint_quotes", "quote-1")
+                .with_field("amount", "1")
+                .with_field("state", "ISSUED"),
+            FederationMaterializedStateRow::new("proofs", "proof-y-1")
+                .with_field("amount", "1")
+                .with_field("state", "SPENT"),
+        ]);
+
+        assert_eq!(
+            FederationJournalDigest::genesis().to_hex(),
+            "98719e56ebdf856720bdabe55f489300b0f8495dff738701b045c389a7f03c4e"
+        );
+        assert_eq!(
+            entry.operation_id.to_string(),
+            "3e69f5d33d1efbea007002834b3e38494955c9632271b649d6df8c3c0463434d"
+        );
+        assert_eq!(
+            entry.order_digest.to_hex(),
+            "8af3ca0fdcced73cd382fb48d0c17c67f5a3697e89396c6aa9080fd3da855fdf"
+        );
+        assert_eq!(
+            FederationStateDigest::genesis().to_hex(),
+            "3bdc17a9cd55a76f38868a285dd337cadd9044db164ab2ec06e5c396e37dac16"
+        );
+        assert_eq!(
+            snapshot.digest().expect("materialized digest").to_hex(),
+            "05bb07bd3d72a521967c221d62f97e0cb6917926864c1f14b373386049501330"
+        );
+    }
+
+    #[test]
     fn state_digest_serializes_as_hex() {
         let digest = FederationStateDigest::genesis();
         let json = serde_json::to_string(&digest).expect("digest json");
