@@ -2241,7 +2241,7 @@ catch-up protocol the wallet never uses.
 
 ## 34. Split the cdk-common federation module by domain
 
-**Status:** Todo
+**Status:** Deferred until Item 43
 
 ### Problem
 
@@ -2265,6 +2265,21 @@ direction and make unsafe cross-layer coupling easy.
 - `docs/federated-cashu-refactoring-plan.md` section R11.
 - Use compile-time visibility and dependency boundaries to prevent modules from
   regaining inappropriate ownership.
+
+### Review decision
+
+- The problem still exists: `federation.rs` is 7,286 lines and owns errors,
+  identity/configuration, payment policy, keysets, most DKG records, invites,
+  snapshots, and wallet-facing validation, while operation, journal, transport,
+  consensus, signing, and trusted-dealer code are already separate modules.
+- Do not perform the mechanical split yet. Items 37-43 still remove or rebase
+  config, transcript, diagnostic, and protocol fields in precisely these types;
+  moving them first would add large merge noise without deleting code or
+  establishing a stable boundary.
+- Revisit this item immediately after Item 43. At that point use a few coarse
+  modules, preserve every serialized/hash form, and avoid the fine-grained file
+  hierarchy sketched in R11 unless a compile-time dependency boundary requires
+  it. This is sequencing, not a rejection of the cleanup.
 
 ## 35. Split federation database traits and centralize row codecs
 
