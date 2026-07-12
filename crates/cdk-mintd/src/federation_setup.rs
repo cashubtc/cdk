@@ -886,12 +886,17 @@ fn write_dkg_setup_route_probe_requests(
             format!("generated DKG route-probe shares for member {receiver_id} are invalid")
         })?;
     }
-    let final_public_config = FederationConfig::new(
+    let mut final_public_config = FederationConfig::new(
         public_config.threshold_params,
         public_config.members.clone(),
         vec![route_probe_keyset],
     )
     .context("generated DKG route-probe final public config is invalid")?;
+    final_public_config.payment_observation_policy =
+        public_config.payment_observation_policy.clone();
+    final_public_config
+        .validate()
+        .context("generated DKG route-probe payment policy is invalid")?;
     let public_ceremonies =
         vec![
             FederationDkgPublicCeremony::new(public_config, round.clone(), reveals.clone())

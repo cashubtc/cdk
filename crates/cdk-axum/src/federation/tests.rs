@@ -2432,12 +2432,14 @@ async fn durable_dkg_transcript_fixture() -> (
         .expect("persist peer secret-share contribution");
     let keyset_share =
         derive_and_persist_dkg_member_keyset_share(&state, &setup_public_config).await;
-    let final_public_config = FederationConfig::new(
+    let mut final_public_config = FederationConfig::new(
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),
         vec![keyset_share.keyset.clone()],
     )
     .expect("final public config");
+    final_public_config.payment_observation_policy =
+        setup_public_config.payment_observation_policy.clone();
     let public_ceremonies = vec![keyset_share.public_ceremony];
     let transcript_hash = FederationDkgTranscript::hash_for_config(
         FederationDkgSetupMethod::PedersenDkg,
@@ -16335,7 +16337,7 @@ async fn start_multi_member_aleph_bft_live_session(
         member_count,
         signature_threshold,
         live_options,
-        FederationPaymentObservationPolicy::default(),
+        FederationPaymentObservationPolicy::development_single_observation_for_testing(),
     )
     .await?;
 

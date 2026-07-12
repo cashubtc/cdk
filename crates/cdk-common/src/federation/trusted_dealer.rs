@@ -12,7 +12,8 @@ use crate::{mint_url::MintUrl, Amount, CurrencyUnit, SecretKey};
 
 use super::{
     FederatedKeyset, FederationConfig, FederationDkgTranscript, FederationError,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, Result, ThresholdParams,
+    FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
+    ThresholdParams,
 };
 
 /// Member input for trusted-dealer config generation.
@@ -245,6 +246,8 @@ pub fn generate_trusted_dealer_configs_with_options(
 
     let mut public_config =
         FederationConfig::new(threshold_params, public_members, federated_keysets)?;
+    public_config.payment_observation_policy =
+        FederationPaymentObservationPolicy::development_single_observation_for_testing();
     let federation_id = public_config.federation_id;
     for private_config in private_configs.values_mut() {
         private_config.federation_id = Some(federation_id);
@@ -369,6 +372,10 @@ mod tests {
         assert_eq!(bundle.public_config.members.len(), 3);
         assert_eq!(bundle.public_config.keysets.len(), 1);
         assert_eq!(bundle.private_configs.len(), 3);
+        assert_eq!(
+            bundle.public_config.payment_observation_policy,
+            FederationPaymentObservationPolicy::development_single_observation_for_testing()
+        );
         let setup_transcript = bundle
             .public_config
             .setup_transcript

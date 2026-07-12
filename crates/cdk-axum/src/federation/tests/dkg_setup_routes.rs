@@ -914,6 +914,8 @@ async fn federation_restart_activates_driver_derived_dkg_records() {
         vec![keyset_share.keyset.clone()],
     )
     .expect("final public config");
+    final_public_config.payment_observation_policy =
+        setup_public_config.payment_observation_policy.clone();
     let public_ceremonies = vec![keyset_share.public_ceremony.clone()];
     let transcript_hash = FederationDkgTranscript::hash_for_config(
         FederationDkgSetupMethod::PedersenDkg,

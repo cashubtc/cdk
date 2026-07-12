@@ -152,8 +152,9 @@ async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
 
 #[tokio::test]
 async fn mint_payment_observation_before_quote_materializes_after_quote_apply() {
-    let runtime_config =
-        runtime_config_with_payment_policy(FederationPaymentObservationPolicy::default());
+    let runtime_config = runtime_config_with_payment_policy(
+        FederationPaymentObservationPolicy::development_single_observation_for_testing(),
+    );
     let (mint, localstore) =
         federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
@@ -369,8 +370,9 @@ async fn payment_quarantine_blocks_mint_signing() {
 
 #[tokio::test]
 async fn future_quarantine_does_not_suppress_prior_mint_payment_replay() {
-    let runtime_config =
-        runtime_config_with_payment_policy(FederationPaymentObservationPolicy::default());
+    let runtime_config = runtime_config_with_payment_policy(
+        FederationPaymentObservationPolicy::development_single_observation_for_testing(),
+    );
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
     let quote = QuoteId::new();

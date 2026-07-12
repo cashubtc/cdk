@@ -1677,12 +1677,6 @@ pub struct FederationPaymentObservationPolicy {
     pub melt_quotes: FederationPaymentVerificationPolicy,
 }
 
-impl Default for FederationPaymentObservationPolicy {
-    fn default() -> Self {
-        Self::development_single_observation_for_testing()
-    }
-}
-
 impl FederationPaymentObservationPolicy {
     /// Create the development/test policy where one accepted observation finalizes.
     #[must_use]
@@ -4626,7 +4620,9 @@ pub struct FederationConfig {
 }
 
 impl FederationConfig {
-    /// Create a federation config and compute its roster ID.
+    /// Create a federation config with consensus-threshold payment quorum and compute its ID.
+    ///
+    /// Development setup must replace the payment policy explicitly before signing the config.
     pub fn new(
         threshold_params: ThresholdParams,
         members: BTreeMap<MemberId, MemberConfigPublic>,
@@ -4640,7 +4636,9 @@ impl FederationConfig {
             members,
             keysets,
             setup_transcript: None,
-            payment_observation_policy: FederationPaymentObservationPolicy::default(),
+            payment_observation_policy: FederationPaymentObservationPolicy::member_quorum(
+                threshold_params.consensus_threshold,
+            ),
         };
         config.validate()?;
         Ok(config)
@@ -5029,23 +5027,6 @@ impl FederationConfig {
         context: FederationPaymentObservationContext,
     ) -> &FederationPaymentVerificationPolicy {
         self.payment_observation_policy.policy_for(context)
-    }
-
-    /// Ensure the configured policy allows the development single-observation path.
-    pub fn ensure_single_payment_observation_can_finalize(
-        &self,
-        context: FederationPaymentObservationContext,
-    ) -> Result<()> {
-        let policy = *self.payment_verification_policy(context);
-        if policy.permits_single_observation_finality() {
-            return Ok(());
-        }
-
-        Err(FederationError::PaymentObservationQuorumNotSatisfied {
-            context,
-            required: policy.required_matching_observations(),
-            found: 1,
-        })
     }
 
     /// Return a member by ID.
@@ -6033,25 +6014,26 @@ mod tests {
     }
 
     #[test]
-    fn federation_config_rejects_missing_payment_observation_policy() {
+    fn federation_config_uses_safe_payment_policy_and_rejects_missing_policy() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
         let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
         assert_eq!(
             config.payment_observation_policy,
-            FederationPaymentObservationPolicy::development_single_observation_for_testing()
+            FederationPaymentObservationPolicy::member_quorum(params.consensus_threshold)
         );
-        config
-            .ensure_single_payment_observation_can_finalize(
-                FederationPaymentObservationContext::MintQuote,
-            )
-            .expect("development mint observations can finalize singly");
-        config
-            .ensure_single_payment_observation_can_finalize(
-                FederationPaymentObservationContext::MeltQuote,
-            )
-            .expect("development melt observations can finalize singly");
+        for context in [
+            FederationPaymentObservationContext::MintQuote,
+            FederationPaymentObservationContext::MeltQuote,
+        ] {
+            let policy = *config.payment_verification_policy(context);
+            assert!(!policy.permits_single_observation_finality());
+            assert_eq!(
+                policy.required_matching_observations(),
+                params.consensus_threshold
+            );
+        }
 
         let mut json = serde_json::to_value(&config).expect("config json");
         json.as_object_mut()
@@ -7133,20 +7115,14 @@ mod tests {
         let (keyset, _) = test_keyset(&members);
         let mut config = FederationConfig::new(params, members, vec![keyset]).expect("config");
 
-        config.payment_observation_policy =
-            FederationPaymentObservationPolicy::member_quorum(params.consensus_threshold);
         config.validate().expect("consensus quorum policy");
-
-        assert!(matches!(
-            config.ensure_single_payment_observation_can_finalize(
-                FederationPaymentObservationContext::MintQuote
-            ),
-            Err(FederationError::PaymentObservationQuorumNotSatisfied {
-                context: FederationPaymentObservationContext::MintQuote,
-                required,
-                found: 1,
-            }) if required == params.consensus_threshold
-        ));
+        let mint_policy =
+            *config.payment_verification_policy(FederationPaymentObservationContext::MintQuote);
+        assert!(!mint_policy.permits_single_observation_finality());
+        assert_eq!(
+            mint_policy.required_matching_observations(),
+            params.consensus_threshold
+        );
 
         config.payment_observation_policy =
             FederationPaymentObservationPolicy::member_quorum(params.consensus_threshold - 1);

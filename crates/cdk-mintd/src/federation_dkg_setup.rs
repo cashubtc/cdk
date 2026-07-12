@@ -80,11 +80,10 @@ pub(crate) fn run_dkg_roster_command(args: &FederationDkgRosterArgs) -> Result<(
         .context("invalid federation threshold parameters")?;
     let mut public_config = FederationConfig::new(threshold_params, members, Vec::new())
         .context("invalid setup-only federation roster")?;
-    let payment_threshold = args
-        .payment_observation_threshold
-        .unwrap_or(threshold_params.consensus_threshold);
-    public_config.payment_observation_policy =
-        FederationPaymentObservationPolicy::member_quorum(payment_threshold);
+    if let Some(payment_threshold) = args.payment_observation_threshold {
+        public_config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(payment_threshold);
+    }
     public_config
         .validate()
         .context("invalid production payment-observation policy")?;

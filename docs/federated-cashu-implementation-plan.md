@@ -3866,7 +3866,11 @@ Implementation checklist:
 - [x] Ensure federation crates and production federation modules do not depend on, import, or semantically special-case `cdk-fake-wallet`.
 - [x] Keep `FakeWallet` only as a normal CDK mint payment backend used by `cdk-mintd` for local development, smoke tests, and regtest.
 - [x] Rename or replace any federation policy type, method, error, config field, or test helper whose production meaning is currently expressed as `FakeWallet`.
-- [x] Replace implicit fakewallet payment policy defaults with explicit payment observation policy configuration at the mintd startup boundary.
+- [x] Remove the permissive payment-policy `Default`: general
+  `FederationConfig::new` derives `MemberQuorum` from the consensus threshold,
+  trusted-dealer/test setup opts into development single-observation finality
+  by name, and mintd rejects missing policy fields or development policy without
+  its explicit local override.
 - [x] Reject production federation startup when a config relies on implicit fakewallet defaults, single-observation dev policies, or test-only payment assumptions.
 - [x] Model deterministic single-observation behavior, if still needed for local tests, as an explicit dev/test payment observation policy rather than as fakewallet-specific federation logic.
 - [x] Make federation minting and melting depend only on generic payment observations, quote state transitions, and existing CDK payment backend traits.

@@ -737,7 +737,7 @@ fn read_public_federation_config(path: &Path) -> Result<FederationConfig> {
         .is_some();
     if !has_payment_observation_policy {
         bail!(
-            "federation public config must explicitly set payment_observation_policy; implicit development single-observation defaults are not accepted by mintd startup"
+            "federation public config must explicitly set payment_observation_policy; missing payment policies are not accepted by mintd startup"
         );
     }
     let config = serde_json::from_value(raw).with_context(|| {

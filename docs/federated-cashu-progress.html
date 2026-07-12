@@ -697,7 +697,7 @@
             <div>
               <h3>Milestone 23: production cleanup and payment-backend isolation</h3>
               <p>Objective: remove MVP and development scaffolding from production federation semantics before real-funds deployment.</p>
-              <p class="test-gate"><strong>Test gate:</strong> federation code is payment-backend agnostic, production startup rejects implicit development policies, fakewallet remains development-only, durable state is used for status and catch-up, and signed private REST remains the documented federation transport scope.</p>
+              <p class="test-gate"><strong>Test gate:</strong> federation code is payment-backend agnostic, general config construction derives a safe member quorum from the consensus threshold, production startup rejects missing policies and explicit development policies without the local override, fakewallet remains development-only, durable state is used for status and catch-up, and signed private REST remains the documented federation transport scope.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -926,7 +926,7 @@
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>
-            <p>Fake-wallet testing keeps one-observation finality, while real-backend policies require a configured quorum and reject single-observation finality. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed.</p>
+            <p>General federation config construction derives member-quorum finality from the consensus threshold. Fake-wallet testing keeps one-observation finality only through an explicit trusted-dealer/test policy, while production startup rejects that policy without the local development override. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed.</p>
           </article>
           <article class="item">
             <h3>Feature-off compatibility</h3>

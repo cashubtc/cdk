@@ -778,9 +778,7 @@ mod tests {
 
         let mut different_config = public_config.clone();
         different_config.payment_observation_policy.mint_quotes =
-            FederationPaymentVerificationPolicy::member_quorum(
-                different_config.threshold_params.consensus_threshold,
-            );
+            FederationPaymentVerificationPolicy::development_single_observation_for_testing();
         assert!(matches!(
             validated.validate_binding(&different_config),
             Err(FederationError::FederationConfigDigestMismatch {

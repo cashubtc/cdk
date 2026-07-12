@@ -272,7 +272,41 @@ threshold is an operational preference, not payment consensus policy.
 
 ## 4. Require explicit payment policy construction
 
-**Status:** Todo
+**Status:** Completed with a safe production constructor (2026-07-12)
+
+### Result
+
+Removed `Default` from `FederationPaymentObservationPolicy`, so generic code can
+no longer request an implicit development policy. `FederationConfig::new` now
+derives the production-safe `MemberQuorum` policy from the already validated
+consensus threshold. Requiring a fourth constructor argument at roughly sixty
+mostly-test call sites was rejected as noisy API churn: there is one
+unambiguous safe policy derivable from the existing threshold parameters, while
+the exceptional development policy should be conspicuous.
+
+Trusted-dealer/local-test generation now opts into
+`development_single_observation_for_testing` by name. DKG roster construction
+uses the safe quorum unless an operator explicitly supplies a different
+observation threshold, and setup-to-finalized DKG assembly preserves the exact
+configured policy instead of reconstructing it. The test-only public helper
+`ensure_single_payment_observation_can_finalize` was removed; tests inspect the
+actual policy evaluation API. Mintd retains its narrow raw-JSON check so a
+missing field has a clear startup error, and still rejects the development
+policy unless the local-development override is explicit.
+
+Verification:
+
+- all 379 `cdk-common` tests with `federation` passed, including config
+  canonicalization, DKG transcript equality, participant binding, config
+  digests, invites, and trusted-dealer output;
+- all 99 mint federation tests passed, and 24 mintd DKG/status tests plus 20
+  Axum DKG route tests passed;
+- five mintd startup tests proved missing policy and unapproved development
+  policy fail closed alongside existing key/config checks;
+- standalone `cdk` and `cdk-mintd` with SQLite compiled without federation;
+- a fresh five-member, threshold-three generated config contained an explicit
+  development policy and local override, then completed the AlephBFT mint,
+  swap, melt, and restore smoke with converged operation results.
 
 ### Problem
 
