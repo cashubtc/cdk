@@ -9,6 +9,7 @@ use crate::{
     FederationDkgMemberAdmissionHandle, FederationInvalidOperationAlertHandle,
     FederationNotificationHandle, FederationOperationNotificationStats,
     FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncHandle,
+    FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
 };
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationConsensusRuntime, FederationJournalAppendOutcome,
@@ -261,5 +262,125 @@ impl FederationNodeRuntime {
         for entry in entries {
             pending.remove(&entry.operation_id);
         }
+    }
+
+    pub(crate) async fn sync_status(&self) -> Option<FederationSyncStatus> {
+        let sync = self.sync.as_ref()?;
+        Some(sync.lock().await.status())
+    }
+
+    async fn update_sync_status<F>(&self, update: F) -> Option<FederationSyncStatus>
+    where
+        F: FnOnce(&mut FederationSyncState),
+    {
+        let sync = self.sync.as_ref()?;
+        sync.lock().await.update_status(update)
+    }
+
+    pub(crate) async fn mark_lagging(
+        &self,
+        peer: MemberId,
+        local_operation_count: u64,
+        peer_operation_count: u64,
+    ) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| {
+            sync.mark_lagging(peer, local_operation_count, peer_operation_count);
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_catching_up(&self, peer: MemberId) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| sync.mark_catching_up(peer))
+            .await
+    }
+
+    pub(crate) async fn mark_verifying_session_outcome(
+        &self,
+        peer: MemberId,
+        operation_count: u64,
+    ) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| {
+            sync.mark_verifying_session_outcome(peer, operation_count);
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_materialized_state_mismatch(
+        &self,
+        peer: MemberId,
+        operation_count: u64,
+    ) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| {
+            sync.mark_materialized_state_mismatch(peer, operation_count);
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_healthy_if_session_outcome_verified(
+        &self,
+        verified_operation_count: u64,
+    ) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| {
+            sync.mark_healthy_if_session_outcome_verified(verified_operation_count);
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mark_healthy(&self) -> Option<FederationSyncStatus> {
+        self.update_sync_status(FederationSyncState::mark_healthy)
+            .await
+    }
+
+    pub(crate) async fn mark_healthy_if_caught_up(
+        &self,
+        local_operation_count: u64,
+    ) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| match sync.status() {
+            FederationSyncStatus::Lagging {
+                peer_operation_count,
+                ..
+            } if peer_operation_count > local_operation_count => {}
+            FederationSyncStatus::VerifyingSessionOutcome { .. }
+            | FederationSyncStatus::Halted { .. } => {}
+            _ => sync.mark_healthy(),
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_halted(&self, reason: String) -> Option<FederationSyncStatus> {
+        self.update_sync_status(|sync| sync.mark_halted(reason))
+            .await
+    }
+
+    pub(crate) async fn ensure_ready_for_authoritative_read(&self) -> Result<(), cdk::Error> {
+        let Some(status) = self.sync_status().await else {
+            return Ok(());
+        };
+        if !status.is_ready() {
+            return Err(cdk::Error::Custom(status.not_ready_message()));
+        }
+        if self.live_session_available().await {
+            return Ok(());
+        }
+        Err(cdk::Error::Custom(
+            ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
+        ))
+    }
+
+    pub(crate) async fn network_inbound_active(&self) -> bool {
+        self.aleph_bft_network_inbound.read().await.is_some()
+    }
+
+    pub(crate) async fn live_session_active(&self) -> bool {
+        self.aleph_bft_live_session.read().await.is_some()
+    }
+
+    pub(crate) async fn live_session_available(&self) -> bool {
+        #[cfg(test)]
+        if self.local_finality_test || self.manual_finality_test {
+            return true;
+        }
+        self.live_session_active().await && self.network_inbound_active().await
     }
 }

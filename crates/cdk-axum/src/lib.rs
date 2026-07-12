@@ -1636,19 +1636,11 @@ impl MintState {
     }
 
     pub(crate) async fn federation_aleph_bft_live_session_active(&self) -> bool {
-        self.federation
-            .aleph_bft_live_session
-            .read()
-            .await
-            .is_some()
+        self.federation.live_session_active().await
     }
 
     pub(crate) async fn federation_aleph_bft_network_inbound_active(&self) -> bool {
-        self.federation
-            .aleph_bft_network_inbound
-            .read()
-            .await
-            .is_some()
+        self.federation.network_inbound_active().await
     }
 
     async fn mark_aleph_bft_consensus_activity(
@@ -3211,8 +3203,7 @@ impl MintState {
     }
 
     pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
-        let sync = self.federation.sync.as_ref()?;
-        Some(sync.lock().await.status())
+        self.federation.sync_status().await
     }
 
     pub(crate) async fn mark_federation_lagging(
@@ -3221,29 +3212,17 @@ impl MintState {
         local_operation_count: u64,
         peer_operation_count: u64,
     ) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| {
-                sync.mark_lagging(peer, local_operation_count, peer_operation_count);
-            })
-        };
-        if let Some(status) = status {
+        if let Some(status) = self
+            .federation
+            .mark_lagging(peer, local_operation_count, peer_operation_count)
+            .await
+        {
             self.persist_federation_sync_status(&status).await;
         }
     }
 
     pub(crate) async fn mark_federation_catching_up(&self, peer: MemberId) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| sync.mark_catching_up(peer))
-        };
-        if let Some(status) = status {
+        if let Some(status) = self.federation.mark_catching_up(peer).await {
             self.persist_federation_sync_status(&status).await;
         }
     }
@@ -3253,14 +3232,11 @@ impl MintState {
         peer: MemberId,
         operation_count: u64,
     ) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| sync.mark_verifying_session_outcome(peer, operation_count))
-        };
-        if let Some(status) = status {
+        if let Some(status) = self
+            .federation
+            .mark_verifying_session_outcome(peer, operation_count)
+            .await
+        {
             self.persist_federation_sync_status(&status).await;
         }
     }
@@ -3277,14 +3253,11 @@ impl MintState {
                     .record_federation_state_digest_mismatch(&member, &peer.to_string());
             }
         }
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| sync.mark_materialized_state_mismatch(peer, operation_count))
-        };
-        if let Some(status) = status {
+        if let Some(status) = self
+            .federation
+            .mark_materialized_state_mismatch(peer, operation_count)
+            .await
+        {
             self.persist_federation_sync_status(&status).await;
         }
     }
@@ -3293,51 +3266,28 @@ impl MintState {
         &self,
         verified_operation_count: u64,
     ) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| {
-                sync.mark_healthy_if_session_outcome_verified(verified_operation_count);
-            })
-        };
-        if let Some(status) = status {
+        if let Some(status) = self
+            .federation
+            .mark_healthy_if_session_outcome_verified(verified_operation_count)
+            .await
+        {
             self.persist_federation_sync_status(&status).await;
         }
     }
 
     #[cfg(test)]
     pub(crate) async fn mark_federation_healthy(&self) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| sync.mark_healthy())
-        };
-        if let Some(status) = status {
+        if let Some(status) = self.federation.mark_healthy().await {
             self.persist_federation_sync_status(&status).await;
         }
     }
 
     pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| match sync.status() {
-                FederationSyncStatus::Lagging {
-                    peer_operation_count,
-                    ..
-                } if peer_operation_count > local_operation_count => {}
-                FederationSyncStatus::VerifyingSessionOutcome { .. } => {}
-                FederationSyncStatus::Halted { .. } => {}
-                _ => sync.mark_healthy(),
-            })
-        };
-        if let Some(status) = status {
+        if let Some(status) = self
+            .federation
+            .mark_healthy_if_caught_up(local_operation_count)
+            .await
+        {
             self.persist_federation_sync_status(&status).await;
         }
     }
@@ -3346,14 +3296,7 @@ impl MintState {
     where
         S: Into<String>,
     {
-        let Some(sync) = &self.federation.sync else {
-            return;
-        };
-        let status = {
-            let mut sync = sync.lock().await;
-            sync.update_status(|sync| sync.mark_halted(reason.into()))
-        };
-        if let Some(status) = status {
+        if let Some(status) = self.federation.mark_halted(reason.into()).await {
             self.persist_federation_sync_status(&status).await;
         }
     }
@@ -3365,43 +3308,11 @@ impl MintState {
     pub(crate) async fn ensure_federation_ready_for_authoritative_read(
         &self,
     ) -> Result<(), cdk::Error> {
-        let Some(sync) = &self.federation.sync else {
-            return Ok(());
-        };
-        let status = sync.lock().await.status();
-        if status.is_ready() {
-            return self.ensure_aleph_bft_live_session_available().await;
-        }
-
-        Err(cdk::Error::Custom(status.not_ready_message()))
-    }
-
-    async fn ensure_aleph_bft_live_session_available(&self) -> Result<(), cdk::Error> {
-        if self.mint.federation_config().is_none() {
-            return Ok(());
-        }
-        #[cfg(test)]
-        if self.federation.local_finality_test || self.federation.manual_finality_test {
-            return Ok(());
-        }
-        if self.federation_aleph_bft_live_session_active().await
-            && self.federation_aleph_bft_network_inbound_active().await
-        {
-            return Ok(());
-        }
-
-        Err(cdk::Error::Custom(
-            ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
-        ))
+        self.federation.ensure_ready_for_authoritative_read().await
     }
 
     async fn aleph_bft_live_session_available(&self) -> bool {
-        #[cfg(test)]
-        if self.federation.local_finality_test || self.federation.manual_finality_test {
-            return true;
-        }
-        self.federation_aleph_bft_live_session_active().await
-            && self.federation_aleph_bft_network_inbound_active().await
+        self.federation.live_session_available().await
     }
 }
 

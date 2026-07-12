@@ -178,7 +178,10 @@ Resolved blocking bugs:
   timeout, eviction, cache-bound, and notification tests pass. Pending source
   sequences, duplicate finalized-unit verification, and response reconstruction
   now also execute there; five finalized-unit and sequence-persistence
-  regressions pass.
+  regressions pass. The complete readiness state machine and live-session
+  admission check now run on the runtime while `MintState` persists returned
+  transitions; status restoration/persistence and public-submit gating tests
+  pass.
 
 ## Recent performance checkpoint
 

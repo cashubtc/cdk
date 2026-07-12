@@ -1209,6 +1209,16 @@ state application remain explicit `MintState` boundary calls until that whole
 transactional group can move together. Five finalized-unit regressions and the
 source-sequence persistence-after-finalization regression pass.
 
+### Checkpoint 4: readiness state machine
+
+Readiness status lookup and every lagging, catching-up, evidence-verification,
+materialized-mismatch, healthy, and halted transition now execute on
+`FederationNodeRuntime`. Live Aleph session/network availability is checked by
+the runtime as part of authoritative-read admission. `MintState` persists only
+the changed status returned by the runtime and retains digest-mismatch metrics.
+Status persistence, startup restoration, readiness, and five public-submit
+gating regressions pass.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,
