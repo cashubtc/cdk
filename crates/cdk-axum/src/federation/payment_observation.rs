@@ -9,6 +9,8 @@ use cdk::federation::{
 
 use crate::MintState;
 
+const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
+
 pub(super) async fn payment_observation_report_summaries(
     state: &MintState,
 ) -> Result<Vec<FederationPaymentObservationReportSummary>, cdk::Error> {
@@ -38,10 +40,6 @@ pub(super) async fn payment_observation_report_summaries(
         .collect::<Vec<_>>();
 
     let mut reports = Vec::with_capacity(report_keys.len());
-    let stale_observation_secs = runtime_config
-        .public_config()
-        .payment_observation_policy
-        .stale_observation_secs;
     let now = current_unix_time();
     for (context, quote) in report_keys {
         let required = runtime_config
@@ -60,7 +58,10 @@ pub(super) async fn payment_observation_report_summaries(
         );
         let quote_age_secs =
             payment_observation_quote_age_secs(state, context, &quote, now).await?;
-        reports.push(report.summary_with_quote_age(quote_age_secs, stale_observation_secs));
+        reports.push(
+            report
+                .summary_with_quote_age(quote_age_secs, FEDERATION_STALE_PAYMENT_OBSERVATION_SECS),
+        );
     }
 
     Ok(reports)

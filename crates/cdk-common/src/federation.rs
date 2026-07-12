@@ -398,14 +398,6 @@ pub enum FederationError {
         /// Configured consensus threshold.
         consensus_threshold: u16,
     },
-    /// Payment observation limits must be non-zero.
-    #[error("Invalid federation payment observation limit {field}: value={value}")]
-    InvalidPaymentObservationLimit {
-        /// Configured limit field.
-        field: &'static str,
-        /// Invalid value.
-        value: u64,
-    },
     /// A single-member payment observation cannot finalize under the configured policy.
     #[error(
         "Federation payment observation quorum not satisfied for {context}: required={required}, found={found}"
@@ -1656,10 +1648,6 @@ fn validate_protocol_component(component: &'static str, expected: u16, found: u1
     })
 }
 
-const DEFAULT_MAX_PENDING_PAYMENT_QUOTES: u32 = 10_000;
-const DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS: u64 = 60 * 60;
-const DEFAULT_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
-
 /// Payment-observation context with separate mint and melt policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1681,17 +1669,12 @@ impl fmt::Display for FederationPaymentObservationContext {
 
 /// Public policy for deciding when payment observations can mutate quote state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationPaymentObservationPolicy {
     /// Incoming mint quote payment verification policy.
     pub mint_quotes: FederationPaymentVerificationPolicy,
     /// Outgoing melt quote payment verification policy.
     pub melt_quotes: FederationPaymentVerificationPolicy,
-    /// Maximum pending quotes operators expect before back-pressure or alerting.
-    pub max_pending_quotes: u32,
-    /// Seconds a quote may remain pending before operator inspection is expected.
-    pub pending_quote_ttl_secs: u64,
-    /// Seconds after which an unresolved observation is considered stale.
-    pub stale_observation_secs: u64,
 }
 
 impl Default for FederationPaymentObservationPolicy {
@@ -1709,9 +1692,6 @@ impl FederationPaymentObservationPolicy {
                 FederationPaymentVerificationPolicy::development_single_observation_for_testing(),
             melt_quotes:
                 FederationPaymentVerificationPolicy::development_single_observation_for_testing(),
-            max_pending_quotes: DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
-            pending_quote_ttl_secs: DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
-            stale_observation_secs: DEFAULT_STALE_PAYMENT_OBSERVATION_SECS,
         }
     }
 
@@ -1722,9 +1702,6 @@ impl FederationPaymentObservationPolicy {
         Self {
             mint_quotes: policy,
             melt_quotes: policy,
-            max_pending_quotes: DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
-            pending_quote_ttl_secs: DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
-            stale_observation_secs: DEFAULT_STALE_PAYMENT_OBSERVATION_SECS,
         }
     }
 
@@ -1742,25 +1719,6 @@ impl FederationPaymentObservationPolicy {
 
     /// Validate this policy against federation threshold parameters.
     pub fn validate(&self, threshold_params: ThresholdParams) -> Result<()> {
-        if self.max_pending_quotes == 0 {
-            return Err(FederationError::InvalidPaymentObservationLimit {
-                field: "max_pending_quotes",
-                value: u64::from(self.max_pending_quotes),
-            });
-        }
-        if self.pending_quote_ttl_secs == 0 {
-            return Err(FederationError::InvalidPaymentObservationLimit {
-                field: "pending_quote_ttl_secs",
-                value: self.pending_quote_ttl_secs,
-            });
-        }
-        if self.stale_observation_secs == 0 {
-            return Err(FederationError::InvalidPaymentObservationLimit {
-                field: "stale_observation_secs",
-                value: self.stale_observation_secs,
-            });
-        }
-
         self.mint_quotes.validate(
             FederationPaymentObservationContext::MintQuote,
             threshold_params,
@@ -6110,10 +6068,7 @@ mod tests {
     fn federation_payment_policy_rejects_missing_contexts() {
         assert!(
             serde_json::from_value::<FederationPaymentObservationPolicy>(serde_json::json!({
-                "mint_quotes": { "type": "development_single_observation" },
-                "max_pending_quotes": DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
-                "pending_quote_ttl_secs": DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
-                "stale_observation_secs": DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
+                "mint_quotes": { "type": "development_single_observation" }
             }))
             .is_err(),
             "payment-observation policy must explicitly cover mint and melt"
@@ -6121,16 +6076,15 @@ mod tests {
     }
 
     #[test]
-    fn federation_payment_policy_rejects_missing_operator_limits() {
+    fn federation_payment_policy_rejects_removed_operator_limits() {
         assert!(
             serde_json::from_value::<FederationPaymentObservationPolicy>(serde_json::json!({
                 "mint_quotes": { "type": "development_single_observation" },
                 "melt_quotes": { "type": "development_single_observation" },
-                "max_pending_quotes": DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
-                "stale_observation_secs": DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
+                "max_pending_quotes": 10_000
             }))
             .is_err(),
-            "payment-observation policy must explicitly include operator limits"
+            "undeployed federation configs must not retain removed operator limits"
         );
     }
 
@@ -6138,10 +6092,7 @@ mod tests {
     fn federation_payment_policy_rejects_fake_wallet_alias() {
         let json = serde_json::json!({
             "mint_quotes": { "type": "fake_wallet" },
-            "melt_quotes": { "type": "fake_wallet" },
-            "max_pending_quotes": DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
-            "pending_quote_ttl_secs": DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
-            "stale_observation_secs": DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
+            "melt_quotes": { "type": "fake_wallet" }
         });
 
         assert!(
@@ -7265,23 +7216,6 @@ mod tests {
                 context: FederationPaymentObservationContext::MintQuote,
                 matching: 2,
                 conflicting: 1,
-            })
-        ));
-    }
-
-    #[test]
-    fn federation_payment_policy_rejects_zero_operator_limits() {
-        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let members = test_roster();
-        let (keyset, _) = test_keyset(&members);
-        let mut config = FederationConfig::new(params, members, vec![keyset]).expect("config");
-
-        config.payment_observation_policy.max_pending_quotes = 0;
-        assert!(matches!(
-            config.validate(),
-            Err(FederationError::InvalidPaymentObservationLimit {
-                field: "max_pending_quotes",
-                value: 0,
             })
         ));
     }

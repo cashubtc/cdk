@@ -61,7 +61,14 @@ fn independent_member_enrollments_assemble_and_bind() {
             .expect("read public config");
     let public_config_json =
         std::fs::read_to_string(&roster_args.public_output).expect("read public config JSON");
-    assert!(!public_config_json.contains("trust_model"));
+    for removed_field in [
+        "trust_model",
+        "max_pending_quotes",
+        "pending_quote_ttl_secs",
+        "stale_observation_secs",
+    ] {
+        assert!(!public_config_json.contains(removed_field));
+    }
     assert_eq!(public_config.members.len(), 3);
     assert!(public_config.keysets.is_empty());
     assert!(public_config.setup_transcript.is_none());

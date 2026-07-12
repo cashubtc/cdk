@@ -788,7 +788,7 @@
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
-            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mint-info now carries typed federation ID, member ID, config digest, and protocol-version metadata, and wallets reject missing or mismatched member metadata before signing fanout. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests; federation config and invite JSON now also rejects missing protocol versions, missing payment-observation policy, partial payment contexts, implicit operator limits, missing invite versions, and the old fake-wallet alias instead of defaulting them.</p>
+            <p>Federation startup, wallet discovery, minting, swapping, restoring, and melt change signing reject non-v3/non-BLS aggregate keysets while standalone legacy keysets remain unaffected. Federation mint-info now carries typed federation ID, member ID, config digest, and protocol-version metadata, and wallets reject missing or mismatched member metadata before signing fanout. Federation mode is pre-deployment and v3/BLS-only, so old experimental federation keysets are kept only in negative tests; federation config and invite JSON now also rejects missing protocol versions, missing payment-observation policy, partial payment contexts, removed operator-limit fields, missing invite versions, and the old fake-wallet alias instead of defaulting them.</p>
           </article>
           <article class="item">
             <h3>Recovery and convergence</h3>

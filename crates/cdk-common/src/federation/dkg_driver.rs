@@ -635,7 +635,8 @@ mod tests {
     use super::*;
     use crate::federation::{
         FederationDkgCeremonyId, FederationDkgKeysetSpec, FederationDkgSetupMethod,
-        FederationDkgTranscript, MemberConfigPublic, ThresholdParams,
+        FederationDkgTranscript, FederationPaymentVerificationPolicy, MemberConfigPublic,
+        ThresholdParams,
     };
     use crate::mint_url::MintUrl;
     use crate::{Amount, CurrencyUnit, SecretKey};
@@ -776,9 +777,10 @@ mod tests {
         assert_eq!(actual, expected);
 
         let mut different_config = public_config.clone();
-        different_config
-            .payment_observation_policy
-            .max_pending_quotes += 1;
+        different_config.payment_observation_policy.mint_quotes =
+            FederationPaymentVerificationPolicy::member_quorum(
+                different_config.threshold_params.consensus_threshold,
+            );
         assert!(matches!(
             validated.validate_binding(&different_config),
             Err(FederationError::FederationConfigDigestMismatch {

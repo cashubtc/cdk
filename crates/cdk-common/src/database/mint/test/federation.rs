@@ -989,9 +989,10 @@ where
     );
 
     let mut conflicting_config = finalized_snapshot.config.clone();
-    conflicting_config
-        .payment_observation_policy
-        .max_pending_quotes += 1;
+    conflicting_config.payment_observation_policy.mint_quotes =
+        crate::federation::FederationPaymentVerificationPolicy::member_quorum(
+            conflicting_config.threshold_params.consensus_threshold,
+        );
     conflicting_config
         .validate()
         .expect("conflicting config validates");

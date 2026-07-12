@@ -1057,10 +1057,10 @@ impl FederationPaymentObservationReport {
     pub fn summary_with_quote_age(
         &self,
         quote_age_secs: Option<u64>,
-        stale_observation_secs: u64,
+        stale_after_secs: u64,
     ) -> FederationPaymentObservationReportSummary {
         let stale = quote_age_secs.is_some_and(|age| {
-            stale_observation_secs > 0 && self.is_unresolved() && age >= stale_observation_secs
+            stale_after_secs > 0 && self.is_unresolved() && age >= stale_after_secs
         });
         let recommended_action = if self.is_quarantined() || self.has_conflicts() {
             FederationPaymentObservationReportAction::Quarantine

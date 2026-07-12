@@ -191,7 +191,33 @@ security models that CDK does not implement or enforce.
 
 ## 3. Remove or relocate inactive payment-observation limits
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Removed `max_pending_quotes`, `pending_quote_ttl_secs`, and
+`stale_observation_secs` from `FederationPaymentObservationPolicy`, together
+with their defaults, validation error, constructors, and fixtures. The policy
+now contains only mint and melt finality rules that affect deterministic state
+transitions. Strict deserialization rejects the undeployed old operator-limit
+fields instead of ignoring them.
+
+Axum payment-observation status retains stale classification with one local,
+documented 15-minute default. This remains presentation-only: quote age and
+recommended action are not committed to federation config or consensus digest.
+Tests that previously mutated a dead limit merely to create a different config
+digest now mutate an actual payment verification policy.
+
+Verification:
+
+- all 379 `cdk-common` tests with `federation` passed, including canonical
+  config, DKG transcript, config digest, invite, quorum, and report-summary
+  coverage;
+- Axum stale-report status and conflicting startup config-digest tests passed;
+- SQLite federation config persistence passed with the simplified schema;
+- standalone `cdk` and `cdk-mintd` with SQLite compiled without federation;
+- freshly generated five-member configs contained none of the removed fields,
+  and the threshold-three AlephBFT smoke completed mint, swap, melt, and restore.
 
 ### Problem
 

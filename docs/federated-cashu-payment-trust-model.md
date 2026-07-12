@@ -132,22 +132,20 @@ work.
 
 ## Pending And Stale Quotes
 
-The policy includes operator-facing limits:
+Pending-quote capacity and expiry are not currently enforced, so federation
+config does not advertise limits for them. The status projection uses one local
+15-minute default to classify unresolved observations as stale; this operator
+display preference is not committed to consensus config or its digest.
 
-- `max_pending_quotes`: maximum expected number of unresolved payment quotes.
-- `pending_quote_ttl_secs`: age after which a pending quote should be inspected.
-- `stale_observation_secs`: age after which unresolved observation evidence is
-  stale.
-
-These limits are validated as non-zero config values. The current status
-surface exposes unresolved and conflicting observations by quote ID, member ID,
-state, report status, quote age, stale classification, and a redacted operator
-action recommendation. `local-status` and `cdk-mintd federation status` mark old
-unresolved evidence as `stale=true` with `action=inspect`, and conflicting
-evidence as `action=quarantine`, without logging secrets, invoices, local paths,
-private keys, or proof secrets. Operators can copy a conflicting report's
-context, quote ID, and evidence operation IDs into the quarantine command
-without exposing payment proof material on the command line.
+The status surface exposes unresolved and conflicting observations by quote ID,
+member ID, state, report status, quote age, stale classification, and a redacted
+operator action recommendation. `local-status` and
+`cdk-mintd federation status` mark old unresolved evidence as `stale=true` with
+`action=inspect`, and conflicting evidence as `action=quarantine`, without
+logging secrets, invoices, local paths, private keys, or proof secrets.
+Operators can copy a conflicting report's context, quote ID, and evidence
+operation IDs into the quarantine command without exposing payment proof
+material on the command line.
 
 ## Required Follow-Up
 

@@ -2702,7 +2702,9 @@ Implementation checklist:
 - [ ] Before real funds, implement and test the concrete Lightning or onchain
   evidence verifier selected by operators.
 - [x] Define observation quorum and conflict handling for each method.
-- [x] Add limits for pending quotes and stale observations.
+- [x] Keep unenforced pending-quote limits out of consensus config; classify
+  unresolved observations for operator status with one local 15-minute
+  default.
 - [x] Add admin tooling to inspect unresolved payment observations.
 
 Tests and success criteria:
@@ -3772,7 +3774,7 @@ Operation encoding migration plan:
 - Because federation has not been deployed, federation JSON must be strict: do
   not silently default missing protocol-version metadata, missing
   payment-observation policy, partial payment-observation contexts, implicit
-  payment-observation operator limits, missing invite versions, or old
+  removed payment-observation operator-limit fields, missing invite versions, or old
   development aliases. Generate fresh configs instead of accepting old
   experimental shapes. Until a real federation deployment exists, remove old
   experimental federated Cashu compatibility code rather than maintaining it.

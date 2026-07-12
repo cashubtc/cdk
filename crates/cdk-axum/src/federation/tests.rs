@@ -32,10 +32,10 @@ use cdk::federation::{
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationReportAction, FederationRestMessageKind,
-    FederationRestoreOperation, FederationSignedRequest, InMemoryFederationConsensus,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
+    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
+    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -7209,9 +7209,10 @@ async fn federation_runtime_startup_rejects_conflicting_public_config_snapshot()
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
 
     let mut conflicting_config = public_config.clone();
-    conflicting_config
-        .payment_observation_policy
-        .max_pending_quotes += 1;
+    conflicting_config.payment_observation_policy.mint_quotes =
+        FederationPaymentVerificationPolicy::member_quorum(
+            conflicting_config.threshold_params.consensus_threshold,
+        );
     conflicting_config
         .validate()
         .expect("conflicting config validates");
@@ -22723,9 +22724,6 @@ async fn private_local_status_route_reports_payment_observation_conflicts() {
 async fn private_local_status_route_reports_stale_payment_observations() {
     let (mut public_config, local_private, peer_private) = transport_config();
     public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
-    public_config
-        .payment_observation_policy
-        .stale_observation_secs = 1;
     let state =
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
     let local_member = local_private.member_id;
