@@ -29,9 +29,55 @@ use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
 };
+#[cfg(feature = "federation")]
+use crate::nuts::{MintQuoteState, PaymentMethod};
 use crate::payment::PaymentIdentifier;
 
 mod auth;
+
+#[cfg(feature = "federation")]
+/// Minimal durable mint-quote state used by federation convergence projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationMintQuoteState {
+    /// Quote identifier.
+    pub id: QuoteId,
+    /// Requested amount, when fixed by the payment request.
+    pub amount: Option<Amount<CurrencyUnit>>,
+    /// Quote currency unit.
+    pub unit: CurrencyUnit,
+    /// External payment request.
+    pub request: String,
+    /// Quote expiry timestamp.
+    pub expiry: u64,
+    /// Total amount observed as paid.
+    pub amount_paid: Amount<CurrencyUnit>,
+    /// Total amount already issued.
+    pub amount_issued: Amount<CurrencyUnit>,
+    /// Derived Cashu quote state.
+    pub state: MintQuoteState,
+    /// Payment method used by the quote.
+    pub payment_method: PaymentMethod,
+}
+
+#[cfg(feature = "federation")]
+impl From<MintMintQuote> for FederationMintQuoteState {
+    fn from(quote: MintMintQuote) -> Self {
+        let amount_paid = quote.amount_paid();
+        let amount_issued = quote.amount_issued();
+        let state = quote.state();
+        Self {
+            id: quote.id,
+            amount: quote.amount,
+            unit: quote.unit,
+            request: quote.request,
+            expiry: quote.expiry,
+            amount_paid,
+            amount_issued,
+            state,
+            payment_method: quote.payment_method,
+        }
+    }
+}
 
 #[cfg(feature = "test")]
 pub mod test;
@@ -885,6 +931,17 @@ pub trait FederationJournalDatabase {
         context: FederationPaymentObservationContext,
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Get all payment observations in consensus order.
+    async fn get_all_federation_payment_observations(
+        &self,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Get minimal mint-quote state for convergence projection in input order.
+    async fn get_federation_mint_quote_states(
+        &self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<Option<FederationMintQuoteState>>, Self::Err>;
 
     /// Get signature shares for one accepted operation output.
     async fn get_federation_signature_shares_for_output(

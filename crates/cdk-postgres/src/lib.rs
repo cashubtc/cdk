@@ -530,6 +530,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_mint_quote_state_projection() {
+        cdk_common::database::mint::test::federation_mint_quote_state_projection(
+            provide_mint_db(unique_federation_test_id(
+                "federation_mint_quote_state_projection",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_member_status_persistence() {
         cdk_common::database::mint::test::federation_member_status_persistence(
             provide_mint_db(unique_federation_test_id(

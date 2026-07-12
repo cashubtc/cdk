@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
+#[cfg(feature = "federation")]
+use cdk_common::database::mint::FederationMintQuoteState;
 use cdk_common::database::mint::{Acquired, LockedMeltQuotes};
 use cdk_common::database::{
     self, ConversionError, Error, MintQuotesDatabase, MintQuotesTransaction,
@@ -364,6 +366,52 @@ where
         .collect();
 
     Ok(result)
+}
+
+#[cfg(feature = "federation")]
+pub(super) async fn get_federation_mint_quote_states_inner<T>(
+    executor: &T,
+    quote_ids: &[QuoteId],
+) -> Result<Vec<Option<FederationMintQuoteState>>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let rows = query(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind,
+            extra_json
+        FROM mint_quote
+        WHERE id IN (:quote_ids)
+        "#,
+    )?
+    .bind_vec(
+        "quote_ids",
+        quote_ids.iter().map(ToString::to_string).collect(),
+    )?
+    .fetch_all(executor)
+    .await?;
+
+    let mut quote_map = rows
+        .into_iter()
+        .map(|row| {
+            let quote = sql_row_to_mint_quote(row, Vec::new(), Vec::new())?;
+            Ok((quote.id.clone(), FederationMintQuoteState::from(quote)))
+        })
+        .collect::<Result<HashMap<_, _>, Error>>()?;
+
+    Ok(quote_ids.iter().map(|id| quote_map.remove(id)).collect())
 }
 
 pub(super) async fn get_melt_quotes_by_request_lookup_id_inner<T>(

@@ -1,7 +1,6 @@
 //! Private federation member REST routes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::str::FromStr;
 
 use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -9,21 +8,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationCatchUpCertificate, FederationCatchUpCertificateQuorum,
-    FederationCatchUpOperation, FederationError, FederationJournalCatchUpResponse,
-    FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationRecord, FederationPeerStatus,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
-    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
+    FederationError, FederationJournalCatchUpResponse, FederationJournalDigest,
+    FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
+    FederationOperationId, FederationPeerStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
+    InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tracing::instrument;
+#[cfg(test)]
 use uuid::Uuid;
 
 use crate::MintState;
@@ -100,7 +97,7 @@ use cdk::federation::{
     FederationConfig, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
-    FederationPeerStatusRequest,
+    FederationMaterializedStateRow, FederationPeerStatusRequest,
 };
 #[cfg(test)]
 use cdk_http_client::Transport;
@@ -722,357 +719,18 @@ async fn materialized_state_snapshot(
     state: &MintState,
     entries: &[FederationJournalEntry],
 ) -> anyhow::Result<FederationMaterializedStateSnapshot> {
-    let db = state.mint.localstore();
-    let mut snapshot = FederationMaterializedStateSnapshot::new();
-    let mut mint_quotes = BTreeSet::new();
-    let mut melt_quotes = BTreeSet::new();
-    let mut payment_observation_quotes = BTreeSet::new();
-    let mut payment_quarantines = BTreeSet::new();
-    let mut completed_operations = BTreeSet::new();
-    let mut proof_ys = BTreeSet::new();
-    let mut blinded_messages = BTreeSet::new();
-    let mut keyset_rotations = Vec::new();
-
-    for entry in entries {
-        if let Some(rejection) = &entry.rejection {
-            snapshot.push(
-                FederationMaterializedStateRow::new(
-                    "federation_operation_rejections",
-                    entry.operation_id.to_string(),
-                )
-                .with_field("operation_index", entry.index.to_string())
-                .with_field("error_code", rejection.code.to_string())
-                .with_field("detail", rejection.detail.clone()),
-            );
-        }
-        if entry.status == FederationOperationStatus::Rejected {
-            continue;
-        }
-
-        match &entry.envelope.operation {
-            FederationOperation::MintQuote(operation) => {
-                mint_quotes.insert(operation.quote.clone());
-            }
-            FederationOperation::MintQuotePayment(observation) => {
-                mint_quotes.insert(observation.quote.clone());
-                payment_observation_quotes.insert((
-                    cdk::federation::FederationPaymentObservationContext::MintQuote,
-                    observation.quote.clone(),
-                ));
-            }
-            FederationOperation::Mint(operation) => {
-                completed_operations.insert(entry.operation_id);
-                mint_quotes.extend(
-                    operation
-                        .request
-                        .quote_ids()
-                        .into_iter()
-                        .map(str::to_string),
-                );
-                match &operation.request {
-                    cdk::federation::FederationMintRequest::Single(request) => {
-                        blinded_messages
-                            .extend(request.outputs.iter().map(|output| output.blinded_secret));
-                    }
-                    cdk::federation::FederationMintRequest::Batch(request) => {
-                        blinded_messages
-                            .extend(request.outputs.iter().map(|output| output.blinded_secret));
-                    }
-                }
-            }
-            FederationOperation::MeltQuote(operation) => {
-                melt_quotes.insert(operation.quote.clone());
-            }
-            FederationOperation::MeltQuotePayment(observation) => {
-                melt_quotes.insert(observation.quote.clone());
-                payment_observation_quotes.insert((
-                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                    observation.quote.clone(),
-                ));
-            }
-            FederationOperation::PaymentObservationQuarantine(operation) => {
-                payment_observation_quotes.insert((operation.context, operation.quote.clone()));
-                payment_quarantines.insert((operation.context, operation.quote.clone()));
-                match operation.context {
-                    cdk::federation::FederationPaymentObservationContext::MintQuote => {
-                        mint_quotes.insert(operation.quote.clone());
-                    }
-                    cdk::federation::FederationPaymentObservationContext::MeltQuote => {
-                        melt_quotes.insert(operation.quote.clone());
-                    }
-                }
-            }
-            FederationOperation::Melt(operation) => {
-                completed_operations.insert(entry.operation_id);
-                melt_quotes.insert(operation.request.quote().clone());
-                for proof in operation.request.inputs() {
-                    proof_ys.insert(proof.y()?);
-                }
-                if let Some(outputs) = operation.request.outputs() {
-                    blinded_messages.extend(outputs.iter().map(|output| output.blinded_secret));
-                }
-            }
-            FederationOperation::Swap(operation) => {
-                completed_operations.insert(entry.operation_id);
-                for proof in operation.request.inputs() {
-                    proof_ys.insert(proof.y()?);
-                }
-                blinded_messages.extend(
-                    operation
-                        .request
-                        .outputs()
-                        .iter()
-                        .map(|output| output.blinded_secret),
-                );
-            }
-            FederationOperation::KeysetRotation(operation) => {
-                keyset_rotations.push((entry.index, entry.operation_id, operation.keyset.clone()));
-            }
-        }
-    }
-
-    for operation_id in completed_operations {
-        let operation_uuid = federation_completed_operation_uuid(operation_id);
-        match db.get_completed_operation(&operation_uuid).await? {
-            Some(operation) => snapshot.push(completed_operation_materialized_row(
-                operation_id,
-                operation_uuid,
-                &operation,
-            )),
-            None => snapshot.push(
-                FederationMaterializedStateRow::new(
-                    "completed_operations",
-                    operation_uuid.to_string(),
-                )
-                .with_field("federation_operation_id", operation_id.to_string())
-                .with_field("missing", "true"),
-            ),
-        }
-    }
-
-    for (operation_index, operation_id, keyset) in keyset_rotations {
-        snapshot.push(federation_keyset_materialized_row(
-            operation_index,
-            operation_id,
-            &keyset,
-        )?);
-    }
-
-    for quote in mint_quotes {
-        let quote_id = cdk::mint::QuoteId::from_str(&quote)?;
-        match db.get_mint_quote(&quote_id).await? {
-            Some(quote) => snapshot.push(
-                FederationMaterializedStateRow::new("mint_quotes", quote.id.to_string())
-                    .with_field("amount", optional_amount_value(quote.amount.as_ref()))
-                    .with_field("unit", quote.unit.to_string())
-                    .with_field("request", quote.request.clone())
-                    .with_field("expiry", quote.expiry.to_string())
-                    .with_field("amount_paid", quote.amount_paid().value().to_string())
-                    .with_field("amount_issued", quote.amount_issued().value().to_string())
-                    .with_field("state", quote.state().to_string())
-                    .with_field("payment_method", quote.payment_method.to_string()),
-            ),
-            None => snapshot.push(
-                FederationMaterializedStateRow::new("mint_quotes", quote)
-                    .with_field("missing", "true"),
-            ),
-        }
-    }
-
-    for quote in melt_quotes {
-        let quote_id = cdk::mint::QuoteId::from_str(&quote)?;
-        match db.get_melt_quote(&quote_id).await? {
-            Some(quote) => snapshot.push(
-                FederationMaterializedStateRow::new("melt_quotes", quote.id.to_string())
-                    .with_field("amount", quote.amount().value().to_string())
-                    .with_field("fee_reserve", quote.fee_reserve().value().to_string())
-                    .with_field("unit", quote.unit.to_string())
-                    .with_field("request", quote.request.to_string())
-                    .with_field("state", quote.state.to_string())
-                    .with_field("payment_method", quote.payment_method.to_string())
-                    .with_field("payment_proof", quote.payment_proof.unwrap_or_default()),
-            ),
-            None => snapshot.push(
-                FederationMaterializedStateRow::new("melt_quotes", quote)
-                    .with_field("missing", "true"),
-            ),
-        }
-    }
-
-    for (context, quote) in payment_quarantines {
-        snapshot.push(
-            FederationMaterializedStateRow::new(
-                "payment_observation_quarantines",
-                format!("{context}:{quote}"),
-            )
-            .with_field("context", context.to_string())
-            .with_field("quote", quote),
-        );
-    }
-
-    for (context, quote) in payment_observation_quotes {
-        let records = db
-            .get_federation_payment_observations(context, &quote)
-            .await?;
-        if records.is_empty() {
-            snapshot.push(
-                FederationMaterializedStateRow::new(
-                    "payment_observations",
-                    format!("{context}:{quote}"),
-                )
-                .with_field("missing", "true"),
-            );
-            continue;
-        }
-
-        for record in records {
-            let key = format!(
-                "{}:{}:{}:{}",
-                record.observation.context(),
-                record.observation.quote(),
-                record.operation_index,
-                record.operation_id
-            );
-            snapshot.push(
-                FederationMaterializedStateRow::new("payment_observations", key)
-                    .with_field("context", record.observation.context().to_string())
-                    .with_field("quote", record.observation.quote().to_string())
-                    .with_field("operation_index", record.operation_index.to_string())
-                    .with_field("operation_id", record.operation_id.to_string())
-                    .with_field("observer", record.observation.observer().to_string())
-                    .with_field("state", record.observation.state_label())
-                    .with_field("evidence_hash", payment_observation_evidence_hash(&record)?),
-            );
-        }
-    }
-
-    if !proof_ys.is_empty() {
-        let proof_ys = proof_ys.into_iter().collect::<Vec<_>>();
-        let proof_states = db.get_proofs_states(&proof_ys).await?;
-        for (y, state) in proof_ys.into_iter().zip(proof_states) {
-            let mut row = FederationMaterializedStateRow::new("proof_states", y.to_hex());
-            match state {
-                Some(state) => row.insert_field("state", state.to_string()),
-                None => row.insert_field("missing", "true"),
-            }
-            snapshot.push(row);
-        }
-    }
-
-    if !blinded_messages.is_empty() {
-        let blinded_messages = blinded_messages.into_iter().collect::<Vec<_>>();
-        let blind_signatures = db.get_blind_signatures(&blinded_messages).await?;
-        for (blinded_message, signature) in blinded_messages.into_iter().zip(blind_signatures) {
-            let mut row =
-                FederationMaterializedStateRow::new("blind_signatures", blinded_message.to_hex());
-            match signature {
-                Some(signature) => {
-                    row.insert_field("amount", signature.amount.to_string());
-                    row.insert_field("keyset_id", signature.keyset_id.to_string());
-                }
-                None => row.insert_field("missing", "true"),
-            }
-            snapshot.push(row);
-        }
-    }
-
-    Ok(snapshot)
+    Ok(state
+        .mint
+        .federation_materialized_state_snapshot(entries)
+        .await?)
 }
 
+#[cfg(test)]
 fn federation_completed_operation_uuid(operation_id: FederationOperationId) -> Uuid {
     let bytes = operation_id.to_bytes();
     let mut uuid = [0_u8; 16];
     uuid.copy_from_slice(&bytes[..16]);
     Uuid::from_bytes(uuid)
-}
-
-fn completed_operation_materialized_row(
-    operation_id: FederationOperationId,
-    operation_uuid: Uuid,
-    operation: &cdk_common::mint::Operation,
-) -> FederationMaterializedStateRow {
-    FederationMaterializedStateRow::new("completed_operations", operation_uuid.to_string())
-        .with_field("federation_operation_id", operation_id.to_string())
-        .with_field("kind", operation.kind().to_string())
-        .with_field(
-            "total_issued",
-            operation.total_issued().to_u64().to_string(),
-        )
-        .with_field(
-            "total_redeemed",
-            operation.total_redeemed().to_u64().to_string(),
-        )
-        .with_field(
-            "fee_collected",
-            operation.fee_collected().to_u64().to_string(),
-        )
-        .with_field(
-            "completed_at",
-            operation
-                .completed_at()
-                .map(|completed_at| completed_at.to_string())
-                .unwrap_or_default(),
-        )
-        .with_field(
-            "payment_method",
-            operation
-                .payment_method()
-                .map(|method| method.to_string())
-                .unwrap_or_default(),
-        )
-}
-
-fn federation_keyset_materialized_row(
-    operation_index: u64,
-    operation_id: FederationOperationId,
-    keyset: &FederatedKeyset,
-) -> anyhow::Result<FederationMaterializedStateRow> {
-    Ok(
-        FederationMaterializedStateRow::new("federation_keysets", keyset.id.to_string())
-            .with_field("operation_index", operation_index.to_string())
-            .with_field("operation_id", operation_id.to_string())
-            .with_field("unit", keyset.unit.to_string())
-            .with_field("active", keyset.active.to_string())
-            .with_field("input_fee_ppk", keyset.input_fee_ppk.to_string())
-            .with_field(
-                "final_expiry",
-                keyset
-                    .final_expiry
-                    .map(|expiry| expiry.to_string())
-                    .unwrap_or_default(),
-            )
-            .with_field(
-                "aggregate_keys",
-                serde_json::to_string(&keyset.aggregate_keys)?,
-            )
-            .with_field(
-                "public_shares",
-                serde_json::to_string(&keyset.public_shares)?,
-            ),
-    )
-}
-
-fn optional_amount_value(amount: Option<&cdk::Amount<cdk::nuts::CurrencyUnit>>) -> String {
-    amount
-        .map(|amount| amount.value().to_string())
-        .unwrap_or_default()
-}
-
-fn payment_observation_evidence_hash(
-    record: &FederationPaymentObservationRecord,
-) -> anyhow::Result<String> {
-    let canonical = serde_json::to_vec(&record.observation)?;
-    Ok(hex_encode(&Sha256::digest(canonical)))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }
 
 fn verify_catch_up_certificate_entries(

@@ -121,6 +121,16 @@ Resolved blocking bugs:
 
 ## Recent consensus checkpoint
 
+- Materialized-state projection cleanup is complete. Axum delegates snapshot
+  construction to the mint domain, which scans operation effects once and uses
+  bounded bulk database reads without loading quote payment/issuance histories
+  outside the commitment. At 1,000 quote operations, debug projection improved
+  from 44.4ms to 27.4ms and release from 5.9ms to 4.2ms while reducing roughly
+  3,000 state reads to five. Incremental durable fingerprints were rejected as
+  unnecessary complexity at the measured scale. Results and discarded
+  candidates are recorded in
+  `docs/federated-cashu-materialized-state-benchmark.md`.
+
 - Milestone 4 is complete. The selected AlephBFT backend is no longer an
   adapter-only placeholder: router startup reconstructs durable adapter state,
   launches upstream `aleph_bft::run_session`, installs the roster-authenticated

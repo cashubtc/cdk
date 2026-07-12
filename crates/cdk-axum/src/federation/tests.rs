@@ -20010,6 +20010,60 @@ async fn materialized_state_digest_tracks_completed_operation_rows_for_value_ope
 }
 
 #[tokio::test]
+#[ignore = "manual materialized-state projection benchmark"]
+async fn benchmark_materialized_state_snapshot_growth() {
+    for operation_count in [100_usize, 500, 1_000] {
+        let (state, _, _) = federation_route_state().await;
+        let mut journal = InMemoryFederationJournal::new();
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin benchmark transaction");
+
+        for _ in 0..operation_count {
+            let quote_id = QuoteId::new();
+            let quote = MintQuote::new(
+                Some(quote_id.clone()),
+                format!("invoice-{quote_id}"),
+                CurrencyUnit::Sat,
+                Some(Amount::from(1).with_unit(CurrencyUnit::Sat)),
+                10_000,
+                PaymentIdentifier::QuoteId(quote_id.clone()),
+                None,
+                Amount::ZERO.with_unit(CurrencyUnit::Sat),
+                Amount::ZERO.with_unit(CurrencyUnit::Sat),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                1,
+                Vec::new(),
+                Vec::new(),
+                None,
+            );
+            tx.add_mint_quote(quote).await.expect("add benchmark quote");
+            journal
+                .append(mint_quote_envelope(&state, &quote_id))
+                .expect("append benchmark operation");
+        }
+        tx.commit().await.expect("commit benchmark quotes");
+
+        let started = std::time::Instant::now();
+        let snapshot = materialized_state_snapshot(&state, journal.entries())
+            .await
+            .expect("benchmark snapshot");
+        let digest = snapshot.digest().expect("benchmark digest");
+        let elapsed = started.elapsed();
+        assert_eq!(snapshot.rows().len(), operation_count);
+        assert_ne!(digest, FederationMaterializedStateDigest::genesis());
+        eprintln!(
+            "materialized_state_snapshot operations={operation_count} elapsed_us={} rows={}",
+            elapsed.as_micros(),
+            snapshot.rows().len()
+        );
+    }
+}
+
+#[tokio::test]
 async fn private_local_status_route_returns_consensus_and_sync_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

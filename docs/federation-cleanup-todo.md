@@ -1668,7 +1668,7 @@ it made catch-up diagnostics hard to interpret.
 
 ## 24. Make materialized-state digest computation scalable
 
-**Status:** Todo
+**Status:** Complete
 
 ### Problem
 
@@ -1691,6 +1691,31 @@ or catch-up risks O(n-squared) lifetime work and N+1 database access.
 - `docs/federated-cashu-refactoring-plan.md` section R8.
 - Prove incremental and full digests agree under apply, rejection, restart,
   catch-up, and deliberate row tampering; record performance measurements.
+
+### Completion record
+
+The canonical projector now belongs to the mint domain in
+`crates/cdk/src/mint/federation/projection.rs`; Axum no longer matches on mint
+operations or constructs mint database rows. It scans accepted journal entries
+once and issues bounded bulk reads for the referenced state. Mint quote
+projection uses a minimal durable-state view in 500-ID chunks, avoiding payment
+and issuance histories that are not part of the convergence commitment. SQL
+tests prove input ordering, missing rows, aggregate counters, derived quote
+state, and all-observation ordering.
+
+The quote-only 1,000-operation benchmark improved from 44,419us to 27,366us in
+debug and from 5,917us to 4,231us in release; a repeat release sample was
+4,091us. The important scaling change is a reduction from roughly 3,000 quote
+and child-history reads to five bounded reads. Reusing the full multi-quote API
+and batching full history vectors were rejected after release regressions.
+Durable incremental fingerprints were also rejected for now: measured full
+recomputation is linear and about 4ms at 1,000 rows, so another durable state
+machine is not justified. Full measurements and rejected-candidate evidence are
+recorded in `docs/federated-cashu-materialized-state-benchmark.md`.
+
+Verification passes 327 common tests, 156 SQLite tests, all 420 non-ignored
+federation Axum tests (the two loopback cases rerun with network permission),
+28 standalone Axum tests, and PostgreSQL plus mintd federation checks.
 
 ## 25. Centralize consensus-application transaction ownership
 

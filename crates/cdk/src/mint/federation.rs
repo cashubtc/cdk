@@ -4,6 +4,8 @@
 //! validates aggregate BLS keysets, and produces member signature shares while
 //! preserving standalone mint behavior outside federation mode.
 
+mod projection;
+
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 #[cfg(feature = "prometheus")]

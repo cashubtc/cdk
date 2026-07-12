@@ -937,6 +937,15 @@ a mint-owned, batched snapshot API and benchmark growing journals to remove the
 current N+1 query pattern. Add an incremental fingerprint/projection model only
 if measurements require it and full recomputation can continuously verify it.
 
+**Implementation verdict: Complete.** The projector is mint-owned, operation
+coverage remains exhaustive, and database reads are bounded and batched. A
+dedicated quote-state projection avoids loading history outside the commitment.
+The 1,000-operation release benchmark improved from 5,917us to 4,231us, with a
+4,091us repeat. Incremental durable fingerprints were not added because the
+measured full audit is linear and about 4ms at that size. See
+`docs/federated-cashu-materialized-state-benchmark.md` for measurements and
+rejected candidates.
+
 ### Target design
 
 Add `mint/federation/projection.rs` with a domain API such as:

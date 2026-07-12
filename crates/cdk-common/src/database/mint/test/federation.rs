@@ -991,6 +991,68 @@ where
     );
 }
 
+/// Assert projection quote-state reads preserve input order and missing rows.
+pub async fn federation_mint_quote_state_projection<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let first_id = crate::quote_id::QuoteId::new();
+    let second_id = crate::quote_id::QuoteId::new();
+    let missing_id = crate::quote_id::QuoteId::new();
+    let quote = |id: crate::quote_id::QuoteId| {
+        crate::mint::MintQuote::new(
+            Some(id.clone()),
+            format!("invoice-{id}"),
+            CurrencyUnit::Sat,
+            Some(Amount::from(5).with_unit(CurrencyUnit::Sat)),
+            10_000,
+            crate::payment::PaymentIdentifier::QuoteId(id),
+            None,
+            Amount::ZERO.with_unit(CurrencyUnit::Sat),
+            Amount::ZERO.with_unit(CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            1,
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_mint_quote(quote(first_id.clone()))
+        .await
+        .expect("add first quote");
+    let mut second_quote = tx
+        .add_mint_quote(quote(second_id.clone()))
+        .await
+        .expect("add second quote");
+    second_quote
+        .increment_amount_paid(Amount::from(5).with_unit(CurrencyUnit::Sat))
+        .expect("mark second quote paid");
+    second_quote
+        .add_issuance(Amount::from(2).with_unit(CurrencyUnit::Sat))
+        .expect("partially issue second quote");
+    tx.update_mint_quote(&mut second_quote)
+        .await
+        .expect("persist second quote state");
+    tx.commit().await.expect("commit quotes");
+
+    let states = db
+        .get_federation_mint_quote_states(&[second_id.clone(), missing_id, first_id.clone()])
+        .await
+        .expect("load projection quote states");
+    assert_eq!(states.len(), 3);
+    let second = states[0].as_ref().expect("second quote state");
+    assert_eq!(second.id, second_id);
+    assert_eq!(second.amount_paid.value(), 5);
+    assert_eq!(second.amount_issued.value(), 2);
+    assert_eq!(second.state, MintQuoteState::Paid);
+    assert!(states[1].is_none());
+    let first = states[2].as_ref().expect("first quote state");
+    assert_eq!(first.id, first_id);
+    assert_eq!(first.state, MintQuoteState::Unpaid);
+}
+
 /// Assert payment observations persist as durable per-member quorum evidence.
 pub async fn federation_payment_observation_persistence<DB>(db: DB)
 where
@@ -1132,6 +1194,14 @@ where
         .expect("unrelated payment observations");
     assert_eq!(unrelated_persisted.len(), 1);
     assert_eq!(unrelated_persisted[0].operation_id, unrelated.operation_id);
+
+    let all_observations = db
+        .get_all_federation_payment_observations()
+        .await
+        .expect("all payment observations");
+    assert_eq!(all_observations.len(), 4);
+    assert_eq!(all_observations[0].operation_id, first.operation_id);
+    assert_eq!(all_observations[3].operation_id, unrelated.operation_id);
 
     let wrong_context = db
         .get_federation_payment_observations(

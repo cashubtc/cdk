@@ -1,7 +1,9 @@
 //! Federation journal database implementation.
 
 use async_trait::async_trait;
-use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTransaction};
+use cdk_common::database::mint::{
+    FederationJournalDatabase, FederationJournalTransaction, FederationMintQuoteState,
+};
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
@@ -17,8 +19,10 @@ use cdk_common::federation::{
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, MemberId,
 };
+use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
 
+use super::quotes::get_federation_mint_quote_states_inner;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -1943,6 +1947,40 @@ where
         .into_iter()
         .map(sql_row_to_federation_payment_observation_record)
         .collect()
+    }
+
+    async fn get_all_federation_payment_observations(
+        &self,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT operation_id, operation_index, observation_json
+            FROM federation_payment_observations
+            ORDER BY operation_index ASC, observer_member_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_payment_observation_record)
+        .collect()
+    }
+
+    async fn get_federation_mint_quote_states(
+        &self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<Option<FederationMintQuoteState>>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        get_federation_mint_quote_states_inner(&*conn, quote_ids).await
     }
 
     async fn get_federation_signature_shares_for_output(
