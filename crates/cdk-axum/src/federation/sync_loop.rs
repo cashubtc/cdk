@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationConsensusEngine, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationPeerStatus, FederationSessionOutcome, FederationStateDigest,
-    MemberConfigPublic, MemberId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationPeerStatus, FederationSessionOutcome, FederationStateDigest, MemberConfigPublic,
+    MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};

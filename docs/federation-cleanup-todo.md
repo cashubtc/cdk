@@ -508,6 +508,15 @@ all 99 mint federation tests, and the complete 456-test Axum federation suite
 pass, including duplicate/fanout, Aleph catch-up, startup-decision, live
 private-message finality, and mint/swap/melt/notification coverage.
 
+The now-single-implementation `FederationConsensusEngine` trait and
+`FederationConsensusBackendKind` enum are deleted. `FederationConsensusRuntime`
+exposes its real Aleph queue/finality and finalized-journal operations directly;
+the impossible synchronous local-submit API and its backend-specific errors are
+gone. Axum compiles with the direct runtime API and all 350 remaining
+federation-enabled `cdk-common` tests pass. The remaining Item 6 work is removal
+of the test-only `InMemoryFederationConsensus` and migration of its peer
+fixtures to finalized Aleph evidence or direct journal tests.
+
 ### Problem
 
 Federation mode still exposes two selectable consensus backends even though

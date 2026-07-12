@@ -1611,12 +1611,6 @@ impl FederationAlephBftConsensusAdapter {
         })
     }
 
-    /// Return the backend kind represented by this adapter boundary.
-    #[must_use]
-    pub fn backend_kind(&self) -> FederationConsensusBackendKind {
-        FederationConsensusBackendKind::AlephBft
-    }
-
     /// Return the current AlephBFT session.
     #[must_use]
     pub fn session(&self) -> u64 {
@@ -1987,93 +1981,6 @@ fn ensure_non_zero_consensus_limit(field: &'static str, value: usize) -> Result<
     Ok(())
 }
 
-/// Minimal synchronous consensus engine surface used by federation runtimes.
-///
-/// The first implementation is the deterministic in-memory engine below. Real
-/// networking or BFT finalization engines should preserve this state-machine
-/// boundary: submit admissible items, expose accepted order, serve catch-up,
-/// replay peer catch-up, and update only local application status.
-pub trait FederationConsensusEngine: fmt::Debug + Send {
-    /// Return the backend kind used by this consensus engine.
-    fn backend_kind(&self) -> FederationConsensusBackendKind {
-        FederationConsensusBackendKind::InMemory
-    }
-
-    /// Return this member's federation ID.
-    fn federation_id(&self) -> FederationId;
-
-    /// Return this member's ID.
-    fn member_id(&self) -> MemberId;
-
-    /// Return the accepted operation journal.
-    fn journal(&self) -> &InMemoryFederationJournal;
-
-    /// Return this member's consensus-visible state digest.
-    fn state_digest(&self) -> FederationStateDigest;
-
-    /// Return a mutable accepted operation journal.
-    fn journal_mut(&mut self) -> &mut InMemoryFederationJournal;
-
-    /// Submit an already-built operation envelope.
-    fn submit_envelope(
-        &mut self,
-        envelope: FederationOperationEnvelope,
-    ) -> Result<FederationSubmitOperationResponse>;
-
-    /// Submit an operation request from a transport boundary.
-    fn submit_operation(
-        &mut self,
-        request: FederationSubmitOperationRequest,
-    ) -> Result<FederationSubmitOperationResponse>;
-
-    /// Return this member's current peer status.
-    fn peer_status(&self) -> FederationPeerStatus;
-
-    /// Return a catch-up request for the next local missing operation.
-    fn catch_up_request(&self) -> FederationJournalCatchUpRequest;
-
-    /// Return journal entries for a catch-up request.
-    fn catch_up(
-        &self,
-        request: &FederationJournalCatchUpRequest,
-    ) -> FederationJournalCatchUpResponse;
-
-    /// Return journal entries for a checked catch-up request.
-    fn catch_up_checked(
-        &self,
-        request: &FederationJournalCatchUpRequest,
-    ) -> Result<FederationJournalCatchUpResponse>;
-
-    /// Apply a peer catch-up response to the local journal.
-    fn apply_catch_up_response(
-        &mut self,
-        response: &FederationJournalCatchUpResponse,
-    ) -> Result<Vec<FederationJournalEntry>>;
-
-    /// Verify a session-outcome quorum before applying a peer catch-up response.
-    fn apply_catch_up_response_with_session_outcome_quorum(
-        &mut self,
-        response: &FederationJournalCatchUpResponse,
-        config: &FederationConfig,
-        additional_outcomes: &[FederationSessionOutcome],
-    ) -> Result<FederationQuorumVerifiedCatchUp>;
-
-    /// Update local application status for an accepted operation.
-    fn update_status(
-        &mut self,
-        operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-    ) -> Result<FederationJournalEntry>;
-
-    /// Update local application status and its optional standard Cashu rejection.
-    fn update_application_state(
-        &mut self,
-        operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-        rejection: Option<ErrorResponse>,
-    ) -> Result<FederationJournalEntry>;
-}
-
 /// Catch-up entries applied after verifying quorum-signed session outcome evidence.
 #[derive(Debug, Clone)]
 pub struct FederationQuorumVerifiedCatchUp {
@@ -2087,54 +1994,6 @@ pub struct FederationQuorumVerifiedCatchUp {
 #[derive(Debug, Clone)]
 pub struct FederationConsensusRuntime {
     adapter: FederationAlephBftConsensusAdapter,
-}
-
-/// Consensus backend selected for ordering federation operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FederationConsensusBackendKind {
-    /// Deterministic local append-log backend for tests and local smoke.
-    #[default]
-    InMemory,
-    /// AlephBFT-backed ordering backend.
-    AlephBft,
-}
-
-impl FederationConsensusBackendKind {
-    /// Return the canonical config string for this backend.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::InMemory => "in_memory",
-            Self::AlephBft => "aleph_bft",
-        }
-    }
-
-    /// Return true when this build can instantiate the backend.
-    #[must_use]
-    pub fn is_available(self) -> bool {
-        true
-    }
-}
-
-impl fmt::Display for FederationConsensusBackendKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for FederationConsensusBackendKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().replace('-', "_").as_str() {
-            "in_memory" | "inmemory" | "memory" => Ok(Self::InMemory),
-            "aleph_bft" | "alephbft" => Ok(Self::AlephBft),
-            _ => Err(format!(
-                "Unknown federation consensus backend: {s}. Valid options: in_memory, aleph_bft"
-            )),
-        }
-    }
 }
 
 impl FederationConsensusRuntime {
@@ -2260,24 +2119,28 @@ impl FederationConsensusRuntime {
     }
 }
 
-impl FederationConsensusEngine for FederationConsensusRuntime {
-    fn backend_kind(&self) -> FederationConsensusBackendKind {
-        FederationConsensusBackendKind::AlephBft
-    }
-
-    fn federation_id(&self) -> FederationId {
+impl FederationConsensusRuntime {
+    /// Return this member's federation ID.
+    #[must_use]
+    pub fn federation_id(&self) -> FederationId {
         self.adapter.status().federation_id
     }
 
-    fn member_id(&self) -> MemberId {
+    /// Return this member's ID.
+    #[must_use]
+    pub fn member_id(&self) -> MemberId {
         self.adapter.status().local_member
     }
 
-    fn journal(&self) -> &InMemoryFederationJournal {
+    /// Return the journal reconstructed from finalized AlephBFT items.
+    #[must_use]
+    pub fn journal(&self) -> &InMemoryFederationJournal {
         self.adapter.journal()
     }
 
-    fn state_digest(&self) -> FederationStateDigest {
+    /// Return the journal state digest.
+    #[must_use]
+    pub fn state_digest(&self) -> FederationStateDigest {
         self.journal().state_digest()
     }
 
@@ -2285,34 +2148,24 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         &mut self.adapter.journal
     }
 
-    fn submit_envelope(
-        &mut self,
-        envelope: FederationOperationEnvelope,
-    ) -> Result<FederationSubmitOperationResponse> {
-        let _ = envelope;
-        Err(requires_external_finalization_error())
-    }
-
-    fn submit_operation(
-        &mut self,
-        request: FederationSubmitOperationRequest,
-    ) -> Result<FederationSubmitOperationResponse> {
-        let _ = request;
-        Err(requires_external_finalization_error())
-    }
-
-    fn peer_status(&self) -> FederationPeerStatus {
+    /// Return this member's current peer status.
+    #[must_use]
+    pub fn peer_status(&self) -> FederationPeerStatus {
         self.adapter
             .peer_status(self.federation_id(), self.member_id())
     }
 
-    fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
+    /// Return a catch-up request for the next local finalized item.
+    #[must_use]
+    pub fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
         FederationJournalCatchUpRequest::new(self.journal().next_index())
             .with_known_order_digest(self.journal().latest_order_digest())
             .with_aleph_bft_next_item_index(self.adapter.next_item_index())
     }
 
-    fn catch_up(
+    /// Return journal entries for a catch-up request.
+    #[must_use]
+    pub fn catch_up(
         &self,
         request: &FederationJournalCatchUpRequest,
     ) -> FederationJournalCatchUpResponse {
@@ -2325,7 +2178,8 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         )
     }
 
-    fn catch_up_checked(
+    /// Return journal entries after checking the request's known digest.
+    pub fn catch_up_checked(
         &self,
         request: &FederationJournalCatchUpRequest,
     ) -> Result<FederationJournalCatchUpResponse> {
@@ -2344,25 +2198,8 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         Ok(self.catch_up(request))
     }
 
-    fn apply_catch_up_response(
-        &mut self,
-        response: &FederationJournalCatchUpResponse,
-    ) -> Result<Vec<FederationJournalEntry>> {
-        let _ = response;
-        Err(requires_external_finalization_error())
-    }
-
-    fn apply_catch_up_response_with_session_outcome_quorum(
-        &mut self,
-        response: &FederationJournalCatchUpResponse,
-        config: &FederationConfig,
-        additional_outcomes: &[FederationSessionOutcome],
-    ) -> Result<FederationQuorumVerifiedCatchUp> {
-        let _ = (response, config, additional_outcomes);
-        Err(requires_external_finalization_error())
-    }
-
-    fn update_status(
+    /// Update local application status for an ordered operation.
+    pub fn update_status(
         &mut self,
         operation_id: FederationOperationId,
         status: FederationOperationStatus,
@@ -2370,7 +2207,8 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         self.journal_mut().update_status(operation_id, status)
     }
 
-    fn update_application_state(
+    /// Update local application status and its optional standard Cashu rejection.
+    pub fn update_application_state(
         &mut self,
         operation_id: FederationOperationId,
         status: FederationOperationStatus,
@@ -2410,14 +2248,6 @@ where
     }
 
     Ok(members)
-}
-
-fn requires_external_finalization_error() -> FederationError {
-    FederationError::ConsensusBackendRequiresExternalFinalization {
-        backend: FederationConsensusBackendKind::AlephBft
-            .as_str()
-            .to_string(),
-    }
 }
 
 /// Deterministic local consensus driver used before real quorum networking.
@@ -2654,106 +2484,6 @@ impl InMemoryFederationConsensus {
         }
 
         Ok(())
-    }
-}
-
-impl FederationConsensusEngine for InMemoryFederationConsensus {
-    fn backend_kind(&self) -> FederationConsensusBackendKind {
-        FederationConsensusBackendKind::InMemory
-    }
-
-    fn federation_id(&self) -> FederationId {
-        Self::federation_id(self)
-    }
-
-    fn member_id(&self) -> MemberId {
-        Self::member_id(self)
-    }
-
-    fn journal(&self) -> &InMemoryFederationJournal {
-        Self::journal(self)
-    }
-
-    fn state_digest(&self) -> FederationStateDigest {
-        self.journal.state_digest()
-    }
-
-    fn journal_mut(&mut self) -> &mut InMemoryFederationJournal {
-        Self::journal_mut(self)
-    }
-
-    fn submit_envelope(
-        &mut self,
-        envelope: FederationOperationEnvelope,
-    ) -> Result<FederationSubmitOperationResponse> {
-        Self::submit_envelope(self, envelope)
-    }
-
-    fn submit_operation(
-        &mut self,
-        request: FederationSubmitOperationRequest,
-    ) -> Result<FederationSubmitOperationResponse> {
-        Self::submit_operation(self, request)
-    }
-
-    fn peer_status(&self) -> FederationPeerStatus {
-        Self::peer_status(self)
-    }
-
-    fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
-        Self::catch_up_request(self)
-    }
-
-    fn catch_up(
-        &self,
-        request: &FederationJournalCatchUpRequest,
-    ) -> FederationJournalCatchUpResponse {
-        Self::catch_up(self, request)
-    }
-
-    fn catch_up_checked(
-        &self,
-        request: &FederationJournalCatchUpRequest,
-    ) -> Result<FederationJournalCatchUpResponse> {
-        Self::catch_up_checked(self, request)
-    }
-
-    fn apply_catch_up_response(
-        &mut self,
-        response: &FederationJournalCatchUpResponse,
-    ) -> Result<Vec<FederationJournalEntry>> {
-        Self::apply_catch_up_response(self, response)
-    }
-
-    fn apply_catch_up_response_with_session_outcome_quorum(
-        &mut self,
-        response: &FederationJournalCatchUpResponse,
-        config: &FederationConfig,
-        additional_outcomes: &[FederationSessionOutcome],
-    ) -> Result<FederationQuorumVerifiedCatchUp> {
-        Self::apply_catch_up_response_with_session_outcome_quorum(
-            self,
-            response,
-            config,
-            additional_outcomes,
-        )
-    }
-
-    fn update_status(
-        &mut self,
-        operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-    ) -> Result<FederationJournalEntry> {
-        Self::update_status(self, operation_id, status)
-    }
-
-    fn update_application_state(
-        &mut self,
-        operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-        rejection: Option<ErrorResponse>,
-    ) -> Result<FederationJournalEntry> {
-        Self::update_application_state(self, operation_id, status, rejection)
     }
 }
 

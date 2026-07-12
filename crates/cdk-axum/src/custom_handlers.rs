@@ -1587,12 +1587,12 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationAlephBftConsensusAdapter,
         FederationAlephBftFinalityMode, FederationAlephBftUnitPayload, FederationConfig,
-        FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
-        FederationJournalEntry, FederationKeysetRotationOperation,
-        FederationMeltQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-        FederationOperationId, FederationPaymentObservationPolicy, InMemoryFederationConsensus,
-        InMemoryFederationJournal, MemberConfigPrivate, MemberId, ThresholdParams,
-        TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationConsensusItem, FederationConsensusRuntime, FederationJournalEntry,
+        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
+        FederationOperation, FederationOperationEnvelope, FederationOperationId,
+        FederationPaymentObservationPolicy, InMemoryFederationConsensus, InMemoryFederationJournal,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     #[cfg(feature = "federation")]
     use cdk::mint::Mint;

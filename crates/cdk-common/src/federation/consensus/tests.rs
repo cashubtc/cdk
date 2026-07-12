@@ -348,54 +348,6 @@ fn dummy_consensus_accepts_duplicates_and_rejects_conflicts() {
 }
 
 #[test]
-fn consensus_engine_trait_accepts_operations_in_submit_order() {
-    let federation_id = federation_id(13);
-    let mut consensus = InMemoryFederationConsensus::new(federation_id, member_id());
-    let engine: &mut dyn FederationConsensusEngine = &mut consensus;
-
-    let first = engine
-        .submit_envelope(mint_quote_envelope(federation_id))
-        .expect("submit first");
-    let second = engine
-        .submit_envelope(mint_envelope(
-            federation_id,
-            "quote-1",
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
-        .expect("submit second");
-
-    assert_eq!(engine.federation_id(), federation_id);
-    assert_eq!(engine.member_id(), member_id());
-    assert_eq!(first.outcome.entry().index, 0);
-    assert_eq!(second.outcome.entry().index, 1);
-    assert_eq!(engine.peer_status().operation_count, 2);
-    assert_eq!(engine.state_digest(), engine.peer_status().state_digest);
-    assert_eq!(
-        engine.journal().entries()[0].operation_id,
-        first.operation_id
-    );
-    assert_eq!(
-        engine.journal().entries()[1].operation_id,
-        second.operation_id
-    );
-}
-
-#[test]
-fn consensus_runtime_aleph_bft_reports_status_and_rejects_synchronous_submit() {
-    let federation_id = federation_id(13);
-    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
-    assert!(matches!(
-        runtime.submit_envelope(mint_envelope(
-            federation_id,
-            "quote-1",
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        )),
-        Err(FederationError::ConsensusBackendRequiresExternalFinalization { ref backend })
-            if backend == "aleph_bft"
-    ));
-}
-
-#[test]
 fn consensus_runtime_aleph_bft_previews_and_drains_matching_units() {
     let federation_id = federation_id(13);
     let mut runtime = FederationConsensusRuntime::new(federation_id, member_id());
@@ -1548,10 +1500,6 @@ fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
     assert_eq!(
         adapter.submit_operation(second).expect("submit second"),
         FederationConsensusItemAdmission::Accepted
-    );
-    assert_eq!(
-        adapter.backend_kind(),
-        FederationConsensusBackendKind::AlephBft
     );
     assert_eq!(adapter.queued_len(), 2);
 

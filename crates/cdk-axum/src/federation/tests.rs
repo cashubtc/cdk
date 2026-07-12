@@ -22,19 +22,19 @@ use cdk::federation::{
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationAlephBftNetworkRetryRecord, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfigSnapshot,
-    FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationPaymentObservationPolicy,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
-    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationRestoreOperation,
-    FederationSignedRequest, InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
+    FederationError, FederationJournalAppendOutcome, FederationJournalDigest,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMemberStatusKind,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
+    FederationRestMessageKind, FederationRestoreOperation, FederationSignedRequest,
+    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -7417,7 +7417,7 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
         .expect("mint quote replayed from finalized items");
     assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
 
-    let mut consensus = consensus.lock().await;
+    let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 1);
     assert_eq!(
         consensus.journal().entries()[0].operation_id,
@@ -7426,13 +7426,6 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
     assert_eq!(
         consensus.journal().entries()[0].status,
         FederationOperationStatus::Applied
-    );
-    let err = consensus
-        .submit_envelope(mint_quote_envelope(&state, &QuoteId::new()))
-        .expect_err("AlephBFT runtime should reject synchronous submit");
-    assert!(
-        err.to_string().contains("requires external finalization"),
-        "unexpected error: {err}"
     );
 }
 
