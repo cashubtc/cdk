@@ -200,6 +200,9 @@ pub struct MintQuote {
     /// Amount paid to the mint for the quote
     #[serde(default)]
     pub amount_paid: Amount,
+    /// Unix timestamp indicating when the mint quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Estimated confirmation target in blocks for onchain quotes
     pub estimated_blocks: Option<u32>,
     /// Operation ID that has reserved this quote (for saga pattern)
@@ -273,6 +276,7 @@ impl MintQuote {
             secret_key,
             amount_issued: Amount::ZERO,
             amount_paid: Amount::ZERO,
+            updated_at: 0,
             estimated_blocks: None,
             used_by_operation: None,
             version: 0,
@@ -286,7 +290,7 @@ impl MintQuote {
 
     /// Derive quote state from the tracked payment and issuance counters.
     pub fn state_from_amounts(&self) -> MintQuoteState {
-        quote_state_from_amounts(self.amount_paid, self.amount_issued)
+        quote_state_from_amounts(self.amount_paid, self.amount_issued).unwrap_or(self.state)
     }
 
     /// Update quote state from the tracked payment and issuance counters.
@@ -994,6 +998,9 @@ pub trait Wallet: Send + Sync {
         split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Self::Error>;
+
+    /// Check and mint any paid but unissued mint quotes
+    async fn mint_unissued_quotes(&self) -> Result<Self::Amount, Self::Error>;
 
     /// Check mint quote status
     async fn check_mint_quote_status(&self, quote_id: &str)

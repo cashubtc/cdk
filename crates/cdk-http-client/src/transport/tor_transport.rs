@@ -17,7 +17,7 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 use crate::transport::Transport;
-use crate::HttpError;
+use crate::{HttpError, RawResponse};
 
 /// Fixed-size pool size.
 pub const DEFAULT_TOR_POOL_SIZE: usize = 5;
@@ -141,23 +141,25 @@ impl TorAsync {
         (h as usize) % pool_len.max(1)
     }
 
-    async fn request<R>(
+    async fn raw_request(
         &self,
         method: http::Method,
         url: Url,
         auth: Option<AuthToken>,
-        mut body: Option<Vec<u8>>,
-    ) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
+        mut body: Option<(Vec<u8>, &'static str)>,
+    ) -> Result<RawResponse, HttpError> {
         let tls = tls_api_native_tls::TlsConnector::builder()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?
             .build()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?;
 
         let pool = self.ensure_pool().await?;
-        let idx = self.index_for_request(&method, &url, body.as_deref(), pool.len());
+        let idx = self.index_for_request(
+            &method,
+            &url,
+            body.as_ref().map(|(bytes, _)| bytes.as_slice()),
+            pool.len(),
+        );
         let client_for_request = pool[idx].clone();
 
         let connector = ArtiHttpConnector::new(client_for_request, tls);
@@ -172,9 +174,9 @@ impl TorAsync {
         builder = builder.header(header::ACCEPT, "application/json");
 
         let mut req = match body.take() {
-            Some(b) => builder
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(b))
+            Some((body, content_type)) => builder
+                .header(http::header::CONTENT_TYPE, content_type)
+                .body(Body::from(body))
                 .map_err(|e| HttpError::Other(e.to_string()))?,
             None => builder
                 .body(Body::empty())
@@ -201,14 +203,22 @@ impl TorAsync {
             .await
             .map_err(|e| HttpError::Other(e.to_string()))?;
 
-        if !(200..300).contains(&status) {
-            return Err(HttpError::Status {
-                status,
-                message: String::from_utf8_lossy(&bytes).to_string(),
-            });
-        }
+        Ok(RawResponse::new(status, bytes.to_vec()))
+    }
 
-        serde_json::from_slice::<R>(&bytes).map_err(|e| HttpError::Serialization(e.to_string()))
+    async fn request<R>(
+        &self,
+        method: http::Method,
+        url: Url,
+        auth: Option<AuthToken>,
+        body: Option<(Vec<u8>, &'static str)>,
+    ) -> Result<R, HttpError>
+    where
+        R: DeserializeOwned,
+    {
+        self.raw_request(method, url, auth, body)
+            .await?
+            .json_or_status_error()
     }
 }
 
@@ -295,11 +305,35 @@ impl Transport for TorAsync {
         Ok(txts)
     }
 
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(crate::ws::WsSender, crate::ws::WsReceiver), crate::ws::WsError> {
+        let parsed_url = Url::parse(url)
+            .map_err(|e| crate::ws::WsError::Connection(format!("Invalid URL: {e}")))?;
+        let pool = self
+            .ensure_pool()
+            .await
+            .map_err(|e| crate::ws::WsError::Connection(e.to_string()))?;
+        let idx = self.index_for_request(&http::Method::GET, &parsed_url, None, pool.len());
+
+        crate::ws::connect_tor(pool[idx].clone(), url, headers).await
+    }
+
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
     where
         R: DeserializeOwned,
     {
         self.request::<R>(Method::GET, url, auth, None).await
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        self.raw_request(Method::GET, url, auth, None).await
     }
 
     async fn http_post<P, R>(
@@ -314,7 +348,32 @@ impl Transport for TorAsync {
     {
         let body =
             serde_json::to_vec(payload).map_err(|e| HttpError::Serialization(e.to_string()))?;
-        self.request::<R>(Method::POST, url, auth_token, Some(body))
-            .await
+        self.request::<R>(
+            Method::POST,
+            url,
+            auth_token,
+            Some((body, "application/json")),
+        )
+        .await
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        let body = serde_urlencoded::to_string(payload)
+            .map_err(|e| HttpError::Serialization(e.to_string()))?;
+        self.raw_request(
+            Method::POST,
+            url,
+            auth_token,
+            Some((body.into_bytes(), "application/x-www-form-urlencoded")),
+        )
+        .await
     }
 }

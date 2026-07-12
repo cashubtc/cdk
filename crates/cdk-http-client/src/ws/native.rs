@@ -102,3 +102,55 @@ pub async fn connect(
         },
     ))
 }
+
+/// Connect to a WebSocket endpoint through an Arti Tor client.
+#[cfg(feature = "tor")]
+pub(crate) async fn connect_tor(
+    tor_client: arti_client::TorClient<tor_rtcompat::PreferredRuntime>,
+    url: &str,
+    headers: &[(&str, &str)],
+) -> Result<(WsSender, WsReceiver), WsError> {
+    let parsed_url =
+        url::Url::parse(url).map_err(|e| WsError::Connection(format!("Invalid URL: {e}")))?;
+
+    let host = parsed_url
+        .host_str()
+        .ok_or_else(|| WsError::Connection("WebSocket URL must include a host".to_string()))?;
+    let port = parsed_url
+        .port_or_known_default()
+        .ok_or_else(|| WsError::Connection("WebSocket URL must include a port".to_string()))?;
+
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| WsError::Connection(e.to_string()))?;
+
+    for &(name, value) in headers {
+        if let (Ok(header_name), Ok(header_value)) = (
+            name.parse::<tokio_tungstenite::tungstenite::http::header::HeaderName>(),
+            value.parse::<tokio_tungstenite::tungstenite::http::header::HeaderValue>(),
+        ) {
+            request.headers_mut().insert(header_name, header_value);
+        }
+    }
+
+    let stream = tor_client
+        .connect((host, port))
+        .await
+        .map_err(|e| WsError::Connection(e.to_string()))?;
+
+    let (ws_stream, _) =
+        tokio_tungstenite::client_async_tls_with_config(request, stream, None, None)
+            .await
+            .map_err(|e| WsError::Connection(e.to_string()))?;
+
+    let (sink, stream) = ws_stream.split();
+
+    Ok((
+        WsSender {
+            inner: Box::new(sink),
+        },
+        WsReceiver {
+            inner: Box::new(stream),
+        },
+    ))
+}

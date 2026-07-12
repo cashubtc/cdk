@@ -63,13 +63,32 @@ impl AuthWallet {
         oidc_client: Option<OidcClient>,
     ) -> Self {
         let http_client = Arc::new(AuthHttpClient::new(mint_url.clone(), cat));
+        Self::with_auth_client(
+            mint_url,
+            localstore,
+            metadata_cache,
+            protected_endpoints,
+            oidc_client,
+            http_client,
+        )
+    }
+
+    /// Create a new [`AuthWallet`] instance with a provided auth connector.
+    pub fn with_auth_client(
+        mint_url: MintUrl,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+        metadata_cache: Arc<MintMetadataCache>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+        oidc_client: Option<OidcClient>,
+        auth_client: Arc<dyn AuthMintConnector + Send + Sync>,
+    ) -> Self {
         Self {
             mint_url,
             localstore,
             metadata_cache,
             protected_endpoints: Arc::new(RwLock::new(protected_endpoints)),
             refresh_token: Arc::new(RwLock::new(None)),
-            auth_client: http_client,
+            auth_client,
             oidc_client: Arc::new(RwLock::new(oidc_client)),
         }
     }

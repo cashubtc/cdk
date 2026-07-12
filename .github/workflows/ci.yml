@@ -41,11 +41,56 @@ jobs:
       - name: typos
         run: nix develop -i -L .#stable --command typos
 
+  # Warm the shared Crane dependency derivation on each physical NixOS runner.
+  # The ephemeral nspawn job containers use the host Nix daemon/store, but
+  # cdk-runner-01 and cdk-runner-02 do not share a store with each other.
+  warm-nix-cache:
+    name: "Warm Nix cache (${{ matrix.host }})"
+    runs-on: [self-hosted, nix, "${{ matrix.host }}"]
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [fuzz-a, fuzz-b]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build shared Crane dependencies
+        run: nix build -L .#deps
+
+  warm-msrv-nix-cache:
+    name: "Warm MSRV Nix cache (${{ matrix.host }})"
+    runs-on: [self-hosted, nix, "${{ matrix.host }}"]
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [fuzz-a, fuzz-b]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build MSRV Crane dependencies
+        run: nix build -L .#deps-msrv
+
   quick-check:
     name: "Quick Check (workspace clippy)"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -56,7 +101,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run workspace clippy
-        run: nix develop -i -L .#stable --command cargo clippy --workspace --all-targets -- -D warnings
+        run: nix build -L .#checks.x86_64-linux.workspace-clippy-all-targets
 
   # Discover CI check groups from flake - single source of truth
   discover_ci_groups:
@@ -75,7 +120,7 @@ jobs:
         id: groups
         run: |
           examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
           msrv_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
           wasm_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
           {
@@ -93,7 +138,7 @@ jobs:
     name: "Examples"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover_ci_groups]
+    needs: [warm-nix-cache, discover_ci_groups]
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -124,8 +169,8 @@ jobs:
   clippy-and-test:
     name: "Check: ${{ matrix.check }}"
     runs-on: self-hosted
-    timeout-minutes: 30
-    needs: [pre-commit-checks, discover_ci_groups]
+    timeout-minutes: 45
+    needs: [warm-nix-cache, discover_ci_groups]
     strategy:
       fail-fast: false
       matrix:
@@ -149,7 +194,7 @@ jobs:
     name: "Build integration test binaries"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -270,8 +315,26 @@ jobs:
         if: always()
         run: docker compose -f misc/supabase/docker-compose.yml down -v
 
-  regtest-itest:
-    name: "Integration regtest tests"
+  # Tests that require a running Redis cluster
+  redis-tests:
+    name: "Redis Cache Tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run clippy and tests for Redis cache
+        run: nix develop -i -L .#regtest --command just test-redis
+
+  regtest-ln-itest:
+    name: "Integration regtest LN tests"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
@@ -403,7 +466,7 @@ jobs:
     name: "MSRV: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover_ci_groups]
+    needs: [warm-msrv-nix-cache, discover_ci_groups]
     strategy:
       fail-fast: true
       matrix:
@@ -424,7 +487,7 @@ jobs:
     name: "WASM: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover_ci_groups]
+    needs: [warm-nix-cache, discover_ci_groups]
     strategy:
       fail-fast: true
       matrix:
@@ -482,7 +545,7 @@ jobs:
     name: "Documentation checks"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -501,7 +564,7 @@ jobs:
     name: "FFI Python tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -543,7 +606,7 @@ jobs:
     name: "Dart binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -554,15 +617,21 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-dart
+        run: |
+          result=$(nix build -L .#dart-bindings --print-out-paths --no-link)
+          cp -r "$result"/* bindings/dart/
+          chmod -R u+w bindings/dart/lib/src/generated/
       - name: Run Dart tests
+        env:
+          CDK_DART_TEST_MINT_URL: https://testnut.cashudevkit.org
+          CDK_DART_MINT_SETTLEMENT_DELAY_SECONDS: "5"
         run: nix develop -L .#bindings --command just test-dart
 
   kotlin-binding-tests:
     name: "Kotlin binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -573,7 +642,10 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-kotlin
+        run: |
+          result=$(nix build -L .#kotlin-bindings --print-out-paths --no-link)
+          cp -r "$result"/* bindings/kotlin/
+          chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
       - name: Run Kotlin tests
         run: nix develop -L .#bindings --command just test-kotlin
 
@@ -581,7 +653,7 @@ jobs:
     name: "Go binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5

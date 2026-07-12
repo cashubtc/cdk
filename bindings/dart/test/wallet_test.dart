@@ -6,11 +6,23 @@ void main() {
   late Wallet wallet;
   late String dbPath;
 
+  final String mintUrl =
+      Platform.environment['CDK_DART_TEST_MINT_URL'] ??
+      'https://dummy-mint-url-for-local-testing.invalid';
+  final bool runLiveMintTests =
+      Platform.environment.containsKey('CDK_DART_TEST_MINT_URL') &&
+      Platform.environment['CDK_DART_TEST_MINT_URL']!.isNotEmpty;
+  final int settlementDelaySeconds =
+      int.tryParse(
+        Platform.environment['CDK_DART_MINT_SETTLEMENT_DELAY_SECONDS'] ?? '',
+      ) ??
+      3;
+
   setUp(() {
     final tempDir = Directory.systemTemp;
     dbPath = '${tempDir.path}/${DateTime.now().microsecondsSinceEpoch}.sqlite';
     wallet = Wallet(
-      mintUrl: 'https://testnut.cashudevkit.org',
+      mintUrl: mintUrl,
       unit: SatCurrencyUnit(),
       mnemonic: generateMnemonic(),
       store: SqliteWalletStore(dbPath),
@@ -32,7 +44,7 @@ void main() {
 
   test('in-memory sqlite handles concurrent access', () async {
     final memoryWallet = Wallet(
-      mintUrl: 'https://testnut.cashudevkit.org',
+      mintUrl: mintUrl,
       unit: SatCurrencyUnit(),
       mnemonic: generateMnemonic(),
       store: SqliteWalletStore(':memory:'),
@@ -52,29 +64,35 @@ void main() {
     }
   });
 
-  test('mint flow', () async {
-    final quote = await wallet.mintQuote(
-      paymentMethod: Bolt11PaymentMethod(),
-      amount: Amount(value: 100),
-      description: null,
-      extra: null,
-    );
+  test(
+    'mint flow',
+    () async {
+      final quote = await wallet.mintQuote(
+        paymentMethod: Bolt11PaymentMethod(),
+        amount: Amount(value: 100),
+        description: null,
+        extra: null,
+      );
 
-    expect(quote.id, isNotEmpty);
-    expect(quote.request, isNotEmpty);
+      expect(quote.id, isNotEmpty);
+      expect(quote.request, isNotEmpty);
 
-    // testnut pays quotes automatically, wait briefly for payment to settle
-    await Future.delayed(Duration(seconds: 3));
+      // testnut pays quotes automatically, wait briefly for payment to settle
+      await Future.delayed(Duration(seconds: settlementDelaySeconds));
 
-    final proofs = await wallet.mint(
-      quoteId: quote.id,
-      amountSplitTarget: NoneSplitTarget(),
-      spendingConditions: null,
-    );
+      final proofs = await wallet.mint(
+        quoteId: quote.id,
+        amountSplitTarget: NoneSplitTarget(),
+        spendingConditions: null,
+      );
 
-    expect(proofs, isNotEmpty);
+      expect(proofs, isNotEmpty);
 
-    final balance = await wallet.totalBalance();
-    expect(balance.value, equals(100));
-  });
+      final balance = await wallet.totalBalance();
+      expect(balance.value, equals(100));
+    },
+    skip: !runLiveMintTests
+        ? 'Set CDK_DART_TEST_MINT_URL to run live mint integration tests'
+        : false,
+  );
 }

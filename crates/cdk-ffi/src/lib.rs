@@ -12,6 +12,8 @@ pub mod error;
 pub mod logging;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
+#[cfg(feature = "nwc")]
+pub mod nwc;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 mod runtime;
@@ -29,6 +31,8 @@ pub use error::*;
 pub use logging::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
+#[cfg(feature = "nwc")]
+pub use nwc::*;
 pub use types::*;
 pub use wallet::*;
 pub use wallet_repository::*;
@@ -478,6 +482,7 @@ mod tests {
                 .expect("valid mint URL should convert successfully"),
             amount_issued: Amount::zero(),
             amount_paid: Amount::zero(),
+            updated_at: 0,
             estimated_blocks: None,
             payment_method: PaymentMethod::Bolt11,
             secret_key: None,

@@ -58,6 +58,41 @@ build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk
   echo "Checksums:"
   cat SHA256SUMS
 
+# Build the CI cache warmup targets locally.
+ci-cache-build:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  nix build -L --no-link \
+    'path:.#deps' \
+    'path:.#deps-msrv' \
+    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    'path:.#dart-bindings' \
+    'path:.#kotlin-bindings' \
+    'path:.#go-bindings'
+
+# Push the locally built CI cache warmup targets to Cachix.
+ci-cache-push:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  nix build --json --no-link \
+    'path:.#deps' \
+    'path:.#deps-msrv' \
+    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    'path:.#dart-bindings' \
+    'path:.#kotlin-bindings' \
+    'path:.#go-bindings' \
+    | jq -r '.[].outputs | to_entries[].value' \
+    | cachix push cashudevkit
+
+# Build and push CI cache warmup targets as they complete.
+ci-cache-watch:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cachix watch-exec cashudevkit -- just ci-cache-build
+
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash
@@ -133,6 +168,10 @@ coverage:
   echo "Running pure integration tests coverage (sqlite)..."
   CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
 
+  # Run NWC e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NWC e2e tests coverage (memory)..."
+  CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test nwc_e2e
+
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
@@ -149,6 +188,7 @@ test-pure db="memory":
     CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~integration_tests_pure)" -j 1
     CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~test_swap_flow)" -j 1
     CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~wallet_saga)" -j 1
+    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~nwc_e2e)" -j 1
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -158,7 +198,40 @@ test-pure db="memory":
 
     # Run wallet saga tests
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+
+    # Run NWC (NIP-47) e2e tests (requires nostr-rs-relay on PATH; skipped locally if absent)
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
   fi
+
+# Run Redis cache clippy and unit tests against both single-node and cluster Redis.
+# Starts a single-node Redis (port 6379) and a 3-node cluster (ports 7001-7003)
+# using Nix-managed scripts, mirrors both code paths in cdk-axum cache.
+test-redis:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  # Start both Redis topologies and stop them on exit
+  trap 'stop-redis-single; stop-redis-cluster' EXIT
+  start-redis-single
+  start-redis-cluster
+
+  # Lint once (compile-time only, topology is irrelevant for clippy)
+  CDK_MINTD_CACHE_BACKEND=redis \
+  CDK_MINTD_CACHE_REDIS_USE_CLUSTER=false \
+  CDK_MINTD_CACHE_REDIS_URL=redis://127.0.0.1:6379 \
+    cargo clippy -p cdk-axum --features redis -- -D warnings
+
+  # Run the full lib test suite once with both endpoint vars present.
+  # Each test constructs its own topology explicitly so a single invocation
+  # exercises both the single-node and cluster paths.
+  CDK_MINTD_CACHE_BACKEND=redis \
+  CDK_MINTD_CACHE_REDIS_URL=redis://127.0.0.1:6379 \
+  CDK_MINTD_CACHE_REDIS_CLUSTER_NODES=redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003 \
+    cargo test -p cdk-axum --features redis,integration-tests --lib
+
 
 # Mutation Testing Commands
 

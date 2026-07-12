@@ -8,11 +8,15 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{BlindSignature, CurrencyUnit, MeltQuoteState, Mpp, PublicKey};
+use super::{BlindSignature, CurrencyUnit, MeltQuoteState, Mpp, PaymentMethod, PublicKey};
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::Amount;
+
+fn default_bolt11_method() -> PaymentMethod {
+    PaymentMethod::BOLT11
+}
 
 /// NUT023 Error
 #[derive(Debug, Error)]
@@ -93,7 +97,20 @@ pub struct MintQuoteBolt11Response<Q> {
     /// Unit
     // REVIEW: This is now required in the spec, we should remove the option once all mints update
     pub unit: Option<CurrencyUnit>,
+    /// Payment method
+    #[serde(default = "default_bolt11_method")]
+    pub method: PaymentMethod,
+    /// Amount that has been paid
+    #[serde(default)]
+    pub amount_paid: Amount,
+    /// Amount that has been issued
+    #[serde(default)]
+    pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Quote State
+    #[serde(default)]
     pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
@@ -116,6 +133,10 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
             pubkey: self.pubkey,
             amount: self.amount,
             unit: self.unit.clone(),
+            method: self.method.clone(),
+            amount_paid: self.amount_paid,
+            amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -131,6 +152,10 @@ impl From<MintQuoteBolt11Response<QuoteId>> for MintQuoteBolt11Response<String> 
             pubkey: value.pubkey,
             amount: value.amount,
             unit: value.unit.clone(),
+            method: value.method,
+            amount_paid: value.amount_paid,
+            amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
         }
     }
 }
@@ -260,6 +285,9 @@ pub struct MeltQuoteBolt11Response<Q> {
     // REVIEW: This is now required in the spec, we should remove the option once all mints update
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<CurrencyUnit>,
+    /// Payment method
+    #[serde(default = "default_bolt11_method")]
+    pub method: PaymentMethod,
 }
 
 impl<Q: ToString> MeltQuoteBolt11Response<Q> {
@@ -276,6 +304,7 @@ impl<Q: ToString> MeltQuoteBolt11Response<Q> {
             change: self.change,
             request: self.request,
             unit: self.unit,
+            method: self.method,
         }
     }
 }
@@ -293,15 +322,18 @@ impl From<MeltQuoteBolt11Response<QuoteId>> for MeltQuoteBolt11Response<String> 
             change: value.change,
             request: value.request,
             unit: value.unit,
+            method: value.method,
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
+    use serde_json::{from_value, json, to_value};
+
     use super::*;
+    use crate::nut00::KnownMethod;
 
     const INVOICE_10_SATS: &str = "lnbc100n1p5z3a63pp56854ytysg7e5z9fl3w5mgvrlqjfcytnjv8ff5hm5qt6gl6alxesqdqqcqzzsxqyz5vqsp5p0x0dlhn27s63j4emxnk26p7f94u0lyarnfp5yqmac9gzy4ngdss9qxpqysgqne3v0hnzt2lp0hc69xpzckk0cdcar7glvjhq60lsrfe8gejdm8c564prrnsft6ctxxyrewp4jtezrq3gxxqnfjj0f9tw2qs9y0lslmqpfu7et9";
 
@@ -368,5 +400,85 @@ mod tests {
             .amount_msat();
 
         assert!(matches!(result, Err(Error::InvalidAmountRequest)));
+    }
+
+    #[test]
+    fn mint_quote_bolt11_response_serializes_method() {
+        let response = MintQuoteBolt11Response {
+            quote: "quote-id".to_string(),
+            request: "lnbc...".to_string(),
+            amount: Some(Amount::from(10)),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+            state: QuoteState::Unpaid,
+            expiry: Some(1_701_704_757),
+            pubkey: None,
+        };
+
+        let value = to_value(&response).expect("serialize response");
+        assert_eq!(value["method"], json!("bolt11"));
+
+        let decoded: MintQuoteBolt11Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt11));
+    }
+
+    #[test]
+    fn mint_quote_bolt11_response_defaults_method() {
+        let value = json!({
+            "quote": "quote-id",
+            "request": "lnbc...",
+            "amount": 10,
+            "unit": "sat",
+            "state": "UNPAID",
+            "expiry": 1_701_704_757
+        });
+
+        let decoded: MintQuoteBolt11Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt11));
+    }
+
+    #[test]
+    fn melt_quote_bolt11_response_serializes_method() {
+        let response = MeltQuoteBolt11Response {
+            quote: "quote-id".to_string(),
+            amount: Amount::from(10),
+            fee_reserve: Amount::from(2),
+            state: MeltQuoteState::Unpaid,
+            expiry: 1_701_704_757,
+            payment_preimage: None,
+            change: None,
+            request: Some("lnbc...".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+        };
+
+        let value = to_value(&response).expect("serialize response");
+        assert_eq!(value["method"], json!("bolt11"));
+
+        let decoded: MeltQuoteBolt11Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt11));
+    }
+
+    #[test]
+    fn melt_quote_bolt11_response_defaults_method() {
+        let value = json!({
+            "quote": "quote-id",
+            "amount": 10,
+            "fee_reserve": 2,
+            "state": "UNPAID",
+            "expiry": 1_701_704_757,
+            "request": "lnbc...",
+            "unit": "sat"
+        });
+
+        let decoded: MeltQuoteBolt11Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt11));
     }
 }

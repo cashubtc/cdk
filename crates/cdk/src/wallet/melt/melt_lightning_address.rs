@@ -97,7 +97,7 @@ mod tests {
 
     use super::*;
     use crate::mint_url::MintUrl;
-    use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState};
+    use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod};
     use crate::wallet::test_utils::MockMintConnector;
     use crate::wallet::WalletBuilder;
 
@@ -150,6 +150,7 @@ mod tests {
             change: None,
             request: None,
             unit: None,
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = test_wallet_with_connector(connector.clone()).await;

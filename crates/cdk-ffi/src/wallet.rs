@@ -357,6 +357,15 @@ impl Wallet {
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
+    /// Check and mint any paid but unissued mint quotes.
+    ///
+    /// This is useful during startup or recovery after incomplete mint quote flows.
+    /// It may perform network requests and write newly issued proofs to the wallet store.
+    pub async fn mint_unissued_quotes(&self) -> Result<Amount, FfiError> {
+        let minted = self.inner.mint_unissued_quotes().await?;
+        Ok(minted.into())
+    }
+
     /// Prepare a melt operation
     ///
     /// Returns a `PreparedMelt` that can be confirmed or cancelled.
@@ -936,4 +945,44 @@ pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
     let m = Mnemonic::parse(&mnemonic)
         .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
     Ok(m.to_entropy())
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::wallet::Wallet as WalletTrait;
+
+    use super::*;
+    use crate::database::custom_wallet_store;
+    use crate::sqlite::WalletSqliteDatabase;
+
+    fn test_wallet() -> Wallet {
+        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
+        Wallet::new(
+            "https://mint.example.com".to_string(),
+            CurrencyUnit::Sat,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+            custom_wallet_store(db),
+            WalletConfig {
+                target_proof_count: None,
+            },
+        )
+        .expect("wallet should be created")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mint_unissued_quotes_is_available_on_wallet_and_trait() {
+        let wallet = test_wallet();
+
+        let minted = wallet
+            .mint_unissued_quotes()
+            .await
+            .expect("empty quote store should mint zero");
+        assert!(minted.is_zero());
+
+        let trait_minted = <Wallet as WalletTrait>::mint_unissued_quotes(&wallet)
+            .await
+            .expect("trait call should mint zero from empty quote store");
+        assert!(trait_minted.is_zero());
+    }
 }

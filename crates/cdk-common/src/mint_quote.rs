@@ -63,7 +63,7 @@ impl MintQuoteRequest {
             Self::Bolt11(request) => Some(request.amount),
             Self::Bolt12(request) => request.amount,
             Self::Onchain(_) => None,
-            Self::Custom { request, .. } => Some(request.amount),
+            Self::Custom { request, .. } => request.amount,
         }
     }
 
@@ -112,6 +112,19 @@ pub enum MintQuoteResponse<Q> {
     },
 }
 
+/// Errors from mint quote accounting validation.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MintQuoteAccountingError {
+    /// The response reports more issued ecash than paid amount.
+    #[error("mint quote amount_issued ({amount_issued}) exceeds amount_paid ({amount_paid})")]
+    AmountIssuedExceedsAmountPaid {
+        /// Amount paid to the mint.
+        amount_paid: Amount,
+        /// Amount of ecash issued by the mint.
+        amount_issued: Amount,
+    },
+}
+
 impl<Q> MintQuoteResponse<Q> {
     /// Returns the payment method for this response.
     pub fn method(&self) -> PaymentMethod {
@@ -145,14 +158,24 @@ impl<Q> MintQuoteResponse<Q> {
 
     /// Returns the quote state derived from the response data.
     pub fn state(&self) -> Option<QuoteState> {
+        self.try_state().ok()
+    }
+
+    /// Returns the quote state derived from the response data, validating quote accounting.
+    pub fn try_state(&self) -> Result<QuoteState, MintQuoteAccountingError> {
         match self {
-            Self::Bolt11(r) => Some(r.state),
-            Self::Bolt12(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
-            Self::Onchain(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
-            Self::Custom { response, .. } => Some(quote_state_from_amounts(
-                response.amount_paid,
-                response.amount_issued,
-            )),
+            Self::Bolt11(r) => {
+                if r.amount_paid > Amount::ZERO || r.amount_issued > Amount::ZERO {
+                    quote_state_from_amounts(r.amount_paid, r.amount_issued)
+                } else {
+                    Ok(r.state)
+                }
+            }
+            Self::Bolt12(r) => quote_state_from_amounts(r.amount_paid, r.amount_issued),
+            Self::Onchain(r) => quote_state_from_amounts(r.amount_paid, r.amount_issued),
+            Self::Custom { response, .. } => {
+                quote_state_from_amounts(response.amount_paid, response.amount_issued)
+            }
         }
     }
 
@@ -167,15 +190,27 @@ impl<Q> MintQuoteResponse<Q> {
     }
 }
 
-pub(crate) fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amount) -> QuoteState {
-    if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
-        return QuoteState::Unpaid;
+/// Derive the deprecated single-use mint quote state from canonical quote counters.
+pub fn quote_state_from_amounts(
+    amount_paid: Amount,
+    amount_issued: Amount,
+) -> Result<QuoteState, MintQuoteAccountingError> {
+    if amount_issued > amount_paid {
+        return Err(MintQuoteAccountingError::AmountIssuedExceedsAmountPaid {
+            amount_paid,
+            amount_issued,
+        });
     }
 
-    match amount_paid.cmp(&amount_issued) {
-        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => QuoteState::Issued,
-        std::cmp::Ordering::Greater => QuoteState::Paid,
+    if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
+        return Ok(QuoteState::Unpaid);
     }
+
+    if amount_paid == amount_issued {
+        return Ok(QuoteState::Issued);
+    }
+
+    Ok(QuoteState::Paid)
 }
 
 #[cfg(test)]
@@ -188,9 +223,11 @@ mod tests {
             response: MintQuoteCustomResponse {
                 quote: "quote".to_string(),
                 request: "custom-request".to_string(),
+                method: PaymentMethod::Custom("custom".to_string()),
                 amount: Some(Amount::from(100)),
                 amount_paid,
                 amount_issued,
+                updated_at: 0,
                 unit: Some(CurrencyUnit::Sat),
                 expiry: None,
                 pubkey: None,
@@ -213,6 +250,14 @@ mod tests {
             custom_response(Amount::from(100), Amount::from(100)).state(),
             Some(QuoteState::Issued)
         );
+        assert_eq!(
+            custom_response(Amount::from(50), Amount::from(100)).state(),
+            None
+        );
+        assert!(matches!(
+            custom_response(Amount::from(50), Amount::from(100)).try_state(),
+            Err(MintQuoteAccountingError::AmountIssuedExceedsAmountPaid { .. })
+        ));
     }
 
     #[test]
@@ -222,6 +267,7 @@ mod tests {
             request: "bolt12-request".to_string(),
             amount: Some(Amount::from(100)),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
             expiry: None,
             pubkey: PublicKey::from_hex(
                 "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c",
@@ -229,6 +275,7 @@ mod tests {
             .expect("valid public key"),
             amount_paid: Amount::from(100),
             amount_issued: Amount::from(40),
+            updated_at: 0,
         });
 
         assert_eq!(response.state(), Some(QuoteState::Paid));

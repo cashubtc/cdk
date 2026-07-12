@@ -1,9 +1,7 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::wallet::MintConnector;
-use cdk::HttpClient;
+use cdk::wallet::WalletRepository;
 use clap::Args;
-use url::Url;
 
 #[derive(Args)]
 pub struct MintInfoSubcommand {
@@ -11,17 +9,11 @@ pub struct MintInfoSubcommand {
 }
 
 pub async fn mint_info(
-    proxy: Option<Url>,
-    danger_accept_invalid_certs: bool,
+    wallet_repository: &WalletRepository,
     sub_command_args: &MintInfoSubcommand,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
-    let client = match proxy {
-        Some(proxy) => HttpClient::with_proxy(mint_url, proxy, None, danger_accept_invalid_certs)?,
-        None => HttpClient::new(mint_url, None),
-    };
-
-    let info = client.get_mint_info().await?;
+    let info = wallet_repository.fetch_mint_info(&mint_url).await?;
 
     println!("{}", serde_json::to_string_pretty(&info)?);
 

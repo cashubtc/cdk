@@ -593,7 +593,7 @@ async fn test_confirm_prefer_async_pending_can_be_dropped_and_polled() {
 
     // Step 5: Poll the quote status
     let mut attempts = 0;
-    let max_attempts = 10;
+    let max_attempts = 100;
     let mut final_state = MeltQuoteState::Unknown;
 
     while attempts < max_attempts {

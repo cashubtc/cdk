@@ -4,6 +4,7 @@
 
 use super::nut05::{MeltQuoteCustomResponse, MeltRequest};
 use super::nut23::MeltQuoteBolt11Response;
+use super::nut25::MeltQuoteBolt12Response;
 use crate::Amount;
 
 impl<Q> MeltRequest<Q> {
@@ -16,6 +17,15 @@ impl<Q> MeltRequest<Q> {
 }
 
 impl<Q> MeltQuoteBolt11Response<Q> {
+    /// Total change [`Amount`]
+    pub fn change_amount(&self) -> Option<Amount> {
+        self.change
+            .as_ref()
+            .and_then(|o| Amount::try_sum(o.iter().map(|proof| proof.amount)).ok())
+    }
+}
+
+impl<Q> MeltQuoteBolt12Response<Q> {
     /// Total change [`Amount`]
     pub fn change_amount(&self) -> Option<Amount> {
         self.change
@@ -38,7 +48,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::nuts::{BlindSignature, Id, MeltQuoteState, PublicKey};
+    use crate::nuts::{BlindSignature, Id, MeltQuoteState, PaymentMethod, PublicKey};
     use crate::CurrencyUnit;
 
     fn blind_signature(amount: u64) -> BlindSignature {
@@ -65,6 +75,7 @@ mod tests {
             change: Some(vec![blind_signature(2), blind_signature(3)]),
             request: Some("invoice".to_string()),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         };
 
         assert_eq!(response.change_amount(), Some(Amount::from(5)));
@@ -82,6 +93,7 @@ mod tests {
             change: Some(vec![blind_signature(4), blind_signature(6)]),
             request: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Custom("custom".to_string()),
             extra: serde_json::Value::Null,
         };
 

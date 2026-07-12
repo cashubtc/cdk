@@ -218,7 +218,6 @@ async fn finalize_melt_common<'a>(
             e
         );
     }
-
     Ok(MeltSaga {
         wallet,
         compensations,
@@ -293,7 +292,7 @@ impl<'a> MeltSaga<'a, Initial> {
     pub async fn prepare(
         mut self,
         quote_id: &str,
-        _metadata: HashMap<String, String>,
+        metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing melt for quote {} with operation {}",
@@ -356,6 +355,8 @@ impl<'a> MeltSaga<'a, Initial> {
                     counter_start: None,
                     counter_end: None,
                     change_amount: None,
+                    metadata: metadata.clone(),
+                    final_proof_ys: None,
                     change_blinded_messages: None,
                 }),
             );
@@ -452,6 +453,8 @@ impl<'a> MeltSaga<'a, Initial> {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata,
+                final_proof_ys: None,
                 change_blinded_messages: None, // Will be set when melt is requested
             }),
         );
@@ -501,7 +504,7 @@ impl<'a> MeltSaga<'a, Initial> {
         mut self,
         quote_id: &str,
         proofs: Proofs,
-        _metadata: HashMap<String, String>,
+        metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing melt with specific proofs for quote {} with operation {}",
@@ -558,6 +561,8 @@ impl<'a> MeltSaga<'a, Initial> {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata,
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -831,6 +836,8 @@ impl<'a> MeltSaga<'a, Prepared> {
             None
         };
 
+        let final_proof_ys = final_proofs.ys()?;
+
         // Update saga state to MeltRequested BEFORE making the melt call
         let mut saga = self.state_data.saga.clone();
         saga.update_state(WalletSagaState::Melt(MeltSagaState::MeltRequested));
@@ -842,6 +849,7 @@ impl<'a> MeltSaga<'a, Prepared> {
             } else {
                 None
             };
+            data.final_proof_ys = Some(final_proof_ys);
             data.change_blinded_messages = change_blinded_messages.clone();
         }
 
@@ -1344,7 +1352,7 @@ mod tests {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
-        let proof_info = test_proof_info(keyset_id, 1010, mint_url.clone());
+        let proof_info = test_proof_info(keyset_id, 2000, mint_url.clone());
         let proof_y = proof_info.y;
         let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
@@ -1378,6 +1386,77 @@ mod tests {
             stored[0].used_by_operation,
             Some(prepared.state_data.operation_id)
         );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_persists_metadata_in_saga() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 2000, mint_url.clone());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut metadata = HashMap::new();
+        metadata.insert("purpose".to_string(), "ffi-pending".to_string());
+
+        let prepared = MeltSaga::new(&wallet)
+            .prepare(&quote_id, metadata.clone())
+            .await
+            .unwrap();
+
+        let saga = db
+            .get_saga(&prepared.state_data.operation_id)
+            .await
+            .unwrap()
+            .expect("saga should be stored");
+        match saga.data {
+            OperationData::Melt(data) => assert_eq!(data.metadata, metadata),
+            _ => panic!("expected melt saga data"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_proofs_persists_metadata_in_saga() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 1010, mint_url.clone());
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut metadata = HashMap::new();
+        metadata.insert("purpose".to_string(), "ffi-pending-proofs".to_string());
+
+        let prepared = MeltSaga::new(&wallet)
+            .prepare_with_proofs(&quote_id, vec![proof], metadata.clone())
+            .await
+            .unwrap();
+
+        let saga = db
+            .get_saga(&prepared.state_data.operation_id)
+            .await
+            .unwrap()
+            .expect("saga should be stored");
+        match saga.data {
+            OperationData::Melt(data) => assert_eq!(data.metadata, metadata),
+            _ => panic!("expected melt saga data"),
+        }
     }
 
     /// Verify the Amount arithmetic used in prepare/request_melt does not panic on overflow.
@@ -1476,6 +1555,7 @@ mod tests {
                 quote: quote_id.clone(),
                 amount: quote.amount,
                 unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Known(KnownMethod::Onchain),
                 state: MeltQuoteState::Pending,
                 expiry: quote.expiry,
                 request: quote.request.clone(),
@@ -1544,6 +1624,7 @@ mod tests {
             quote: quote.id.clone(),
             amount: quote.amount,
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Onchain),
             state,
             expiry: quote.expiry,
             request: quote.request.clone(),

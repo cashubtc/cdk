@@ -312,7 +312,7 @@ impl Mint {
                     let custom_options = CustomIncomingPaymentOptions {
                         method: payment_method.to_string(),
                         description: request.description,
-                        amount: request.amount.with_unit(unit.clone()),
+                        amount: request.amount.map(|a| a.with_unit(unit.clone())),
                         unix_expiry: Some(quote_expiry),
                         extra_json,
                     };
@@ -334,6 +334,7 @@ impl Mint {
                     Error::InvalidPaymentRequest
                 })?;
 
+            let now = unix_time();
             let quote = MintQuote::new(
                 Some(quote_id),
                 create_invoice_response.request.to_string(),
@@ -345,7 +346,8 @@ impl Mint {
                 Amount::new(0, unit.clone()),
                 Amount::new(0, unit.clone()),
                 payment_method.clone(),
-                unix_time(),
+                now,
+                now,
                 vec![],
                 vec![],
                 Some(create_invoice_response.extra_json.unwrap_or_default()),
@@ -1197,6 +1199,7 @@ mod batch_mint_tests {
 
     async fn add_paid_onchain_mint_quote(mint: &Mint, paid_amount: u64) -> QuoteId {
         let quote_id = QuoteId::new();
+        let now = cdk_common::util::unix_time();
         let quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -1208,7 +1211,8 @@ mod batch_mint_tests {
             Amount::new(paid_amount, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Onchain),
-            cdk_common::util::unix_time(),
+            now,
+            now,
             vec![],
             vec![],
             None,

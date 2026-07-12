@@ -2575,13 +2575,11 @@ async fn test_recovery_idempotence() {
 // ==================== PHASE 3: EDGE CASE TESTS ====================
 // These tests verify edge cases and error handling scenarios.
 
-/// Tests cleanup of orphaned saga (saga deletion fails but swap succeeds).
+/// Tests cleanup of orphaned saga (saga deletion fails after swap succeeds).
 ///
 /// # What This Tests
 /// - Swap completes successfully (proofs marked SPENT)
-/// - Saga deletion fails (simulated by test hook)
-/// - Swap still succeeds (best-effort deletion)
-/// - Saga remains orphaned in database
+/// - Saga remains orphaned in database after a successful swap
 /// - Recovery detects orphaned saga (proofs already SPENT)
 /// - Recovery deletes orphaned saga
 ///
@@ -2591,12 +2589,14 @@ async fn test_recovery_idempotence() {
 /// on next recovery.
 ///
 /// # Success Criteria
-/// - Swap succeeds despite deletion failure
+/// - Swap succeeds
 /// - Proofs are SPENT after swap
-/// - Saga remains after swap (orphaned)
+/// - Saga is manually reinserted to simulate failed best-effort deletion
 /// - Recovery cleans up orphaned saga
 #[tokio::test]
 async fn test_orphaned_saga_cleanup() {
+    use cdk_common::mint::{Saga, SwapSagaState};
+
     let mint = create_test_mint().await.unwrap();
     let db = mint.localstore();
 
@@ -2614,14 +2614,12 @@ async fn test_orphaned_saga_cleanup() {
 
     let operation_id = *saga.state_data.operation.id();
     let ys = input_proofs.ys().unwrap();
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
 
     let saga = saga.sign_outputs().await.expect("Signing should succeed");
-
-    // Note: We cannot easily inject a failure for saga deletion within finalize
-    // because the deletion happens inside a database transaction and uses the
-    // transaction trait. For now, we'll test the recovery side: create a saga
-    // that completes, then manually verify recovery can handle scenarios where
-    // saga exists but proofs are already SPENT.
 
     let _response = saga.finalize().await.expect("Finalize should succeed");
 
@@ -2632,25 +2630,42 @@ async fn test_orphaned_saga_cleanup() {
         "Proofs should be SPENT after successful swap"
     );
 
-    // In a real scenario with deletion failure, saga would remain.
-    // For this test, we'll verify that saga is properly deleted.
-    // TODO: Add failure injection for delete_saga to properly test this.
-    let saga = {
+    let signatures = db.get_blind_signatures(&blinded_secrets).await.unwrap();
+    assert!(
+        signatures.iter().all(Option::is_some),
+        "Outputs should remain signed after successful swap"
+    );
+
+    {
+        let mut tx = db.begin_transaction().await.unwrap();
+        tx.add_saga(&Saga::new_swap(operation_id, SwapSagaState::SetupComplete))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    let saga_after = {
         let mut tx = db.begin_transaction().await.unwrap();
         let result = tx.get_saga(&operation_id).await.unwrap();
         tx.commit().await.unwrap();
         result
     };
+    assert!(saga_after.is_none(), "Recovery should delete saga");
+
+    let states_after = db.get_proofs_states(&ys).await.unwrap();
     assert!(
-        saga.is_none(),
-        "Saga should be deleted after successful swap"
+        states_after.iter().all(|s| s == &Some(State::Spent)),
+        "Recovery should not remove spent proofs"
     );
 
-    // If we had a way to inject deletion failure, we would:
-    // 1. Verify saga remains (orphaned)
-    // 2. Run recovery
-    // 3. Verify recovery detects proofs are SPENT
-    // 4. Verify recovery deletes orphaned saga
+    let signatures_after = db.get_blind_signatures(&blinded_secrets).await.unwrap();
+    assert!(
+        signatures_after.iter().all(Option::is_some),
+        "Recovery should not remove signed outputs"
+    );
 }
 
 /// Tests recovery with orphaned proofs (proofs without corresponding saga).

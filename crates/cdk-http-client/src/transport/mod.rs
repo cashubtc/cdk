@@ -8,14 +8,23 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::HttpError;
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 use crate::{HttpClient, HttpClientBuilder};
+use crate::{HttpError, RawResponse};
 
 /// Expected HTTP transport
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
+    /// Connect to a WebSocket endpoint using this transport.
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(crate::ws::WsSender, crate::ws::WsReceiver), crate::ws::WsError> {
+        crate::ws::connect(url, headers).await
+    }
+
     /// Make the transport use a proxy.
     ///
     /// SOCKS proxy schemes such as `socks5h` are available only when this crate
@@ -37,6 +46,13 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
     where
         R: DeserializeOwned;
 
+    /// HTTP GET request returning a raw response.
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError>;
+
     /// HTTP POST request.
     async fn http_post<P, R>(
         &self,
@@ -47,6 +63,16 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
     where
         P: Serialize + Send + Sync,
         R: DeserializeOwned;
+
+    /// HTTP POST request with a form body returning a raw response.
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync;
 }
 
 /// Default async transport backed by the crate `HttpClient`.
@@ -147,6 +173,14 @@ impl Transport for Async {
     where
         R: DeserializeOwned,
     {
+        self.http_get_raw(url, auth).await?.json_or_status_error()
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
         let url_str = url.to_string();
         let mut request = self.inner.get(&url_str);
 
@@ -154,7 +188,7 @@ impl Transport for Async {
             request = request.header(auth.header_key(), auth.to_string());
         }
 
-        request.send_json::<R>().await
+        request.send().await
     }
 
     async fn http_post<P, R>(
@@ -175,6 +209,25 @@ impl Transport for Async {
         }
 
         request.send_json::<R>().await
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        let url_str = url.to_string();
+        let mut request = self.inner.post(&url_str).form(payload);
+
+        if let Some(auth) = auth_token {
+            request = request.header(auth.header_key(), auth.to_string());
+        }
+
+        request.send().await
     }
 }
 

@@ -21,6 +21,7 @@ wallet = [
 ]
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
+nwc = ["wallet", "nostr", "dep:cdk-nwc"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
 bip353 = ["wallet", "cdk-common/bip353", "cdk-http-client?/bip353"]
 bench = []
@@ -54,6 +55,7 @@ uuid.workspace = true
 jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, default-features = false, optional = true }
+cdk-nwc = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 bitcoin-payment-instructions = { workspace = true }
 web-time.workspace = true
@@ -153,6 +155,10 @@ name = "npubcash"
 required-features = ["npubcash"]
 
 [[example]]
+name = "nwc"
+required-features = ["nwc"]
+
+[[example]]
 name = "multimint-npubcash"
 required-features = ["npubcash"]
 
@@ -184,6 +190,8 @@ bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
 anyhow.workspace = true
+nwc = { version = "0.44.0", default-features = false }
+serde_urlencoded = { version = "0.7", default-features = false }
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }
 

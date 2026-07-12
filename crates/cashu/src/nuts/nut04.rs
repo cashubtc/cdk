@@ -381,7 +381,11 @@ impl Settings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuoteCustomRequest {
     /// Amount to mint
-    pub amount: Amount,
+    ///
+    /// Optional common field. Method-specific NUTs make it required or ignore
+    /// it as needed (e.g. NUT-23 requires `amount`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<Amount>,
     /// Currency unit
     pub unit: CurrencyUnit,
     /// Optional description
@@ -409,6 +413,7 @@ pub struct MintQuoteCustomRequest {
 /// ```json
 /// {
 ///   "quote": "abc123",
+///   "method": "paypal",
 ///   "amount": 1000,
 ///   "amount_paid": 0,
 ///   "amount_issued": 0,
@@ -431,12 +436,17 @@ pub struct MintQuoteCustomResponse<Q> {
     pub quote: Q,
     /// Payment request string (method-specific format)
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount
     pub amount: Option<Amount>,
     /// Amount that has been paid
     pub amount_paid: Amount,
     /// Amount that has been issued
     pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
     /// Unix timestamp until the quote is valid
@@ -463,9 +473,11 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
         MintQuoteCustomResponse {
             quote: self.quote.to_string(),
             request: self.request.clone(),
+            method: self.method.clone(),
             amount: self.amount,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -480,9 +492,11 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
         Self {
             quote: value.quote.to_string(),
             request: value.request,
+            method: value.method,
             amount: value.amount,
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
             unit: value.unit,
             expiry: value.expiry,
             pubkey: value.pubkey,
@@ -945,9 +959,11 @@ mod tests {
         let response = MintQuoteCustomResponse {
             quote: "abc123".to_string(),
             request: "paypal://pay?id=123".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
             amount: Some(Amount::from(1000)),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -958,6 +974,7 @@ mod tests {
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
         assert!(parsed.get("state").is_none());
+        assert_eq!(parsed["method"], json!("paypal"));
         assert_eq!(parsed["amount_paid"], json!(0));
         assert_eq!(parsed["amount_issued"], json!(0));
     }
@@ -967,9 +984,11 @@ mod tests {
         let response = MintQuoteCustomResponse {
             quote: "q1".to_string(),
             request: "custom://pay".to_string(),
+            method: PaymentMethod::Custom("custom".to_string()),
             amount: Some(Amount::from(100)),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999),
             pubkey: None,

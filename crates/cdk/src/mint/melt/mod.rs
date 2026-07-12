@@ -423,7 +423,7 @@ impl Mint {
     async fn get_melt_bolt12_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_bolt12_quote");
 
@@ -682,6 +682,7 @@ impl Mint {
                 request,
                 unit,
                 method,
+                amount,
                 extra,
             } = melt_request;
 
@@ -720,6 +721,7 @@ impl Mint {
                 OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.clone(),
+                    amount: (*amount).map(|a| a.with_unit(unit.clone())),
                     max_fee_amount: None,
                     timeout_secs: None,
                     melt_options: None,
@@ -839,6 +841,7 @@ impl Mint {
                         change: change.clone(),
                         request: Some(quote.request.to_string()),
                         unit: Some(quote.unit.clone()),
+                        method: PaymentMethod::Known(KnownMethod::Bolt11),
                     })
                 }
                 PaymentMethod::Known(KnownMethod::Bolt12) => {
@@ -852,6 +855,7 @@ impl Mint {
                         change: change.clone(),
                         request: Some(quote.request.to_string()),
                         unit: Some(quote.unit.clone()),
+                        method: PaymentMethod::Known(KnownMethod::Bolt12),
                     })
                 }
                 PaymentMethod::Known(KnownMethod::Onchain) => {
