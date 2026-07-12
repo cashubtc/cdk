@@ -2172,7 +2172,13 @@ Implementation checklist:
 
 - [x] Add `FederatedMintConnector` implementing `MintConnector`.
 - [x] Load federation config through explicit builder/config construction.
-- [x] Load federation config automatically from mint info or invite codes.
+- [x] Load federation config from an invite or from one member's public mint
+  URL. Every active member exposes the finalized public `FederationConfig` at
+  unauthenticated `GET /v1/config`; standalone mints do not mount the route.
+  URL discovery fully validates the config, requires the supplied URL to match
+  exactly one roster member, then cross-checks that member's federation ID,
+  member ID, protocol versions, and config digest against `GET /v1/info` before
+  connector construction.
 - [x] Wrap one `HttpClient` per member.
 - [x] `get_mint_keys`, `get_mint_keysets`, and `get_mint_info` should query multiple members and require matching federation ID and aggregate keysets.
 - [x] `post_mint_quote` creates a quote through the first healthy member.
@@ -2342,7 +2348,11 @@ Implementation checklist:
 - [x] Implement an in-memory consensus/network simulator for tests.
 - [x] Abstract HTTP transport for the private REST peer client.
 - [x] Implement private REST transport first using Axum/Reqwest for local, regtest, and reachable-server deployments.
-- [x] Keep federation REST endpoints separate from public Cashu wallet endpoints, for example under `/federation/v1/*`.
+- [x] Keep signed member-to-member federation REST endpoints separate from
+  public Cashu wallet endpoints under `/federation/v1/*`. The intentional
+  exception is the read-only wallet discovery endpoint `GET /v1/config`, which
+  returns only the finalized public federation config and requires no member
+  authentication.
 - [x] Use signed, canonical member-to-member envelopes on every REST message: federation ID, sender member ID, receiver member ID, message kind, consensus height, nonce or sequence number, body hash, and signature.
 - [x] Verify every private REST envelope against the sender's identity public key from the local federation roster.
 - [x] Refuse private REST requests from member IDs that are not in the configured roster.
@@ -3957,6 +3967,15 @@ Implementation checklist:
   `cdk-cli federation add --invite-code <cashufed...>`. The invite-code path
   decodes the same public federation config carried by `FederationInvite`, then
   reuses the existing registry validation and connector policy path.
+- [x] Add URL-only federation discovery:
+  `cdk-cli federation add --mint-url <member-public-url>`. The CLI fetches
+  `<member-public-url>/v1/config`, performs full external config validation,
+  requires the supplied URL to identify exactly one roster member, fetches
+  `/v1/info` from that same member, and verifies matching federation ID, member
+  ID, protocol versions, and config digest before mutating the registry. The
+  discovery member URL becomes the default local wallet mint URL unless
+  `--local-mint-url` is supplied. File and invite imports remain available for
+  offline setup.
 - [x] Define how the first CLI path identifies a federation wallet in local
   state and token workflows: it maps the federation to the first member's public
   mint URL by default, with an override for the local wallet mint URL. A later
@@ -4006,8 +4025,9 @@ Implementation checklist:
   tokens whose mint URL matches the imported local federation URL or any member
   public mint URL in the imported federation config. A focused receive test now
   proves an unimported token mint URL fails before receive/network work with an
-  error that tells the user to run `cdk-cli federation add --public-config
-  <path>` for federated tokens or `--allow-untrusted` for standalone mints.
+  error that tells the user to run `cdk-cli federation add --mint-url
+  <member-url>` for federated tokens or `--allow-untrusted` for standalone
+  mints.
   A second focused receive test now proves a token whose mint URL is an imported
   member public URL reaches federation wallet resolution rather than the
   untrusted-mint gate, without needing live member HTTP.
@@ -4139,7 +4159,7 @@ CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=60 \
 just fed-regtest-start target/cdk-cli-fed-smoke-aleph-live 5 3 62705
 
 target/debug/cdk-cli --work-dir target/cdk-cli-fed-smoke-wallet --non-interactive \
-  federation add --public-config target/cdk-cli-fed-smoke-aleph-live/federation-public.json \
+  federation add --mint-url http://127.0.0.1:62705 \
   --primary-member-id 1 \
   --member-request-timeout-secs 60 \
   --member-fallback-timeout-secs 60 \
@@ -4180,6 +4200,13 @@ Tests and success criteria:
   --invite-code <cashufed...>` reaches the federation add command, a valid
   `FederationInvite` decodes to the expected public config, and malformed
   invite codes fail closed before registry mutation.
+- [x] Public discovery route coverage proves unauthenticated `GET /v1/config`
+  returns the exact finalized `FederationConfig`, sets `Cache-Control: no-store`,
+  and serializes no identity-secret or BLS secret-share fields. CLI validation
+  tests accept a fully matching member, reject a config that does not contain
+  the supplied URL, and reject mismatched member config-digest metadata. CLI
+  parsing covers `federation add --mint-url <member-public-url>`, whose discovery
+  implementation requests `/v1/config` and `/v1/info` from that member.
 - [x] CLI command tests prove `cdk-cli federation add --public-config
   <federation-public.json>` stores only public federation metadata and never
   persists member private configs or mint-side private material.

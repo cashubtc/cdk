@@ -7,12 +7,13 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::wallet::{
     FederatedMintConnector, FederatedMintConnectorConfig, MintConnector, WalletConfig,
     WalletRepository,
 };
 use cdk_common::federation::{FederationConfig, FederationId, FederationInvite, MemberId};
+use cdk_http_client::HttpClient;
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -44,21 +45,28 @@ pub struct FederationAddSubCommand {
     /// Path to federation-public.json.
     #[arg(
         long,
-        conflicts_with = "invite_code",
-        required_unless_present = "invite_code"
+        conflicts_with_all = ["invite_code", "mint_url"],
+        required_unless_present_any = ["invite_code", "mint_url"]
     )]
     public_config: Option<PathBuf>,
     /// Federation invite code containing a public federation config.
     #[arg(
         long,
-        conflicts_with = "public_config",
-        required_unless_present = "public_config"
+        conflicts_with_all = ["public_config", "mint_url"],
+        required_unless_present_any = ["public_config", "mint_url"]
     )]
     invite_code: Option<String>,
+    /// Public URL of any federation member to discover and import.
+    #[arg(
+        long,
+        conflicts_with_all = ["public_config", "invite_code"],
+        required_unless_present_any = ["public_config", "invite_code"]
+    )]
+    mint_url: Option<MintUrl>,
     /// Local wallet mint URL to map this federation to.
     ///
-    /// Defaults to the first member's public mint URL. This keeps existing
-    /// Cashu token mint-url semantics unchanged during the first CLI milestone.
+    /// Defaults to the discovery member for `--mint-url`, or otherwise to the
+    /// first member's public mint URL.
     #[arg(long)]
     local_mint_url: Option<MintUrl>,
     /// Preferred federation member for quote creation and other sequential calls.
@@ -365,10 +373,13 @@ pub async fn federation(
 
 async fn add(work_dir: &Path, args: &FederationAddSubCommand) -> Result<()> {
     let mut registry = FederationWalletRegistry::load(work_dir)?;
-    let public_config = load_imported_public_config(args)?;
+    let public_config = load_imported_public_config(args).await?;
     let local_mint_url = match &args.local_mint_url {
         Some(local_mint_url) => local_mint_url.clone(),
-        None => primary_member_mint_url(&public_config)?,
+        None => match &args.mint_url {
+            Some(mint_url) => mint_url.clone(),
+            None => primary_member_mint_url(&public_config)?,
+        },
     };
     let wallet = registry.upsert(public_config, local_mint_url, args.connector_policy()?)?;
     registry.save(work_dir)?;
@@ -425,17 +436,59 @@ fn load_public_config(path: &Path) -> Result<FederationConfig> {
     Ok(config)
 }
 
-fn load_imported_public_config(args: &FederationAddSubCommand) -> Result<FederationConfig> {
-    match (&args.public_config, &args.invite_code) {
-        (Some(path), None) => load_public_config(path),
-        (None, Some(invite_code)) => {
+async fn load_imported_public_config(args: &FederationAddSubCommand) -> Result<FederationConfig> {
+    match (&args.public_config, &args.invite_code, &args.mint_url) {
+        (Some(path), None, None) => load_public_config(path),
+        (None, Some(invite_code), None) => {
             let invite = FederationInvite::from_str(invite_code)?;
             invite.config.validate()?;
             Ok(invite.config)
         }
-        (None, None) => bail!("Provide either --public-config or --invite-code"),
-        (Some(_), Some(_)) => bail!("Provide either --public-config or --invite-code, not both"),
+        (None, None, Some(mint_url)) => discover_public_config(mint_url).await,
+        _ => bail!("Provide exactly one of --mint-url, --public-config, or --invite-code"),
     }
+}
+
+async fn discover_public_config(mint_url: &MintUrl) -> Result<FederationConfig> {
+    let client = HttpClient::builder().no_redirects().build()?;
+    let config_url = mint_url.join_paths(&["v1", "config"])?;
+    let public_config: FederationConfig = client.fetch(config_url.as_str()).await?;
+    let info_url = mint_url.join_paths(&["v1", "info"])?;
+    let mint_info: MintInfo = client.fetch(info_url.as_str()).await?;
+    validate_discovered_public_config(mint_url, public_config, &mint_info)
+}
+
+fn validate_discovered_public_config(
+    mint_url: &MintUrl,
+    public_config: FederationConfig,
+    mint_info: &MintInfo,
+) -> Result<FederationConfig> {
+    public_config.validate()?;
+    if !public_config.keysets.iter().any(|keyset| keyset.active) {
+        bail!("Federation public config does not contain an active keyset");
+    }
+
+    let mut matching_members = public_config
+        .members
+        .iter()
+        .filter(|(_, member)| &member.public_mint_url == mint_url);
+    let Some((member_id, _)) = matching_members.next() else {
+        bail!("Federation public config does not contain discovery mint URL {mint_url}");
+    };
+    if matching_members.next().is_some() {
+        bail!("Federation public config contains discovery mint URL {mint_url} more than once");
+    }
+
+    let federation_info = mint_info.federation.as_ref().ok_or_else(|| {
+        anyhow!("Discovery member mint info does not advertise federation metadata")
+    })?;
+    let config_digest = public_config.config_digest_for_validated_config()?;
+    public_config.validate_member_mint_info_with_config_digest(
+        *member_id,
+        federation_info,
+        config_digest,
+    )?;
+    Ok(public_config)
 }
 
 fn primary_member_mint_url(config: &FederationConfig) -> Result<MintUrl> {
@@ -472,8 +525,8 @@ mod tests {
     use cdk::nuts::nut02::Id;
     use cdk::Amount;
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-        TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationConfigDigest, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::SecretKey;
 
@@ -562,6 +615,7 @@ mod tests {
         FederationAddSubCommand {
             public_config,
             invite_code,
+            mint_url: None,
             local_mint_url: None,
             primary_member_id: None,
             member_fallback_timeout_secs: 10,
@@ -626,8 +680,8 @@ mod tests {
         fs::remove_dir_all(work_dir).expect("remove temp dir");
     }
 
-    #[test]
-    fn imported_public_config_loader_accepts_invite_code() {
+    #[tokio::test]
+    async fn imported_public_config_loader_accepts_invite_code() {
         let public_config = valid_public_config();
         let invite_code = FederationInvite::new(public_config.clone())
             .expect("invite")
@@ -635,18 +689,81 @@ mod tests {
             .expect("invite code");
         let args = add_args_with_import_source(None, Some(invite_code));
 
-        let loaded = load_imported_public_config(&args).expect("load invite config");
+        let loaded = load_imported_public_config(&args)
+            .await
+            .expect("load invite config");
 
         assert_eq!(loaded, public_config);
     }
 
-    #[test]
-    fn imported_public_config_loader_rejects_bad_invite_code() {
+    #[tokio::test]
+    async fn imported_public_config_loader_rejects_bad_invite_code() {
         let args = add_args_with_import_source(None, Some("cashuAunsupported".to_string()));
 
-        let err = load_imported_public_config(&args).expect_err("bad invite rejected");
+        let err = load_imported_public_config(&args)
+            .await
+            .expect_err("bad invite rejected");
 
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn discovered_public_config_accepts_matching_source_member() {
+        let public_config = valid_public_config();
+        let source_url = public_config
+            .member(member_id(2))
+            .expect("source member")
+            .public_mint_url
+            .clone();
+        let mint_info = MintInfo::new().federation(
+            public_config
+                .mint_info_for_member(member_id(2))
+                .expect("member federation info"),
+        );
+
+        let validated =
+            validate_discovered_public_config(&source_url, public_config.clone(), &mint_info)
+                .expect("matching discovery metadata");
+
+        assert_eq!(validated, public_config);
+    }
+
+    #[test]
+    fn discovered_public_config_rejects_unlisted_source_url() {
+        let public_config = valid_public_config();
+        let source_url = MintUrl::from_str("https://unknown.example.com").expect("source URL");
+        let mint_info = MintInfo::new().federation(
+            public_config
+                .mint_info_for_member(member_id(1))
+                .expect("member federation info"),
+        );
+
+        let err = validate_discovered_public_config(&source_url, public_config, &mint_info)
+            .expect_err("unlisted source rejected");
+
+        assert!(err
+            .to_string()
+            .contains("does not contain discovery mint URL"));
+    }
+
+    #[test]
+    fn discovered_public_config_rejects_mismatched_mint_info_digest() {
+        let public_config = valid_public_config();
+        let source_url = public_config
+            .member(member_id(1))
+            .expect("source member")
+            .public_mint_url
+            .clone();
+        let mut federation_info = public_config
+            .mint_info_for_member(member_id(1))
+            .expect("member federation info");
+        federation_info.config_digest = FederationConfigDigest::from_bytes([42; 32]).to_string();
+        let mint_info = MintInfo::new().federation(federation_info);
+
+        let err = validate_discovered_public_config(&source_url, public_config, &mint_info)
+            .expect_err("mismatched digest rejected");
+
+        assert!(err.to_string().contains("config digest"));
     }
 
     #[test]

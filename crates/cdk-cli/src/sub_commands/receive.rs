@@ -159,7 +159,8 @@ async fn receive_token(
     if !is_trusted && !allow_untrusted {
         #[cfg(feature = "federation")]
         return Err(anyhow!(
-            "Mint {} is not trusted or imported as a federation member. Run `cdk-cli federation add --public-config <path>` for federated tokens, or use --allow-untrusted to receive from untrusted standalone mints.",
+            "Mint {} is not trusted or imported as a federation member. Run `cdk-cli federation add --mint-url {}` for federated tokens, or use --allow-untrusted to receive from untrusted standalone mints.",
+            mint_url,
             mint_url
         ));
 
@@ -361,7 +362,7 @@ mod tests {
         #[cfg(not(feature = "federation"))]
         assert!(err.contains("is not trusted"));
         #[cfg(feature = "federation")]
-        assert!(err.contains("cdk-cli federation add --public-config"));
+        assert!(err.contains("cdk-cli federation add --mint-url"));
         assert!(err.contains("--allow-untrusted"));
     }
 

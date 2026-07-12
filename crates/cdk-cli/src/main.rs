@@ -530,6 +530,25 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[test]
+    fn parses_federation_add_mint_url_command() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "federation",
+            "add",
+            "--mint-url",
+            "https://mint2.example.com",
+        ]);
+
+        assert!(matches!(
+            cli.command,
+            Commands::Federation(sub_commands::federation::FederationCommand {
+                command: sub_commands::federation::FederationSubCommand::Add(_)
+            })
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn read_only_federation_commands_skip_startup_wallet_activation() {
         let decode_token = Cli::parse_from(["cdk-cli", "decode-token", "cashuAeyJ0b2tlbiI6W119fQ"]);
         let mint_info = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);

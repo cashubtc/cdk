@@ -3402,6 +3402,44 @@ async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
 }
 
 #[tokio::test]
+async fn public_federation_config_route_returns_finalized_config_without_authentication() {
+    let (state, public_config, _, _) = federation_route_state_with_local_private().await;
+    let router = Router::new()
+        .route("/v1/config", axum::routing::get(get_public_config))
+        .with_state(state);
+
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/v1/config")
+                .body(axum::body::Body::empty())
+                .expect("public config request"),
+        )
+        .await
+        .expect("public config response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("public config body");
+    let decoded: FederationConfig =
+        serde_json::from_slice(&body).expect("public federation config json");
+
+    assert_eq!(decoded, public_config);
+    let json = String::from_utf8(body.to_vec()).expect("public config utf8");
+    assert!(!json.contains("identity_secret_key"));
+    assert!(!json.contains("keyset_secret_shares"));
+}
+
+#[tokio::test]
 async fn rest_peer_client_rejects_status_wrong_federation() {
     let (public_config, local_private, _) = transport_config();
     let member = public_config.member(member_id(2)).expect("peer member");

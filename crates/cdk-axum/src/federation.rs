@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use axum::extract::{DefaultBodyLimit, Json, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
@@ -149,6 +149,44 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
         .route("/journal", post(post_journal))
+}
+
+pub(crate) async fn get_public_config(
+    State(state): State<MintState>,
+) -> Result<Response, Response> {
+    let runtime_config = state.mint.federation_config().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "mint is not configured as a federation member",
+        )
+            .into_response()
+    })?;
+    let public_config = runtime_config.public_config();
+
+    if let Err(err) = public_config.validate() {
+        tracing::error!(%err, "Refusing to advertise an invalid federation config");
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "federation public config is unavailable",
+        )
+            .into_response());
+    }
+
+    if public_config.setup_transcript.is_none()
+        || !public_config.keysets.iter().any(|keyset| keyset.active)
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "federation setup is not finalized",
+        )
+            .into_response());
+    }
+
+    let mut response = Json(public_config.clone()).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 fn acquire_private_rest_admission(

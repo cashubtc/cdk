@@ -12,6 +12,7 @@ A command-line Cashu wallet implementation built with the Cashu Development Kit 
 ## Features
 
 - **Multiple Mint Support**: Connect to and manage multiple Cashu mints simultaneously
+- **Federated Mint Support**: Join a federation from any member URL and aggregate threshold BLS signatures
 - **Token Operations**: Mint, melt, send, and receive Cashu tokens
 - **Batch Minting**: Mint multiple existing paid quotes in a single request
 - **Lightning Integration**: Pay Lightning invoices (BOLT11, BOLT12, BIP353) and receive payments
@@ -101,6 +102,26 @@ cdk-cli receive <cashu_token>
 
 # Receive from untrusted mint with transfer to trusted mint
 cdk-cli receive <cashu_token> --allow-untrusted --transfer-to http://127.0.0.1:8085
+```
+
+### 5. Join a Federated Mint
+
+Build `cdk-cli` with the `federation` feature, then provide the public URL of any
+federation member:
+
+```bash
+cdk-cli federation add --mint-url https://mint2.example.com
+cdk-cli mint-info https://mint2.example.com
+```
+
+The CLI fetches `GET /v1/config`, validates the complete v3/BLS public
+federation config, and verifies the contacted member's federation identity and
+config digest against `GET /v1/info` before storing the public wallet metadata.
+Config-file and invite-code imports remain available for offline workflows:
+
+```bash
+cdk-cli federation add --public-config federation-public.json
+cdk-cli federation add --invite-code <cashufed...>
 ```
 
 ## Global Options

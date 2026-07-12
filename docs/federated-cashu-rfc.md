@@ -75,6 +75,37 @@ Federation member identity is separate from Cashu signing keys:
 - Every member stores the complete federation roster of member IDs, identity public keys, endpoints, BLS public shares, and aggregate Cashu keysets.
 - Unknown member IDs, wrong federation IDs, mismatched public keys, invalid signatures, stale sequence numbers, and body-hash mismatches must be rejected before state mutation.
 
+## Public Federation Discovery
+
+An active federation member exposes its complete public federation config at
+`GET /v1/config`. This is a public, unauthenticated, read-only wallet discovery
+endpoint and is separate from signed member coordination under
+`/federation/v1/*`. Standalone mints do not expose it, and a member must not
+serve an incomplete setup config without a finalized transcript and active
+aggregate keyset. Responses use `Cache-Control: no-store` so key rotation or a
+restarted finalized config is not hidden by an intermediary cache.
+
+The response contains only `FederationConfig`: member public URLs, member
+identity public keys, thresholds, v3/BLS aggregate keysets and public shares,
+payment-observation policy, protocol versions, and the signed setup transcript.
+It must never contain a member identity secret key, BLS secret share, database
+credential, payment credential, or private runtime state.
+
+A wallet joining from one member URL treats the response as untrusted input and
+must:
+
+1. fully validate the federation ID, roster, thresholds, transcript, protocol
+   versions, payment policy, and every v3/BLS aggregate keyset and member share;
+2. require the supplied URL to identify exactly one member in the config;
+3. fetch that member's `GET /v1/info` response and verify its member ID,
+   federation ID, protocol versions, and full config digest against the fetched
+   config; and
+4. persist or construct a federation connector only after all checks succeed.
+
+This bootstraps trust from the member URL chosen by the user while preventing a
+stale, mismatched, or unrelated config response from silently selecting another
+federation.
+
 ## Consensus-Before-Signing Rule
 
 No direct signing path may be available in federation mode. All minting and swapping outputs, and all melt change outputs, must pass through:
