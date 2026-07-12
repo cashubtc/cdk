@@ -172,7 +172,10 @@ Resolved blocking bugs:
   notification, and live-session fields. Every call site explicitly names the
   runtime owner; no trait or event bus was added. All 332 Axum federation and
   28 standalone Axum tests pass. Submission, finalization/catch-up, recovery,
-  and task lifecycle methods remain to move in coherent checkpoints.
+  and task lifecycle methods remain to move in coherent checkpoints. Operation
+  waiter registration, response-cache policy/statistics, and notification
+  delivery are the first methods moved onto the runtime; focused saturation,
+  timeout, eviction, cache-bound, and notification tests pass.
 
 ## Recent performance checkpoint
 

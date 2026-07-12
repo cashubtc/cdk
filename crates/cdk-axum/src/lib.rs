@@ -1987,55 +1987,29 @@ impl MintState {
         operation_id: FederationOperationId,
         waiter_limit: usize,
     ) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
-        let Some(notifications) = self.federation.notifications.as_ref() else {
-            return Ok(None);
-        };
-        Ok(Some(
-            notifications.wait_for(operation_id, waiter_limit).await?,
-        ))
+        self.federation
+            .wait_for_operation(operation_id, waiter_limit)
+            .await
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn federation_pending_response_waiter_count(&self) -> usize {
-        self.federation
-            .notifications
-            .as_ref()
-            .map(|notifications| notifications.pending_waiter_count())
-            .unwrap_or_default()
+        self.federation.pending_response_waiter_count()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn federation_response_cache_entry_count(&self) -> usize {
-        self.federation
-            .notifications
-            .as_ref()
-            .map(|notifications| notifications.response_cache_count())
-            .unwrap_or_default()
+        self.federation.response_cache_entry_count()
     }
 
     pub(crate) fn federation_operation_notification_stats(
         &self,
     ) -> FederationOperationNotificationStats {
-        self.federation
-            .notifications
-            .as_ref()
-            .map(|notifications| notifications.stats())
-            .unwrap_or_default()
+        self.federation.operation_notification_stats()
     }
 
     async fn notify_federation_operation(&self, response: FederationSubmitOperationResponse) {
-        if let Some(notifications) = &self.federation.notifications {
-            crate::federation::aleph_bft_latency::record(
-                crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::OperationNotified,
-                [response.operation_id],
-            );
-            let response_cache_limit = self
-                .federation
-                .peer_sync_config
-                .unwrap_or_default()
-                .response_cache_limit;
-            notifications.notify(response, response_cache_limit);
-        }
+        self.federation.notify_operation(response);
     }
 
     async fn federation_submit_responses_with_current_status(

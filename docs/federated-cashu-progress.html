@@ -962,7 +962,7 @@
           </article>
           <article class="item">
             <h3>Federation node runtime has one owner</h3>
-            <p><code>MintState</code> no longer carries 13 separate consensus, synchronization, DKG, admission, notification, sequence, and live-session fields. A concrete <code>FederationNodeRuntime</code> owns them, standalone mints use an explicit inert runtime, and every call site names that boundary directly. This first behavior-neutral extraction checkpoint passes all 332 Axum federation and 28 standalone Axum tests. Submission, finalization, catch-up, recovery, and task lifecycle methods are the next groups to move.</p>
+            <p><code>MintState</code> no longer carries 13 separate consensus, synchronization, DKG, admission, notification, sequence, and live-session fields. A concrete <code>FederationNodeRuntime</code> owns them, standalone mints use an explicit inert runtime, and every call site names that boundary directly. Operation waiters, response-cache policy and statistics, and notification delivery now execute on that runtime while <code>MintState</code> keeps thin temporary delegators. The ownership checkpoint passes all 332 Axum federation and 28 standalone Axum tests; focused waiter, cache, and notification tests pass after the method move.</p>
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>

@@ -1191,6 +1191,15 @@ Remaining: move submission/notification, finalization/catch-up, readiness and
 startup recovery, then task startup/shutdown methods onto the concrete runtime
 in reviewable groups. Coordinate live-session task ownership with Item 18.
 
+### Checkpoint 2: notification ownership
+
+Operation waiter registration, response-cache limits and counts, notification
+statistics, and finalized-operation delivery now execute on
+`FederationNodeRuntime`. `MintState` retains thin temporary delegators so HTTP
+handler behavior and test call sites stay unchanged while larger submission and
+finalization groups move. Focused waiter saturation/timeout, bounded cache,
+cache eviction, and operation-notification tests pass.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,

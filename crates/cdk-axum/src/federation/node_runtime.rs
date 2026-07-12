@@ -7,9 +7,10 @@ use crate::{
     FederationAlephBftLiveSessionState, FederationAlephBftNetworkInboundState,
     FederationAlephBftPendingSequenceHandle, FederationConsensusHandle,
     FederationDkgMemberAdmissionHandle, FederationInvalidOperationAlertHandle,
-    FederationNotificationHandle, FederationRestAdmissionHandle, FederationSequenceHandle,
-    FederationSyncHandle,
+    FederationNotificationHandle, FederationOperationNotificationStats,
+    FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncHandle,
 };
+use cdk::federation::{FederationOperationId, FederationSubmitOperationResponse};
 
 /// Runtime-owned handles for one active federation member.
 #[derive(Clone)]
@@ -54,5 +55,55 @@ impl FederationNodeRuntime {
             #[cfg(test)]
             manual_finality_test: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_operation(
+        &self,
+        operation_id: FederationOperationId,
+        waiter_limit: usize,
+    ) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
+        let Some(notifications) = self.notifications.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            notifications.wait_for(operation_id, waiter_limit).await?,
+        ))
+    }
+
+    pub(crate) fn pending_response_waiter_count(&self) -> usize {
+        self.notifications
+            .as_ref()
+            .map(|notifications| notifications.pending_waiter_count())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn response_cache_entry_count(&self) -> usize {
+        self.notifications
+            .as_ref()
+            .map(|notifications| notifications.response_cache_count())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn operation_notification_stats(&self) -> FederationOperationNotificationStats {
+        self.notifications
+            .as_ref()
+            .map(|notifications| notifications.stats())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn notify_operation(&self, response: FederationSubmitOperationResponse) {
+        let Some(notifications) = &self.notifications else {
+            return;
+        };
+        super::aleph_bft_latency::record(
+            super::aleph_bft_latency::CdkAlephBftLatencyStage::OperationNotified,
+            [response.operation_id],
+        );
+        let response_cache_limit = self
+            .peer_sync_config
+            .unwrap_or_default()
+            .response_cache_limit;
+        notifications.notify(response, response_cache_limit);
     }
 }
