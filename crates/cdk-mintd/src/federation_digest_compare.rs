@@ -72,10 +72,10 @@ fn print_digest_comparison(
 
 fn digest_group_line(group: &DigestComparisonGroup) -> String {
     format!(
-        "digest_group operations={} order_digest={} state_digest={} members={} ready={}/{} sync_states={}",
+        "digest_group operations={} order_digest={} materialized_state_digest={} members={} ready={}/{} sync_states={}",
         group.key.operation_count,
         group.key.order_digest,
-        group.key.state_digest,
+        group.key.materialized_state_digest,
         display_list(&group.members),
         group.ready_count,
         group.members.len(),
@@ -98,13 +98,19 @@ impl DigestComparisonReport {
         let mut digest_alert_members = Vec::new();
 
         for status in statuses {
-            if status_reports_digest_alert(status) {
+            if status_reports_digest_alert(status)
+                || status.peer_status.materialized_state_digest.is_none()
+            {
                 digest_alert_members.push(status.peer_status.member_id);
             }
             let key = DigestComparisonKey {
                 operation_count: status.peer_status.operation_count,
                 order_digest: status.peer_status.latest_order_digest.to_string(),
-                state_digest: status.peer_status.state_digest.to_string(),
+                materialized_state_digest: status
+                    .peer_status
+                    .materialized_state_digest
+                    .map(|digest| digest.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
             };
             let group = groups
                 .entry(key.clone())
@@ -218,7 +224,7 @@ impl DigestComparisonDiagnosticKind {
 struct DigestComparisonKey {
     operation_count: u64,
     order_digest: String,
-    state_digest: String,
+    materialized_state_digest: String,
 }
 
 fn digest_comparison_diagnostics(
@@ -277,23 +283,23 @@ fn digest_comparison_diagnostics(
         return diagnostics;
     }
 
-    let state_digests = groups
+    let materialized_state_digests = groups
         .iter()
-        .map(|group| group.key.state_digest.clone())
+        .map(|group| group.key.materialized_state_digest.clone())
         .collect::<BTreeSet<_>>();
-    if state_digests.len() > 1 {
+    if materialized_state_digests.len() > 1 {
         diagnostics.push(DigestComparisonDiagnostic {
             kind: DigestComparisonDiagnosticKind::MaterializedStateMismatch,
             members,
             detail: format!(
-                "operation_count={} order_digest={} state_digests={}",
+                "operation_count={} order_digest={} materialized_materialized_state_digests={}",
                 operation_count,
                 order_digests
                     .iter()
                     .next()
                     .cloned()
                     .unwrap_or_else(|| "none".to_string()),
-                display_set(&state_digests)
+                display_set(&materialized_state_digests)
             ),
         });
     }
@@ -330,11 +336,17 @@ fn materialized_row_diffs(
             continue;
         }
 
-        let state_digests = group
+        let materialized_state_digests = group
             .iter()
-            .map(|status| status.peer_status.state_digest.to_string())
+            .map(|status| {
+                status
+                    .peer_status
+                    .materialized_state_digest
+                    .map(|digest| digest.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            })
             .collect::<BTreeSet<_>>();
-        if state_digests.len() <= 1 {
+        if materialized_state_digests.len() <= 1 {
             continue;
         }
 

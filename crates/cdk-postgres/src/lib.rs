@@ -793,13 +793,9 @@ mod test {
                 (name, required)
             })
             .collect::<BTreeMap<_, _>>();
-        for column in [
-            "operation_outcome_hash",
-            "state_digest",
-            "conflict_keys_json",
-        ] {
-            assert_eq!(journal_columns.get(column), Some(&true));
-        }
+        assert_eq!(journal_columns.get("conflict_keys_json"), Some(&true));
+        assert!(!journal_columns.contains_key("operation_outcome_hash"));
+        assert!(!journal_columns.contains_key("materialized_state_digest"));
         for column in ["consensus_evidence_json", "rejection_json"] {
             assert_eq!(journal_columns.get(column), Some(&false));
         }

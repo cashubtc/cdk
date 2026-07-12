@@ -10,14 +10,14 @@ use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
     FederatedKeyset, FederationError, FederationJournalCatchUpResponse, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateRow,
+    FederationJournalEntry, FederationMaterializedStateDigest, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
     FederationOperation, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationRecord, FederationPeerStatus, FederationRestMessageKind,
     FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
-    InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
+    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use serde::Serialize;
@@ -421,7 +421,7 @@ struct SessionOutcomeRangeKey {
     previous_order_digest: FederationJournalDigest,
     range_order_digest: FederationJournalDigest,
     latest_order_digest: FederationJournalDigest,
-    state_digest: FederationStateDigest,
+    materialized_state_digest: FederationMaterializedStateDigest,
     operation_ids: Vec<FederationOperationId>,
 }
 
@@ -434,7 +434,7 @@ impl From<&FederationSessionOutcome> for SessionOutcomeRangeKey {
             previous_order_digest: outcome.previous_order_digest,
             range_order_digest: outcome.range_order_digest,
             latest_order_digest: outcome.latest_order_digest,
-            state_digest: outcome.state_digest,
+            materialized_state_digest: outcome.materialized_state_digest,
             operation_ids: outcome.operation_ids.clone(),
         }
     }
@@ -478,7 +478,7 @@ async fn session_outcome_quorum_status(
             entries,
             latest_index: Some(range.latest_index),
             latest_order_digest: range.latest_order_digest,
-            state_digest: range.state_digest,
+            materialized_state_digest: range.materialized_state_digest,
             session_outcome: None,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
@@ -607,7 +607,7 @@ fn anyhow_response(err: anyhow::Error) -> Response {
 
 async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
     let (mut status, entries) = local_peer_status_and_entries(state).await?;
-    status.state_digest = materialized_state_digest(state, &entries).await?;
+    status.materialized_state_digest = Some(materialized_state_digest(state, &entries).await?);
     Ok(status)
 }
 
@@ -623,22 +623,20 @@ async fn local_peer_order_status(state: &MintState) -> anyhow::Result<Federation
                 .index
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("federation journal index overflow"))?;
-            FederationPeerStatus::new_with_state_digest(
+            FederationPeerStatus::new(
                 runtime_config.federation_id(),
                 runtime_config.member_id(),
                 operation_count,
                 Some(tip.index),
                 tip.order_digest,
-                tip.state_digest,
             )
         }
-        None => FederationPeerStatus::new_with_state_digest(
+        None => FederationPeerStatus::new(
             runtime_config.federation_id(),
             runtime_config.member_id(),
             0,
             None,
             cdk::federation::FederationJournalDigest::genesis(),
-            FederationStateDigest::genesis(),
         ),
     };
     let next_item_index = local_finalized_item_cursor(state).await?;
@@ -654,7 +652,7 @@ async fn local_peer_status_with_materialized_rows(
 )> {
     let (mut status, entries) = local_peer_status_and_entries(state).await?;
     let snapshot = materialized_state_snapshot(state, &entries).await?;
-    status.state_digest = snapshot.digest()?;
+    status.materialized_state_digest = Some(snapshot.digest()?);
     let materialized_state_rows = snapshot.row_fingerprints()?;
     Ok((status, materialized_state_rows))
 }
@@ -704,7 +702,7 @@ async fn durable_federation_journal(
 pub(crate) async fn materialized_state_digest(
     state: &MintState,
     entries: &[FederationJournalEntry],
-) -> anyhow::Result<FederationStateDigest> {
+) -> anyhow::Result<FederationMaterializedStateDigest> {
     Ok(materialized_state_snapshot(state, entries)
         .await?
         .digest()?)

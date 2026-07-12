@@ -2200,8 +2200,6 @@ fn ensure_same_federation_journal_entry_for_retry(
         || persisted.conflict_keys != accepted.conflict_keys
         || persisted.previous_order_digest != accepted.previous_order_digest
         || persisted.order_digest != accepted.order_digest
-        || persisted.operation_outcome_hash != accepted.operation_outcome_hash
-        || persisted.state_digest != accepted.state_digest
         || persisted.consensus_evidence != accepted.consensus_evidence
     {
         return Err(Error::Custom(format!(

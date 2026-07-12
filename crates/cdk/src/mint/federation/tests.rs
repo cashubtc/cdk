@@ -18,11 +18,11 @@ use cdk_common::federation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationOutcomeHash,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationStateDigest, FederationSwapOperation, InMemoryFederationJournal, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationSwapOperation, InMemoryFederationJournal, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;
@@ -703,22 +703,17 @@ fn accepted_entry_without_journal(
     let conflict_keys = envelope.operation.conflict_keys();
     let previous_order_digest = FederationJournalDigest::from_bytes([index as u8; 32]);
     let order_digest = FederationJournalDigest::from_bytes([(index + 1) as u8; 32]);
-    let state_digest = FederationStateDigest::from_bytes([(index + 2) as u8; 32]);
-    let mut entry = FederationJournalEntry {
+    FederationJournalEntry {
         index,
         operation_id,
         conflict_keys,
         envelope,
         previous_order_digest,
         order_digest,
-        operation_outcome_hash: FederationOperationOutcomeHash::from_bytes([0; 32]),
-        state_digest,
         consensus_evidence: None,
         rejection: None,
         status: FederationOperationStatus::Accepted,
-    };
-    entry.operation_outcome_hash = entry.expected_operation_outcome_hash(state_digest);
-    entry
+    }
 }
 
 async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {

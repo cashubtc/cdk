@@ -149,11 +149,13 @@ Resolved blocking bugs:
   below-quorum full value-operation,
   production-paced above-quorum basic recovery, and below-finality conflicting
   swap plus melt side-effect matrices.
-- Undeployed federation wire shapes are now strict. Materialized state digests,
-  journal conflict/outcome/state metadata, keyset fees, wallet registry policy,
-  and current status/report fields are required instead of receiving legacy
-  defaults. Optional setup phases, pagination, evidence, payment proof data,
-  and diagnostics remain optional only where absence has current meaning.
+- Undeployed federation wire shapes are now strict. Materialized-state digests
+  are required for convergence and signed catch-up evidence while fast
+  order-only status explicitly omits them. Journal order/conflict metadata,
+  keyset fees, wallet registry policy, and current status/report fields are
+  required instead of receiving legacy defaults. Optional setup phases,
+  pagination, evidence, payment proof data, and diagnostics remain optional
+  only where absence has current meaning.
   Missing-field regressions fail closed, while 221 common federation, 21
   SQLite federation, 11 CLI registry, 99 mint federation, 41 mintd status, and
   332 Axum federation tests pass alongside 28 standalone Axum and 134
@@ -161,8 +163,8 @@ Resolved blocking bugs:
 - The undeployed federation SQL history is squashed from 20 incremental files
   per backend to one direct final-schema migration for SQLite and PostgreSQL.
   No pre-federation migration changed. Real catalog tests require exactly one
-  federation migration, all 18 federation tables, the saga operation ID,
-  required journal hashes/conflict keys, nullable evidence/rejection metadata,
+  federation migration, all federation tables, the saga operation ID,
+  required journal order/conflict fields, nullable evidence/rejection metadata,
   and every current index. Verification passes 21 SQLite and 19 PostgreSQL
   federation tests, 29 catch-up and 8 SQLite restart tests, plus 134 SQLite and
   125 PostgreSQL standalone tests.
@@ -800,13 +802,15 @@ Architecture checklist:
   consensus runtime. Focused tests prove that activation opens queue admission
   but still returns retryable pending-finalization and does not persist quote or
   journal state until the exact finalized unit is delivered.
-- [x] Store accepted session number, item index, operation hash, operation
-  outcome hash, state digest, and signed session outcome in the federation
-  journal before considering an item durable. `FederationJournalEntry` now
-  stores operation outcome hashes, post-append state digests, and optional
+- [x] Store accepted session number, item index, canonical operation/order
+  commitment, and signed session outcome before considering an item durable.
+  `FederationJournalEntry` stores the immutable order chain and optional
   accepted-item consensus evidence with session, accepted item index, finalized
   unit position, submitting member, and member unit index. SQLite/Postgres
-  journal persistence now round-trips those fields. Full signed session-outcome
+  journal persistence round-trips those fields. A later audit removed the
+  duplicate journal state chain and derivable `operation_outcome_hash`; the
+  distinct materialized-state commitment remains on signed status and catch-up
+  evidence. Full signed session-outcome
   quorum linkage remains in the existing session-outcome table; core consensus
   now exposes `apply_catch_up_response_with_session_outcome_quorum` so replay can
   require quorum-signed evidence before appending peer entries. Axum REST peer
@@ -1604,7 +1608,7 @@ AlephBFT and consensus unit tests:
   sampling found the five-second peer-sync loop repeatedly deserializing every
   durable operation, including BLS points, through
   `local_peer_order_status`. SQL storage now reads only the latest durable
-  operation index, order digest, and consensus-visible state digest. Empty and
+  operation index and order digest. Empty and
   populated tip persistence is covered, all 13 focused peer-sync tests pass,
   and the same 17-entry trace-enabled process set dropped from 15.45-17.05% to
   3.85-3.95% CPU without changing protocol behavior or materialized-state
@@ -1742,8 +1746,8 @@ AlephBFT and consensus unit tests:
   wallet fanout, threshold aggregation, rotation, and restore without inventing
   a shared P2P history for independent in-memory stores. Private operation
   fixtures construct v3/BLS outputs from the configured keyset. Inline
-  consensus finalization persists journal outcome/state digests without a
-  separate write-only digest checkpoint table.
+  consensus finalization persists the journal order chain without a separate
+  write-only digest checkpoint table.
   Finalized-unit REST replay watermarks remain liveness-only and in memory,
   including exact idempotent duplicate delivery. The five-member equivocation
   test likewise requires no durable gossip watermark, and empty-session
@@ -2111,8 +2115,9 @@ Implementation checklist:
 - [x] Exclude local private config, local connection status, logs, and caches from the digest.
 - [x] Add an audit summary similar to Fedimint's balance audit after each accepted operation.
 - [x] Persist accepted order digests and signed session outcomes as lightweight replay/catch-up evidence.
-- [x] Keep the current materialized-state digest in journal/status and catch-up
-  verification without a separate write-only digest-history table.
+- [x] Keep the materialized-state digest in convergence status, signed session
+  outcomes, and catch-up verification without storing it redundantly on every
+  journal row or in a write-only digest-history table.
 
 Tests and success criteria:
 
@@ -2483,7 +2488,8 @@ Implementation checklist:
 - [x] On startup, load federation config and validate key shares before serving HTTP.
 - [x] Start private REST/consensus runtime before enabling federation signing endpoints.
 - [x] Replay accepted items since last checkpoint if needed.
-- [x] Persist last applied consensus session, item index, operation hash, outcome hash, and state digest.
+- [x] Persist finalized consensus evidence and the immutable operation/order
+  commitment; recompute the materialized-state digest from durable mint rows.
 - [x] Persist signed session outcomes so lagging members can verify catch-up data without trusting one peer.
 - [x] On reconnect, request missing signed session outcomes and accepted items from peers starting at the last durable local height.
 - [x] Verify quorum or threshold signatures on catch-up data before replaying it locally.
@@ -2527,7 +2533,8 @@ Implementation checklist:
 - [x] Include materialized-state digests in signed status/session evidence and
   compare them after catch-up; the write-only digest-history table and retention
   policy were removed.
-- [x] Store last applied session, item index, operation hash, outcome hash, and state digest.
+- [x] Store finalized session/item evidence and the immutable operation/order
+  commitment; compute the distinct materialized-state digest from canonical rows.
 - [x] Implement an admin command to compare state digests across members.
 - [x] Implement an optional admin command to diff consensus-visible rows when digests differ.
 - [x] Require catch-up data to include quorum-signed session outcomes or equivalent authenticated evidence.
@@ -4464,8 +4471,8 @@ Verified implementation result:
   through the unchanged `ErrorResponse -> Error` conversion. Replays and
   duplicates return the stored error; rejected operations never enter
   `completed_operations`.
-- Rejection metadata does not alter operation IDs, outcome hashes, or the order
-  digest. It does alter materialized-state digests, is restored into runtime
+- Rejection metadata does not alter operation IDs or the order digest. It does
+  alter materialized-state digests, is restored into runtime
   state, and is compared exactly during overlap and post-apply catch-up
   verification.
 - Signing fanout now retains member failures. Mint/swap and melt return valid

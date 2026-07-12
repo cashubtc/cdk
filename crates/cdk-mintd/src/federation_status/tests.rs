@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationJournalDigest, FederationPaymentObservationContext,
-    FederationPaymentObservationEvidenceGroupSummary, FederationStateDigest, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederationJournalDigest, FederationMaterializedStateDigest,
+    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
@@ -147,12 +147,13 @@ fn local_status(
     let member_id = MemberId::new(member_id).expect("member id");
     FederationLocalStatusResponse {
         version: FEDERATION_REST_API_VERSION,
-        peer_status: FederationPeerStatus::new(
+        peer_status: FederationPeerStatus::new_with_materialized_state_digest(
             public_config.federation_id,
             member_id,
             operation_count,
             None,
             FederationJournalDigest::genesis(),
+            FederationMaterializedStateDigest::from_bytes([1; 32]),
         ),
         sync_state: "healthy".to_string(),
         sync_ready: true,
@@ -751,11 +752,26 @@ fn status_convergence_guard_rejects_height_mismatch() {
 }
 
 #[test]
-fn status_convergence_guard_rejects_state_digest_mismatch() {
+fn status_convergence_guard_rejects_missing_materialized_state_digest() {
+    let (public_config, _) = status_fixture();
+    let mut status = local_status(&public_config, 1, 2);
+    status.peer_status.materialized_state_digest = None;
+
+    let err = ensure_statuses_converged(&[status])
+        .expect_err("missing materialized state digest should fail");
+
+    assert!(err
+        .to_string()
+        .contains("omitted its materialized state digest"));
+}
+
+#[test]
+fn status_convergence_guard_rejects_materialized_state_digest_mismatch() {
     let (public_config, _) = status_fixture();
     let first = local_status(&public_config, 1, 0);
     let mut second = local_status(&public_config, 2, 0);
-    second.peer_status.state_digest = FederationStateDigest::genesis();
+    second.peer_status.materialized_state_digest =
+        Some(FederationMaterializedStateDigest::genesis());
     let statuses = vec![first, second];
 
     let err = ensure_statuses_converged(&statuses).expect_err("state digest mismatch should fail");
@@ -776,11 +792,12 @@ fn status_digest_alert_guard_accepts_height_mismatch() {
 }
 
 #[test]
-fn status_digest_alert_guard_rejects_state_digest_mismatch() {
+fn status_digest_alert_guard_rejects_materialized_state_digest_mismatch() {
     let (public_config, _) = status_fixture();
     let first = local_status(&public_config, 1, 2);
     let mut second = local_status(&public_config, 2, 2);
-    second.peer_status.state_digest = FederationStateDigest::genesis();
+    second.peer_status.materialized_state_digest =
+        Some(FederationMaterializedStateDigest::genesis());
     let statuses = vec![first, second];
 
     let err = ensure_statuses_no_digest_alerts(&statuses).expect_err("state digest mismatch fails");
@@ -795,8 +812,6 @@ fn status_digest_alert_guard_rejects_order_digest_mismatch() {
     let first = local_status(&public_config, 1, 2);
     let mut second = local_status(&public_config, 2, 2);
     second.peer_status.latest_order_digest = FederationJournalDigest::from_bytes([42; 32]);
-    second.peer_status.state_digest =
-        FederationStateDigest::from_order_digest(second.peer_status.latest_order_digest);
     let statuses = vec![first, second];
 
     let err = ensure_statuses_no_digest_alerts(&statuses).expect_err("order digest mismatch fails");

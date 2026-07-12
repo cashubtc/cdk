@@ -155,7 +155,7 @@ fn session_outcome_range_rejects_span_larger_than_available_entries() {
         previous_order_digest: order_digest,
         range_order_digest: order_digest,
         latest_order_digest: order_digest,
-        state_digest: cdk::federation::FederationStateDigest::from_order_digest(order_digest),
+        materialized_state_digest: cdk::federation::FederationMaterializedStateDigest::genesis(),
         operation_ids: Vec::new(),
     };
 
@@ -2544,9 +2544,11 @@ async fn peer_status_with_materialized_digest(
     let adapter_status = consensus.status();
     let mut status =
         consensus.peer_status_for(adapter_status.federation_id, adapter_status.local_member);
-    status.state_digest = materialized_state_digest(state, consensus.journal().entries())
-        .await
-        .expect("materialized peer status digest");
+    status.materialized_state_digest = Some(
+        materialized_state_digest(state, consensus.journal().entries())
+            .await
+            .expect("materialized peer status digest"),
+    );
     status
 }
 
@@ -2556,9 +2558,10 @@ async fn catch_up_response_with_materialized_digest(
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
     let mut response = test_catch_up_response(consensus, request);
-    response.state_digest = materialized_state_digest(state, consensus.journal().entries())
-        .await
-        .expect("materialized catch-up state digest");
+    response.materialized_state_digest =
+        materialized_state_digest(state, consensus.journal().entries())
+            .await
+            .expect("materialized catch-up state digest");
     response
 }
 
@@ -2569,9 +2572,11 @@ async fn aleph_bft_peer_status_with_materialized_digest(
     consensus: &FederationConsensusRuntime,
 ) -> FederationPeerStatus {
     let mut status = consensus.peer_status_for(public_config.federation_id, member_id);
-    status.state_digest = materialized_state_digest(state, consensus.journal().entries())
-        .await
-        .expect("materialized AlephBFT peer status digest");
+    status.materialized_state_digest = Some(
+        materialized_state_digest(state, consensus.journal().entries())
+            .await
+            .expect("materialized AlephBFT peer status digest"),
+    );
     status
 }
 
@@ -2582,9 +2587,10 @@ async fn aleph_bft_catch_up_response_with_materialized_digest(
     request: &FederationJournalCatchUpRequest,
 ) -> FederationJournalCatchUpResponse {
     let mut response = aleph_bft_catch_up_response(public_config, consensus, request);
-    response.state_digest = materialized_state_digest(state, consensus.journal().entries())
-        .await
-        .expect("materialized AlephBFT catch-up state digest");
+    response.materialized_state_digest =
+        materialized_state_digest(state, consensus.journal().entries())
+            .await
+            .expect("materialized AlephBFT catch-up state digest");
     response
 }
 
@@ -4285,13 +4291,13 @@ async fn peer_sync_round_backs_off_failed_peer_until_retry_delay() {
     assert_eq!(synced, 0);
     assert_eq!(transport.status_requests().len(), 2);
 
-    let status = FederationPeerStatus::new_with_state_digest(
+    let status = FederationPeerStatus::new_with_materialized_state_digest(
         federation_id,
         peer_member.member_id,
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-        cdk::federation::FederationStateDigest::genesis(),
+        cdk::federation::FederationMaterializedStateDigest::genesis(),
     );
     let _transport = transport.clone().with_status_response(status);
 
@@ -4703,7 +4709,9 @@ async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
         runtime_config,
         &entries[..chunk_size],
         local_status.latest_order_digest,
-        local_status.state_digest,
+        local_status
+            .materialized_state_digest
+            .expect("local status has materialized-state digest"),
         chunk_size,
     )
     .await;
@@ -4777,13 +4785,13 @@ async fn peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer() {
     state
         .mark_federation_lagging(peer_member.member_id, 0, 2)
         .await;
-    let status = FederationPeerStatus::new_with_state_digest(
+    let status = FederationPeerStatus::new_with_materialized_state_digest(
         federation_id,
         peer_member.member_id,
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-        cdk::federation::FederationStateDigest::genesis(),
+        cdk::federation::FederationMaterializedStateDigest::genesis(),
     );
     let transport = MockFederationTransport::default().with_status_response(status);
     let client =
@@ -4849,13 +4857,13 @@ async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
     )
     .await;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let mut status = FederationPeerStatus::new_with_state_digest(
+    let mut status = FederationPeerStatus::new_with_materialized_state_digest(
         public_config.federation_id,
         peer_member.member_id,
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-        cdk::federation::FederationStateDigest::genesis(),
+        cdk::federation::FederationMaterializedStateDigest::genesis(),
     );
     status.aleph_bft_next_item_index = None;
     let transport = MockFederationTransport::default().with_status_response(status);
@@ -4877,13 +4885,13 @@ async fn rest_peer_client_uses_status_as_cheap_order_status() {
         federation_route_state_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let status = FederationPeerStatus::new_with_state_digest(
+    let status = FederationPeerStatus::new_with_materialized_state_digest(
         federation_id,
         peer_member.member_id,
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-        cdk::federation::FederationStateDigest::from_bytes([9; 32]),
+        cdk::federation::FederationMaterializedStateDigest::from_bytes([9; 32]),
     );
     let transport = MockFederationTransport::default().with_status_response(status);
     let client =
@@ -4913,7 +4921,8 @@ async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
     let catch_up_request = local_consensus.lock().await.catch_up_request();
     let mut catch_up_response =
         aleph_bft_catch_up_response(&public_config, &peer_consensus, &catch_up_request);
-    catch_up_response.state_digest = cdk::federation::FederationStateDigest::from_bytes([9; 32]);
+    catch_up_response.materialized_state_digest =
+        cdk::federation::FederationMaterializedStateDigest::from_bytes([9; 32]);
     let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(
@@ -8037,9 +8046,10 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
         50,
         100,
     );
-    response.state_digest = materialized_state_digest(&state, peer_adapter.journal().entries())
-        .await
-        .expect("materialized state digest");
+    response.materialized_state_digest =
+        materialized_state_digest(&state, peer_adapter.journal().entries())
+            .await
+            .expect("materialized state digest");
     let response =
         response.with_aleph_bft_finalized_items(peer_adapter.finalized_items()[1..].to_vec(), true);
     let transport = MockFederationTransport::default()
@@ -8225,9 +8235,10 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
         1,
         100,
     );
-    response.state_digest = materialized_state_digest(&state, peer_adapter.journal().entries())
-        .await
-        .expect("materialized state digest");
+    response.materialized_state_digest =
+        materialized_state_digest(&state, peer_adapter.journal().entries())
+            .await
+            .expect("materialized state digest");
     response = response.with_aleph_bft_finalized_items(Vec::new(), false);
     let response = signed_catch_up_response(response.clone(), &peer_private);
     let witness_outcome = signed_catch_up_response(response.clone(), &local_private)
@@ -8329,9 +8340,10 @@ async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation()
         50,
         100,
     );
-    response.state_digest = materialized_state_digest(&state, peer_adapter.journal().entries())
-        .await
-        .expect("materialized state digest");
+    response.materialized_state_digest =
+        materialized_state_digest(&state, peer_adapter.journal().entries())
+            .await
+            .expect("materialized state digest");
     response = response.with_aleph_bft_finalized_items(reordered_finalized_items, true);
     let response = signed_catch_up_response(response.clone(), &peer_private);
     let witness_outcome = signed_catch_up_response(response.clone(), &local_private)
@@ -18235,7 +18247,10 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
     let missing_status = local_peer_status(&restarted_state)
         .await
         .expect("missing materialized status");
-    assert_ne!(missing_status.state_digest, control_status.state_digest);
+    assert_ne!(
+        missing_status.materialized_state_digest,
+        control_status.materialized_state_digest
+    );
 
     let (replayed_consensus, replayed_sequences) =
         crate::create_federation_runtime_state(&restarted_state.mint)
@@ -18268,7 +18283,10 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
         .await
         .expect("replayed status");
     assert_eq!(replayed_status.operation_count, 1);
-    assert_eq!(replayed_status.state_digest, control_status.state_digest);
+    assert_eq!(
+        replayed_status.materialized_state_digest,
+        control_status.materialized_state_digest
+    );
     let replayed_consensus = restarted_state
         .federation
         .consensus
@@ -18346,8 +18364,8 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
 
     assert_eq!(local_status.peer_status.operation_count, 1);
     assert_eq!(
-        local_status.peer_status.state_digest,
-        control_status.state_digest
+        local_status.peer_status.materialized_state_digest,
+        control_status.materialized_state_digest
     );
     assert!(
         local_status
@@ -18524,15 +18542,11 @@ async fn local_status_uses_materialized_database_state_digest() {
         .expect("submit mint quote");
 
     let status = local_peer_status(&state).await.expect("local status");
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
-    let journal_only_digest = consensus.lock().await.state_digest();
-
     assert_eq!(status.operation_count, 1);
     assert_ne!(
-        status.state_digest, journal_only_digest,
-        "status digest should include applied mint database rows, not only the accepted journal"
+        status.materialized_state_digest,
+        Some(FederationMaterializedStateDigest::genesis())
     );
-    assert_ne!(status.state_digest, FederationStateDigest::genesis());
 }
 
 #[tokio::test]
@@ -18564,10 +18578,6 @@ async fn materialized_state_digest_tracks_rejection_without_changing_ordering_ha
 
     assert_eq!(spent_entry.operation_id, duplicate_entry.operation_id);
     assert_eq!(spent_entry.order_digest, duplicate_entry.order_digest);
-    assert_eq!(
-        spent_entry.operation_outcome_hash,
-        duplicate_entry.operation_outcome_hash
-    );
 
     let spent_digest = materialized_state_digest(&state, &[spent_entry])
         .await
@@ -18648,7 +18658,7 @@ async fn materialized_state_digest_tracks_keyset_rotation_rows() {
         .expect("after digest");
 
     assert_ne!(before_digest, after_digest);
-    assert_ne!(after_digest, FederationStateDigest::genesis());
+    assert_ne!(after_digest, FederationMaterializedStateDigest::genesis());
 
     let persisted = state
         .mint
@@ -18849,7 +18859,7 @@ async fn materialized_state_digest_tracks_payment_observation_quarantine_rows() 
         before_digest, after_digest,
         "accepted payment-observation quarantine rows must affect the materialized digest"
     );
-    assert_ne!(after_digest, FederationStateDigest::genesis());
+    assert_ne!(after_digest, FederationMaterializedStateDigest::genesis());
 }
 
 #[tokio::test]
@@ -18886,7 +18896,7 @@ async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
         .expect("after digest");
 
     assert_ne!(before_digest, after_digest);
-    assert_ne!(after_digest, FederationStateDigest::genesis());
+    assert_ne!(after_digest, FederationMaterializedStateDigest::genesis());
 
     let proof_states = state
         .mint
@@ -19791,7 +19801,7 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
         .expect("after digest");
 
     assert_ne!(before_digest, after_digest);
-    assert_ne!(after_digest, FederationStateDigest::genesis());
+    assert_ne!(after_digest, FederationMaterializedStateDigest::genesis());
 
     let quote = state
         .mint
@@ -19929,7 +19939,7 @@ async fn materialized_state_digest_tracks_completed_operation_rows_for_value_ope
         .await
         .expect("materialized snapshot");
     let digest = snapshot.digest().expect("materialized digest");
-    assert_ne!(digest, FederationStateDigest::genesis());
+    assert_ne!(digest, FederationMaterializedStateDigest::genesis());
 
     let mint_row = completed_operation_snapshot_row(&snapshot, mint_operation_id);
     assert_eq!(
@@ -20348,11 +20358,14 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
         .await
         .expect("journal entries");
     let peer_status = local_peer_status(&state).await.expect("local status");
+    let materialized_state_digest = peer_status
+        .materialized_state_digest
+        .expect("local status has materialized-state digest");
     let local_outcome = FederationSessionOutcome::new_signed(
         public_config.federation_id,
         &entries,
         peer_status.latest_order_digest,
-        peer_status.state_digest,
+        materialized_state_digest,
         &local_private,
     )
     .expect("local session outcome");
@@ -20360,7 +20373,7 @@ async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
         public_config.federation_id,
         &entries,
         peer_status.latest_order_digest,
-        peer_status.state_digest,
+        materialized_state_digest,
         &peer_private,
     )
     .expect("peer session outcome");
@@ -20434,6 +20447,7 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
     assert_eq!(status.operation_count, 1);
     assert_eq!(status.latest_index, Some(0));
     assert_eq!(status.latest_order_digest, entries[0].order_digest);
+    assert_eq!(status.materialized_state_digest, None);
 
     let local_status_request = signed_status_request_with_payload(
         &public_config,
@@ -20452,6 +20466,7 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
         local_status.peer_status.latest_order_digest,
         entries[0].order_digest
     );
+    assert!(local_status.peer_status.materialized_state_digest.is_some());
     assert!(!local_status.materialized_state_rows.is_empty());
 }
 
@@ -20758,10 +20773,11 @@ async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quoru
         100,
         100,
     );
-    response.state_digest = local_peer_status(&state)
+    response.materialized_state_digest = local_peer_status(&state)
         .await
         .expect("local status")
-        .state_digest;
+        .materialized_state_digest
+        .expect("local status has materialized-state digest");
     let peer_outcome = signed_catch_up_response(response.clone(), &peer_private)
         .session_outcome
         .expect("peer session outcome");

@@ -20,9 +20,7 @@ use crate::error::ErrorResponse;
 
 const FEDERATION_JOURNAL_GENESIS_VERSION: &[u8] = b"cdk-federation-journal-genesis-v1";
 const FEDERATION_JOURNAL_ENTRY_VERSION: &[u8] = b"cdk-federation-journal-entry-v1";
-const FEDERATION_OPERATION_OUTCOME_HASH_VERSION: &[u8] = b"cdk-federation-operation-outcome-v1";
-const FEDERATION_STATE_GENESIS_VERSION: &[u8] = b"cdk-federation-state-genesis-v1";
-const FEDERATION_STATE_ENTRY_VERSION: &[u8] = b"cdk-federation-state-entry-v1";
+const FEDERATION_MATERIALIZED_STATE_GENESIS_VERSION: &[u8] = b"cdk-federation-state-genesis-v1";
 const FEDERATION_MATERIALIZED_STATE_ROW_VERSION: &[u8] =
     b"cdk-federation-materialized-state-row-v1";
 const FEDERATION_MATERIALIZED_STATE_ROW_KEY_FINGERPRINT_VERSION: &[u8] =
@@ -123,30 +121,30 @@ impl<'de> Deserialize<'de> for FederationJournalDigest {
     }
 }
 
-/// Stable hash of a consensus-accepted operation outcome.
+/// Digest of the deterministic materialized federation database state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FederationOperationOutcomeHash([u8; 32]);
+pub struct FederationMaterializedStateDigest([u8; 32]);
 
-impl FederationOperationOutcomeHash {
-    /// Create an outcome hash from raw bytes.
+impl FederationMaterializedStateDigest {
+    /// Create a materialized-state digest from raw bytes.
     #[must_use]
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    /// Parse an outcome hash from a byte slice.
+    /// Parse a materialized-state digest from a byte slice.
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         let bytes: [u8; 32] =
             bytes
                 .try_into()
-                .map_err(|_| FederationError::InvalidOperationOutcomeHashSize {
+                .map_err(|_| FederationError::InvalidMaterializedStateDigestSize {
                     expected: 32,
                     found: bytes.len(),
                 })?;
         Ok(Self(bytes))
     }
 
-    /// Parse an outcome hash from hex.
+    /// Parse a materialized-state digest from hex.
     pub fn from_hex<S>(hex: S) -> Result<Self>
     where
         S: AsRef<str>,
@@ -155,132 +153,22 @@ impl FederationOperationOutcomeHash {
         Self::from_slice(&bytes)
     }
 
-    /// Return this outcome hash as bytes.
+    /// Return this materialized-state digest as bytes.
     #[must_use]
     pub fn to_bytes(self) -> [u8; 32] {
         self.0
     }
 
-    /// Return this outcome hash as hex.
+    /// Return this materialized-state digest as hex.
     #[must_use]
     pub fn to_hex(self) -> String {
         crate::util::hex::encode(self.0)
     }
 
-    fn accepted_operation(
-        index: u64,
-        operation_id: FederationOperationId,
-        previous_order_digest: FederationJournalDigest,
-        order_digest: FederationJournalDigest,
-        state_digest: FederationStateDigest,
-    ) -> Self {
-        let mut transcript = Vec::new();
-        append_hash_bytes(&mut transcript, FEDERATION_OPERATION_OUTCOME_HASH_VERSION);
-        transcript.extend_from_slice(&index.to_be_bytes());
-        append_hash_bytes(&mut transcript, &operation_id.to_bytes());
-        append_hash_bytes(&mut transcript, &previous_order_digest.to_bytes());
-        append_hash_bytes(&mut transcript, &order_digest.to_bytes());
-        append_hash_bytes(&mut transcript, &state_digest.to_bytes());
-        Self(Sha256Hash::hash(&transcript).to_byte_array())
-    }
-}
-
-impl fmt::Display for FederationOperationOutcomeHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationOperationOutcomeHash {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationOperationOutcomeHash {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationOperationOutcomeHash {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Digest of consensus-visible federation state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FederationStateDigest([u8; 32]);
-
-impl FederationStateDigest {
-    /// Create a state digest from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Create a state digest from an order digest for status fixtures.
-    #[must_use]
-    pub fn from_order_digest(digest: FederationJournalDigest) -> Self {
-        Self(digest.to_bytes())
-    }
-
-    /// Parse a state digest from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidStateDigestSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a state digest from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this state digest as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this state digest as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
-    /// Return the empty-state digest.
+    /// Return the empty materialized-state digest.
     #[must_use]
     pub fn genesis() -> Self {
-        Self(Sha256Hash::hash(FEDERATION_STATE_GENESIS_VERSION).to_byte_array())
-    }
-
-    fn append(self, index: u64, operation_id: FederationOperationId) -> Self {
-        let mut transcript = Vec::new();
-        append_hash_bytes(&mut transcript, FEDERATION_STATE_ENTRY_VERSION);
-        append_hash_bytes(&mut transcript, &self.to_bytes());
-        transcript.extend_from_slice(&index.to_be_bytes());
-        append_hash_bytes(&mut transcript, &operation_id.to_bytes());
-        Self(Sha256Hash::hash(&transcript).to_byte_array())
+        Self(Sha256Hash::hash(FEDERATION_MATERIALIZED_STATE_GENESIS_VERSION).to_byte_array())
     }
 
     fn append_materialized_row(self, row: &FederationMaterializedStateRow) -> Result<Self> {
@@ -293,13 +181,13 @@ impl FederationStateDigest {
     }
 }
 
-impl fmt::Display for FederationStateDigest {
+impl fmt::Display for FederationMaterializedStateDigest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_hex())
     }
 }
 
-impl FromStr for FederationStateDigest {
+impl FromStr for FederationMaterializedStateDigest {
     type Err = FederationError;
 
     fn from_str(value: &str) -> Result<Self> {
@@ -307,7 +195,7 @@ impl FromStr for FederationStateDigest {
     }
 }
 
-impl Serialize for FederationStateDigest {
+impl Serialize for FederationMaterializedStateDigest {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -316,7 +204,7 @@ impl Serialize for FederationStateDigest {
     }
 }
 
-impl<'de> Deserialize<'de> for FederationStateDigest {
+impl<'de> Deserialize<'de> for FederationMaterializedStateDigest {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -401,10 +289,10 @@ impl FederationMaterializedStateRow {
 
         Ok(FederationMaterializedStateRowFingerprint {
             table: self.table.clone(),
-            key_digest: FederationStateDigest::from_bytes(
+            key_digest: FederationMaterializedStateDigest::from_bytes(
                 Sha256Hash::hash(&key_transcript).to_byte_array(),
             ),
-            row_digest: FederationStateDigest::from_bytes(
+            row_digest: FederationMaterializedStateDigest::from_bytes(
                 Sha256Hash::hash(&row_transcript).to_byte_array(),
             ),
         })
@@ -417,9 +305,9 @@ pub struct FederationMaterializedStateRowFingerprint {
     /// Logical table or state collection name.
     pub table: String,
     /// Digest of the row table and key.
-    pub key_digest: FederationStateDigest,
+    pub key_digest: FederationMaterializedStateDigest,
     /// Digest of the complete deterministic row.
-    pub row_digest: FederationStateDigest,
+    pub row_digest: FederationMaterializedStateDigest,
 }
 
 /// Deterministic materialized-state snapshot used for federation convergence checks.
@@ -477,10 +365,10 @@ impl FederationMaterializedStateSnapshot {
     /// Rows are sorted by table, key, and field content before hashing, so
     /// backend iteration order cannot affect the digest. Duplicate rows remain
     /// visible to the digest because every sorted row is appended.
-    pub fn digest(&self) -> Result<FederationStateDigest> {
+    pub fn digest(&self) -> Result<FederationMaterializedStateDigest> {
         let mut rows = self.rows.clone();
         rows.sort();
-        let mut digest = FederationStateDigest::genesis();
+        let mut digest = FederationMaterializedStateDigest::genesis();
         for row in &rows {
             digest = digest.append_materialized_row(row)?;
         }
@@ -574,10 +462,6 @@ pub struct FederationJournalEntry {
     pub previous_order_digest: FederationJournalDigest,
     /// Digest after this operation was appended.
     pub order_digest: FederationJournalDigest,
-    /// Stable hash of the accepted operation outcome.
-    pub operation_outcome_hash: FederationOperationOutcomeHash,
-    /// Consensus-visible state digest after this operation was appended.
-    pub state_digest: FederationStateDigest,
     /// Ordering-backend evidence for this accepted operation, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consensus_evidence: Option<FederationJournalConsensusEvidence>,
@@ -598,49 +482,12 @@ pub struct FederationJournalTip {
     pub index: u64,
     /// Accepted-order digest after the latest operation.
     pub order_digest: FederationJournalDigest,
-    /// Consensus-visible state digest after the latest operation.
-    pub state_digest: FederationStateDigest,
 }
 
 impl FederationJournalEntry {
-    /// Return the expected accepted-operation outcome hash for this entry.
-    #[must_use]
-    pub fn expected_operation_outcome_hash(
-        &self,
-        state_digest: FederationStateDigest,
-    ) -> FederationOperationOutcomeHash {
-        FederationOperationOutcomeHash::accepted_operation(
-            self.index,
-            self.operation_id,
-            self.previous_order_digest,
-            self.order_digest,
-            state_digest,
-        )
-    }
-
-    fn validate_outcome_metadata(
-        &self,
-        expected_state_digest: FederationStateDigest,
-    ) -> Result<()> {
+    fn validate_application_metadata(&self) -> Result<()> {
         if self.rejection.is_some() && self.status != FederationOperationStatus::Rejected {
             return Err(FederationError::JournalRejectionStateMismatch { index: self.index });
-        }
-
-        if self.state_digest != expected_state_digest {
-            return Err(FederationError::JournalStateDigestMismatch {
-                index: self.index,
-                expected: expected_state_digest,
-                found: self.state_digest,
-            });
-        }
-
-        let expected = self.expected_operation_outcome_hash(expected_state_digest);
-        if self.operation_outcome_hash != expected {
-            return Err(FederationError::JournalOutcomeHashMismatch {
-                index: self.index,
-                expected: expected.to_string(),
-                found: self.operation_outcome_hash.to_string(),
-            });
         }
 
         Ok(())
@@ -794,20 +641,6 @@ impl InMemoryFederationJournal {
         self.latest_order_digest
     }
 
-    /// Return a deterministic digest for consensus-visible state.
-    ///
-    /// This digest is derived from the accepted operation sequence and
-    /// intentionally excludes local application status. Durable DB-state
-    /// digests can extend this API without changing operator status payloads.
-    #[must_use]
-    pub fn state_digest(&self) -> FederationStateDigest {
-        let mut digest = FederationStateDigest::genesis();
-        for entry in &self.entries {
-            digest = digest.append(entry.index, entry.operation_id);
-        }
-        digest
-    }
-
     /// Return the next journal index that would be appended locally.
     #[must_use]
     pub fn next_index(&self) -> u64 {
@@ -882,9 +715,7 @@ impl InMemoryFederationJournal {
                     found: entry.order_digest,
                 });
             }
-            let expected_state_digest =
-                journal.state_digest_after_append(entry.index, entry.operation_id);
-            entry.validate_outcome_metadata(expected_state_digest)?;
+            entry.validate_application_metadata()?;
 
             let conflict_keys = entry.envelope.operation.conflict_keys();
             if entry.conflict_keys != conflict_keys {
@@ -1069,14 +900,6 @@ impl InMemoryFederationJournal {
         let index = self.entries.len() as u64;
         let previous_order_digest = self.latest_order_digest;
         let order_digest = previous_order_digest.append(index, operation_id);
-        let state_digest = self.state_digest_after_append(index, operation_id);
-        let operation_outcome_hash = FederationOperationOutcomeHash::accepted_operation(
-            index,
-            operation_id,
-            previous_order_digest,
-            order_digest,
-            state_digest,
-        );
         let entry = FederationJournalEntry {
             index,
             operation_id,
@@ -1084,8 +907,6 @@ impl InMemoryFederationJournal {
             conflict_keys: conflict_keys.clone(),
             previous_order_digest,
             order_digest,
-            operation_outcome_hash,
-            state_digest,
             consensus_evidence,
             rejection: None,
             status,
@@ -1102,14 +923,6 @@ impl InMemoryFederationJournal {
         }
         self.latest_order_digest = order_digest;
         entry
-    }
-
-    fn state_digest_after_append(
-        &self,
-        index: u64,
-        operation_id: FederationOperationId,
-    ) -> FederationStateDigest {
-        self.state_digest().append(index, operation_id)
     }
 
     /// Validate and append one catch-up entry from a federation peer.
@@ -1157,9 +970,7 @@ impl InMemoryFederationJournal {
             });
         }
 
-        let expected_state_digest =
-            self.state_digest_after_append(peer_entry.index, peer_entry.operation_id);
-        peer_entry.validate_outcome_metadata(expected_state_digest)?;
+        peer_entry.validate_application_metadata()?;
 
         let outcome = if peer_entry.status == FederationOperationStatus::Rejected {
             let Some(consensus_evidence) = peer_entry.consensus_evidence else {
@@ -1337,51 +1148,6 @@ mod tests {
     }
 
     #[test]
-    fn journal_records_outcome_hash_and_state_digest_for_new_entries() {
-        let mut journal = InMemoryFederationJournal::new();
-        let entry = journal
-            .append(mint_quote_envelope(1))
-            .expect("append")
-            .entry()
-            .clone();
-
-        let state_digest = entry.state_digest;
-        let outcome_hash = entry.operation_outcome_hash;
-
-        assert_eq!(state_digest, journal.state_digest());
-        assert_eq!(
-            outcome_hash,
-            entry.expected_operation_outcome_hash(state_digest)
-        );
-        InMemoryFederationJournal::from_entries(vec![entry]).expect("metadata replays");
-    }
-
-    #[test]
-    fn journal_rejects_tampered_outcome_hash_and_state_digest_on_replay() {
-        let mut journal = InMemoryFederationJournal::new();
-        let entry = journal
-            .append(mint_quote_envelope(1))
-            .expect("append")
-            .entry()
-            .clone();
-
-        let mut tampered_outcome_hash = entry.clone();
-        tampered_outcome_hash.operation_outcome_hash =
-            FederationOperationOutcomeHash::from_bytes([42; 32]);
-        assert!(matches!(
-            InMemoryFederationJournal::from_entries(vec![tampered_outcome_hash]),
-            Err(FederationError::JournalOutcomeHashMismatch { .. })
-        ));
-
-        let mut tampered_state_digest = entry;
-        tampered_state_digest.state_digest = FederationStateDigest::from_bytes([24; 32]);
-        assert!(matches!(
-            InMemoryFederationJournal::from_entries(vec![tampered_state_digest]),
-            Err(FederationError::JournalStateDigestMismatch { .. })
-        ));
-    }
-
-    #[test]
     fn journal_entry_json_requires_current_consensus_metadata() {
         let mut journal = InMemoryFederationJournal::new();
         let entry = journal
@@ -1390,7 +1156,7 @@ mod tests {
             .entry()
             .clone();
 
-        for field in ["conflict_keys", "operation_outcome_hash", "state_digest"] {
+        for field in ["conflict_keys", "previous_order_digest", "order_digest"] {
             let mut value = serde_json::to_value(&entry).expect("journal entry json");
             value
                 .as_object_mut()
@@ -1525,14 +1291,12 @@ mod tests {
             .entry()
             .clone();
         let digest = journal.latest_order_digest();
-        let state_digest = journal.state_digest();
         let updated = journal
             .update_status(entry.operation_id, FederationOperationStatus::Applied)
             .expect("status update");
 
         assert_eq!(updated.status, FederationOperationStatus::Applied);
         assert_eq!(journal.latest_order_digest(), digest);
-        assert_eq!(journal.state_digest(), state_digest);
         assert!(matches!(
             journal.update_status(
                 FederationOperationId::from_bytes([42; 32]),
@@ -1548,29 +1312,6 @@ mod tests {
             ),
             Err(FederationError::JournalRejectionStateMismatch { .. })
         ));
-    }
-
-    #[test]
-    fn journal_state_digest_matches_for_same_accepted_log() {
-        let mut first = InMemoryFederationJournal::new();
-        let mut second = InMemoryFederationJournal::new();
-        first.append(mint_quote_envelope(1)).expect("first quote");
-        first
-            .append(mint_envelope(
-                "quote-1",
-                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-            ))
-            .expect("first mint");
-        second.append(mint_quote_envelope(1)).expect("second quote");
-        second
-            .append(mint_envelope(
-                "quote-1",
-                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-            ))
-            .expect("second mint");
-
-        assert_eq!(first.state_digest(), second.state_digest());
-        assert_ne!(first.state_digest(), FederationStateDigest::genesis());
     }
 
     #[test]
@@ -1598,7 +1339,7 @@ mod tests {
         );
         assert_ne!(
             first.digest().expect("first digest"),
-            FederationStateDigest::genesis()
+            FederationMaterializedStateDigest::genesis()
         );
     }
 
@@ -1729,7 +1470,7 @@ mod tests {
             "8af3ca0fdcced73cd382fb48d0c17c67f5a3697e89396c6aa9080fd3da855fdf"
         );
         assert_eq!(
-            FederationStateDigest::genesis().to_hex(),
+            FederationMaterializedStateDigest::genesis().to_hex(),
             "3bdc17a9cd55a76f38868a285dd337cadd9044db164ab2ec06e5c396e37dac16"
         );
         assert_eq!(
@@ -1739,17 +1480,19 @@ mod tests {
     }
 
     #[test]
-    fn state_digest_serializes_as_hex() {
-        let digest = FederationStateDigest::genesis();
+    fn materialized_state_digest_serializes_as_hex() {
+        let digest = FederationMaterializedStateDigest::genesis();
         let json = serde_json::to_string(&digest).expect("digest json");
 
         assert_eq!(json.len(), 66);
         assert_eq!(
-            serde_json::from_str::<FederationStateDigest>(&json).expect("digest from json"),
+            serde_json::from_str::<FederationMaterializedStateDigest>(&json)
+                .expect("digest from json"),
             digest
         );
         assert_eq!(
-            FederationStateDigest::from_slice(&digest.to_bytes()).expect("digest from bytes"),
+            FederationMaterializedStateDigest::from_slice(&digest.to_bytes())
+                .expect("digest from bytes"),
             digest
         );
     }

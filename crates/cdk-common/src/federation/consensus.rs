@@ -15,9 +15,9 @@ use super::{
     FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationPeerStatus, FederationProtocolVersions,
     FederationRestMessageKind, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -1970,12 +1970,6 @@ impl FederationConsensusRuntime {
     #[must_use]
     pub fn member_id(&self) -> MemberId {
         self.status().local_member
-    }
-
-    /// Return the journal state digest.
-    #[must_use]
-    pub fn state_digest(&self) -> FederationStateDigest {
-        self.journal().state_digest()
     }
 
     fn journal_mut(&mut self) -> &mut InMemoryFederationJournal {

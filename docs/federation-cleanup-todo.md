@@ -948,9 +948,10 @@ materialized-state digest verification.
 
 Each finalized or replayed batch now avoids one extra full materialized-state
 snapshot plus a separate transaction containing checkpoint insert and retention
-delete statements. Journal outcome/state digests, signed session outcomes,
-redacted row fingerprints, mismatch metrics, and catch-up digest comparison are
-unchanged.
+delete statements. At this checkpoint, the then-current journal hashes, signed
+session outcomes, redacted row fingerprints, mismatch metrics, and catch-up
+digest comparison were unchanged; sections 20 and 21 later removed the
+redundant journal hashes without changing the materialized commitment.
 
 Verification:
 
@@ -1055,19 +1056,20 @@ Persisting each failed delivery increases write contention and recovery code.
 ### Result
 
 Current consensus-visible federation fields now fail closed instead of silently
-deserializing obsolete development shapes. Peer status and catch-up responses
-require the materialized-state digest; journal entries require conflict keys,
-the accepted-operation outcome hash, and the post-application state digest;
+deserializing obsolete development shapes. Convergence-capable local status and
+catch-up responses require the materialized-state digest, while fast order-only
+peer status represents it as absent; journal entries require conflict keys and
+the immutable order chain;
 materialized rows require their deterministic field map; federation keysets
 require their fee; wallet registry entries require the current schema version
 and connector policy; and operator status/payment-observation reports require
 their current counters, flags, and collections. The status request also carries
 its materialized-row choice explicitly, including `false`.
 
-The journal and SQL codecs now model accepted outcome/state hashes as concrete
-values rather than optional compatibility fields, and fresh SQLite/PostgreSQL
-federation schemas require both columns. Missing-field regressions cover peer
-status, catch-up, journal metadata, keyset fees, and wallet registry policy.
+The later digest cleanup in sections 20 and 21 removed the derivable journal
+outcome/state hashes and their fresh-schema columns entirely. Missing-field
+regressions cover convergence status, catch-up, journal order metadata, keyset
+fees, and wallet registry policy.
 There were no legacy serde aliases to retain or remove.
 
 Optionality with a current meaning remains intact: setup/DKG phase artifacts,
@@ -1120,15 +1122,17 @@ Replaced the 20-file experimental federation migration chain in each backend
 with one direct final-schema migration:
 `20260712000000_create_federation_schema.sql`. The migration adds the one
 federation field on standalone saga rows, creates all 18 current federation
-tables, defines journal outcome/state hashes as required from the start, and
-creates the complete current index set. Every standalone migration predating
+tables, defines the journal order chain from the start, and creates the complete
+current index set. The later digest audit removed the derivable journal
+outcome/state columns from this same undeployed migration. Every standalone
+migration predating
 federation is unchanged.
 
 Deleted the 368-line test that searched individual migration source strings for
 column names. SQLite and PostgreSQL now open fresh real databases and inspect
 the resulting catalog instead: both require exactly one federation migration,
 all standalone and federation tables, all current DKG tables, the saga column,
-the complete index set, required journal hashes/conflict keys, and nullable
+the complete index set, required journal order/conflict fields, and nullable
 consensus-evidence/rejection metadata. Existing CRUD, concurrency, restart, and
 catch-up tests exercise the schema through the database APIs.
 
@@ -1457,7 +1461,31 @@ exists to support multiple backends or the retired external driver.
 
 ## 20. Give order and materialized-state digests distinct semantics
 
-**Status:** Todo
+**Status:** Complete
+
+### Review and result
+
+The accepted-order commitment is now only `FederationJournalDigest`. Each link
+hashes its domain, previous digest, zero-based index, and operation ID; the
+operation ID already commits the versioned canonical operation envelope. It
+detects omission, insertion, reordering, and envelope substitution, and is
+immutable after finalization. It deliberately does not claim that local apply
+has completed.
+
+The database commitment is now the distinct
+`FederationMaterializedStateDigest`. It hashes sorted deterministic rows for
+consensus-relevant quote, proof, signature, completed-operation, payment,
+keyset, and rejection state. It excludes private shares, local transport state,
+logs, caches, and transient apply progress. Signed session outcomes and
+catch-up responses bind both commitments. Fast peer status carries no
+materialized digest; operator/convergence status carries the computed digest,
+and mintd rejects its absence.
+
+The second journal chain, which hashed the same `(index, operation_id)` pairs
+under another domain, was removed from the entry type, runtime, SQL codecs, and
+fresh SQLite/PostgreSQL schemas. Golden vectors preserve the retained order and
+materialized algorithms. Reorder, omission, altered rejection, altered
+materialized rows, restart replay, and digest mismatch regressions pass.
 
 ### Problem
 
@@ -1484,7 +1512,26 @@ hash proves and may duplicate work without adding a commitment.
 
 ## 21. Evaluate and remove a derivable operation outcome hash
 
-**Status:** Todo
+**Status:** Complete
+
+### Review and result
+
+The audit found no independent consumer. `operation_outcome_hash` was a pure
+function of entry index, operation ID, previous/order digests, and the removed
+duplicate journal state chain. It did not include status or rejection, so it
+did not commit the post-consensus outcome its name implied. Ordering tamper is
+already rejected by the order chain; application and rejection substitution is
+detected by the materialized-state commitment and signed catch-up evidence.
+
+The type, error variants, journal field, validation, retry comparison, SQL
+column/codecs, and fixtures were deleted. Fresh-schema tests explicitly assert
+that neither removed hash column exists.
+
+Verification passes all 327 `cdk-common` tests, all 420 federation-enabled
+Axum tests, 4 focused SQLite journal tests plus the fresh-schema migration test,
+42 mintd status tests, 11 mintd digest-comparison tests, 28 standalone Axum
+tests, and 134 standalone SQLite tests. Federation-enabled PostgreSQL, CDK,
+Axum, and mintd compile gates are clean.
 
 ### Problem
 

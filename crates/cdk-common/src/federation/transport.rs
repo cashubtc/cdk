@@ -19,8 +19,8 @@ use super::{
     FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
+    FederationMaterializedStateDigest, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
     MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
@@ -1249,8 +1249,9 @@ pub struct FederationPeerStatus {
     pub latest_index: Option<u64>,
     /// Latest accepted-order digest.
     pub latest_order_digest: FederationJournalDigest,
-    /// Digest of consensus-visible state.
-    pub state_digest: FederationStateDigest,
+    /// Digest of deterministic materialized database state, when computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub materialized_state_digest: Option<FederationMaterializedStateDigest>,
 }
 
 impl FederationPeerStatus {
@@ -1271,19 +1272,19 @@ impl FederationPeerStatus {
             operation_count,
             latest_index,
             latest_order_digest,
-            state_digest: FederationStateDigest::from_order_digest(latest_order_digest),
+            materialized_state_digest: None,
         }
     }
 
-    /// Create a peer status snapshot with an explicit state digest.
+    /// Create a peer status snapshot with an explicit materialized-state digest.
     #[must_use]
-    pub fn new_with_state_digest(
+    pub fn new_with_materialized_state_digest(
         federation_id: FederationId,
         member_id: MemberId,
         operation_count: u64,
         latest_index: Option<u64>,
         latest_order_digest: FederationJournalDigest,
-        state_digest: FederationStateDigest,
+        materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Self {
         Self {
             version: FEDERATION_REST_API_VERSION,
@@ -1293,7 +1294,7 @@ impl FederationPeerStatus {
             operation_count,
             latest_index,
             latest_order_digest,
-            state_digest,
+            materialized_state_digest: Some(materialized_state_digest),
         }
     }
 
@@ -1304,7 +1305,10 @@ impl FederationPeerStatus {
         self
     }
 
-    /// Create a peer status snapshot from the in-memory journal.
+    /// Create an order-only peer status snapshot from the in-memory journal.
+    ///
+    /// The materialized-state digest is absent and must be supplied by an owner
+    /// that can read the durable mint state before convergence comparison.
     #[must_use]
     pub fn from_journal(
         federation_id: FederationId,
@@ -1312,13 +1316,12 @@ impl FederationPeerStatus {
         journal: &InMemoryFederationJournal,
     ) -> Self {
         let latest_index = journal.entries().last().map(|entry| entry.index);
-        Self::new_with_state_digest(
+        Self::new(
             federation_id,
             member_id,
             journal.len() as u64,
             latest_index,
             journal.latest_order_digest(),
-            journal.state_digest(),
         )
     }
 }
@@ -1674,8 +1677,8 @@ pub struct FederationSessionOutcome {
     pub range_order_digest: FederationJournalDigest,
     /// Latest accepted-order digest known to the signer.
     pub latest_order_digest: FederationJournalDigest,
-    /// Latest consensus-visible state digest known to the signer.
-    pub state_digest: FederationStateDigest,
+    /// Latest materialized-state digest known to the signer.
+    pub materialized_state_digest: FederationMaterializedStateDigest,
     /// Operation IDs covered by this range, in order.
     pub operation_ids: Vec<FederationOperationId>,
     /// Member identity signature over the session outcome transcript.
@@ -1705,7 +1708,7 @@ impl FederationSessionOutcome {
         federation_id: FederationId,
         entries: &[FederationJournalEntry],
         latest_order_digest: FederationJournalDigest,
-        state_digest: FederationStateDigest,
+        materialized_state_digest: FederationMaterializedStateDigest,
         private_config: &MemberConfigPrivate,
     ) -> Result<Self> {
         let first = entries
@@ -1727,7 +1730,7 @@ impl FederationSessionOutcome {
             first.previous_order_digest,
             last.order_digest,
             latest_order_digest,
-            state_digest,
+            materialized_state_digest,
             &operation_ids,
         );
         let signature = FederationRestSignature::sign(&transcript, private_config)?;
@@ -1742,7 +1745,7 @@ impl FederationSessionOutcome {
             previous_order_digest: first.previous_order_digest,
             range_order_digest: last.order_digest,
             latest_order_digest,
-            state_digest,
+            materialized_state_digest,
             operation_ids,
             signature,
         })
@@ -1756,7 +1759,7 @@ impl FederationSessionOutcome {
         from_index: u64,
         entries: &[FederationJournalEntry],
         latest_order_digest: FederationJournalDigest,
-        state_digest: FederationStateDigest,
+        materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Result<()> {
         if self.version != FEDERATION_SESSION_OUTCOME_VERSION {
             return Err(FederationError::SessionOutcomeVersionMismatch {
@@ -1793,7 +1796,7 @@ impl FederationSessionOutcome {
             || self.previous_order_digest != first.previous_order_digest
             || self.range_order_digest != last.order_digest
             || self.latest_order_digest != latest_order_digest
-            || self.state_digest != state_digest
+            || self.materialized_state_digest != materialized_state_digest
             || self.operation_ids != operation_ids
         {
             return Err(session_outcome_mismatch("range content mismatch"));
@@ -1808,7 +1811,7 @@ impl FederationSessionOutcome {
             self.previous_order_digest,
             self.range_order_digest,
             self.latest_order_digest,
-            self.state_digest,
+            self.materialized_state_digest,
             &self.operation_ids,
         );
         let signature = self.signature.as_schnorr()?;
@@ -1841,8 +1844,8 @@ pub struct FederationJournalCatchUpResponse {
     pub latest_index: Option<u64>,
     /// Latest local accepted-order digest.
     pub latest_order_digest: FederationJournalDigest,
-    /// Latest local consensus-visible state digest.
-    pub state_digest: FederationStateDigest,
+    /// Latest local materialized-state digest.
+    pub materialized_state_digest: FederationMaterializedStateDigest,
     /// Signed summary of the returned accepted-operation range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_outcome: Option<FederationSessionOutcome>,
@@ -1875,7 +1878,7 @@ impl FederationJournalCatchUpResponse {
             entries,
             latest_index: journal.entries().last().map(|entry| entry.index),
             latest_order_digest: journal.latest_order_digest(),
-            state_digest: journal.state_digest(),
+            materialized_state_digest: FederationMaterializedStateDigest::genesis(),
             session_outcome: None,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
@@ -1905,7 +1908,7 @@ impl FederationJournalCatchUpResponse {
                 self.federation_id,
                 &self.entries,
                 self.latest_order_digest,
-                self.state_digest,
+                self.materialized_state_digest,
                 private_config,
             )?);
         }
@@ -1929,7 +1932,7 @@ impl FederationJournalCatchUpResponse {
                 self.from_index,
                 &self.entries,
                 self.latest_order_digest,
-                self.state_digest,
+                self.materialized_state_digest,
             ),
         }
     }
@@ -1969,7 +1972,7 @@ impl FederationJournalCatchUpResponse {
                 self.from_index,
                 &self.entries,
                 self.latest_order_digest,
-                self.state_digest,
+                self.materialized_state_digest,
             )?;
             signers.insert(outcome.signer);
         }
@@ -2005,7 +2008,7 @@ fn session_outcome_transcript(
     previous_order_digest: FederationJournalDigest,
     range_order_digest: FederationJournalDigest,
     latest_order_digest: FederationJournalDigest,
-    state_digest: FederationStateDigest,
+    materialized_state_digest: FederationMaterializedStateDigest,
     operation_ids: &[FederationOperationId],
 ) -> Vec<u8> {
     let mut transcript = Vec::new();
@@ -2022,7 +2025,7 @@ fn session_outcome_transcript(
     append_hash_bytes(&mut transcript, &previous_order_digest.to_bytes());
     append_hash_bytes(&mut transcript, &range_order_digest.to_bytes());
     append_hash_bytes(&mut transcript, &latest_order_digest.to_bytes());
-    append_hash_bytes(&mut transcript, &state_digest.to_bytes());
+    append_hash_bytes(&mut transcript, &materialized_state_digest.to_bytes());
     transcript.extend_from_slice(&(operation_ids.len() as u64).to_be_bytes());
     for operation_id in operation_ids {
         append_hash_bytes(&mut transcript, &operation_id.to_bytes());
@@ -2285,7 +2288,7 @@ mod tests {
         assert_eq!(decoded.latest_index, Some(entry.index));
         assert_eq!(decoded.operation_count, 1);
         assert_eq!(decoded.latest_order_digest, entry.order_digest);
-        assert_eq!(decoded.state_digest, journal.state_digest());
+        assert_eq!(decoded.materialized_state_digest, None);
     }
 
     #[test]
@@ -2389,7 +2392,10 @@ mod tests {
         assert!(!response.complete);
         assert_eq!(response.latest_index, Some(2));
         assert_eq!(response.latest_order_digest, journal.latest_order_digest());
-        assert_eq!(response.state_digest, journal.state_digest());
+        assert_eq!(
+            response.materialized_state_digest,
+            FederationMaterializedStateDigest::genesis()
+        );
         assert!(response.aleph_bft_finalized_items.is_empty());
         assert!(response.aleph_bft_finalized_items_complete);
     }
@@ -2423,7 +2429,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_messages_reject_missing_aleph_bft_replay_fields() {
+    fn catch_up_messages_require_replay_fields_and_order_status_omits_materialized_digest() {
         let mut request_value =
             serde_json::to_value(FederationJournalCatchUpRequest::new(3)).expect("request json");
         request_value
@@ -2432,7 +2438,7 @@ mod tests {
             .remove("aleph_bft_next_item_index");
         assert!(serde_json::from_value::<FederationJournalCatchUpRequest>(request_value).is_err());
 
-        let mut status_value = serde_json::to_value(FederationPeerStatus::new(
+        let status_value = serde_json::to_value(FederationPeerStatus::new(
             federation_id(),
             member_id(),
             0,
@@ -2440,11 +2446,13 @@ mod tests {
             FederationJournalDigest::genesis(),
         ))
         .expect("status json");
-        status_value
-            .as_object_mut()
-            .expect("status object")
-            .remove("state_digest");
-        assert!(serde_json::from_value::<FederationPeerStatus>(status_value).is_err());
+        assert!(status_value.get("materialized_state_digest").is_none());
+        assert_eq!(
+            serde_json::from_value::<FederationPeerStatus>(status_value)
+                .expect("order-only status")
+                .materialized_state_digest,
+            None
+        );
 
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -2471,7 +2479,7 @@ mod tests {
         response_without_state_digest
             .as_object_mut()
             .expect("response object")
-            .remove("state_digest");
+            .remove("materialized_state_digest");
         assert!(serde_json::from_value::<FederationJournalCatchUpResponse>(
             response_without_state_digest
         )

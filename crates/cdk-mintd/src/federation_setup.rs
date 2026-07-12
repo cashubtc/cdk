@@ -2003,14 +2003,14 @@ wait_for_converged() {{
   for _ in $(seq 1 "$STATUS_RETRIES"); do
     local baseline_operations=""
     local baseline_order_digest=""
-    local baseline_state_digest=""
+    local baseline_materialized_state_digest=""
     local converged=1
     local member
     for member in "${{MEMBERS[@]}}"; do
       local line
       local operations
       local order_digest
-      local state_digest
+      local materialized_state_digest
       if ! line="$(member_status_line "$member" 2>/dev/null)"; then
         converged=0
         break
@@ -2023,17 +2023,17 @@ wait_for_converged() {{
         converged=0
         break
       fi
-      if ! state_digest="$(status_field "$line" state_digest)"; then
+      if ! materialized_state_digest="$(status_field "$line" materialized_state_digest)"; then
         converged=0
         break
       fi
       if [[ -z "$baseline_operations" ]]; then
         baseline_operations="$operations"
         baseline_order_digest="$order_digest"
-        baseline_state_digest="$state_digest"
+        baseline_materialized_state_digest="$materialized_state_digest"
         continue
       fi
-      if [[ "$operations" != "$baseline_operations" || "$order_digest" != "$baseline_order_digest" || "$state_digest" != "$baseline_state_digest" ]]; then
+      if [[ "$operations" != "$baseline_operations" || "$order_digest" != "$baseline_order_digest" || "$materialized_state_digest" != "$baseline_materialized_state_digest" ]]; then
         converged=0
         break
       fi

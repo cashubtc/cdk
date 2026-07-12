@@ -435,22 +435,12 @@ where
     assert_eq!(entries[0].operation_id, first.operation_id);
     assert_eq!(entries[0].status, FederationOperationStatus::Applied);
     assert_eq!(entries[0].conflict_keys, first.conflict_keys);
-    assert_eq!(
-        entries[0].operation_outcome_hash,
-        first.operation_outcome_hash
-    );
-    assert_eq!(entries[0].state_digest, first.state_digest);
     assert_eq!(entries[0].consensus_evidence, Some(first_evidence));
     assert_eq!(entries[1].index, 1);
     assert_eq!(entries[1].operation_id, second.operation_id);
     assert_eq!(entries[1].status, FederationOperationStatus::Rejected);
     assert_eq!(entries[1].rejection, Some(rejection.clone()));
     assert_eq!(entries[1].previous_order_digest, first.order_digest);
-    assert_eq!(
-        entries[1].operation_outcome_hash,
-        second.operation_outcome_hash
-    );
-    assert_eq!(entries[1].state_digest, second.state_digest);
 
     let tip = db
         .get_federation_journal_tip()
@@ -459,7 +449,6 @@ where
         .expect("persisted journal tip");
     assert_eq!(tip.index, second.index);
     assert_eq!(tip.order_digest, second.order_digest);
-    assert_eq!(tip.state_digest, second.state_digest);
 
     let first_by_operation_id = db
         .get_federation_journal_entry_by_operation_id(first.operation_id)
@@ -482,11 +471,6 @@ where
         .expect("second entry by operation id")
         .expect("second entry");
     assert_eq!(second_by_operation_id.index, second.index);
-    assert_eq!(
-        second_by_operation_id.operation_outcome_hash,
-        second.operation_outcome_hash
-    );
-    assert_eq!(second_by_operation_id.state_digest, second.state_digest);
     assert_eq!(
         second_by_operation_id.status,
         FederationOperationStatus::Rejected

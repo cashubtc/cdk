@@ -472,22 +472,17 @@ async fn apply_federation_melt_rejects_pending_quote_reuse_before_payment_attemp
     let conflicting_operation_id_string = conflicting_operation_id.to_string();
     let previous_order_digest = FederationJournalDigest::from_bytes([1; 32]);
     let order_digest = FederationJournalDigest::from_bytes([2; 32]);
-    let state_digest = FederationStateDigest::from_bytes([3; 32]);
-    let mut conflicting_entry = FederationJournalEntry {
+    let conflicting_entry = FederationJournalEntry {
         index: 42,
         operation_id: conflicting_operation_id,
         conflict_keys: conflicting_envelope.operation.conflict_keys(),
         envelope: conflicting_envelope,
         previous_order_digest,
         order_digest,
-        operation_outcome_hash: FederationOperationOutcomeHash::from_bytes([0; 32]),
-        state_digest,
         consensus_evidence: None,
         rejection: None,
         status: FederationOperationStatus::Accepted,
     };
-    conflicting_entry.operation_outcome_hash =
-        conflicting_entry.expected_operation_outcome_hash(state_digest);
     persist_journal_entry(&localstore, &conflicting_entry).await;
 
     assert!(matches!(

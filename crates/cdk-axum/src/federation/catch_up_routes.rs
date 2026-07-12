@@ -36,7 +36,7 @@ pub(super) async fn post_journal(
         "Received federation journal catch-up request"
     );
     let (mut response, entries) = durable_catch_up_response(&state, &payload.payload).await?;
-    response.state_digest = materialized_state_digest(&state, &entries)
+    response.materialized_state_digest = materialized_state_digest(&state, &entries)
         .await
         .map_err(anyhow_response)?;
     let response = response

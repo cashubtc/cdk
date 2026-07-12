@@ -207,14 +207,7 @@ fn aleph_operation_unit(
 
 fn journal_fingerprint(
     adapter: &FederationConsensusRuntime,
-) -> Vec<(
-    u64,
-    String,
-    FederationOperationStatus,
-    String,
-    String,
-    Option<String>,
-)> {
+) -> Vec<(u64, String, FederationOperationStatus, String, String)> {
     adapter
         .journal()
         .entries()
@@ -226,7 +219,6 @@ fn journal_fingerprint(
                 entry.status,
                 entry.previous_order_digest.to_string(),
                 entry.order_digest.to_string(),
-                Some(entry.state_digest.to_string()),
             )
         })
         .collect()
@@ -1357,10 +1349,6 @@ fn consensus_runtime_builds_units_and_applies_finalized_operations() {
     assert_eq!(first_evidence.unit_finalization_index, 0);
     assert_eq!(first_evidence.unit_submitting_member, member_id_value(1));
     assert_eq!(first_evidence.unit_index, 0);
-    assert_eq!(
-        first_entry.operation_outcome_hash,
-        first_entry.expected_operation_outcome_hash(first_entry.state_digest)
-    );
     assert_eq!(adapter.finalized_items().len(), 2);
     assert_eq!(
         adapter

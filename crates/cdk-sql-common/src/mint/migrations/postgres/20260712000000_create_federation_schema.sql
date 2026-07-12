@@ -7,8 +7,6 @@ CREATE TABLE federation_journal_entries (
     conflict_keys_json TEXT NOT NULL,
     previous_order_digest TEXT NOT NULL,
     order_digest TEXT NOT NULL,
-    operation_outcome_hash TEXT NOT NULL,
-    state_digest TEXT NOT NULL,
     consensus_evidence_json TEXT,
     rejection_json TEXT,
     status TEXT NOT NULL

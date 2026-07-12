@@ -55,10 +55,10 @@ pub use self::dkg_driver::{
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
-    FederationJournalEntry, FederationJournalTip, FederationMaterializedStateRow,
-    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationOutcomeHash,
-    FederationOperationStatus, FederationStateDigest, InMemoryFederationJournal,
+    FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
+    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
+    FederationMaterializedStateSnapshot, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationOperationStatus, InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
@@ -327,14 +327,6 @@ pub enum FederationError {
         /// Actual byte length.
         found: usize,
     },
-    /// A federation operation outcome hash must be exactly 32 bytes.
-    #[error("Invalid federation operation outcome hash size: expected={expected}, found={found}")]
-    InvalidOperationOutcomeHashSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
     /// A federation journal digest must be exactly 32 bytes.
     #[error("Invalid federation journal digest size: expected={expected}, found={found}")]
     InvalidJournalDigestSize {
@@ -343,9 +335,11 @@ pub enum FederationError {
         /// Actual byte length.
         found: usize,
     },
-    /// A federation state digest must be exactly 32 bytes.
-    #[error("Invalid federation state digest size: expected={expected}, found={found}")]
-    InvalidStateDigestSize {
+    /// A federation materialized-state digest must be exactly 32 bytes.
+    #[error(
+        "Invalid federation materialized-state digest size: expected={expected}, found={found}"
+    )]
+    InvalidMaterializedStateDigestSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.
@@ -957,30 +951,6 @@ pub enum FederationError {
     JournalConsensusEvidenceMissing {
         /// Journal index whose consensus evidence was missing.
         index: u64,
-    },
-    /// Stored journal operation outcome hash did not match the accepted entry.
-    #[error(
-        "Federation journal outcome hash mismatch at index {index}: expected={expected}, found={found}"
-    )]
-    JournalOutcomeHashMismatch {
-        /// Journal index whose outcome hash did not match.
-        index: u64,
-        /// Expected outcome hash.
-        expected: String,
-        /// Found outcome hash.
-        found: String,
-    },
-    /// Stored journal state digest did not match the accepted sequence.
-    #[error(
-        "Federation journal state digest mismatch at index {index}: expected={expected}, found={found}"
-    )]
-    JournalStateDigestMismatch {
-        /// Journal index whose state digest did not match.
-        index: u64,
-        /// Expected state digest.
-        expected: FederationStateDigest,
-        /// Found state digest.
-        found: FederationStateDigest,
     },
     /// A journal rejection payload appeared on a non-rejected operation.
     #[error("Federation journal rejection state mismatch at index {index}")]

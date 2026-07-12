@@ -851,9 +851,9 @@ application metadata obvious in the type system.
 The current `status` plus optional rejection can express invalid combinations.
 Use an enum or an equivalently constrained representation for pending, applied,
 and rejected-with-standard-response states. Do not implement the struct sketch
-literally because it still permits `Applied` with a rejection. First resolve the
-precise semantics and continued need for journal `state_digest` and
-`operation_outcome_hash`; do not cement redundant hash fields into the new type.
+literally because it still permits `Applied` with a rejection. The digest audit
+is complete: journal `state_digest` and `operation_outcome_hash` were redundant
+and have been removed. Do not reintroduce them into the application-state type.
 
 ### Target model
 
@@ -874,21 +874,16 @@ struct FederationJournalEntry {
 
 enum FederationApplicationState {
     Pending,
-    Applied {
-        state_digest: Option<FederationStateDigest>,
-        operation_outcome_hash: Option<FederationOperationOutcomeHash>,
-    },
+    Applied,
     Rejected {
         response: ErrorResponse,
-        state_digest: Option<FederationStateDigest>,
-        operation_outcome_hash: Option<FederationOperationOutcomeHash>,
     },
 }
 ```
 
-Whether state digest and outcome hash belong in the nested type should be decided
-from their precise hash semantics. The minimum required grouping is `status` and
-`rejection`.
+The materialized-state digest is a snapshot-level convergence commitment, not
+per-entry application metadata. The minimum required grouping remains `status`
+and `rejection`.
 
 ### Work
 

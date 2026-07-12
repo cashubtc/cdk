@@ -1,7 +1,7 @@
 use cdk_common::federation::{
-    FederationId, FederationJournalDigest, FederationMaterializedStateRow,
-    FederationMaterializedStateRowFingerprint, FederationPeerStatus, FederationStateDigest,
-    FEDERATION_REST_API_VERSION,
+    FederationId, FederationJournalDigest, FederationMaterializedStateDigest,
+    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
+    FederationPeerStatus, FEDERATION_REST_API_VERSION,
 };
 
 use super::*;
@@ -10,7 +10,7 @@ fn local_status(
     member_id: u16,
     operation_count: u64,
     order_digest: FederationJournalDigest,
-    state_digest: FederationStateDigest,
+    materialized_state_digest: FederationMaterializedStateDigest,
 ) -> FederationLocalStatusResponse {
     let member_id = MemberId::new(member_id).expect("member id");
     FederationLocalStatusResponse {
@@ -48,7 +48,7 @@ fn local_status(
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
     }
-    .with_state_digest(state_digest)
+    .with_materialized_state_digest(materialized_state_digest)
 }
 
 fn materialized_row(
@@ -93,12 +93,18 @@ fn completed_operation_row(
 }
 
 trait StatusFixtureExt {
-    fn with_state_digest(self, state_digest: FederationStateDigest) -> Self;
+    fn with_materialized_state_digest(
+        self,
+        materialized_state_digest: FederationMaterializedStateDigest,
+    ) -> Self;
 }
 
 impl StatusFixtureExt for FederationLocalStatusResponse {
-    fn with_state_digest(mut self, state_digest: FederationStateDigest) -> Self {
-        self.peer_status.state_digest = state_digest;
+    fn with_materialized_state_digest(
+        mut self,
+        materialized_state_digest: FederationMaterializedStateDigest,
+    ) -> Self {
+        self.peer_status.materialized_state_digest = Some(materialized_state_digest);
         self
     }
 }
@@ -106,10 +112,10 @@ impl StatusFixtureExt for FederationLocalStatusResponse {
 #[test]
 fn digest_comparison_groups_matching_members() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let state_digest = FederationStateDigest::from_order_digest(order_digest);
+    let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
     let statuses = vec![
-        local_status(1, 4, order_digest, state_digest),
-        local_status(2, 4, order_digest, state_digest),
+        local_status(1, 4, order_digest, materialized_state_digest),
+        local_status(2, 4, order_digest, materialized_state_digest),
     ];
 
     let report = DigestComparisonReport::from_statuses(&statuses);
@@ -131,6 +137,24 @@ fn digest_comparison_groups_matching_members() {
 }
 
 #[test]
+fn digest_comparison_rejects_missing_materialized_state_digest() {
+    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+    let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let first = local_status(1, 4, order_digest, materialized_state_digest);
+    let mut second = local_status(2, 4, order_digest, materialized_state_digest);
+    second.peer_status.materialized_state_digest = None;
+    let second_member = second.peer_status.member_id;
+
+    let report = DigestComparisonReport::from_statuses(&[first, second]);
+    let err = report
+        .ensure_converged()
+        .expect_err("missing materialized digest must fail convergence");
+
+    assert!(err.to_string().contains("digest alerts"));
+    assert_eq!(report.digest_alert_members, vec![second_member]);
+}
+
+#[test]
 fn digest_comparison_rejects_divergent_groups() {
     let first_order_digest = FederationJournalDigest::from_bytes([1; 32]);
     let second_order_digest = FederationJournalDigest::from_bytes([2; 32]);
@@ -139,13 +163,13 @@ fn digest_comparison_rejects_divergent_groups() {
             1,
             4,
             first_order_digest,
-            FederationStateDigest::from_order_digest(first_order_digest),
+            FederationMaterializedStateDigest::from_bytes([11; 32]),
         ),
         local_status(
             2,
             4,
             second_order_digest,
-            FederationStateDigest::from_order_digest(second_order_digest),
+            FederationMaterializedStateDigest::from_bytes([12; 32]),
         ),
     ];
 
@@ -169,8 +193,8 @@ fn digest_comparison_rejects_divergent_groups() {
 #[test]
 fn digest_comparison_rejects_reported_digest_alert() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let state_digest = FederationStateDigest::from_order_digest(order_digest);
-    let mut status = local_status(1, 4, order_digest, state_digest);
+    let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let mut status = local_status(1, 4, order_digest, materialized_state_digest);
     status.sync_state = "halted".to_string();
     status.sync_message = "peer 2 digest mismatch at operation count 4".to_string();
 
@@ -192,10 +216,10 @@ fn digest_comparison_rejects_reported_digest_alert() {
 #[test]
 fn digest_comparison_diagnoses_height_mismatch() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let state_digest = FederationStateDigest::from_order_digest(order_digest);
+    let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
     let statuses = vec![
-        local_status(1, 4, order_digest, state_digest),
-        local_status(2, 6, order_digest, state_digest),
+        local_status(1, 4, order_digest, materialized_state_digest),
+        local_status(2, 6, order_digest, materialized_state_digest),
     ];
 
     let report = DigestComparisonReport::from_statuses(&statuses);
@@ -217,11 +241,11 @@ fn digest_comparison_diagnoses_height_mismatch() {
 #[test]
 fn digest_comparison_diagnoses_materialized_state_mismatch() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
-    let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let first_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let second_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([3; 32]);
     let statuses = vec![
-        local_status(1, 4, order_digest, first_state_digest),
-        local_status(2, 4, order_digest, second_state_digest),
+        local_status(1, 4, order_digest, first_materialized_state_digest),
+        local_status(2, 4, order_digest, second_materialized_state_digest),
     ];
 
     let report = DigestComparisonReport::from_statuses(&statuses);
@@ -243,15 +267,15 @@ fn digest_comparison_diagnoses_materialized_state_mismatch() {
 #[test]
 fn digest_comparison_prints_materialized_row_diffs() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
-    let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
-    let mut first = local_status(1, 4, order_digest, first_state_digest);
+    let first_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let second_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([3; 32]);
+    let mut first = local_status(1, 4, order_digest, first_materialized_state_digest);
     first.materialized_state_rows = vec![materialized_row(
         "proof_states",
         "secret-proof-y",
         "PENDING",
     )];
-    let mut second = local_status(2, 4, order_digest, second_state_digest);
+    let mut second = local_status(2, 4, order_digest, second_materialized_state_digest);
     second.materialized_state_rows =
         vec![materialized_row("proof_states", "secret-proof-y", "SPENT")];
     let statuses = vec![first, second];
@@ -268,16 +292,16 @@ fn digest_comparison_prints_materialized_row_diffs() {
 #[test]
 fn digest_comparison_diagnoses_missing_completed_operation_row() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
-    let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let first_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let second_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([3; 32]);
     let completed_operation_row = completed_operation_row(
         "completed-operation-row-uuid",
         "mint",
         "secret-response-hash",
     );
-    let mut first = local_status(1, 4, order_digest, first_state_digest);
+    let mut first = local_status(1, 4, order_digest, first_materialized_state_digest);
     first.materialized_state_rows = vec![completed_operation_row];
-    let second = local_status(2, 4, order_digest, second_state_digest);
+    let second = local_status(2, 4, order_digest, second_materialized_state_digest);
     let statuses = vec![first, second];
 
     let report = DigestComparisonReport::from_statuses(&statuses);
@@ -305,23 +329,24 @@ fn digest_comparison_diagnoses_missing_completed_operation_row() {
 #[test]
 fn digest_comparison_diagnoses_completed_operation_row_variant_without_leaking_response_material() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let matching_state_digest = FederationStateDigest::from_bytes([2; 32]);
-    let divergent_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let matching_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let divergent_materialized_state_digest =
+        FederationMaterializedStateDigest::from_bytes([3; 32]);
     let completed_operation_key = "completed-operation-row-uuid";
 
-    let mut third = local_status(3, 8, order_digest, matching_state_digest);
+    let mut third = local_status(3, 8, order_digest, matching_materialized_state_digest);
     third.materialized_state_rows = vec![completed_operation_row(
         completed_operation_key,
         "melt",
         "secret-response-hash-a",
     )];
-    let mut second = local_status(2, 8, order_digest, divergent_state_digest);
+    let mut second = local_status(2, 8, order_digest, divergent_materialized_state_digest);
     second.materialized_state_rows = vec![completed_operation_row(
         completed_operation_key,
         "melt",
         "secret-response-hash-b",
     )];
-    let mut first = local_status(1, 8, order_digest, matching_state_digest);
+    let mut first = local_status(1, 8, order_digest, matching_materialized_state_digest);
     first.materialized_state_rows = vec![completed_operation_row(
         completed_operation_key,
         "melt",
@@ -360,16 +385,16 @@ fn digest_comparison_diagnoses_completed_operation_row_variant_without_leaking_r
 #[test]
 fn digest_comparison_diagnoses_missing_payment_observation_row_without_leaking_payment_material() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
-    let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let first_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let second_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([3; 32]);
     let payment_observation_key = "mint_quote:secret-quote-id:7:secret-operation-id";
-    let mut first = local_status(1, 7, order_digest, first_state_digest);
+    let mut first = local_status(1, 7, order_digest, first_materialized_state_digest);
     first.materialized_state_rows = vec![payment_observation_row(
         payment_observation_key,
         "paid",
         "payment-proof-secret-a",
     )];
-    let second = local_status(2, 7, order_digest, second_state_digest);
+    let second = local_status(2, 7, order_digest, second_materialized_state_digest);
     let statuses = vec![first, second];
 
     let report = DigestComparisonReport::from_statuses(&statuses);
@@ -398,23 +423,24 @@ fn digest_comparison_diagnoses_missing_payment_observation_row_without_leaking_p
 #[test]
 fn digest_comparison_diagnoses_payment_observation_row_variant_without_leaking_payment_material() {
     let order_digest = FederationJournalDigest::from_bytes([1; 32]);
-    let matching_state_digest = FederationStateDigest::from_bytes([2; 32]);
-    let divergent_state_digest = FederationStateDigest::from_bytes([3; 32]);
+    let matching_materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let divergent_materialized_state_digest =
+        FederationMaterializedStateDigest::from_bytes([3; 32]);
     let payment_observation_key = "mint_quote:secret-quote-id:7:secret-operation-id";
 
-    let mut third = local_status(3, 7, order_digest, matching_state_digest);
+    let mut third = local_status(3, 7, order_digest, matching_materialized_state_digest);
     third.materialized_state_rows = vec![payment_observation_row(
         payment_observation_key,
         "paid",
         "payment-proof-secret-a",
     )];
-    let mut second = local_status(2, 7, order_digest, divergent_state_digest);
+    let mut second = local_status(2, 7, order_digest, divergent_materialized_state_digest);
     second.materialized_state_rows = vec![payment_observation_row(
         payment_observation_key,
         "paid",
         "payment-proof-secret-b",
     )];
-    let mut first = local_status(1, 7, order_digest, matching_state_digest);
+    let mut first = local_status(1, 7, order_digest, matching_materialized_state_digest);
     first.materialized_state_rows = vec![payment_observation_row(
         payment_observation_key,
         "paid",

@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use cdk::federation::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationPeerStatus, FederationSessionOutcome, FederationStateDigest, MemberConfigPublic,
-    MemberId,
+    FederationMaterializedStateDigest, FederationPeerStatus, FederationSessionOutcome,
+    MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -285,17 +285,25 @@ where
     }
 
     let mut collected = match local_peer_status(state).await {
-        Ok(peer_status) => {
-            persist_local_session_outcome_evidence_chunks(
-                state,
-                runtime_config,
-                entries_to_collect,
-                peer_status.latest_order_digest,
-                peer_status.state_digest,
-                client.sync_config.session_outcome_evidence_chunk_size,
-            )
-            .await
-        }
+        Ok(peer_status) => match peer_status.materialized_state_digest {
+            Some(materialized_state_digest) => {
+                persist_local_session_outcome_evidence_chunks(
+                    state,
+                    runtime_config,
+                    entries_to_collect,
+                    peer_status.latest_order_digest,
+                    materialized_state_digest,
+                    client.sync_config.session_outcome_evidence_chunk_size,
+                )
+                .await
+            }
+            None => {
+                tracing::warn!(
+                    "Local federation status omitted its materialized-state digest for session outcome evidence"
+                );
+                0
+            }
+        },
         Err(err) => {
             tracing::warn!(
                 "Could not read local federation status for session outcome evidence: {}",
@@ -399,7 +407,7 @@ pub(super) async fn persist_local_session_outcome_evidence_chunks(
     runtime_config: &cdk::mint::FederationRuntimeConfig,
     entries: &[FederationJournalEntry],
     latest_order_digest: cdk::federation::FederationJournalDigest,
-    state_digest: FederationStateDigest,
+    materialized_state_digest: FederationMaterializedStateDigest,
     chunk_size: usize,
 ) -> usize {
     let mut persisted = 0;
@@ -408,7 +416,7 @@ pub(super) async fn persist_local_session_outcome_evidence_chunks(
             runtime_config.federation_id(),
             chunk,
             latest_order_digest,
-            state_digest,
+            materialized_state_digest,
             runtime_config.private_config(),
         ) {
             Ok(outcome) => outcome,
@@ -576,7 +584,7 @@ where
             response.from_index,
             &response.entries,
             response.latest_order_digest,
-            response.state_digest,
+            response.materialized_state_digest,
         ) {
             tracing::warn!(
                 member_id = %peer.member_id,
@@ -660,7 +668,7 @@ where
         let peer_status = self.peer_status(member).await?;
         let mut local_status = local_peer_order_status(state).await?;
         let mut recovered_from_peer = false;
-        let mut latest_catch_up_state_digest = None;
+        let mut latest_catch_up_materialized_state_digest = None;
 
         if peer_requires_catch_up(&local_status, &peer_status)? {
             state
@@ -676,7 +684,8 @@ where
                 let before_status = local_status.clone();
                 match self.catch_up_state_from_member(state, member).await {
                     Ok((response, _applied)) => {
-                        latest_catch_up_state_digest = Some(response.state_digest);
+                        latest_catch_up_materialized_state_digest =
+                            Some(response.materialized_state_digest);
                     }
                     Err(err) => {
                         state
@@ -727,14 +736,15 @@ where
             );
         }
 
-        if let (true, Some(expected_state_digest)) =
-            (recovered_from_peer, latest_catch_up_state_digest)
-        {
+        if let (true, Some(expected_materialized_state_digest)) = (
+            recovered_from_peer,
+            latest_catch_up_materialized_state_digest,
+        ) {
             wait_for_local_materialized_state_digest(
                 state,
                 member,
                 local_status.operation_count,
-                expected_state_digest,
+                expected_materialized_state_digest,
                 self.sync_config,
             )
             .await?;
@@ -825,12 +835,12 @@ async fn wait_for_local_materialized_state_digest(
     state: &MintState,
     member: &MemberConfigPublic,
     operation_count: u64,
-    expected_state_digest: FederationStateDigest,
+    expected_materialized_state_digest: FederationMaterializedStateDigest,
     sync_config: FederationPeerSyncConfig,
 ) -> anyhow::Result<()> {
     for attempt in 1..=sync_config.digest_recheck_attempts {
         let local_status = local_peer_status(state).await?;
-        if local_status.state_digest == expected_state_digest {
+        if local_status.materialized_state_digest == Some(expected_materialized_state_digest) {
             tracing::debug!(
                 member_id = %member.member_id,
                 operation_count,

@@ -929,7 +929,7 @@ impl FederationNodeRuntime {
         );
         aleph_response.complete = response.complete;
         aleph_response.latest_order_digest = response.latest_order_digest;
-        aleph_response.state_digest = response.state_digest;
+        aleph_response.materialized_state_digest = response.materialized_state_digest;
 
         self.apply_verified_catch_up_response(&aleph_response, &[])
             .await
@@ -984,7 +984,7 @@ impl FederationNodeRuntime {
                 response.from_index,
                 &response.entries,
                 response.latest_order_digest,
-                response.state_digest,
+                response.materialized_state_digest,
             )?;
         }
 

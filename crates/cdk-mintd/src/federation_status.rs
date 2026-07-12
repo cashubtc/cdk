@@ -314,8 +314,12 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_report_counts(status);
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
+    let materialized_state_digest = peer
+        .materialized_state_digest
+        .map(|digest| digest.to_string())
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
+        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} materialized_state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -326,7 +330,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         peer.operation_count,
         latest_index,
         peer.latest_order_digest,
-        peer.state_digest,
+        materialized_state_digest,
         status.materialized_state_rows.len(),
         status.pending_mempool_items,
         status.pending_response_waiters,
@@ -534,23 +538,33 @@ fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<(
 }
 
 fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
+    ensure_statuses_have_materialized_state_digest(statuses)?;
     let Some(first) = statuses.first() else {
         return Ok(());
     };
     for status in statuses.iter().skip(1) {
         if status.peer_status.operation_count != first.peer_status.operation_count
             || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
-            || status.peer_status.state_digest != first.peer_status.state_digest
+            || status.peer_status.materialized_state_digest
+                != first.peer_status.materialized_state_digest
         {
             bail!(
-                "federation status is not converged: member {} has operations {} order digest {} state digest {}, expected operations {} order digest {} state digest {}",
+                "federation status is not converged: member {} has operations {} order digest {} materialized state digest {}, expected operations {} order digest {} materialized state digest {}",
                 status.peer_status.member_id,
                 status.peer_status.operation_count,
                 status.peer_status.latest_order_digest,
-                status.peer_status.state_digest,
+                status
+                    .peer_status
+                    .materialized_state_digest
+                    .map(|digest| digest.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
                 first.peer_status.operation_count,
                 first.peer_status.latest_order_digest,
-                first.peer_status.state_digest
+                first
+                    .peer_status
+                    .materialized_state_digest
+                    .map(|digest| digest.to_string())
+                    .unwrap_or_else(|| "none".to_string())
             );
         }
     }
@@ -588,6 +602,7 @@ fn ensure_statuses_operation_lag(
 }
 
 fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
+    ensure_statuses_have_materialized_state_digest(statuses)?;
     for status in statuses {
         if status.sync_state == "materialized_state_mismatch"
             || (status.sync_state == "halted" && status.sync_message.contains("digest mismatch"))
@@ -614,9 +629,11 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
                     status.peer_status.operation_count
                 );
             }
-            if status.peer_status.state_digest != other.peer_status.state_digest {
+            if status.peer_status.materialized_state_digest
+                != other.peer_status.materialized_state_digest
+            {
                 bail!(
-                    "federation digest alert: members {} and {} disagree on state digest at operation count {}",
+                    "federation digest alert: members {} and {} disagree on materialized state digest at operation count {}",
                     status.peer_status.member_id,
                     other.peer_status.member_id,
                     status.peer_status.operation_count
@@ -625,6 +642,20 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
         }
     }
 
+    Ok(())
+}
+
+fn ensure_statuses_have_materialized_state_digest(
+    statuses: &[FederationLocalStatusResponse],
+) -> Result<()> {
+    for status in statuses {
+        if status.peer_status.materialized_state_digest.is_none() {
+            bail!(
+                "federation member {} omitted its materialized state digest",
+                status.peer_status.member_id
+            );
+        }
+    }
     Ok(())
 }
 

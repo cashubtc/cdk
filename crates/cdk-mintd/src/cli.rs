@@ -60,7 +60,7 @@ pub struct FederationArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Subcommand)]
 pub enum FederationCommand {
-    /// Compare signed consensus and state digests across federation members.
+    /// Compare signed order and materialized-state digests across federation members.
     CompareDigests(FederationCompareDigestsArgs),
     /// Generate one member's independent DKG identity enrollment.
     DkgMember(FederationDkgMemberArgs),
@@ -475,7 +475,7 @@ pub struct FederationStatusArgs {
     /// Fail if any queried member reports a non-ready sync state.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_ready: bool,
-    /// Fail if queried members disagree on consensus height, latest order digest, or state digest.
+    /// Fail if queried members disagree on height, order digest, or materialized-state digest.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_converged: bool,
     /// Fail if any queried member is more than this many accepted operations behind the highest queried member.
