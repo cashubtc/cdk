@@ -74,8 +74,7 @@ type FederationAlephBftPendingSequenceHandle =
 type FederationAlephBftNetworkInboundHandle =
     Arc<dyn self::federation::CdkAlephBftNetworkInboundQueue>;
 #[cfg(feature = "federation")]
-type FederationAlephBftLiveSessionTaskHandle =
-    Arc<self::federation::FederationAlephBftLiveSessionHandle>;
+type FederationAlephBftLiveSessionTaskHandle = Arc<self::federation::AlephBftSessionSupervisor>;
 #[cfg(feature = "federation")]
 type FederationAlephBftNetworkInboundState =
     Arc<tokio::sync::RwLock<Option<FederationAlephBftNetworkInboundHandle>>>;

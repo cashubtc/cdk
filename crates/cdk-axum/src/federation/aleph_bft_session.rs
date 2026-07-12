@@ -211,26 +211,72 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
 
 /// Live upstream AlephBFT session tasks owned by router state.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) struct FederationAlephBftLiveSessionHandle {
+pub(crate) struct AlephBftSessionSupervisor {
+    state: Mutex<AlephBftSessionSupervisorState>,
     exit: Mutex<Option<oneshot::Sender<()>>>,
     activity_hint: CdkAlephBftActivityHint,
     spawn_handle: CdkAlephBftTokioSpawnHandle,
-    session_task: JoinHandle<()>,
     activity_sender: mpsc::UnboundedSender<FederationOperationId>,
+    tasks: Mutex<Option<AlephBftSessionTasks>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlephBftSessionSupervisorState {
+    Running,
+    Stopping,
+    Stopped,
+}
+
+struct AlephBftSessionTasks {
+    session: JoinHandle<()>,
     activity_broadcast_task: JoinHandle<()>,
     network_pump_task: JoinHandle<()>,
     apply_task: JoinHandle<()>,
     completion_watcher_task: Option<JoinHandle<()>>,
 }
 
-impl std::fmt::Debug for FederationAlephBftLiveSessionHandle {
+impl AlephBftSessionTasks {
+    fn abort(&self, abort_completion_watcher: bool) {
+        self.session.abort();
+        self.activity_broadcast_task.abort();
+        self.network_pump_task.abort();
+        self.apply_task.abort();
+        if abort_completion_watcher {
+            if let Some(completion_watcher_task) = &self.completion_watcher_task {
+                completion_watcher_task.abort();
+            }
+        }
+    }
+
+    async fn join(self, join_completion_watcher: bool) {
+        let _ = self.session.await;
+        let _ = self.activity_broadcast_task.await;
+        let _ = self.network_pump_task.await;
+        let _ = self.apply_task.await;
+        if join_completion_watcher {
+            if let Some(completion_watcher_task) = self.completion_watcher_task {
+                let _ = completion_watcher_task.await;
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for AlephBftSessionSupervisor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FederationAlephBftLiveSessionHandle")
+        f.debug_struct("AlephBftSessionSupervisor")
             .finish_non_exhaustive()
     }
 }
 
-impl FederationAlephBftLiveSessionHandle {
+impl AlephBftSessionSupervisor {
+    #[cfg(test)]
+    fn state(&self) -> AlephBftSessionSupervisorState {
+        self.state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(AlephBftSessionSupervisorState::Stopped)
+    }
+
     #[cfg(test)]
     pub(crate) fn activity_is_active(&self) -> bool {
         self.activity_hint.is_active()
@@ -259,36 +305,63 @@ impl FederationAlephBftLiveSessionHandle {
             .mark_network_activity([operation_id.to_bytes()]);
     }
 
-    fn shutdown(&self) {
-        self.shutdown_inner(true);
+    async fn shutdown(&self) {
+        self.shutdown_inner(true).await;
     }
 
-    fn shutdown_for_rotation(&self) {
-        self.shutdown_inner(false);
+    async fn shutdown_for_rotation(&self) {
+        self.shutdown_inner(false).await;
     }
 
-    fn shutdown_inner(&self, abort_completion_watcher: bool) {
+    async fn shutdown_inner(&self, stop_completion_watcher: bool) {
+        let should_stop = match self.state.lock() {
+            Ok(mut state) if *state == AlephBftSessionSupervisorState::Running => {
+                *state = AlephBftSessionSupervisorState::Stopping;
+                true
+            }
+            _ => false,
+        };
+        if !should_stop {
+            return;
+        }
         if let Ok(mut exit) = self.exit.lock() {
             if let Some(exit) = exit.take() {
                 let _ = exit.send(());
             }
         }
         self.spawn_handle.abort_all();
-        self.activity_broadcast_task.abort();
-        self.network_pump_task.abort();
-        self.apply_task.abort();
-        self.session_task.abort();
-        if abort_completion_watcher {
-            if let Some(completion_watcher_task) = &self.completion_watcher_task {
-                completion_watcher_task.abort();
+        let tasks = self.tasks.lock().ok().and_then(|mut tasks| tasks.take());
+        if let Some(tasks) = tasks {
+            tasks.abort(stop_completion_watcher);
+            tasks.join(stop_completion_watcher).await;
+        }
+        self.spawn_handle.abort_all_and_wait().await;
+        if let Ok(mut state) = self.state.lock() {
+            *state = AlephBftSessionSupervisorState::Stopped;
+        }
+    }
+
+    fn abort(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = AlephBftSessionSupervisorState::Stopped;
+        }
+        if let Ok(mut exit) = self.exit.lock() {
+            if let Some(exit) = exit.take() {
+                let _ = exit.send(());
+            }
+        }
+        self.spawn_handle.abort_all();
+        if let Ok(tasks) = self.tasks.lock() {
+            if let Some(tasks) = tasks.as_ref() {
+                tasks.abort(true);
             }
         }
     }
 }
 
-impl Drop for FederationAlephBftLiveSessionHandle {
+impl Drop for AlephBftSessionSupervisor {
     fn drop(&mut self) {
-        self.shutdown();
+        self.abort();
     }
 }
 
@@ -296,7 +369,7 @@ impl Drop for FederationAlephBftLiveSessionHandle {
 pub(crate) async fn start_federation_aleph_bft_live_session(
     state: &mut MintState,
     sync_config: FederationPeerSyncConfig,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error> {
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error> {
     start_federation_aleph_bft_live_session_with_config(
         state,
         sync_config,
@@ -311,7 +384,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     state: &mut MintState,
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error> {
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error> {
     start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
@@ -328,7 +401,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_transport<T>(
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
     transport: T,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
 where
     T: Transport + 'static,
 {
@@ -347,7 +420,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_options_and_tra
     sync_config: FederationPeerSyncConfig,
     options: FederationAlephBftLiveSessionOptions,
     transport: T,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
 where
     T: Transport + 'static,
 {
@@ -367,7 +440,7 @@ async fn start_federation_aleph_bft_live_session_with_options_and_transport_inne
     options: FederationAlephBftLiveSessionOptions,
     transport: T,
     restore_recovered_startup_round_cap: bool,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
 where
     T: Transport + 'static,
 {
@@ -449,12 +522,11 @@ where
     let pending_activity_operation_ids = pending_aleph_bft_operation_ids(&db, session_id).await?;
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
-    let inbound = CdkAlephBftNetworkInboundHandle::with_activity_hint(
+    let inbound = Arc::new(CdkAlephBftNetworkInboundHandle::with_activity_hint(
         session_id,
         &network_handle,
         activity_hint.clone(),
-    );
-    *state.federation.aleph_bft_network_inbound.write().await = Some(Arc::new(inbound));
+    ));
 
     let aleph_config = aleph_bft_config(
         NodeCount(public_config.members.len()),
@@ -585,17 +657,21 @@ where
         session_id,
         session_completed_receiver,
     );
-    let handle = Arc::new(FederationAlephBftLiveSessionHandle {
+    let handle = Arc::new(AlephBftSessionSupervisor {
+        state: Mutex::new(AlephBftSessionSupervisorState::Running),
         exit: Mutex::new(Some(exit_sender)),
         activity_hint,
         spawn_handle,
-        session_task,
         activity_sender,
-        activity_broadcast_task,
-        network_pump_task,
-        apply_task,
-        completion_watcher_task,
+        tasks: Mutex::new(Some(AlephBftSessionTasks {
+            session: session_task,
+            activity_broadcast_task,
+            network_pump_task,
+            apply_task,
+            completion_watcher_task,
+        })),
     });
+    *state.federation.aleph_bft_network_inbound.write().await = Some(inbound);
     *state.federation.aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
 
     Ok(Some(handle))
@@ -900,7 +976,7 @@ pub(crate) async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
     transport: T,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
 where
     T: Transport + 'static,
 {
@@ -918,7 +994,7 @@ async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_options_and
     sync_config: FederationPeerSyncConfig,
     options: FederationAlephBftLiveSessionOptions,
     transport: T,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
 where
     T: Transport + 'static,
 {
@@ -962,7 +1038,7 @@ where
 
     let previous_handle = state.federation.aleph_bft_live_session.write().await.take();
     if let Some(handle) = previous_handle {
-        handle.shutdown();
+        handle.shutdown().await;
     }
     *state.federation.aleph_bft_network_inbound.write().await = None;
 
@@ -1001,7 +1077,7 @@ async fn rotate_federation_aleph_bft_completed_live_session_with_options_and_tra
     options: FederationAlephBftLiveSessionOptions,
     transport: T,
     completed_session: u64,
-) -> Result<Option<Arc<FederationAlephBftLiveSessionHandle>>, cdk::Error>
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
 where
     T: Transport + 'static,
 {
@@ -1053,7 +1129,7 @@ where
 
     let previous_handle = state.federation.aleph_bft_live_session.write().await.take();
     if let Some(handle) = previous_handle {
-        handle.shutdown_for_rotation();
+        handle.shutdown_for_rotation().await;
     }
     *state.federation.aleph_bft_network_inbound.write().await = None;
 
@@ -1140,6 +1216,7 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use cdk::federation::{
         FederationAlephBftPendingOperationRecord, FederationId, FederationOperation,
@@ -1148,6 +1225,63 @@ mod tests {
     };
 
     use super::*;
+
+    struct TaskDropCounter {
+        stopped: Arc<AtomicUsize>,
+    }
+
+    impl Drop for TaskDropCounter {
+        fn drop(&mut self) {
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn pending_supervised_task(
+        started: Arc<AtomicUsize>,
+        stopped: Arc<AtomicUsize>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let _drop_counter = TaskDropCounter { stopped };
+            started.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        })
+    }
+
+    #[tokio::test]
+    async fn aleph_bft_session_supervisor_shutdown_joins_every_owned_task() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let task = || pending_supervised_task(Arc::clone(&started), Arc::clone(&stopped));
+        let (exit_sender, _exit_receiver) = oneshot::channel();
+        let (activity_sender, _activity_receiver) = mpsc::unbounded_channel();
+        let supervisor = AlephBftSessionSupervisor {
+            state: Mutex::new(AlephBftSessionSupervisorState::Running),
+            exit: Mutex::new(Some(exit_sender)),
+            activity_hint: CdkAlephBftActivityHint::default(),
+            spawn_handle: CdkAlephBftTokioSpawnHandle::default(),
+            activity_sender,
+            tasks: Mutex::new(Some(AlephBftSessionTasks {
+                session: task(),
+                activity_broadcast_task: task(),
+                network_pump_task: task(),
+                apply_task: task(),
+                completion_watcher_task: Some(task()),
+            })),
+        };
+
+        while started.load(Ordering::SeqCst) < 5 {
+            tokio::task::yield_now().await;
+        }
+        supervisor.shutdown().await;
+
+        assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
+        assert_eq!(stopped.load(Ordering::SeqCst), 5);
+        assert!(supervisor
+            .tasks
+            .lock()
+            .expect("supervisor tasks lock")
+            .is_none());
+    }
 
     #[tokio::test]
     async fn pending_activity_refresh_loads_only_current_session_operations() {

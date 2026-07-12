@@ -54,7 +54,7 @@ use self::aleph_bft_session::{
     FederationAlephBftLiveSessionStartupDecision,
 };
 pub(crate) use self::aleph_bft_session::{
-    start_federation_aleph_bft_live_session, FederationAlephBftLiveSessionHandle,
+    start_federation_aleph_bft_live_session, AlephBftSessionSupervisor,
 };
 use self::catch_up_routes::post_journal;
 pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;

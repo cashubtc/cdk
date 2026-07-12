@@ -15553,8 +15553,8 @@ const LATENCY_EXPECTED_STAGES: &[CdkAlephBftLatencyStage] = &[
 struct TwoMemberAlephBftLiveSession {
     first_state: MintState,
     second_state: MintState,
-    _first_handle: Arc<FederationAlephBftLiveSessionHandle>,
-    _second_handle: Arc<FederationAlephBftLiveSessionHandle>,
+    _first_handle: Arc<AlephBftSessionSupervisor>,
+    _second_handle: Arc<AlephBftSessionSupervisor>,
 }
 
 struct MultiMemberAlephBftLiveSession {
@@ -15564,7 +15564,7 @@ struct MultiMemberAlephBftLiveSession {
     public_config: FederationConfig,
     private_configs: Vec<MemberConfigPrivate>,
     sync_config: FederationPeerSyncConfig,
-    _handles: Vec<Arc<FederationAlephBftLiveSessionHandle>>,
+    _handles: Vec<Arc<AlephBftSessionSupervisor>>,
 }
 
 async fn start_two_member_aleph_bft_live_session(

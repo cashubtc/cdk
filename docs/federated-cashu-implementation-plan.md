@@ -217,7 +217,11 @@ Resolved blocking bugs:
   secret-share, transcript-signature, activation, transcript derivation, and
   finalized-config admission state now belong to the runtime as well. All 50
   focused DKG tests pass across restart, response-loss, partition, conflict,
-  transcript, fairness, and bounded-CPU cases.
+  transcript, fairness, and bounded-CPU cases. The runtime-owned live-session
+  handle is now an explicit `AlephBftSessionSupervisor` with a single owned
+  task set and Running/Stopping/Stopped state. Shutdown and rotation join all
+  CDK tasks and tracked upstream Aleph children; focused supervisor, start,
+  manual/automatic rotation, backup restart, and idle-cadence tests pass.
 
 ## Recent performance checkpoint
 

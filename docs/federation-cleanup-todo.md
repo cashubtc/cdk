@@ -1317,6 +1317,18 @@ rejection, transcript/activation checks, admission fairness, and bounded CPU
 responsiveness. Live session task lifecycle remains and is coordinated with
 Item 18 rather than introducing two competing owners.
 
+### Checkpoint 14: owned session supervisor boundary
+
+The runtime's former live-session handle is now the concrete
+`AlephBftSessionSupervisor`. It owns one explicit task set and
+Running/Stopping/Stopped state; startup installs the inbound queue only after
+all fallible construction succeeds. Shutdown and rotation abort and join the
+session, activity broadcaster, network pump, apply loop, completion watcher,
+and every upstream Aleph child task. Focused supervisor, upstream spawn, start,
+manual rotation, automatic rotation, backup restart, and idle-cadence tests
+pass. Item 17 awaits the final complete federation and standalone gates while
+the remaining failure-state work continues in Item 18.
+
 ### Problem
 
 `MintState` directly owns consensus, synchronization, DKG, sequence tracking,
@@ -1341,7 +1353,19 @@ lifecycle, making ownership and shutdown dependencies difficult to follow.
 
 ## 18. Introduce an explicit AlephBFT session supervisor
 
-**Status:** Todo
+**Status:** In progress
+
+### Checkpoint 1: deterministic task ownership and shutdown
+
+The existing live-session owner was evolved into
+`AlephBftSessionSupervisor`; no parallel lifecycle service or general task
+framework was added. It has explicit Running/Stopping/Stopped state, one
+shutdown entry point, a single owned CDK task set, and an upstream Aleph task
+tracker that waits for active children to exit after abort. Manual and automatic
+rotation await shutdown without self-joining the completion watcher. Startup
+publishes neither the inbound queue nor the supervisor until construction is
+complete. New tests prove all five CDK tasks and pending upstream tasks are
+joined, and existing start/rotation/restart/idle tests pass.
 
 ### Problem
 

@@ -5,6 +5,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher as StdHasher};
 use std::io;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -24,7 +25,7 @@ use futures::future::BoxFuture;
 use futures::io::{AsyncRead, AsyncWrite};
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::AbortHandle;
 
 use crate::{
@@ -1028,13 +1029,31 @@ impl CdkAlephBftSessionIo {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftTokioSpawnHandle {
-    spawned_tasks: Arc<Mutex<Vec<AbortHandle>>>,
+    inner: Arc<CdkAlephBftTokioSpawnState>,
+}
+
+#[derive(Debug, Default)]
+struct CdkAlephBftTokioSpawnState {
+    spawned_tasks: Mutex<Vec<AbortHandle>>,
+    active_tasks: AtomicUsize,
+    tasks_finished: Notify,
+}
+
+struct CdkAlephBftSpawnedTaskGuard {
+    inner: Arc<CdkAlephBftTokioSpawnState>,
+}
+
+impl Drop for CdkAlephBftSpawnedTaskGuard {
+    fn drop(&mut self) {
+        self.inner.active_tasks.fetch_sub(1, Ordering::SeqCst);
+        self.inner.tasks_finished.notify_waiters();
+    }
 }
 
 impl CdkAlephBftTokioSpawnHandle {
     /// Abort every child task spawned through this handle.
     pub(crate) fn abort_all(&self) {
-        let Ok(mut tasks) = self.spawned_tasks.lock() else {
+        let Ok(mut tasks) = self.inner.spawned_tasks.lock() else {
             return;
         };
         for task in tasks.drain(..) {
@@ -1042,8 +1061,31 @@ impl CdkAlephBftTokioSpawnHandle {
         }
     }
 
+    pub(crate) async fn abort_all_and_wait(&self) {
+        self.abort_all();
+        loop {
+            let finished = self.inner.tasks_finished.notified();
+            if self.inner.active_tasks.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            finished.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn active_task_count(&self) -> usize {
+        self.inner.active_tasks.load(Ordering::SeqCst)
+    }
+
+    fn task_guard(&self) -> CdkAlephBftSpawnedTaskGuard {
+        self.inner.active_tasks.fetch_add(1, Ordering::SeqCst);
+        CdkAlephBftSpawnedTaskGuard {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
     fn track(&self, abort_handle: AbortHandle) {
-        match self.spawned_tasks.lock() {
+        match self.inner.spawned_tasks.lock() {
             Ok(mut tasks) => tasks.push(abort_handle),
             Err(_) => abort_handle.abort(),
         }
@@ -1052,7 +1094,9 @@ impl CdkAlephBftTokioSpawnHandle {
 
 impl SpawnHandle for CdkAlephBftTokioSpawnHandle {
     fn spawn(&self, name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
+        let task_guard = self.task_guard();
         let handle = tokio::spawn(async move {
+            let _task_guard = task_guard;
             tracing::trace!(task = name, "AlephBFT task started");
             task.await;
         });
@@ -1064,7 +1108,9 @@ impl SpawnHandle for CdkAlephBftTokioSpawnHandle {
         name: &'static str,
         task: impl Future<Output = ()> + Send + 'static,
     ) -> TaskHandle {
+        let task_guard = self.task_guard();
         let handle = tokio::spawn(async move {
+            let _task_guard = task_guard;
             tracing::trace!(task = name, "AlephBFT essential task started");
             task.await;
         });
@@ -1820,6 +1866,19 @@ mod tests {
         let handle = spawn.spawn_essential("adapter-test", async {});
 
         assert!(handle.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_tokio_spawn_handle_waits_for_aborted_tasks() {
+        let spawn = CdkAlephBftTokioSpawnHandle::default();
+        spawn.spawn("pending-adapter-test", std::future::pending());
+        while spawn.active_task_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        spawn.abort_all_and_wait().await;
+
+        assert_eq!(spawn.active_task_count(), 0);
     }
 
     #[test]
