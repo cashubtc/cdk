@@ -997,6 +997,10 @@
             <p>Formatting-sensitive scanners over Rust files, manifests, and migration text are gone. Consensus admission is covered by real fail-closed route behavior; payment-backend isolation is checked by a production feature build without fake wallet; the development smoke command is proven absent through the compiled CLI parser; and the migrated SQLite table accepts every durable melt state while rejecting transient backend <code>UNKNOWN</code>. Embedded-text assertions remain only where generated scripts, templates, documentation, or legacy fixtures are themselves the contract. Verification passes all 332 shared federation tests, five focused public-route gates, the migrated-schema and production-CLI regressions, all 28 standalone Axum tests, and federation and standalone mint compile gates.</p>
           </article>
           <article class="item">
+            <h3>Federation tests wake on state changes</h3>
+            <p>Mint, swap, melt, duplicate-submit, finalized-operation, latency-stage, and in-process Aleph network-message tests now wait on explicit test notifications instead of short sleep loops or fixed scheduler-yield counts. Every event wait retains a bounded diagnostic timeout, and database state is still asserted after finalization. Deliberate fault delays, retry and backoff cadence, Aleph idle/activity grace, real HTTP readiness, and asynchronous backup persistence keep wall-clock coverage because timing is part of those contracts. A controlled duplicate-request comparison was runtime-neutral at 2.54 seconds before and 2.50 seconds after; five repeated post-change runs passed in 2.46-2.49 seconds. The complete federation Axum suite passes 419 tests with one manual benchmark ignored in 97.24 seconds, and standalone Axum remains 28/28.</p>
+          </article>
+          <article class="item">
             <h3>Feature-off compatibility</h3>
             <p>The first Rust scaffold is gated so normal standalone builds do not see federation mint fields or APIs.</p>
           </article>

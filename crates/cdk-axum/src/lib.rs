@@ -479,6 +479,8 @@ fn validate_federation_submit_response(
 #[derive(Debug, Default)]
 struct FederationOperationNotifications {
     inner: Mutex<FederationOperationNotificationState>,
+    #[cfg(test)]
+    waiter_count_changed: tokio::sync::Notify,
 }
 
 #[cfg(feature = "federation")]
@@ -638,6 +640,8 @@ impl FederationOperationNotifications {
             notifier.notify.clone().notified_owned()
         };
         inner.waiter_count = inner.waiter_count.saturating_add(1);
+        #[cfg(test)]
+        self.waiter_count_changed.notify_waiters();
         Ok(FederationOperationWaitRegistration::Waiting(
             FederationOperationWaiter {
                 notifications: self,
@@ -660,6 +664,8 @@ impl FederationOperationNotifications {
         if remove_notifier {
             inner.notifiers.remove(&operation_id);
         }
+        #[cfg(test)]
+        self.waiter_count_changed.notify_waiters();
     }
 
     fn waiter_response(
@@ -677,6 +683,27 @@ impl FederationOperationNotifications {
     #[cfg_attr(not(test), allow(dead_code))]
     fn pending_waiter_count(&self) -> usize {
         self.lock_inner().waiter_count
+    }
+
+    #[cfg(test)]
+    async fn wait_for_pending_waiter_count(&self, expected: usize) {
+        let wait = async {
+            loop {
+                let changed = self.waiter_count_changed.notified();
+                if self.pending_waiter_count() == expected {
+                    return;
+                }
+                changed.await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(1), wait)
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out waiting for {expected} federation response waiters; found {}",
+                    self.pending_waiter_count()
+                )
+            });
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1557,6 +1584,13 @@ impl MintState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn federation_pending_response_waiter_count(&self) -> usize {
         self.federation.pending_response_waiter_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_federation_pending_response_waiter_count(&self, expected: usize) {
+        self.federation
+            .wait_for_pending_response_waiter_count(expected)
+            .await;
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

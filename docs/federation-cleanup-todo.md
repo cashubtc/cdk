@@ -2674,7 +2674,7 @@ fail without proving runtime behavior or type-level architecture.
 
 ## 42. Replace sleep-driven federation tests with deterministic synchronization
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
 
 ### Problem
 
@@ -2696,6 +2696,40 @@ variability, and can conceal missed wakeups or ordering races.
   wallet HTTP tests, DKG harnesses, and multi-member smoke tests.
 - Compare runtime and flake rate before and after, run each suite repeatedly,
   and retain at least one real partition/heal and restart convergence test.
+
+### Resolution
+
+- Added a test-only notification for federation response-waiter count changes.
+  Mint, swap, melt, timeout, and duplicate-join tests now wait for the exact
+  registry state instead of sleeping in 5 ms loops or assuming a fixed number
+  of scheduler yields is sufficient.
+- Reused the existing finalized-operation notifier for live-session applied and
+  rejected operation waits. Tests still inspect the database after the signal,
+  but no longer poll SQL every 20 ms to discover finalization.
+- Added explicit test notifications to the AlephBFT latency recorder and both
+  in-process REST transports. Stage and network-message tests now wake on the
+  recorded event while retaining a diagnostic outer timeout.
+- Kept bounded wall-clock waits where time is the behavior under test: retry
+  and backoff cadence, AlephBFT idle/activity grace, injected slow or reordered
+  transports, real HTTP member readiness, and asynchronous backup/database
+  persistence. Production timers and consensus behavior were not changed for
+  test convenience.
+- A broader cross-crate database event bus and paused-time conversion for live
+  upstream AlephBFT sessions were rejected. They would add production-shaped
+  test infrastructure or distort real runtime scheduling for little benefit.
+
+### Verification
+
+- The four duplicate pending-request tests measured 2.54 seconds before and
+  2.50 seconds after, confirming runtime is neutral within noise rather than
+  claiming an artificial speedup. Five consecutive post-change runs passed in
+  2.46-2.49 seconds.
+- Focused pending-finalization, waiter-limit, duplicate-submit, session
+  rotation, recovered-session, latency-stage, below-finality conflict/melt,
+  and partition/catch-up tests pass.
+- The complete federation-enabled Axum suite passes 419 tests with one manual
+  benchmark ignored in 97.24 seconds under normal parallel execution.
+- All 28 standalone Axum tests pass.
 
 ## 43. Rebase the undeployed federation protocol as version 1
 

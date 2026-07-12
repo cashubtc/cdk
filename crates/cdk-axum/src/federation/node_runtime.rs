@@ -216,6 +216,17 @@ impl FederationNodeRuntime {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn wait_for_pending_response_waiter_count(&self, expected: usize) {
+        match self.notifications.as_ref() {
+            Some(notifications) => notifications.wait_for_pending_waiter_count(expected).await,
+            None => assert_eq!(
+                expected, 0,
+                "inert runtime cannot register response waiters"
+            ),
+        }
+    }
+
     pub(crate) fn response_cache_entry_count(&self) -> usize {
         self.notifications
             .as_ref()

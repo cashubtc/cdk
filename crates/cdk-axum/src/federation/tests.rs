@@ -383,6 +383,7 @@ struct MockFederationTransportState {
 #[derive(Debug, Clone, Default)]
 struct MockFederationTransport {
     state: Arc<Mutex<MockFederationTransportState>>,
+    aleph_bft_network_message_changed: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Clone)]
@@ -408,6 +409,7 @@ struct RouterFederationTransportRegistry {
     dkg_readiness_requests: Arc<Mutex<Vec<FederationSignedRequest<FederationDkgReadinessRequest>>>>,
     aleph_bft_network_message_requests:
         Arc<Mutex<Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>>>,
+    aleph_bft_network_message_changed: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Default)]
@@ -612,6 +614,29 @@ impl RouterFederationTransportRegistry {
             .lock()
             .expect("router transport network-message requests lock")
             .clone()
+    }
+
+    async fn wait_for_aleph_bft_network_message_request_matching<F>(
+        &self,
+        matches: F,
+    ) -> FederationSignedRequest<FederationAlephBftNetworkMessageRequest>
+    where
+        F: Fn(&FederationSignedRequest<FederationAlephBftNetworkMessageRequest>) -> bool,
+    {
+        loop {
+            let changed = self
+                .aleph_bft_network_message_changed
+                .clone()
+                .notified_owned();
+            if let Some(request) = self
+                .aleph_bft_network_message_requests()
+                .into_iter()
+                .find(|request| matches(request))
+            {
+                return request;
+            }
+            changed.await;
+        }
     }
 
     fn aleph_bft_activity_request_count(&self) -> usize {
@@ -943,6 +968,29 @@ impl MockFederationTransport {
             .clone()
     }
 
+    async fn wait_for_aleph_bft_network_message_request_matching<F>(
+        &self,
+        matches: F,
+    ) -> FederationSignedRequest<FederationAlephBftNetworkMessageRequest>
+    where
+        F: Fn(&FederationSignedRequest<FederationAlephBftNetworkMessageRequest>) -> bool,
+    {
+        loop {
+            let changed = self
+                .aleph_bft_network_message_changed
+                .clone()
+                .notified_owned();
+            if let Some(request) = self
+                .aleph_bft_network_message_requests()
+                .into_iter()
+                .find(|request| matches(request))
+            {
+                return request;
+            }
+            changed.await;
+        }
+    }
+
     fn catch_up_requests(&self) -> Vec<FederationSignedRequest<FederationJournalCatchUpRequest>> {
         self.state
             .lock()
@@ -1041,6 +1089,7 @@ impl Transport for MockFederationTransport {
                         .unwrap_or_default(),
                 )
             };
+            self.aleph_bft_network_message_changed.notify_waiters();
             if !delay.is_zero() {
                 time::sleep(delay).await;
             }
@@ -1300,6 +1349,7 @@ impl Transport for RouterFederationTransportRegistry {
                 .lock()
                 .expect("router transport network-message requests lock")
                 .push(signed_request);
+            self.aleph_bft_network_message_changed.notify_waiters();
         }
         if self.federation_link_is_blocked(signed_request.sender, signed_request.receiver) {
             return Err(HttpError::Other(format!(
@@ -9893,17 +9943,13 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
         .await
         .submit_aleph_bft_envelope(next_envelope)
         .expect("queue rotated-session operation");
-    let requests = time::timeout(Duration::from_secs(5), async {
-        loop {
-            let requests = rotated_transport.aleph_bft_network_message_requests();
-            if !requests.is_empty() {
-                return requests;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    time::timeout(
+        Duration::from_secs(5),
+        rotated_transport.wait_for_aleph_bft_network_message_request_matching(|_| true),
+    )
     .await
     .expect("rotated-session network-message request");
+    let requests = rotated_transport.aleph_bft_network_message_requests();
 
     assert!(
         requests
@@ -10112,17 +10158,13 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
         .await
         .submit_aleph_bft_envelope(next_envelope)
         .expect("queue session one operation");
-    let requests = time::timeout(Duration::from_secs(5), async {
-        loop {
-            let requests = transport.aleph_bft_network_message_requests();
-            if !requests.is_empty() {
-                return requests;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    time::timeout(
+        Duration::from_secs(5),
+        transport.wait_for_aleph_bft_network_message_request_matching(|_| true),
+    )
     .await
     .expect("session one network-message request");
+    let requests = transport.aleph_bft_network_message_requests();
 
     assert!(
         requests
@@ -15663,23 +15705,9 @@ async fn wait_for_applied_operation(state: &MintState, operation_id: FederationO
 }
 
 async fn wait_for_recorded_operation(state: &MintState, operation_id: FederationOperationId) {
-    time::timeout(Duration::from_secs(15), async {
-        loop {
-            let recorded = state
-                .mint
-                .localstore()
-                .get_federation_journal_entry_by_operation_id(operation_id)
-                .await
-                .expect("recorded operation lookup")
-                .is_some();
-            if recorded {
-                return;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("operation recorded before timeout");
+    operation_terminal_within(state, operation_id, Duration::from_secs(15))
+        .await
+        .expect("operation recorded before timeout");
 }
 
 fn journal_convergence_projection(
@@ -15709,28 +15737,9 @@ async fn wait_for_terminal_operation(
     state: &MintState,
     operation_id: FederationOperationId,
 ) -> FederationOperationStatus {
-    time::timeout(Duration::from_secs(30), async {
-        loop {
-            let status = state
-                .mint
-                .localstore()
-                .get_federation_journal_entry_by_operation_id(operation_id)
-                .await
-                .expect("terminal operation lookup")
-                .map(|entry| entry.status());
-            if status.is_some_and(|status| {
-                matches!(
-                    status,
-                    FederationOperationStatus::Applied | FederationOperationStatus::Rejected
-                )
-            }) {
-                return status.expect("terminal operation status");
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("operation reached terminal status before timeout")
+    operation_terminal_within(state, operation_id, Duration::from_secs(30))
+        .await
+        .expect("operation reached terminal status before timeout")
 }
 
 async fn replay_aleph_bft_runtime_after_test_process_restart(state: &mut MintState) {
@@ -16102,18 +16111,10 @@ async fn wait_for_latency_stage(
     operation_id: FederationOperationId,
     stage: CdkAlephBftLatencyStage,
 ) {
-    time::timeout(Duration::from_secs(5), async {
-        loop {
-            if recorder
-                .events_for_operation(operation_id)
-                .iter()
-                .any(|event| event.stage == stage)
-            {
-                return;
-            }
-            time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    time::timeout(
+        Duration::from_secs(5),
+        recorder.wait_for_stage(operation_id, stage),
+    )
     .await
     .expect("AlephBFT latency stage was not recorded before timeout")
 }
@@ -16211,25 +16212,43 @@ async fn operation_applied_within(
     operation_id: FederationOperationId,
     timeout: Duration,
 ) -> bool {
-    time::timeout(timeout, async {
-        loop {
-            let entries = state
-                .mint
-                .localstore()
-                .get_federation_journal_entries()
-                .await
-                .expect("journal lookup");
-            if entries.iter().any(|entry| {
-                entry.operation_id == operation_id
-                    && entry.status() == FederationOperationStatus::Applied
-            }) {
-                return;
-            }
-            time::sleep(Duration::from_millis(20)).await;
+    operation_terminal_within(state, operation_id, timeout).await
+        == Some(FederationOperationStatus::Applied)
+}
+
+async fn operation_terminal_within(
+    state: &MintState,
+    operation_id: FederationOperationId,
+    timeout: Duration,
+) -> Option<FederationOperationStatus> {
+    if let Some(entry) = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await
+        .expect("operation status lookup")
+    {
+        if matches!(
+            entry.status(),
+            FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+        ) {
+            return Some(entry.status());
         }
-    })
+    }
+
+    let response = time::timeout(
+        timeout,
+        state.wait_for_federation_operation_acceptance(operation_id),
+    )
     .await
-    .is_ok()
+    .ok()
+    .flatten()?;
+    let status = response.outcome.entry().status();
+    matches!(
+        status,
+        FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+    )
+    .then_some(status)
 }
 
 async fn wait_for_aleph_bft_pending_operations(
@@ -16259,18 +16278,12 @@ async fn wait_for_aleph_bft_network_message_request(
     sender: MemberId,
     receiver: MemberId,
 ) -> FederationSignedRequest<FederationAlephBftNetworkMessageRequest> {
-    time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(request) = transport
-                .aleph_bft_network_message_requests()
-                .into_iter()
-                .find(|request| request.sender == sender && request.receiver == receiver)
-            {
-                return request;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    time::timeout(
+        Duration::from_secs(5),
+        transport.wait_for_aleph_bft_network_message_request_matching(|request| {
+            request.sender == sender && request.receiver == receiver
+        }),
+    )
     .await
     .expect("AlephBFT network message request was not captured")
 }
@@ -16280,22 +16293,16 @@ async fn wait_for_aleph_bft_unit_with_operation(
     sender: MemberId,
     operation_id: FederationOperationId,
 ) -> Option<u64> {
-    time::timeout(Duration::from_secs(10), async {
-        loop {
-            for request in transport.aleph_bft_network_message_requests() {
-                if request.sender == sender {
-                    if let Some(unit_index) =
-                        aleph_bft_network_request_operation_unit_index(&request, operation_id)
-                    {
-                        return unit_index;
-                    }
-                }
-            }
-            time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    let request = time::timeout(
+        Duration::from_secs(10),
+        transport.wait_for_aleph_bft_network_message_request_matching(|request| {
+            request.sender == sender
+                && aleph_bft_network_request_contains_operation(request, operation_id)
+        }),
+    )
     .await
-    .ok()
+    .ok()?;
+    aleph_bft_network_request_operation_unit_index(&request, operation_id)
 }
 
 fn aleph_bft_network_request_contains_operation(
@@ -17558,12 +17565,9 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
             .submit_federation_envelope_to_consensus(envelope)
             .await
     });
-    for _ in 0..50 {
-        if state.federation_pending_response_waiter_count() == 1 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    state
+        .wait_for_federation_pending_response_waiter_count(1)
+        .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
@@ -17654,12 +17658,9 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
             ))
             .await
     });
-    for _ in 0..50 {
-        if state.federation_pending_response_waiter_count() == 1 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    state
+        .wait_for_federation_pending_response_waiter_count(1)
+        .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
 
     let err = state
@@ -17681,12 +17682,9 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
 
     first_submit.abort();
     let _ = first_submit.await;
-    for _ in 0..50 {
-        if state.federation_pending_response_waiter_count() == 0 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    state
+        .wait_for_federation_pending_response_waiter_count(0)
+        .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
 }
 
@@ -17718,12 +17716,9 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
             .submit_federation_envelope_to_consensus(first_envelope)
             .await
     });
-    for _ in 0..50 {
-        if state.federation_pending_response_waiter_count() == 1 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    state
+        .wait_for_federation_pending_response_waiter_count(1)
+        .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
 
     let second_state = state.clone();
@@ -17732,12 +17727,9 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
             .submit_federation_envelope_to_consensus(envelope)
             .await
     });
-    for _ in 0..50 {
-        if state.federation_pending_response_waiter_count() == 2 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    state
+        .wait_for_federation_pending_response_waiter_count(2)
+        .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 2);
     let stats = state.federation_operation_notification_stats();
     assert_eq!(stats.response_cache_lookups, 2);
@@ -17819,12 +17811,9 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
             .submit_federation_envelope_to_consensus(envelope)
             .await
     });
-    for _ in 0..50 {
-        if state.federation_pending_response_waiter_count() == 1 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    state
+        .wait_for_federation_pending_response_waiter_count(1)
+        .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
     assert!(
         !duplicate_submit.is_finished(),

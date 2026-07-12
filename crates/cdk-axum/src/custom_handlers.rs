@@ -4899,12 +4899,9 @@ mod tests {
             .await
         });
 
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -5098,12 +5095,9 @@ mod tests {
             .await
         });
 
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -5249,12 +5243,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -5283,12 +5274,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(2)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             2,
@@ -5411,12 +5399,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -5446,12 +5431,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(2)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             2,
@@ -6245,12 +6227,9 @@ mod tests {
             .await
         });
 
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -6333,12 +6312,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -6355,12 +6331,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(2)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             2,
@@ -7073,12 +7046,9 @@ mod tests {
             .await
         });
 
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -7213,12 +7183,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(1)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             1,
@@ -7238,12 +7205,9 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.federation_pending_response_waiter_count() == 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        state
+            .wait_for_federation_pending_response_waiter_count(2)
+            .await;
         assert_eq!(
             state.federation_pending_response_waiter_count(),
             2,

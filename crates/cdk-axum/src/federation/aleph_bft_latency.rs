@@ -60,6 +60,7 @@ pub(crate) struct CdkAlephBftLatencyEvent {
 struct CdkAlephBftLatencyRecorderState {
     started_at: Instant,
     events: Vec<CdkAlephBftLatencyEvent>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 #[cfg(test)]
@@ -87,6 +88,7 @@ impl CdkAlephBftLatencyRecorder {
         let inner = Arc::new(Mutex::new(CdkAlephBftLatencyRecorderState {
             started_at: Instant::now(),
             events: Vec::new(),
+            changed: Arc::new(tokio::sync::Notify::new()),
         }));
         *ACTIVE_RECORDER
             .lock()
@@ -116,6 +118,30 @@ impl CdkAlephBftLatencyRecorder {
             .into_iter()
             .filter(|event| event.operation_ids.contains(&operation_id))
             .collect()
+    }
+
+    /// Wait until a stage is recorded for an operation.
+    pub(crate) async fn wait_for_stage(
+        &self,
+        operation_id: FederationOperationId,
+        stage: CdkAlephBftLatencyStage,
+    ) {
+        loop {
+            let state = self
+                .inner
+                .lock()
+                .expect("AlephBFT latency recorder state mutex poisoned");
+            let changed = state.changed.clone().notified_owned();
+            if state
+                .events
+                .iter()
+                .any(|event| event.stage == stage && event.operation_ids.contains(&operation_id))
+            {
+                return;
+            }
+            drop(state);
+            changed.await;
+        }
     }
 }
 
@@ -183,4 +209,5 @@ fn record_for_test(stage: CdkAlephBftLatencyStage, operation_ids: Vec<Federation
         operation_ids,
         elapsed,
     });
+    state.changed.notify_waiters();
 }
