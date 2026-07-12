@@ -32,8 +32,8 @@ use cdk::federation::{
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationMemberStatusKind,
     FederationMemberStatusSnapshot, FederationOperationEnvelope, FederationOperationId,
     FederationOperationKind, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationStateDigestCheckpoint, FederationSubmitOperationResponse,
-    MemberId, FEDERATION_REST_API_VERSION,
+    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -2251,11 +2251,6 @@ impl MintState {
             let entries_to_apply = accepted_federation_journal_entries(&entries);
             self.apply_federation_journal_entries(&entries_to_apply)
                 .await?;
-            self.record_federation_state_digest_checkpoint_for_latest_entry(
-                &entries,
-                &entries_to_apply,
-            )
-            .await?;
             let responses = self
                 .federation_submit_responses_with_current_status(&responses)
                 .await;
@@ -2298,11 +2293,6 @@ impl MintState {
 
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
-        self.record_federation_state_digest_checkpoint_for_latest_entry(
-            &entries,
-            &entries_to_apply,
-        )
-        .await?;
         let responses = self
             .federation_submit_responses_with_current_status(&responses)
             .await;
@@ -2601,12 +2591,6 @@ impl MintState {
             self.verify_federation_catch_up_rejections(&response_to_apply.entries)
                 .await?;
         }
-        self.record_federation_state_digest_checkpoint_for_latest_entry(
-            &applied,
-            &entries_to_apply,
-        )
-        .await?;
-
         Ok(applied)
     }
 
@@ -3229,10 +3213,6 @@ impl MintState {
             }
         }
         self.mark_federation_operations_applied(&applied).await?;
-        if let Some(entry) = entries.last() {
-            self.record_federation_state_digest_checkpoint(entry)
-                .await?;
-        }
         Ok(applied)
     }
 
@@ -3317,57 +3297,6 @@ impl MintState {
                 }
             }
         }
-    }
-
-    async fn record_federation_state_digest_checkpoint(
-        &self,
-        entry: &FederationJournalEntry,
-    ) -> Result<(), cdk::Error> {
-        let db = self.mint.localstore();
-        let entries = db.get_federation_journal_entries().await?;
-        let Some(latest_entry) = entries.last() else {
-            return Ok(());
-        };
-        if latest_entry.index != entry.index || latest_entry.operation_id != entry.operation_id {
-            return Ok(());
-        }
-        let state_digest = crate::federation::materialized_state_digest(self, &entries)
-            .await
-            .map_err(|err| {
-                cdk::Error::Custom(format!(
-                    "could not compute federation state digest checkpoint: {err}"
-                ))
-            })?;
-        let checkpoint = FederationStateDigestCheckpoint::new(latest_entry, state_digest);
-        let retention = self
-            .federation_peer_sync_config
-            .unwrap_or_default()
-            .state_digest_checkpoint_retention;
-        let mut tx = db.begin_transaction().await?;
-        tx.add_federation_state_digest_checkpoint(&checkpoint)
-            .await?;
-        tx.prune_federation_state_digest_checkpoints(retention)
-            .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn record_federation_state_digest_checkpoint_for_latest_entry(
-        &self,
-        entries: &[FederationJournalEntry],
-        checkpointed_entries: &[FederationJournalEntry],
-    ) -> Result<(), cdk::Error> {
-        let Some(latest_entry) = entries.last() else {
-            return Ok(());
-        };
-        if checkpointed_entries.last().is_some_and(|entry| {
-            entry.index == latest_entry.index && entry.operation_id == latest_entry.operation_id
-        }) {
-            return Ok(());
-        }
-
-        self.record_federation_state_digest_checkpoint(latest_entry)
-            .await
     }
 
     async fn mark_federation_operations_applied(

@@ -2,7 +2,7 @@
 
 This note documents the lock ordering contract for SQL-backed federation state.
 It applies to SQLite and Postgres mint storage, and to any future
-`federation_signature_share`, digest-history, or member-status tables.
+`federation_signature_share` or member-status tables.
 
 The current consensus path serializes accepted operations before persistence,
 but SQL code still needs a stable rule for concurrent catch-up, replay,
@@ -81,7 +81,6 @@ consensus labels, also sorted lexicographically:
 | Proof state row | `proof:{y}` |
 | Blinded output/signature row | `blinded_message:{keyset_id}:{blinded_secret}` |
 | Future federation signature-share row | `signature_share:{operation_id}:{output_index}:{member_id}` |
-| Future digest-history row | `state_digest:{operation_count}` |
 | Future member-status row | `member_status:{member_id}` |
 
 When a single SQL statement can lock all rows in one deterministic query, prefer

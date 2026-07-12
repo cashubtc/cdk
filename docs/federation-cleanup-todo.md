@@ -934,7 +934,34 @@ time available.
 
 ## 13. Remove unused materialized-state digest checkpoints
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Confirmed that every production use was a writer or pruner; status, catch-up,
+monitoring, digest comparison, and operator tooling had no checkpoint-history
+reader. Deleted the checkpoint type, transaction/database methods, SQL codec,
+runtime recorder, retention configuration, SQLite/PostgreSQL table migrations,
+and checkpoint-only tests. Catch-up tests continue to assert the actual
+materialized rows, terminal rejection state, signed status output, and live
+materialized-state digest verification.
+
+Each finalized or replayed batch now avoids one extra full materialized-state
+snapshot plus a separate transaction containing checkpoint insert and retention
+delete statements. Journal outcome/state digests, signed session outcomes,
+redacted row fingerprints, mismatch metrics, and catch-up digest comparison are
+unchanged.
+
+Verification:
+
+- all 219 focused `cdk-common` federation tests pass;
+- all 22 SQLite federation persistence, fresh-schema, and index tests pass;
+- all 99 mint federation tests pass;
+- all 420 Axum federation tests pass, including live AlephBFT finalization,
+  restart, catch-up, mismatch detection, DKG, and public `GET /v1/config`;
+- federation-enabled PostgreSQL and mintd checks pass;
+- all 28 standalone Axum and 134 standalone SQLite tests pass, and the
+  federation-disabled mintd check passes.
 
 ### Problem
 

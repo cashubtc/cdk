@@ -21,7 +21,7 @@ use crate::federation::{
     FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
-    FederationStateDigestCheckpoint, MemberId,
+    MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -714,18 +714,6 @@ pub trait FederationJournalTransaction {
         operation_id: FederationOperationId,
     ) -> Result<(), Self::Err>;
 
-    /// Persist one materialized state digest checkpoint.
-    async fn add_federation_state_digest_checkpoint(
-        &mut self,
-        checkpoint: &FederationStateDigestCheckpoint,
-    ) -> Result<(), Self::Err>;
-
-    /// Retain only the newest materialized state digest checkpoints.
-    async fn prune_federation_state_digest_checkpoints(
-        &mut self,
-        keep_latest: usize,
-    ) -> Result<(), Self::Err>;
-
     /// Persist one payment observation extracted from an accepted federation operation.
     async fn add_federation_payment_observation(
         &mut self,
@@ -909,17 +897,6 @@ pub trait FederationJournalDatabase {
         &self,
         session: u64,
     ) -> Result<Vec<FederationAlephBftNetworkRetryRecord>, Self::Err>;
-
-    /// Get all persisted materialized state digest checkpoints in consensus order.
-    async fn get_federation_state_digest_checkpoints(
-        &self,
-    ) -> Result<Vec<FederationStateDigestCheckpoint>, Self::Err>;
-
-    /// Get persisted materialized state digest checkpoints starting at `next_index`.
-    async fn get_federation_state_digest_checkpoints_from(
-        &self,
-        next_index: u64,
-    ) -> Result<Vec<FederationStateDigestCheckpoint>, Self::Err>;
 
     /// Get payment observations for one quote and context in consensus order.
     async fn get_federation_payment_observations(

@@ -16,7 +16,7 @@ use cdk_common::federation::{
     FederationOperationId, FederationOperationOutcomeHash, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
-    FederationStateDigest, FederationStateDigestCheckpoint, MemberId,
+    FederationStateDigest, MemberId,
 };
 use cdk_common::PublicKey;
 
@@ -222,36 +222,6 @@ fn sql_row_to_federation_payment_observation_record(
         operation_id,
         operation_index,
         observation,
-    })
-}
-
-fn sql_row_to_federation_state_digest_checkpoint(
-    row: Vec<Column>,
-) -> Result<FederationStateDigestCheckpoint, Error> {
-    unpack_into!(
-        let (
-            operation_index,
-            operation_id,
-            order_digest,
-            state_digest
-        ) = row
-    );
-
-    let operation_index: u64 = column_as_number!(operation_index);
-    let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
-        .map_err(|e| Error::Internal(format!("Invalid federation operation id: {e}")))?;
-    let order_digest =
-        cdk_common::federation::FederationJournalDigest::from_hex(column_as_string!(&order_digest))
-            .map_err(|e| Error::Internal(format!("Invalid federation order digest: {e}")))?;
-    let state_digest =
-        cdk_common::federation::FederationStateDigest::from_hex(column_as_string!(&state_digest))
-            .map_err(|e| Error::Internal(format!("Invalid federation state digest: {e}")))?;
-
-    Ok(FederationStateDigestCheckpoint {
-        operation_index,
-        operation_id,
-        order_digest,
-        state_digest,
     })
 }
 
@@ -660,13 +630,6 @@ fn sql_row_to_federation_dkg_activation(
     }
 
     Ok(activation)
-}
-
-fn federation_state_digest_conflict_error(checkpoint: &FederationStateDigestCheckpoint) -> Error {
-    Error::Internal(format!(
-        "Conflicting federation state digest checkpoint for operation index {}",
-        checkpoint.operation_index
-    ))
 }
 
 fn federation_dkg_conflict_error(phase: &str, member_id: MemberId) -> Error {
@@ -1293,64 +1256,6 @@ where
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn add_federation_state_digest_checkpoint(
-        &mut self,
-        checkpoint: &FederationStateDigestCheckpoint,
-    ) -> Result<(), Self::Err> {
-        let rows_affected = query(
-            r#"
-            INSERT INTO federation_state_digest
-            (operation_index, operation_id, order_digest, state_digest)
-            VALUES
-            (:operation_index, :operation_id, :order_digest, :state_digest)
-            ON CONFLICT (operation_index)
-            DO UPDATE SET
-                operation_id = EXCLUDED.operation_id,
-                order_digest = EXCLUDED.order_digest,
-                state_digest = EXCLUDED.state_digest
-            WHERE federation_state_digest.operation_id = EXCLUDED.operation_id
-              AND federation_state_digest.order_digest = EXCLUDED.order_digest
-              AND federation_state_digest.state_digest = EXCLUDED.state_digest
-            "#,
-        )?
-        .bind("operation_index", checkpoint.operation_index as i64)
-        .bind("operation_id", checkpoint.operation_id.to_string())
-        .bind("order_digest", checkpoint.order_digest.to_string())
-        .bind("state_digest", checkpoint.state_digest.to_string())
-        .execute(&self.inner)
-        .await?;
-        if rows_affected == 0 {
-            return Err(federation_state_digest_conflict_error(checkpoint));
-        }
-
-        Ok(())
-    }
-
-    async fn prune_federation_state_digest_checkpoints(
-        &mut self,
-        keep_latest: usize,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-            DELETE FROM federation_state_digest
-            WHERE operation_index NOT IN (
-                SELECT operation_index
-                FROM (
-                    SELECT operation_index
-                    FROM federation_state_digest
-                    ORDER BY operation_index DESC
-                    LIMIT :keep_latest
-                ) AS retained
-            )
-            "#,
-        )?
-        .bind("keep_latest", keep_latest as i64)
         .execute(&self.inner)
         .await?;
 
@@ -2192,53 +2097,6 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_payment_observation_record)
-        .collect()
-    }
-
-    async fn get_federation_state_digest_checkpoints(
-        &self,
-    ) -> Result<Vec<FederationStateDigestCheckpoint>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT operation_index, operation_id, order_digest, state_digest
-            FROM federation_state_digest
-            ORDER BY operation_index ASC
-            "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_state_digest_checkpoint)
-        .collect()
-    }
-
-    async fn get_federation_state_digest_checkpoints_from(
-        &self,
-        next_index: u64,
-    ) -> Result<Vec<FederationStateDigestCheckpoint>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT operation_index, operation_id, order_digest, state_digest
-            FROM federation_state_digest
-            WHERE operation_index >= :next_index
-            ORDER BY operation_index ASC
-            "#,
-        )?
-        .bind("next_index", next_index as i64)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_state_digest_checkpoint)
         .collect()
     }
 

@@ -554,18 +554,6 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_state_digest_checkpoint_persistence() {
-        cdk_common::database::mint::test::federation_state_digest_checkpoint_persistence(
-            provide_mint_db(unique_federation_test_id(
-                "federation_state_digest_checkpoint_persistence",
-            ))
-            .await,
-        )
-        .await;
-    }
-
-    #[cfg(feature = "federation")]
-    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_mint_db(unique_federation_test_id(
@@ -734,7 +722,6 @@ mod test {
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
             "federation_aleph_bft_session_state",
-            "federation_state_digest",
             "federation_payment_observations",
             "federation_member_status",
             "federation_config",
@@ -772,7 +759,6 @@ mod test {
             "idx_federation_session_outcomes_from_index",
             "idx_federation_aleph_bft_finalized_items_session_unit",
             "idx_federation_aleph_bft_finalized_items_operation_id",
-            "idx_federation_state_digest_state",
             "idx_federation_payment_observations_member_state",
             "idx_federation_payment_observations_quote",
             "idx_federation_signature_shares_operation_output",

@@ -220,10 +220,6 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             ..valid
         },
         FederationPeerSyncConfig {
-            state_digest_checkpoint_retention: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
             pending_mempool_item_limit: 0,
             ..valid
         },
@@ -7851,7 +7847,7 @@ async fn aleph_bft_catch_up_advances_recovered_active_session() {
 }
 
 #[tokio::test]
-async fn aleph_bft_catch_up_checkpoints_rejected_trailing_entry() {
+async fn aleph_bft_catch_up_applies_rejected_trailing_entry() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -7945,21 +7941,6 @@ async fn aleph_bft_catch_up_checkpoints_rejected_trailing_entry() {
     assert_eq!(persisted.len(), 2);
     assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
     assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
-    let expected_state_digest = materialized_state_digest(&state, &persisted)
-        .await
-        .expect("materialized state digest");
-
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(checkpoints[0].operation_index, persisted[1].index);
-    assert_eq!(checkpoints[0].operation_id, conflicting_operation_id);
-    assert_eq!(checkpoints[0].order_digest, persisted[1].order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
 }
 
 #[tokio::test]
@@ -8749,7 +8730,7 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
 }
 
 #[tokio::test]
-async fn federation_aleph_bft_finalized_unit_checkpoints_rejected_trailing_entry() {
+async fn federation_aleph_bft_finalized_unit_applies_rejected_trailing_entry() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -8819,21 +8800,6 @@ async fn federation_aleph_bft_finalized_unit_checkpoints_rejected_trailing_entry
     assert_eq!(persisted.len(), 2);
     assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
     assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
-    let expected_state_digest = materialized_state_digest(&state, &persisted)
-        .await
-        .expect("materialized state digest");
-
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(checkpoints[0].operation_index, persisted[1].index);
-    assert_eq!(checkpoints[0].operation_id, conflicting_operation_id);
-    assert_eq!(checkpoints[0].order_digest, persisted[1].order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
 }
 
 #[tokio::test]
@@ -19776,103 +19742,7 @@ async fn submit_federation_envelope_bounds_response_cache() {
 }
 
 #[tokio::test]
-async fn submit_federation_envelope_records_state_digest_checkpoint() {
-    let (state, _, _) = federation_route_state().await;
-    let quote_id = QuoteId::new();
-    let response = state
-        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
-        .await
-        .expect("submit mint quote");
-    let entry = response.outcome.entry();
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("journal entries");
-    let expected_state_digest = materialized_state_digest(&state, &entries)
-        .await
-        .expect("materialized state digest");
-
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(checkpoints[0].operation_index, entry.index);
-    assert_eq!(checkpoints[0].operation_id, response.operation_id);
-    assert_eq!(checkpoints[0].order_digest, entry.order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
-}
-
-#[tokio::test]
-async fn catch_up_replay_records_state_digest_checkpoint() {
-    let (state, public_config, _) = federation_route_state().await;
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let quote_id = QuoteId::new();
-    let envelope = mint_quote_envelope(&state, &quote_id);
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
-    finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted mint quote");
-    let catch_up_request = state
-        .federation_consensus
-        .as_ref()
-        .expect("local consensus")
-        .lock()
-        .await
-        .catch_up_request();
-    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
-        .expect("catch-up response");
-
-    assert!(state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoint lookup before catch-up")
-        .is_empty());
-
-    let applied = state
-        .apply_federation_catch_up_response(&catch_up_response)
-        .await
-        .expect("apply catch-up response");
-    assert_eq!(applied.len(), 1);
-
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("journal entries");
-    let expected_state_digest = materialized_state_digest(&state, &entries)
-        .await
-        .expect("materialized state digest");
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    let entry = applied.first().expect("applied entry");
-
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(checkpoints[0].operation_index, entry.index);
-    assert_eq!(checkpoints[0].operation_id, entry.operation_id);
-    assert_eq!(checkpoints[0].order_digest, entry.order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
-    assert!(state
-        .mint
-        .localstore()
-        .get_mint_quote(&quote_id)
-        .await
-        .expect("mint quote lookup")
-        .is_some());
-}
-
-#[tokio::test]
-async fn catch_up_replay_checkpoints_completed_operation_rows() {
+async fn catch_up_replay_materializes_completed_operation_rows() {
     let (state, public_config, _) = federation_route_state().await;
     let config = state
         .mint
@@ -19934,32 +19804,17 @@ async fn catch_up_replay_checkpoints_completed_operation_rows() {
     let snapshot = materialized_state_snapshot(&state, &entries)
         .await
         .expect("materialized snapshot");
-    let expected_state_digest = snapshot.digest().expect("materialized digest");
+    snapshot.digest().expect("materialized digest");
     let completed_row = completed_operation_snapshot_row(&snapshot, mint_operation_id);
     assert_eq!(
         completed_row.fields.get("kind").map(String::as_str),
         Some("mint")
     );
     assert!(!completed_row.fields.contains_key("missing"));
-
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    let mint_entry = entries.last().expect("mint journal entry");
-
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(mint_entry.operation_id, mint_operation_id);
-    assert_eq!(checkpoints[0].operation_index, mint_entry.index);
-    assert_eq!(checkpoints[0].operation_id, mint_entry.operation_id);
-    assert_eq!(checkpoints[0].order_digest, mint_entry.order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
 }
 
 #[tokio::test]
-async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
+async fn catch_up_replay_materializes_unresolved_payment_observation_rows() {
     let (mut public_config, local_private, peer_private) = transport_config();
     public_config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     let state =
@@ -19969,9 +19824,6 @@ async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
     let quote_id = QuoteId::new();
     let observation =
         mint_payment_observation_envelope_for_member(&state, &quote_id, 1, 1, "settled");
-    let observation_id = observation
-        .operation_id()
-        .expect("observation operation id");
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, mint_quote_envelope(&state, &quote_id))
@@ -19993,30 +19845,6 @@ async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
         .await
         .expect("apply catch-up response");
     assert_eq!(applied.len(), 2);
-
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("journal entries");
-    let expected_state_digest = materialized_state_digest(&state, &entries)
-        .await
-        .expect("materialized state digest");
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    let observation_entry = entries.last().expect("observation journal entry");
-
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(observation_entry.operation_id, observation_id);
-    assert_eq!(checkpoints[0].operation_index, observation_entry.index);
-    assert_eq!(checkpoints[0].operation_id, observation_entry.operation_id);
-    assert_eq!(checkpoints[0].order_digest, observation_entry.order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
 
     let quote = state
         .mint
@@ -20066,7 +19894,7 @@ async fn catch_up_replay_checkpoints_unresolved_payment_observation_rows() {
 }
 
 #[tokio::test]
-async fn catch_up_replay_checkpoints_payment_observation_quarantine_rows() {
+async fn catch_up_replay_materializes_payment_observation_quarantine_rows() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let config = state
         .mint
@@ -20122,30 +19950,6 @@ async fn catch_up_replay_checkpoints_payment_observation_quarantine_rows() {
         .expect("apply catch-up response");
     assert_eq!(applied.len(), 4);
 
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("journal entries");
-    let expected_state_digest = materialized_state_digest(&state, &entries)
-        .await
-        .expect("materialized state digest");
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    let quarantine_entry = entries.last().expect("quarantine journal entry");
-
-    assert_eq!(checkpoints.len(), 1);
-    assert_eq!(quarantine_entry.operation_id, quarantine_id);
-    assert_eq!(checkpoints[0].operation_index, quarantine_entry.index);
-    assert_eq!(checkpoints[0].operation_id, quarantine_entry.operation_id);
-    assert_eq!(checkpoints[0].order_digest, quarantine_entry.order_digest);
-    assert_eq!(checkpoints[0].state_digest, expected_state_digest);
-
     let status_request = signed_status_request(
         &public_config,
         &peer_private,
@@ -20167,33 +19971,6 @@ async fn catch_up_replay_checkpoints_payment_observation_quarantine_rows() {
         .expect("payment observation report");
     assert!(report.quarantined);
     assert_eq!(report.quarantine_operation_ids, vec![quarantine_id]);
-}
-
-#[tokio::test]
-async fn submit_federation_envelope_prunes_state_digest_checkpoints_to_retention() {
-    let (mut state, _, _) = federation_route_state().await;
-    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
-        state_digest_checkpoint_retention: 2,
-        ..FederationPeerSyncConfig::default()
-    });
-
-    for _ in 0..3 {
-        let quote_id = QuoteId::new();
-        state
-            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
-            .await
-            .expect("submit mint quote");
-    }
-
-    let checkpoints = state
-        .mint
-        .localstore()
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    assert_eq!(checkpoints.len(), 2);
-    assert_eq!(checkpoints[0].operation_index, 1);
-    assert_eq!(checkpoints[1].operation_index, 2);
 }
 
 #[cfg(feature = "prometheus")]

@@ -186,15 +186,6 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_state_digest_checkpoint_persistence() {
-        cdk_common::database::mint::test::federation_state_digest_checkpoint_persistence(
-            provide_db("federation_state_digest_checkpoint_persistence".to_string()).await,
-        )
-        .await;
-    }
-
-    #[cfg(feature = "federation")]
-    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_db("federation_signature_share_persistence".to_string()).await,
@@ -469,7 +460,6 @@ mod test {
             "federation_aleph_bft_network_retries",
             "federation_aleph_bft_pending_operations",
             "federation_aleph_bft_session_state",
-            "federation_state_digest",
             "federation_payment_observations",
             "federation_member_status",
             "federation_config",
@@ -528,7 +518,6 @@ mod test {
                   'federation_journal_entries',
                   'federation_session_outcomes',
                   'federation_aleph_bft_finalized_items',
-                  'federation_state_digest',
                   'federation_payment_observations',
                   'federation_signature_shares',
                   'federation_dkg_setup_messages',
@@ -563,10 +552,6 @@ mod test {
         assert!(
             index_names.contains("idx_federation_aleph_bft_finalized_items_operation_id"),
             "missing federation AlephBFT finalized-item operation-id index"
-        );
-        assert!(
-            index_names.contains("idx_federation_state_digest_state"),
-            "missing federation state-digest index"
         );
         assert!(
             index_names.contains("idx_federation_payment_observations_member_state"),

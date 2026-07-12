@@ -1670,7 +1670,8 @@ AlephBFT and consensus unit tests:
   wallet fanout, threshold aggregation, rotation, and restore without inventing
   a shared P2P history for independent in-memory stores. Private operation
   fixtures construct v3/BLS outputs from the configured keyset. Inline
-  consensus finalization records materialized state-digest checkpoints.
+  consensus finalization persists journal outcome/state digests without a
+  separate write-only digest checkpoint table.
   Finalized-unit REST replay watermarks remain liveness-only and in memory,
   including exact idempotent duplicate delivery. The five-member equivocation
   test likewise requires no durable gossip watermark, and empty-session
@@ -2030,7 +2031,6 @@ Implementation checklist:
   - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
   - [x] `federation_signature_share`, implemented as `federation_signature_shares`.
   - [x] `federation_payment_observations`.
-  - [x] Dedicated `federation_state_digest` digest-history table.
   - [x] `federation_member_sequences` for private REST sequence watermarks.
   - [x] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.
@@ -2039,7 +2039,8 @@ Implementation checklist:
 - [x] Exclude local private config, local connection status, logs, and caches from the digest.
 - [x] Add an audit summary similar to Fedimint's balance audit after each accepted operation.
 - [x] Persist accepted order digests and signed session outcomes as lightweight replay/catch-up evidence.
-- [x] Add configurable DB checkpoint retention and/or dedicated digest-history storage, satisfied for now by dedicated digest-history storage.
+- [x] Keep the current materialized-state digest in journal/status and catch-up
+  verification without a separate write-only digest-history table.
 
 Tests and success criteria:
 
@@ -2418,7 +2419,9 @@ Implementation checklist:
 - [x] Regenerate deterministic signature shares from accepted operations when local share rows are missing.
 - [x] Compare local state digest to quorum state digest at session boundaries.
 - [x] Expose admin endpoint or CLI to show consensus height, last digest, member lag, and pending operations.
-- [x] Add DB checkpoint retention configuration.
+- [x] Keep catch-up replay bounded by accepted journal/session evidence; a
+  separate materialized-state checkpoint retention setting was removed after
+  confirming it had no production reader.
 - [x] Add a safe read-only "catch-up" mode for lagging members.
 - [x] Prevent a lagging member from serving signing shares until it catches up to the operation's acceptance height.
 - [x] Prevent a lagging member from initiating configured development-backend outgoing payment attempts until it has replayed all accepted melt state.
@@ -2449,7 +2452,9 @@ Implementation checklist:
 - [x] Implement a canonical state snapshot/export over consensus-visible rows.
 - [x] Implement a state digest over the canonical snapshot.
 - [x] Include state digests in signed session outcomes and admin status reporting.
-- [x] Add a dedicated digest-history table and retention policy for consensus session boundaries.
+- [x] Include materialized-state digests in signed status/session evidence and
+  compare them after catch-up; the write-only digest-history table and retention
+  policy were removed.
 - [x] Store last applied session, item index, operation hash, outcome hash, and state digest.
 - [x] Implement an admin command to compare state digests across members.
 - [x] Implement an optional admin command to diff consensus-visible rows when digests differ.
@@ -2540,17 +2545,13 @@ Tests and success criteria:
 - [x] Catch-up replay continues past a deterministic rejected conflicting swap
   and still applies later independent swaps. Covered by
   `catch_up_marks_conflicting_swap_rejected_and_continues_replay`.
-- [x] Catch-up replay records a durable materialized state-digest checkpoint for
-  the replayed journal boundary. Covered by
-  `catch_up_replay_records_state_digest_checkpoint`.
-- [x] Catch-up replay records a durable materialized state-digest checkpoint for
-  payment-observation quarantine rows, and signed local status reports the
-  replayed quarantine. Covered by
-  `catch_up_replay_checkpoints_payment_observation_quarantine_rows`.
-- [x] Catch-up replay records a durable materialized state-digest checkpoint for
-  unresolved payment-observation rows, keeps the quote unpaid, and signed local
-  status reports the replayed observation as awaiting quorum. Covered by
-  `catch_up_replay_checkpoints_unresolved_payment_observation_rows`.
+- [x] Catch-up replay materializes payment-observation quarantine rows, and
+  signed local status reports the replayed quarantine. Covered by
+  `catch_up_replay_materializes_payment_observation_quarantine_rows`.
+- [x] Catch-up replay materializes unresolved payment-observation rows, keeps
+  the quote unpaid, and signed local status reports the replayed observation as
+  awaiting quorum. Covered by
+  `catch_up_replay_materializes_unresolved_payment_observation_rows`.
 - [x] Signed local status row-fingerprint output includes unresolved
   payment-observation rows for operator diffing without leaking raw payment
   proof material. Covered by
@@ -2571,9 +2572,9 @@ Tests and success criteria:
   across members. Covered by
   `materialized_state_digest_tracks_completed_operation_rows_for_value_operations`
   and `accepted_federation_melt_persists_reserve_before_payment_attempt`.
-- [x] Catch-up replay records a durable materialized state-digest checkpoint for
-  completed-operation rows after replaying accepted mint issuance history.
-  Covered by `catch_up_replay_checkpoints_completed_operation_rows`.
+- [x] Catch-up replay materializes completed-operation rows after replaying
+  accepted mint issuance history. Covered by
+  `catch_up_replay_materializes_completed_operation_rows`.
 - [x] Signed local status exposes redacted completed-operation materialized row
   fingerprints after accepted mint issuance without leaking operation IDs,
   completed-operation row UUIDs, or blinded outputs. Covered by
@@ -2587,11 +2588,10 @@ Tests and success criteria:
   ordering, without leaking row keys, operation IDs, or response material.
   Covered by
   `digest_comparison_diagnoses_completed_operation_row_variant_without_leaking_response_material`.
-- [x] AlephBFT finalized-unit apply and AlephBFT catch-up record durable
-  materialized state-digest checkpoints even when the latest consensus item is
-  rejected. Covered by
-  `federation_aleph_bft_finalized_unit_checkpoints_rejected_trailing_entry`
-  and `aleph_bft_catch_up_checkpoints_rejected_trailing_entry`.
+- [x] AlephBFT finalized-unit apply and catch-up preserve terminal rejected
+  entries when the latest consensus item is rejected. Covered by
+  `federation_aleph_bft_finalized_unit_applies_rejected_trailing_entry` and
+  `aleph_bft_catch_up_applies_rejected_trailing_entry`.
 - [x] Member offline across melting catches up without attempting a duplicate outgoing payment.
 - [x] Member offline across pending-to-paid melt finalization catches up to paid state.
 - [x] Member offline across pending-to-failed melt finalization catches up to rolled-back state.

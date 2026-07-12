@@ -24,8 +24,8 @@ use crate::federation::{
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    FederationSignatureShareRecord, FederationStateDigest, FederationStateDigestCheckpoint,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
@@ -989,9 +989,7 @@ where
 
     let mut conflicting_config = finalized_snapshot.config.clone();
     conflicting_config.payment_observation_policy.mint_quotes =
-        crate::federation::FederationPaymentVerificationPolicy::member_quorum(
-            conflicting_config.threshold_params.consensus_threshold,
-        );
+        crate::federation::FederationPaymentVerificationPolicy::development_single_observation_for_testing();
     conflicting_config
         .validate()
         .expect("conflicting config validates");
@@ -999,6 +997,10 @@ where
         FederationConfigSnapshot::new(conflicting_config).expect("conflicting snapshot");
     assert_eq!(conflicting_snapshot.federation_id, snapshot.federation_id);
     assert_ne!(conflicting_snapshot.config_digest, snapshot.config_digest);
+    assert_ne!(
+        conflicting_snapshot.config_digest,
+        finalized_snapshot.config_digest
+    );
 
     let mut tx = Database::begin_transaction(&db)
         .await
@@ -1224,116 +1226,6 @@ where
         .await
         .expect("wrong-context payment observations");
     assert!(wrong_context.is_empty());
-}
-
-/// Assert materialized state digest checkpoints persist in consensus order.
-pub async fn federation_state_digest_checkpoint_persistence<DB>(db: DB)
-where
-    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
-{
-    let mut journal = InMemoryFederationJournal::new();
-    let first = appended(
-        journal
-            .append(mint_quote_envelope("digest-quote-1", 21))
-            .expect("append first digest entry"),
-    );
-    let second = appended(
-        journal
-            .append(payment_observation_envelope("digest-quote-1"))
-            .expect("append second digest entry"),
-    );
-    let first_checkpoint =
-        FederationStateDigestCheckpoint::new(&first, FederationStateDigest::from_bytes([11; 32]));
-    let second_checkpoint =
-        FederationStateDigestCheckpoint::new(&second, FederationStateDigest::from_bytes([22; 32]));
-    let conflicting_first =
-        FederationStateDigestCheckpoint::new(&first, FederationStateDigest::from_bytes([33; 32]));
-
-    let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_journal_entry(&first)
-        .await
-        .expect("persist first journal entry");
-    tx.add_federation_journal_entry(&second)
-        .await
-        .expect("persist second journal entry");
-    tx.add_federation_state_digest_checkpoint(&first_checkpoint)
-        .await
-        .expect("persist first state digest checkpoint");
-    tx.add_federation_state_digest_checkpoint(&second_checkpoint)
-        .await
-        .expect("persist second state digest checkpoint");
-    tx.add_federation_state_digest_checkpoint(&first_checkpoint)
-        .await
-        .expect("idempotent checkpoint replay");
-    tx.commit().await.expect("commit");
-
-    let mut tx = Database::begin_transaction(&db)
-        .await
-        .expect("begin conflicting checkpoint");
-    assert!(tx
-        .add_federation_state_digest_checkpoint(&conflicting_first)
-        .await
-        .is_err());
-    tx.rollback()
-        .await
-        .expect("rollback conflicting checkpoint");
-
-    let persisted = db
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("state digest checkpoints");
-    assert_eq!(
-        persisted,
-        vec![first_checkpoint, second_checkpoint],
-        "state digest checkpoints should persist in operation order"
-    );
-
-    let ranged = db
-        .get_federation_state_digest_checkpoints_from(1)
-        .await
-        .expect("ranged state digest checkpoints");
-    assert_eq!(ranged, vec![second_checkpoint]);
-
-    let third = appended(
-        journal
-            .append(mint_quote_envelope("digest-quote-2", 34))
-            .expect("append third digest entry"),
-    );
-    let fourth = appended(
-        journal
-            .append(payment_observation_envelope("digest-quote-2"))
-            .expect("append fourth digest entry"),
-    );
-    let third_checkpoint =
-        FederationStateDigestCheckpoint::new(&third, FederationStateDigest::from_bytes([44; 32]));
-    let fourth_checkpoint =
-        FederationStateDigestCheckpoint::new(&fourth, FederationStateDigest::from_bytes([55; 32]));
-
-    let mut tx = Database::begin_transaction(&db)
-        .await
-        .expect("begin retention transaction");
-    tx.add_federation_journal_entry(&third)
-        .await
-        .expect("persist third journal entry");
-    tx.add_federation_journal_entry(&fourth)
-        .await
-        .expect("persist fourth journal entry");
-    tx.add_federation_state_digest_checkpoint(&third_checkpoint)
-        .await
-        .expect("persist third state digest checkpoint");
-    tx.add_federation_state_digest_checkpoint(&fourth_checkpoint)
-        .await
-        .expect("persist fourth state digest checkpoint");
-    tx.prune_federation_state_digest_checkpoints(2)
-        .await
-        .expect("prune state digest checkpoints");
-    tx.commit().await.expect("commit retention transaction");
-
-    let retained = db
-        .get_federation_state_digest_checkpoints()
-        .await
-        .expect("retained state digest checkpoints");
-    assert_eq!(retained, vec![third_checkpoint, fourth_checkpoint]);
 }
 
 /// Assert threshold signature shares persist independently from final blind signatures.

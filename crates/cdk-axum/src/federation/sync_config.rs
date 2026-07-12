@@ -16,7 +16,6 @@ const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_se
 const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 const DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT: usize = 128;
 const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
-const DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION: usize = 10_000;
 const DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT: usize = 1024;
 const DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT: usize = 1024;
 const DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT: usize = 4096;
@@ -46,8 +45,6 @@ pub struct FederationPeerSyncConfig {
     pub private_rest_inbound_concurrency_limit: usize,
     /// Maximum concurrent private REST requests sent by one peer client.
     pub private_rest_outbound_concurrency_limit: usize,
-    /// Number of materialized state digest checkpoints retained locally.
-    pub state_digest_checkpoint_retention: usize,
     /// Maximum number of locally queued consensus items awaiting finalization.
     pub pending_mempool_item_limit: usize,
     /// Maximum number of local requests waiting for accepted operation responses.
@@ -77,7 +74,6 @@ impl Default for FederationPeerSyncConfig {
                 DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT,
             private_rest_outbound_concurrency_limit:
                 DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT,
-            state_digest_checkpoint_retention: DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION,
             pending_mempool_item_limit: DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT,
             response_waiter_limit: DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT,
             response_cache_limit: DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT,
@@ -138,9 +134,6 @@ impl FederationPeerSyncConfig {
             anyhow::bail!(
                 "federation private REST outbound concurrency limit must be greater than zero"
             );
-        }
-        if self.state_digest_checkpoint_retention == 0 {
-            anyhow::bail!("federation state digest checkpoint retention must be greater than zero");
         }
         if self.pending_mempool_item_limit == 0 {
             anyhow::bail!("federation pending mempool item limit must be greater than zero");
