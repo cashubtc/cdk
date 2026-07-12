@@ -159,15 +159,6 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_aleph_bft_network_retry_persistence() {
-        cdk_common::database::mint::test::federation_aleph_bft_network_retry_persistence(
-            provide_db("federation_aleph_bft_network_retry_persistence".to_string()).await,
-        )
-        .await;
-    }
-
-    #[cfg(feature = "federation")]
-    #[tokio::test]
     async fn federation_payment_observation_persistence() {
         cdk_common::database::mint::test::federation_payment_observation_persistence(
             provide_db("federation_payment_observation_persistence".to_string()).await,
@@ -457,7 +448,6 @@ mod test {
             "federation_session_outcomes",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
-            "federation_aleph_bft_network_retries",
             "federation_aleph_bft_pending_operations",
             "federation_aleph_bft_session_state",
             "federation_payment_observations",
@@ -475,6 +465,10 @@ mod test {
                 "missing migrated table {table}"
             );
         }
+        assert!(
+            !table_names.contains("federation_aleph_bft_network_retries"),
+            "AlephBFT gossip retries must remain runtime-only"
+        );
 
         drop(conn);
         drop(pool);

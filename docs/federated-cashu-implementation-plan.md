@@ -802,9 +802,9 @@ Architecture checklist:
   then finalizes the exact same operation after the member returns and retained
   network messages are redelivered. The unfinalized live-session restart
   regression now explicitly covers the earlier restart window where pending
-  operation rows and network retry rows exist before upstream AlephBFT backup
-  bytes have been flushed; after restart, pending-operation replay still drives
-  the member to finality and clears pending operation rows. Operator
+  operation rows exist before upstream AlephBFT backup bytes have been flushed;
+  after restart, pending-operation replay regenerates protocol traffic, drives
+  the member to finality, and clears pending operation rows. Operator
   `cdk-mintd` startup now accepts the `aleph_bft` backend instead of failing the
   config before runtime construction. A deterministic private-REST reorder
   regression now holds one opaque AlephBFT `/messages` POST until a later
@@ -882,8 +882,8 @@ Architecture checklist:
   limits, bounded driver ticks, finalized-unit peer request timeouts, and a
   configurable per-unit finalized-unit remote delivery cap that stops after
   quorum and fails before networking if the cap is below the remote quorum
-  requirement. The live network retry queue now also has a durable overflow
-  regression proving the oldest failed retry is dropped from memory and storage
+  requirement. The live network retry queue has an overflow regression proving
+  the oldest failed delivery is dropped from bounded runtime memory and counted
   when the queue exceeds its cap.
 - [x] Expose status for AlephBFT session, pending item
   count, finalized item count, signed session outcome height, catch-up state,
@@ -1243,17 +1243,13 @@ AlephBFT and consensus unit tests:
   real network-message exchange can finalize and apply the same operation on
   both members. Cargo registry checks confirm upstream `aleph-bft` 0.45.4 is
   available and is the workspace dependency used by the federation feature.
-  Bounded in-memory redelivery now retries failed network-message deliveries to
-  recovered peers. SQL-backed retry rows now persist outbound network-message
-  retry material, reload it only when the same session has durable AlephBFT
-  backup bytes, and clear orphan retry rows that cannot safely reconstruct
-  uncheckpointed upstream state. Durable retry-queue reload coverage now proves
-  current-session rows for known peers are redelivered while stale retry
-  sessions, mismatched request sessions, and unknown-only peer rows are pruned
-  from storage; successful DB-backed redelivery also removes the accepted retry
-  rows instead of carrying them into later restarts. Retry-queue overflow
-  coverage now proves the oldest failed delivery is evicted from both memory
-  and durable storage while retaining the newest bounded retry window.
+  Bounded in-memory redelivery retries failed network-message deliveries to
+  recovered peers. Gossip retries are deliberately runtime-only: upstream
+  AlephBFT persists its DAG backup, rebroadcasts units, and repeatedly requests
+  missing coordinates, parents, and newest units after recovery. The queue
+  retains failed peer subsets, prioritizes fresh messages, limits idle retry
+  work and per-attempt duration, reports dropped deliveries, and evicts the
+  oldest delivery at its hard bound without adding database write contention.
   Durable pending-operation rows now persist locally accepted AlephBFT operation
   envelopes before wallet-facing pending responses, production runtime startup
   replays those pending envelopes back into the live AlephBFT data provider, and
@@ -1298,9 +1294,9 @@ AlephBFT and consensus unit tests:
   units still await finality. Live-session startup now durably records a
   monotonic active-session marker, startup recovers the maximum of that marker
   and finalized-item evidence, and focused storage/Axum tests cover empty
-  newly-rotated session recovery before finalized evidence exists. Recovered
-  later-session startup now also clears orphan network-retry rows when no
-  durable upstream backup exists for that session.
+  newly-rotated session recovery before finalized evidence exists. Runtime
+  gossip queues begin empty for each recovered session and Aleph regenerates
+  required protocol traffic from its backup.
   Focused long unavailable-window coverage now proves multiple operations can
   remain durably pending without pre-finality state mutation while one member is
   unavailable, then converge in the same accepted order after that member
@@ -1359,9 +1355,8 @@ AlephBFT and consensus unit tests:
   `aleph_bft_live_sessions_finalize_after_unavailable_member_returns` and
   `aleph_bft_live_partition_matrix_catches_up_and_certifies_lagging_members`
   pass against the router-started upstream runtime. Full-process restart
-  matrices remain a separate operational-hardening gate; orphan retry rows
-  without reconstructable backup state are deleted rather than replayed
-  unsafely.
+  matrices remain a separate operational-hardening gate; transient gossip is
+  never replayed as durable application state.
 - [x] Add a live private-REST AlephBFT regression for the exact
   self-partitioned proposer case: keep the submitting member's public/client
   route usable while its federation transport to the other members is

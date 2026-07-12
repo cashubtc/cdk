@@ -82,9 +82,8 @@ pub use self::signing::{
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationAlephBftNetworkRetryRecord, FederationDkgActivationRequest,
-    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
     FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,

@@ -987,7 +987,44 @@ schema/configuration surface without contributing to current verification.
 
 ## 14. Replace durable Aleph gossip retries with bounded runtime queues
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
+
+### Result
+
+Confirmed that AlephBFT 0.45.4 persists its DAG backup and independently
+rebroadcasts units plus repeated coordinate, parent, and newest-unit requests.
+Fedimint likewise feeds Aleph traffic through bounded reconnecting in-memory
+peer channels while persisting Aleph's backup, not individual failed sends.
+CDK already had a bounded 4,096-entry runtime queue that retains only failed
+peer subsets, prioritizes fresh outbound traffic, drains bounded work while
+idle, and caps each retry attempt.
+
+Deleted the durable retry record type, database APIs, SQL codec/table/index,
+SQLite/PostgreSQL migrations, startup reload/orphan-cleanup branches, retry-ID
+hashing, and persistence-only tests. Queue overflow now reports an explicit
+structured dropped-delivery count. Aleph backup, pending-operation persistence,
+finalized-item evidence, and catch-up are unchanged.
+
+Adding a second per-peer backoff/expiry subsystem was rejected as unnecessary
+complexity: Aleph already owns rebroadcast and missing-unit recovery, while the
+existing queue is hard-bounded, periodically retried, and evicts oldest work.
+There is no durable stale gossip to expire after restart.
+
+Verification:
+
+- focused runtime tests pass for failed-peer recovery, one retry per idle tick,
+  non-retryable errors, slow-peer quorum fast path, and bounded eviction;
+- restart before Aleph backup flush recovers the durable pending operation and
+  reaches finality without persisted gossip;
+- restart from Aleph backup and five-member post-backup multi-operation
+  continuation pass;
+- all 219 focused `cdk-common` federation tests pass;
+- all 21 SQLite federation persistence/fresh-schema tests pass and prove the
+  retry table is absent;
+- all 416 Axum federation tests pass, including partition/heal and one-offline
+  value windows;
+- federation-enabled PostgreSQL and mintd checks pass, as do all 28 standalone
+  Axum and 134 standalone SQLite tests.
 
 ### Problem
 

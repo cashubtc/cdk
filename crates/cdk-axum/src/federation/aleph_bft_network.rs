@@ -1,21 +1,16 @@
 use core::fmt;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aleph_bft::Recipient;
 use cdk::federation::FederationOperationId;
-use cdk::federation::{
-    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkRetryRecord,
-    MemberConfigPublic, MemberId,
-};
-use cdk_common::database::DynMintDatabase;
+use cdk::federation::{FederationAlephBftNetworkMessageRequest, MemberConfigPublic, MemberId};
 use cdk_http_client::{HttpError, Transport};
 use futures::stream::{FuturesUnordered, StreamExt};
 use parity_scale_codec::{Decode, Encode};
-use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use super::aleph_bft_runtime::{
@@ -265,13 +260,14 @@ pub(crate) struct CdkAlephBftNetworkPumpTickOutcome {
     pub remote_skipped_members: Vec<MemberId>,
     /// Retry messages waiting after this tick completes.
     pub retry_queue_len: usize,
+    /// Oldest retry deliveries evicted by the bounded runtime queue.
+    pub retry_deliveries_dropped: usize,
     /// True when the outbound channel was empty during this tick.
     pub reached_idle: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CdkAlephBftNetworkRetryDelivery {
-    retry_id: String,
     request: FederationAlephBftNetworkMessageRequest,
     peers: Vec<MemberConfigPublic>,
 }
@@ -279,8 +275,7 @@ struct CdkAlephBftNetworkRetryDelivery {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CdkAlephBftNetworkRetryPushOutcome {
     member_ids: Vec<MemberId>,
-    dropped_retry_ids: Vec<String>,
-    delivery: Option<CdkAlephBftNetworkRetryDelivery>,
+    dropped_deliveries: usize,
 }
 
 /// In-memory retry queue for failed private REST AlephBFT network deliveries.
@@ -302,70 +297,6 @@ impl CdkAlephBftNetworkRetryQueue {
         self.pending.is_empty()
     }
 
-    /// Load persisted failed deliveries for the current session.
-    pub(crate) async fn from_db(
-        db: &DynMintDatabase,
-        keychain: &CdkAlephBftKeychain,
-        session_id: u64,
-    ) -> Result<Self, cdk::Error> {
-        let retries = db
-            .get_federation_aleph_bft_network_retries(session_id)
-            .await
-            .map_err(|err| {
-                cdk::Error::Custom(format!(
-                    "AlephBFT network retry database read failed: {err}"
-                ))
-            })?;
-        let remote_members = keychain
-            .remote_members()
-            .into_iter()
-            .map(|member| (member.member_id, member))
-            .collect::<BTreeMap<_, _>>();
-        let mut pending = VecDeque::new();
-        for retry in retries {
-            if let Err(err) = retry.request.ensure_admissible_size() {
-                tracing::warn!(
-                    retry_id = %retry.retry_id,
-                    error = %err,
-                    "Removing invalid AlephBFT network retry row"
-                );
-                remove_persisted_retry(Some(db), &retry.retry_id).await?;
-                continue;
-            }
-            if retry.session_id != session_id || retry.request.session_id != session_id {
-                tracing::warn!(
-                    retry_id = %retry.retry_id,
-                    retry_session = retry.session_id,
-                    request_session = retry.request.session_id,
-                    expected_session = session_id,
-                    "Removing AlephBFT network retry row for a different session"
-                );
-                remove_persisted_retry(Some(db), &retry.retry_id).await?;
-                continue;
-            }
-            let peers = retry
-                .peer_member_ids
-                .iter()
-                .filter_map(|member_id| remote_members.get(member_id).cloned())
-                .collect::<Vec<_>>();
-            if peers.is_empty() {
-                tracing::warn!(
-                    retry_id = %retry.retry_id,
-                    "Removing AlephBFT network retry row with no current remote peers"
-                );
-                remove_persisted_retry(Some(db), &retry.retry_id).await?;
-                continue;
-            }
-            pending.push_back(CdkAlephBftNetworkRetryDelivery {
-                retry_id: retry.retry_id,
-                request: retry.request,
-                peers,
-            });
-        }
-
-        Ok(Self { pending })
-    }
-
     fn push_failed(
         &mut self,
         request: FederationAlephBftNetworkMessageRequest,
@@ -384,22 +315,16 @@ impl CdkAlephBftNetworkRetryQueue {
             let Some(dropped) = self.pending.pop_front() else {
                 break;
             };
-            outcome.dropped_retry_ids.push(dropped.retry_id.clone());
+            outcome.dropped_deliveries = outcome.dropped_deliveries.saturating_add(1);
             tracing::warn!(
-                retry_id = %dropped.retry_id,
                 dropped_members = dropped.peers.len(),
                 retry_queue_limit = CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT,
                 "AlephBFT network retry queue dropped oldest failed delivery"
             );
         }
 
-        let delivery = CdkAlephBftNetworkRetryDelivery {
-            retry_id: aleph_bft_network_retry_id(&request, &peers),
-            request,
-            peers,
-        };
-        self.pending.push_back(delivery.clone());
-        outcome.delivery = Some(delivery);
+        let delivery = CdkAlephBftNetworkRetryDelivery { request, peers };
+        self.pending.push_back(delivery);
 
         outcome
     }
@@ -463,8 +388,8 @@ where
 
 /// Drain failed AlephBFT deliveries and new outbound messages with retry retention.
 ///
-/// Successful new outbound messages stay on the fast path and do not touch the
-/// retry store. Only failed deliveries are persisted for crash recovery.
+/// Successful new outbound messages stay on the fast path. Failed deliveries
+/// remain only in the bounded queue for this live session.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn run_cdk_aleph_bft_network_pump_tick_with_retry_queue<T, D>(
     handle: &mut CdkAlephBftNetworkHandle<D>,
@@ -472,7 +397,6 @@ pub(crate) async fn run_cdk_aleph_bft_network_pump_tick_with_retry_queue<T, D>(
     client: &FederationRestPeerClient<T>,
     config: CdkAlephBftNetworkPumpConfig,
     retry_queue: &mut CdkAlephBftNetworkRetryQueue,
-    retry_store: Option<&DynMintDatabase>,
 ) -> Result<CdkAlephBftNetworkPumpTickOutcome, cdk::Error>
 where
     T: Transport,
@@ -484,7 +408,6 @@ where
         client,
         config,
         retry_queue,
-        retry_store,
         None,
     )
     .await
@@ -499,7 +422,6 @@ pub(crate) async fn run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_fir
     client: &FederationRestPeerClient<T>,
     config: CdkAlephBftNetworkPumpConfig,
     retry_queue: &mut CdkAlephBftNetworkRetryQueue,
-    retry_store: Option<&DynMintDatabase>,
     first_outbound: Option<CdkAlephBftOutboundMessage<D>>,
 ) -> Result<CdkAlephBftNetworkPumpTickOutcome, cdk::Error>
 where
@@ -545,7 +467,9 @@ where
             .append(&mut message_outcome.remote_skipped_members);
         let requeued =
             retry_queue.push_failed(message_outcome.request, message_outcome.remote_failed_peers);
-        persist_retry_push_outcome(retry_store, &requeued).await?;
+        outcome.retry_deliveries_dropped = outcome
+            .retry_deliveries_dropped
+            .saturating_add(requeued.dropped_deliveries);
         outcome.remote_requeued_members.extend(requeued.member_ids);
     }
 
@@ -580,89 +504,15 @@ where
                 .append(&mut retry_outcome.remote_skipped_members);
             let requeued =
                 retry_queue.push_failed(delivery.request, retry_outcome.remote_failed_peers);
-            persist_retry_push_outcome(retry_store, &requeued).await?;
-            remove_obsolete_persisted_retry(retry_store, &delivery.retry_id, &requeued).await?;
+            outcome.retry_deliveries_dropped = outcome
+                .retry_deliveries_dropped
+                .saturating_add(requeued.dropped_deliveries);
             outcome.remote_requeued_members.extend(requeued.member_ids);
         }
     }
     outcome.retry_queue_len = retry_queue.len();
 
     Ok(outcome)
-}
-
-async fn remove_obsolete_persisted_retry(
-    retry_store: Option<&DynMintDatabase>,
-    original_retry_id: &str,
-    requeued: &CdkAlephBftNetworkRetryPushOutcome,
-) -> Result<(), cdk::Error> {
-    let still_pending = requeued
-        .delivery
-        .as_ref()
-        .is_some_and(|delivery| delivery.retry_id == original_retry_id);
-    if !still_pending {
-        remove_persisted_retry(retry_store, original_retry_id).await?;
-    }
-
-    Ok(())
-}
-
-async fn persist_retry_push_outcome(
-    retry_store: Option<&DynMintDatabase>,
-    outcome: &CdkAlephBftNetworkRetryPushOutcome,
-) -> Result<(), cdk::Error> {
-    for retry_id in &outcome.dropped_retry_ids {
-        remove_persisted_retry(retry_store, retry_id).await?;
-    }
-    let Some(delivery) = &outcome.delivery else {
-        return Ok(());
-    };
-    persist_retry_delivery(retry_store, delivery).await
-}
-
-async fn persist_retry_delivery(
-    retry_store: Option<&DynMintDatabase>,
-    delivery: &CdkAlephBftNetworkRetryDelivery,
-) -> Result<(), cdk::Error> {
-    if delivery.peers.is_empty() {
-        return Ok(());
-    }
-    let Some(db) = retry_store else {
-        return Ok(());
-    };
-    db.add_federation_aleph_bft_network_retry(&retry_record_for_delivery(delivery))
-        .await
-        .map_err(|err| {
-            cdk::Error::Custom(format!(
-                "AlephBFT network retry database write failed: {err}"
-            ))
-        })
-}
-
-async fn remove_persisted_retry(
-    retry_store: Option<&DynMintDatabase>,
-    retry_id: &str,
-) -> Result<(), cdk::Error> {
-    let Some(db) = retry_store else {
-        return Ok(());
-    };
-    db.remove_federation_aleph_bft_network_retry(retry_id)
-        .await
-        .map_err(|err| {
-            cdk::Error::Custom(format!(
-                "AlephBFT network retry database delete failed: {err}"
-            ))
-        })
-}
-
-fn retry_record_for_delivery(
-    delivery: &CdkAlephBftNetworkRetryDelivery,
-) -> FederationAlephBftNetworkRetryRecord {
-    FederationAlephBftNetworkRetryRecord {
-        retry_id: delivery.retry_id.clone(),
-        session_id: delivery.request.session_id,
-        request: delivery.request.clone(),
-        peer_member_ids: delivery.peers.iter().map(|peer| peer.member_id).collect(),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,11 +548,7 @@ where
     };
 
     Ok(CdkAlephBftNetworkDelivery {
-        retry_delivery: CdkAlephBftNetworkRetryDelivery {
-            retry_id: aleph_bft_network_retry_id(&request, &peers),
-            request,
-            peers,
-        },
+        retry_delivery: CdkAlephBftNetworkRetryDelivery { request, peers },
         local_message,
     })
 }
@@ -903,33 +749,6 @@ fn recipient_includes_local(
             Ok(member.member_id == keychain.local_member())
         }
     }
-}
-
-fn aleph_bft_network_retry_id(
-    request: &FederationAlephBftNetworkMessageRequest,
-    peers: &[MemberConfigPublic],
-) -> String {
-    let mut member_ids = peers.iter().map(|peer| peer.member_id).collect::<Vec<_>>();
-    member_ids.sort();
-    let mut hasher = Sha256::new();
-    hasher.update(request.session_id.to_be_bytes());
-    hasher.update(request.encoded_message.as_bytes());
-    for member_id in member_ids {
-        hasher.update(member_id.get().to_be_bytes());
-    }
-
-    hex_encode(&hasher.finalize())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-
-    encoded
 }
 
 fn aleph_bft_network_request_operation_ids(

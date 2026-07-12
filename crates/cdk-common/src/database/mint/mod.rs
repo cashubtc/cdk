@@ -12,14 +12,13 @@ use cashu::Amount;
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftNetworkRetryRecord,
-    FederationAlephBftPendingOperationRecord, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
-    FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
+    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyRecord,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalEntry, FederationJournalTip, FederationMemberStatusSnapshot,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
     MemberId,
 };
@@ -879,24 +878,6 @@ pub trait FederationJournalDatabase {
         &self,
         session: u64,
     ) -> Result<Vec<FederationAlephBftPendingOperationRecord>, Self::Err>;
-
-    /// Persist one outbound AlephBFT network-message retry row.
-    async fn add_federation_aleph_bft_network_retry(
-        &self,
-        retry: &FederationAlephBftNetworkRetryRecord,
-    ) -> Result<(), Self::Err>;
-
-    /// Remove one outbound AlephBFT network-message retry row.
-    async fn remove_federation_aleph_bft_network_retry(
-        &self,
-        retry_id: &str,
-    ) -> Result<(), Self::Err>;
-
-    /// Get outbound AlephBFT network-message retries for one session.
-    async fn get_federation_aleph_bft_network_retries(
-        &self,
-        session: u64,
-    ) -> Result<Vec<FederationAlephBftNetworkRetryRecord>, Self::Err>;
 
     /// Get payment observations for one quote and context in consensus order.
     async fn get_federation_payment_observations(

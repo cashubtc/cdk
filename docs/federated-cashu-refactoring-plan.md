@@ -1240,7 +1240,7 @@ statements and shared explicit decoding.
   - journal and application state;
   - AlephBFT backup/session data;
   - payment observations and quarantine;
-  - member status, sequences, and network retry records.
+  - member status and sequences.
 - Add migration tests only for deployed formats. Federation is undeployed, so
   squash experimental federation migrations after the retained schema is
   settled rather than testing every intermediate development schema.

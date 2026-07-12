@@ -512,12 +512,6 @@ mod federation_migration_tests {
             include_str!("migrations/sqlite/20260703170000_add_federation_aleph_bft_backups.sql");
         let postgres_aleph_bft_backups =
             include_str!("migrations/postgres/20260703170000_add_federation_aleph_bft_backups.sql");
-        let sqlite_aleph_bft_network_retries = include_str!(
-            "migrations/sqlite/20260703171000_add_federation_aleph_bft_network_retries.sql"
-        );
-        let postgres_aleph_bft_network_retries = include_str!(
-            "migrations/postgres/20260703171000_add_federation_aleph_bft_network_retries.sql"
-        );
         let sqlite_aleph_bft_pending_operations = include_str!(
             "migrations/sqlite/20260703172000_add_federation_aleph_bft_pending_operations.sql"
         );
@@ -667,23 +661,6 @@ mod federation_migration_tests {
             assert_contains_all(
                 migration,
                 &["federation_aleph_bft_backups", "session", "backup_bytes"],
-            );
-        }
-
-        for migration in [
-            sqlite_aleph_bft_network_retries,
-            postgres_aleph_bft_network_retries,
-        ] {
-            assert_contains_all(
-                migration,
-                &[
-                    "federation_aleph_bft_network_retries",
-                    "retry_id",
-                    "session",
-                    "request_json",
-                    "peer_member_ids_json",
-                    "idx_federation_aleph_bft_network_retries_session",
-                ],
             );
         }
 

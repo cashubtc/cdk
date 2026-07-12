@@ -403,8 +403,8 @@ where
         .ok_or_else(|| {
             cdk::Error::Custom("AlephBFT live session missing consensus runtime".to_string())
         })?;
-    let retry_store = state.mint.localstore();
-    let mut tx = retry_store.begin_transaction().await.map_err(|err| {
+    let db = state.mint.localstore();
+    let mut tx = db.begin_transaction().await.map_err(|err| {
         cdk::Error::Custom(format!(
             "AlephBFT active session transaction begin failed: {err}"
         ))
@@ -419,7 +419,7 @@ where
             "AlephBFT active session transaction commit failed: {err}"
         ))
     })?;
-    let existing_session_backup_bytes = retry_store
+    let existing_session_backup_bytes = db
         .get_federation_aleph_bft_backup_bytes(session_id)
         .await
         .map_err(|err| {
@@ -438,41 +438,12 @@ where
     let activity_hint = CdkAlephBftActivityHint::default();
     let session_io = CdkAlephBftSessionIo::from_db(
         Arc::clone(&consensus),
-        Arc::clone(&retry_store),
+        Arc::clone(&db),
         session_id,
         activity_hint.clone(),
     )
     .await?;
-    let reload_persisted_network_retries = has_existing_session_backup;
-    if !reload_persisted_network_retries {
-        let orphan_retries = retry_store
-            .get_federation_aleph_bft_network_retries(session_id)
-            .await
-            .map_err(|err| {
-                cdk::Error::Custom(format!(
-                    "AlephBFT orphan network retry lookup failed: {err}"
-                ))
-            })?;
-        for retry in &orphan_retries {
-            retry_store
-                .remove_federation_aleph_bft_network_retry(&retry.retry_id)
-                .await
-                .map_err(|err| {
-                    cdk::Error::Custom(format!(
-                        "AlephBFT orphan network retry removal failed: {err}"
-                    ))
-                })?;
-        }
-        if !orphan_retries.is_empty() {
-            tracing::warn!(
-                session_id,
-                orphan_retry_count = orphan_retries.len(),
-                "Cleared AlephBFT network retries without a durable session backup"
-            );
-        }
-    }
-    let pending_activity_operation_ids =
-        pending_aleph_bft_operation_ids(&retry_store, session_id).await?;
+    let pending_activity_operation_ids = pending_aleph_bft_operation_ids(&db, session_id).await?;
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
     let inbound = CdkAlephBftNetworkInboundHandle::with_activity_hint(
@@ -526,7 +497,7 @@ where
         client.clone(),
         activity_peers,
         session_id,
-        Arc::clone(&retry_store),
+        Arc::clone(&db),
         activity_hint.clone(),
         pending_activity_operation_ids,
         activity_receiver,
@@ -534,19 +505,7 @@ where
     let pump_keychain = keychain.clone();
     let network_pump_task = tokio::spawn(async move {
         let mut interval = federation_peer_sync_interval(sync_config);
-        let mut retry_queue = if reload_persisted_network_retries {
-            match CdkAlephBftNetworkRetryQueue::from_db(&retry_store, &pump_keychain, session_id)
-                .await
-            {
-                Ok(queue) => queue,
-                Err(err) => {
-                    tracing::warn!("AlephBFT network retry reload failed: {}", err);
-                    CdkAlephBftNetworkRetryQueue::default()
-                }
-            }
-        } else {
-            CdkAlephBftNetworkRetryQueue::default()
-        };
+        let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
         loop {
             let first_outbound = tokio::select! {
                 outbound = network_handle.next_outgoing() => match outbound {
@@ -564,7 +523,6 @@ where
                 &client,
                 pump_config,
                 &mut retry_queue,
-                Some(&retry_store),
                 first_outbound,
             )
             .await
@@ -587,6 +545,7 @@ where
                                 remote_requeued_members,
                                 remote_skipped_members,
                                 retry_queue_len = outcome.retry_queue_len,
+                                retry_deliveries_dropped = outcome.retry_deliveries_dropped,
                                 reached_idle = outcome.reached_idle,
                                 "AlephBFT network pump tick completed with incomplete delivery"
                             );
@@ -597,6 +556,7 @@ where
                                 encoded_bytes = outcome.encoded_bytes,
                                 remote_accepted_members = outcome.remote_accepted_members.len(),
                                 retry_queue_len = outcome.retry_queue_len,
+                                retry_deliveries_dropped = outcome.retry_deliveries_dropped,
                                 reached_idle = outcome.reached_idle,
                                 "AlephBFT network pump tick completed"
                             );
