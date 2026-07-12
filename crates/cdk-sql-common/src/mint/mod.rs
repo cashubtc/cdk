@@ -33,7 +33,6 @@ mod signatures;
 mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations_mint.rs"));
 }
-
 pub use auth::SQLMintAuthDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
@@ -442,87 +441,5 @@ mod tests {
             gauge_value("cdk_mint_in_flight_requests", &in_flight_labels),
             in_flight_before
         );
-    }
-}
-
-#[cfg(all(test, feature = "federation"))]
-mod federation_migration_tests {
-    fn assert_contains_all(sql: &str, expected: &[&str]) {
-        for needle in expected {
-            assert!(
-                sql.contains(needle),
-                "migration is missing `{needle}` in:\n{sql}"
-            );
-        }
-    }
-
-    fn compact_sql(sql: &str) -> String {
-        sql.chars()
-            .filter(|character| !character.is_whitespace())
-            .collect()
-    }
-
-    fn assert_melt_quote_state_constraint_keeps_unknown_transient(name: &str, sql: &str) {
-        let compact = compact_sql(sql);
-        let mut remainder = compact.as_str();
-
-        while let Some(index) = remainder.find("melt_quote") {
-            remainder = &remainder[index..];
-            let statement_end = remainder.find(';').unwrap_or(remainder.len());
-            let statement = &remainder[..statement_end];
-
-            if statement.contains("stateTEXTCHECK") || statement.contains("ADDstateTEXTCHECK") {
-                assert!(
-                    !statement.contains("'UNKNOWN'"),
-                    "melt quote schema must not persist backend Unknown as a durable state in {name}:\n{sql}"
-                );
-            }
-
-            if statement_end == remainder.len() {
-                break;
-            }
-
-            remainder = &remainder[statement_end + 1..];
-        }
-    }
-
-    #[test]
-    fn melt_quote_state_schema_keeps_unknown_transient() {
-        let postgres_initial = include_str!("migrations/postgres/1_initial.sql");
-        let sqlite_quote_state = include_str!("migrations/sqlite/20240618195700_quote_state.sql");
-        let sqlite_request_lookup_rebuild = include_str!(
-            "migrations/sqlite/20250819200000_remove_request_lookup_kind_constraints.sql"
-        );
-
-        for sql in [
-            postgres_initial,
-            sqlite_quote_state,
-            sqlite_request_lookup_rebuild,
-        ] {
-            assert_contains_all(sql, &["'UNPAID'", "'PENDING'", "'PAID'", "'FAILED'"]);
-            let compact = compact_sql(sql);
-            assert!(
-                compact.contains("stateIN('UNPAID','PENDING','PAID','FAILED')"),
-                "melt quote schema must admit FAILED in its durable-state constraint:\n{sql}"
-            );
-            assert!(
-                !compact.contains("stateIN('UNPAID','PENDING','PAID','UNKNOWN'")
-                    && !compact.contains("stateIN('UNPAID','PENDING','PAID','FAILED','UNKNOWN'")
-                    && !compact.contains("stateIN('UNPAID','PENDING','PAID','UNKNOWN','FAILED'"),
-                "melt quote schema must not persist backend Unknown as a durable state:\n{sql}"
-            );
-        }
-
-        for (_, name, sql) in super::migrations::MIGRATIONS {
-            assert_melt_quote_state_constraint_keeps_unknown_transient(name, sql);
-            assert!(
-                !name.contains("allow_failed_melt_quote_state"),
-                "FAILED quote-state support should be folded into base schemas during federation development"
-            );
-            assert!(
-                !name.contains("unknown_melt_quote_state"),
-                "backend Unknown must remain transient and must not be introduced by a schema migration"
-            );
-        }
     }
 }

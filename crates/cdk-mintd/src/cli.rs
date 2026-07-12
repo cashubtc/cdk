@@ -599,6 +599,14 @@ mod tests {
         assert!(err.to_string().contains("unrecognized subcommand"));
     }
 
+    #[cfg(not(all(feature = "fakewallet", feature = "sqlite")))]
+    #[test]
+    fn production_cli_does_not_expose_federation_smoke_operations() {
+        let err = CLIArgs::try_parse_from(["cdk-mintd", "federation", "smoke-operations"])
+            .expect_err("development-only smoke command must not parse in a production build");
+        assert!(err.to_string().contains("unrecognized subcommand"));
+    }
+
     #[test]
     fn parses_federation_dkg_status_subcommand() {
         let args = CLIArgs::try_parse_from([

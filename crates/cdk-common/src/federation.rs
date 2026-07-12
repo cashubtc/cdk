@@ -5257,8 +5257,6 @@ fn append_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::Path;
     use std::str::FromStr;
 
     use crate::nuts::nut02::KeySetVersion;
@@ -5997,127 +5995,6 @@ mod tests {
             serde_json::from_value::<FederationPaymentVerificationPolicy>(json).is_err(),
             "undeployed federation configs must not retain removed trust-model fields"
         );
-    }
-
-    #[test]
-    fn production_federation_modules_do_not_import_fakewallet_backend() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("workspace root");
-        let production_modules = [
-            "crates/cdk-common/src/federation.rs",
-            "crates/cdk-common/src/federation/consensus.rs",
-            "crates/cdk-common/src/federation/journal.rs",
-            "crates/cdk-common/src/federation/operation.rs",
-            "crates/cdk-common/src/federation/signing.rs",
-            "crates/cdk-common/src/federation/transport.rs",
-            "crates/cdk-common/src/federation/trusted_dealer.rs",
-            "crates/cdk/src/mint/federation.rs",
-            "crates/cdk/src/wallet/federation.rs",
-            "crates/cdk-axum/src/custom_handlers.rs",
-            "crates/cdk-axum/src/federation.rs",
-        ];
-        let forbidden = ["cdk_fake_wallet", "FakeWallet"];
-
-        let mut violations = Vec::new();
-        for module in production_modules {
-            let path = repo_root.join(module);
-            let source = fs::read_to_string(&path).expect("federation source file");
-            let production_source = match source.find("#[cfg(test)]") {
-                Some(test_start) => &source[..test_start],
-                None => source.as_str(),
-            };
-
-            for token in forbidden {
-                if production_source.contains(token) {
-                    violations.push(format!("{module} contains `{token}` outside tests"));
-                }
-            }
-        }
-
-        assert!(
-            violations.is_empty(),
-            "production federation modules must stay payment-backend agnostic:\n{}",
-            violations.join("\n")
-        );
-    }
-
-    #[test]
-    fn federation_manifests_keep_fakewallet_dev_or_backend_scoped() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("workspace root");
-
-        for manifest in [
-            "crates/cashu/Cargo.toml",
-            "crates/cdk-common/Cargo.toml",
-            "crates/cdk-http-client/Cargo.toml",
-        ] {
-            let contents = fs::read_to_string(repo_root.join(manifest)).expect("manifest");
-            assert!(
-                !contents.contains("cdk-fake-wallet"),
-                "{manifest} must not depend on the fakewallet backend"
-            );
-        }
-
-        for manifest in ["crates/cdk/Cargo.toml", "crates/cdk-axum/Cargo.toml"] {
-            let contents = fs::read_to_string(repo_root.join(manifest)).expect("manifest");
-            let hits = manifest_lines_for_dependency(&contents, "cdk-fake-wallet");
-            assert!(
-                !hits.is_empty(),
-                "{manifest} should keep fakewallet test coverage explicit"
-            );
-            assert!(
-                hits.iter()
-                    .all(|(section, _line)| section == "dev-dependencies"),
-                "{manifest} must keep cdk-fake-wallet under [dev-dependencies]: {hits:?}"
-            );
-        }
-
-        let mintd_manifest = "crates/cdk-mintd/Cargo.toml";
-        let contents = fs::read_to_string(repo_root.join(mintd_manifest)).expect("mintd manifest");
-        let hits = manifest_lines_for_dependency(&contents, "cdk-fake-wallet");
-        assert!(
-            hits.iter().any(|(section, line)| {
-                section == "features" && line.trim() == "fakewallet = [\"dep:cdk-fake-wallet\"]"
-            }),
-            "{mintd_manifest} must expose fakewallet only as an explicit backend feature"
-        );
-        assert!(
-            hits.iter().any(|(section, line)| {
-                section == "dependencies"
-                    && line.contains("cdk-fake-wallet")
-                    && line.contains("optional = true")
-            }),
-            "{mintd_manifest} must keep cdk-fake-wallet optional"
-        );
-        assert!(
-            hits.iter().all(|(section, _line)| {
-                matches!(section.as_str(), "features" | "dependencies")
-            }),
-            "{mintd_manifest} has unexpected fakewallet manifest entries: {hits:?}"
-        );
-    }
-
-    fn manifest_lines_for_dependency(manifest: &str, needle: &str) -> Vec<(String, String)> {
-        let mut section = String::new();
-        let mut hits = Vec::new();
-
-        for line in manifest.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                section = trimmed.trim_matches(['[', ']']).to_string();
-                continue;
-            }
-
-            if trimmed.contains(needle) {
-                hits.push((section.clone(), trimmed.to_string()));
-            }
-        }
-
-        hits
     }
 
     #[test]

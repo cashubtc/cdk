@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::FeeReserve;
-use cdk_common::database::mint::{CompletedOperationsDatabase, SagaDatabase};
+use cdk_common::database::mint::{
+    CompletedOperationsDatabase, FederationApplicationDatabase, SagaDatabase,
+};
 use cdk_common::database::{
     MintDatabase, MintFederationJournalDatabase, MintProofsDatabase, MintQuotesDatabase,
     MintSignaturesDatabase,

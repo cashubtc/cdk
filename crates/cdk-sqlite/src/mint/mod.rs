@@ -544,6 +544,38 @@ mod test {
         .await;
         assert!(unknown_status.is_err());
 
+        query(
+            r#"
+            INSERT INTO melt_quote
+                (id, unit, amount, request, fee_reserve, expiry, state)
+            VALUES
+                ('state-unpaid', 'sat', 1, 'request-unpaid', 0, 0, 'UNPAID'),
+                ('state-pending', 'sat', 1, 'request-pending', 0, 0, 'PENDING'),
+                ('state-paid', 'sat', 1, 'request-paid', 0, 0, 'PAID'),
+                ('state-failed', 'sat', 1, 'request-failed', 0, 0, 'FAILED')
+            "#,
+        )
+        .expect("durable melt quote state insert")
+        .execute(&*conn)
+        .await
+        .expect("migrated melt quote schema accepts every durable state");
+
+        let unknown_melt_quote_state = query(
+            r#"
+            INSERT INTO melt_quote
+                (id, unit, amount, request, fee_reserve, expiry, state)
+            VALUES
+                ('state-unknown', 'sat', 1, 'request-unknown', 0, 0, 'UNKNOWN')
+            "#,
+        )
+        .expect("transient melt quote state insert")
+        .execute(&*conn)
+        .await;
+        assert!(
+            unknown_melt_quote_state.is_err(),
+            "migrated melt quote schema must reject transient backend UNKNOWN"
+        );
+
         let saga_columns = query("PRAGMA table_info(saga_state)")
             .expect("saga column query")
             .fetch_all(&*conn)

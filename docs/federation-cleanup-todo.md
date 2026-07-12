@@ -2618,7 +2618,7 @@ parallel test behavior is hard to understand.
 
 ## 41. Replace source-text architecture tests with enforceable boundaries
 
-**Status:** Todo
+**Status:** Completed (2026-07-12)
 
 ### Problem
 
@@ -2639,6 +2639,38 @@ fail without proving runtime behavior or type-level architecture.
   `source_slice`, and `.contains` assertions over implementation source.
 - Verify forbidden production features fail to compile or are absent from the
   built command surface rather than merely absent as text.
+
+### Resolution
+
+- Removed Rust-source scanners that counted signing calls, sliced handler
+  bodies, inferred call ordering, checked nearby `cfg` attributes, searched
+  manifests, or searched production modules for backend names. Those checks
+  were sensitive to formatting and comments and did not enforce the claimed
+  runtime boundary.
+- Consensus-gated mint quote, mint, swap, melt quote, and melt behavior remains
+  covered by route tests that assert no work is queued or persisted before
+  AlephBFT admission. Restore, replay, duplicate handling, transactional saga
+  effects, signature-share provenance, and standalone paths retain their
+  existing behavioral suites.
+- The production-style mintd feature matrix now compiles with
+  `federation,sqlite` and without `fakewallet`. A parser regression proves the
+  development smoke command is absent from that built command surface.
+- Replaced migration-source matching with a migrated SQLite schema test that
+  successfully inserts `UNPAID`, `PENDING`, `PAID`, and `FAILED` melt quotes
+  and proves the database rejects transient backend `UNKNOWN`.
+- Kept `include_str!` checks for generated scripts, configuration templates,
+  documentation, and legacy database fixtures where the embedded text is the
+  artifact under test.
+
+### Verification
+
+- All 332 federation-enabled `cdk-common` library tests pass.
+- The five focused federation public-route fail-closed tests pass.
+- Federation-enabled `cdk` library tests compile, including the restored
+  application-database trait scope for split mint tests.
+- The migrated SQLite schema regression and the production-feature mintd CLI
+  regression pass.
+- All 28 standalone Axum tests pass, and standalone mint library tests compile.
 
 ## 42. Replace sleep-driven federation tests with deterministic synchronization
 
