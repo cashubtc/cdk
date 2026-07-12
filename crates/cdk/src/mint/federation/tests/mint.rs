@@ -334,7 +334,7 @@ async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
         .find(|entry| entry.operation_id == mint_entry.operation_id)
         .expect("stored mint entry");
     assert_eq!(
-        stored_mint_entry.status,
+        stored_mint_entry.status(),
         FederationOperationStatus::Accepted
     );
 }
@@ -744,7 +744,10 @@ async fn apply_federation_mint_persists_accepted_materialization_rows() {
         .iter()
         .find(|entry| entry.operation_id == mint_entry.operation_id)
         .expect("stored mint entry");
-    assert_eq!(stored_mint_entry.status, FederationOperationStatus::Applied);
+    assert_eq!(
+        stored_mint_entry.status(),
+        FederationOperationStatus::Applied
+    );
 }
 
 #[tokio::test]
@@ -837,7 +840,7 @@ async fn apply_federation_mint_rolls_back_late_failure_and_replays() {
             .iter()
             .find(|entry| entry.operation_id == mint_entry.operation_id)
             .expect("mint entry after rollback")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted
     );
 

@@ -39,7 +39,7 @@ impl Mint {
         let mut keyset_rotations = Vec::new();
 
         for entry in entries {
-            if let Some(rejection) = &entry.rejection {
+            if let Some(rejection) = entry.rejection() {
                 snapshot.push(
                     FederationMaterializedStateRow::new(
                         "federation_operation_rejections",
@@ -50,7 +50,7 @@ impl Mint {
                     .with_field("detail", rejection.detail.clone()),
                 );
             }
-            if entry.status == FederationOperationStatus::Rejected {
+            if entry.status() == FederationOperationStatus::Rejected {
                 continue;
             }
 

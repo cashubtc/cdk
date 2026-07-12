@@ -13,14 +13,14 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationCatchUpCertificate, FederationConfigSnapshot, FederationDkgActivationRequest,
-    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationApplicationState, FederationCatchUpCertificate, FederationConfigSnapshot,
+    FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
     FederationJournalTip, FederationMemberStatusSnapshot, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSignatureShareRecord, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -683,18 +683,11 @@ pub trait FederationJournalTransaction {
         entry: &FederationJournalEntry,
     ) -> Result<(), Self::Err>;
 
-    /// Update the local application status for one accepted federation operation.
-    async fn update_federation_operation_status(
+    /// Persist one legal post-consensus application state.
+    async fn set_federation_operation_application_state(
         &mut self,
         operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-    ) -> Result<(), Self::Err>;
-
-    /// Atomically persist a deterministic application rejection and rejected status.
-    async fn reject_federation_operation(
-        &mut self,
-        operation_id: FederationOperationId,
-        rejection: &crate::error::ErrorResponse,
+        application: &FederationApplicationState,
     ) -> Result<(), Self::Err>;
 
     /// Persist the highest accepted private REST sequence for one federation member.

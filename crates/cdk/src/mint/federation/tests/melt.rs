@@ -480,8 +480,7 @@ async fn apply_federation_melt_rejects_pending_quote_reuse_before_payment_attemp
         previous_order_digest,
         order_digest,
         consensus_evidence: None,
-        rejection: None,
-        status: FederationOperationStatus::Accepted,
+        application: FederationApplicationState::Accepted {},
     };
     persist_journal_entry(&localstore, &conflicting_entry).await;
 
@@ -666,7 +665,7 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_inputs() 
             .await
             .expect("conflicting terminal-paid journal lookup")
             .expect("conflicting terminal-paid journal entry")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted,
         "conflicting terminal-paid melt must not be marked applied"
     );
@@ -766,7 +765,7 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
             .await
             .expect("conflicting terminal-paid change journal lookup")
             .expect("conflicting terminal-paid change journal entry")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted,
         "conflicting terminal-paid change operation must not be marked applied"
     );
@@ -836,9 +835,9 @@ async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
         .begin_transaction()
         .await
         .expect("begin failed-status transaction");
-    tx.update_federation_operation_status(
+    tx.set_federation_operation_application_state(
         original_entry.operation_id,
-        FederationOperationStatus::Failed,
+        &FederationApplicationState::Failed {},
     )
     .await
     .expect("mark original melt failed");
@@ -854,7 +853,7 @@ async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
             .await
             .expect("zero-change replay journal lookup")
             .expect("zero-change replay journal entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(
@@ -1056,7 +1055,7 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
             .await
             .expect("unknown backend journal lookup")
             .expect("unknown backend journal entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied,
         "accepted unknown-backend melt should apply as a pending operation"
     );
@@ -1147,7 +1146,7 @@ async fn apply_federation_melt_payment_observation_keeps_unknown_transient() {
             .await
             .expect("unknown observation journal lookup")
             .expect("unknown observation journal entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -1230,7 +1229,7 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
         .iter()
         .find(|entry| entry.operation_id == melt_entry.operation_id)
         .expect("stored melt entry");
-    assert_eq!(stored_entry.status, FederationOperationStatus::Applied);
+    assert_eq!(stored_entry.status(), FederationOperationStatus::Applied);
 }
 
 #[tokio::test]
@@ -1346,7 +1345,7 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
             .await
             .expect("melt journal lookup after cleanup failure")
             .expect("melt journal entry after cleanup failure")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted
     );
 
@@ -1394,7 +1393,7 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
             .await
             .expect("melt journal lookup after replay")
             .expect("melt journal entry after replay")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -1494,7 +1493,7 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
             .await
             .expect("failed observation journal lookup")
             .expect("failed observation journal entry")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted
     );
 
@@ -1559,7 +1558,7 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
             .await
             .expect("failed observation journal lookup after replay")
             .expect("failed observation journal entry after replay")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }

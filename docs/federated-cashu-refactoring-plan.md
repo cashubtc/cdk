@@ -865,6 +865,15 @@ literally because it still permits `Applied` with a rejection. The digest audit
 is complete: journal `state_digest` and `operation_outcome_hash` were redundant
 and have been removed. Do not reintroduce them into the application-state type.
 
+### Implementation status: Complete
+
+The journal now stores one explicit application enum in the existing row. It
+separates a consensus-conflict rejection without a wallet response from a
+deterministic mint rejection carrying the standard Cashu `ErrorResponse`.
+Catch-up compares this enum directly, SQL writes derive both legacy columns
+from it, and fresh schemas reject impossible column combinations. No new
+consensus or persistence layer was introduced.
+
 ### Target model
 
 ```rust
@@ -883,8 +892,11 @@ struct FederationJournalEntry {
 }
 
 enum FederationApplicationState {
-    Pending,
-    Applied,
+    Accepted {},
+    Applying {},
+    Applied {},
+    Failed {},
+    ConsensusRejected {},
     Rejected {
         response: ErrorResponse,
     },
@@ -892,8 +904,8 @@ enum FederationApplicationState {
 ```
 
 The materialized-state digest is a snapshot-level convergence commitment, not
-per-entry application metadata. The minimum required grouping remains `status`
-and `rejection`.
+per-entry application metadata. SQL retains the compact `status` and
+`rejection_json` columns, but only the enum is exposed to journal callers.
 
 ### Work
 

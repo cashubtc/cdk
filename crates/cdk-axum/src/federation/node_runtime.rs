@@ -13,10 +13,10 @@ use crate::{
 };
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationCatchUpCertificate, FederationCatchUpOperation,
-    FederationConfig, FederationConsensusItemAdmission, FederationConsensusRuntime,
-    FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationAlephBftUnitPayload, FederationApplicationState, FederationCatchUpCertificate,
+    FederationCatchUpOperation, FederationConfig, FederationConsensusItemAdmission,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
@@ -122,7 +122,7 @@ impl FederationNodeRuntime {
         operation: &str,
         response: &FederationSubmitOperationResponse,
     ) {
-        if response.outcome.entry().status == FederationOperationStatus::Rejected {
+        if response.outcome.entry().status() == FederationOperationStatus::Rejected {
             self.record_rejected_operation_metric(operation, "consensus");
         }
     }
@@ -675,7 +675,7 @@ impl FederationNodeRuntime {
         let mut consensus = consensus.lock().await;
         if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
             if matches!(
-                entry.status,
+                entry.status(),
                 FederationOperationStatus::Accepted | FederationOperationStatus::Applying
             ) {
                 notifications.record_duplicate_pending_waiter_join();
@@ -955,11 +955,10 @@ impl FederationNodeRuntime {
             &recovered_entries_before_status_overlay,
         );
         for local_entry in &local_entries {
-            if crate::should_overlay_local_status_after_aleph_bft_recovery(local_entry.status) {
+            if crate::should_overlay_local_status_after_aleph_bft_recovery(local_entry.status()) {
                 next_consensus.update_application_state(
                     local_entry.operation_id,
-                    local_entry.status,
-                    local_entry.rejection.clone(),
+                    local_entry.application.clone(),
                 )?;
             }
         }
@@ -1548,7 +1547,7 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         for peer_entry in peer_entries
             .iter()
-            .filter(|entry| entry.status == FederationOperationStatus::Rejected)
+            .filter(|entry| entry.application.status() == FederationOperationStatus::Rejected)
         {
             let local_entry = self
                 .active_mint()?
@@ -1560,9 +1559,7 @@ impl FederationNodeRuntime {
                         operation_id: peer_entry.operation_id.to_string(),
                     })
                 })?;
-            if local_entry.status != FederationOperationStatus::Rejected
-                || local_entry.rejection != peer_entry.rejection
-            {
+            if local_entry.application != peer_entry.application {
                 return Err(cdk::Error::Federation(
                     FederationError::CatchUpCertificateMismatch {
                         reason: format!(
@@ -1648,22 +1645,18 @@ impl FederationNodeRuntime {
         operation_id: FederationOperationId,
         rejection: Option<&cdk::error::ErrorResponse>,
     ) -> Result<FederationOperationStatus, cdk::Error> {
-        let status = match rejection {
-            Some(_) => FederationOperationStatus::Rejected,
-            None => FederationOperationStatus::Failed,
+        let application = match rejection {
+            Some(rejection) => FederationApplicationState::Rejected {
+                response: rejection.clone(),
+            },
+            None => FederationApplicationState::Failed {},
         };
+        let status = application.status();
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        let outcome = match rejection {
-            Some(rejection) => {
-                tx.reject_federation_operation(operation_id, rejection)
-                    .await
-            }
-            None => {
-                tx.update_federation_operation_status(operation_id, status)
-                    .await
-            }
-        };
+        let outcome = tx
+            .set_federation_operation_application_state(operation_id, &application)
+            .await;
         match outcome {
             Ok(()) => tx.commit().await?,
             Err(error) => {
@@ -1673,14 +1666,10 @@ impl FederationNodeRuntime {
         }
 
         if let Some(consensus) = &self.consensus {
-            match rejection {
-                Some(rejection) => consensus.lock().await.update_application_state(
-                    operation_id,
-                    status,
-                    Some(rejection.clone()),
-                )?,
-                None => consensus.lock().await.update_status(operation_id, status)?,
-            };
+            consensus
+                .lock()
+                .await
+                .update_application_state(operation_id, application)?;
         }
         Ok(status)
     }

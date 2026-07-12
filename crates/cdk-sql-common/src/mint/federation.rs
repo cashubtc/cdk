@@ -7,11 +7,12 @@ use cdk_common::database::mint::{
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftPendingOperationRecord, FederationCatchUpCertificate, FederationConfigDigest,
-    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationAlephBftPendingOperationRecord, FederationApplicationState,
+    FederationCatchUpCertificate, FederationConfigDigest, FederationConfigSnapshot,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationEnvelope,
@@ -158,6 +159,8 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         "federation operation rejection",
     )?;
     let status = status_from_str(&column_as_string!(&status))?;
+    let application = FederationApplicationState::from_parts(index, status, rejection)
+        .map_err(|error| Error::Internal(error.to_string()))?;
 
     Ok(FederationJournalEntry {
         index,
@@ -167,8 +170,7 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         previous_order_digest,
         order_digest,
         consensus_evidence,
-        rejection,
-        status,
+        application,
     })
 }
 
@@ -853,42 +855,21 @@ where
         .bind(
             "rejection_json",
             entry
-                .rejection
-                .as_ref()
+                .rejection()
                 .map(serde_json::to_string)
                 .transpose()?,
         )
-        .bind("status", status_to_str(entry.status))
+        .bind("status", status_to_str(entry.status()))
         .execute(&self.inner)
         .await?;
 
         Ok(())
     }
 
-    async fn update_federation_operation_status(
+    async fn set_federation_operation_application_state(
         &mut self,
         operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-            UPDATE federation_journal_entries
-            SET status = :status, rejection_json = NULL
-            WHERE operation_id = :operation_id
-            "#,
-        )?
-        .bind("operation_id", operation_id.to_string())
-        .bind("status", status_to_str(status))
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn reject_federation_operation(
-        &mut self,
-        operation_id: FederationOperationId,
-        rejection: &cdk_common::error::ErrorResponse,
+        application: &FederationApplicationState,
     ) -> Result<(), Self::Err> {
         query(
             r#"
@@ -898,8 +879,14 @@ where
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
-        .bind("status", status_to_str(FederationOperationStatus::Rejected))
-        .bind("rejection_json", serde_json::to_string(rejection)?)
+        .bind("status", status_to_str(application.status()))
+        .bind(
+            "rejection_json",
+            application
+                .rejection()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
         .execute(&self.inner)
         .await?;
 

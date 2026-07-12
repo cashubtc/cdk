@@ -9,7 +9,10 @@ CREATE TABLE federation_journal_entries (
     order_digest TEXT NOT NULL,
     consensus_evidence_json TEXT,
     rejection_json TEXT,
-    status TEXT NOT NULL
+    status TEXT NOT NULL CHECK (
+        status IN ('accepted', 'applying', 'applied', 'rejected', 'failed')
+    ),
+    CHECK (status = 'rejected' OR rejection_json IS NULL)
 );
 
 CREATE INDEX idx_federation_journal_operation_id

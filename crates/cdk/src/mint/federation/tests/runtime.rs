@@ -223,7 +223,7 @@ async fn apply_accepted_federation_operation_applies_accepted_and_applying_entri
             bolt11_quote_response(&applying_quote, 2),
         ),
     );
-    applying_entry.status = FederationOperationStatus::Applying;
+    applying_entry.application = FederationApplicationState::Applying {};
     persist_journal_entry(&localstore, &applying_entry).await;
     assert!(mint
         .apply_accepted_federation_operation(&applying_entry)
@@ -250,7 +250,7 @@ async fn apply_accepted_federation_operation_skips_applied_entries() {
             bolt11_quote_response(&quote, 1),
         ),
     );
-    entry.status = FederationOperationStatus::Applied;
+    entry.application = FederationApplicationState::Applied {};
 
     assert!(!mint
         .apply_accepted_federation_operation(&entry)
@@ -282,7 +282,7 @@ async fn apply_accepted_federation_operation_rejects_terminal_local_statuses() {
                 bolt11_quote_response(&quote, 1),
             ),
         );
-        entry.status = status;
+        entry.application = FederationApplicationState::from_status(status);
 
         let err = mint
             .apply_accepted_federation_operation(&entry)
@@ -317,9 +317,12 @@ async fn apply_accepted_federation_operation_retries_matching_failed_local_statu
 
     persist_journal_entry(&localstore, &entry).await;
     let mut tx = localstore.begin_transaction().await.expect("begin");
-    tx.update_federation_operation_status(entry.operation_id, FederationOperationStatus::Failed)
-        .await
-        .expect("mark operation failed");
+    tx.set_federation_operation_application_state(
+        entry.operation_id,
+        &FederationApplicationState::Failed {},
+    )
+    .await
+    .expect("mark operation failed");
     tx.commit().await.expect("commit failed status");
 
     assert!(mint
@@ -337,7 +340,7 @@ async fn apply_accepted_federation_operation_retries_matching_failed_local_statu
         .await
         .expect("journal lookup")
         .expect("journal entry");
-    assert_eq!(persisted.status, FederationOperationStatus::Applied);
+    assert_eq!(persisted.status(), FederationOperationStatus::Applied);
 }
 
 #[tokio::test]
@@ -357,9 +360,12 @@ async fn apply_accepted_federation_operation_rejects_rejected_local_status_retry
 
     persist_journal_entry(&localstore, &entry).await;
     let mut tx = localstore.begin_transaction().await.expect("begin");
-    tx.update_federation_operation_status(entry.operation_id, FederationOperationStatus::Rejected)
-        .await
-        .expect("mark operation rejected");
+    tx.set_federation_operation_application_state(
+        entry.operation_id,
+        &FederationApplicationState::ConsensusRejected {},
+    )
+    .await
+    .expect("mark operation rejected");
     tx.commit().await.expect("commit rejected status");
 
     let err = mint

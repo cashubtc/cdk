@@ -216,7 +216,7 @@ fn journal_fingerprint(
             (
                 entry.index,
                 entry.operation_id.to_string(),
-                entry.status,
+                entry.status(),
                 entry.previous_order_digest.to_string(),
                 entry.order_digest.to_string(),
             )
@@ -1453,7 +1453,7 @@ fn consensus_runtime_finalizes_four_member_order_with_faulty_duplicates() {
         assert_eq!(conflict_responses.len(), 1);
         assert_eq!(conflict_responses[0].operation_id, conflict_id);
         assert_eq!(
-            conflict_responses[0].outcome.entry().status,
+            conflict_responses[0].outcome.entry().status(),
             FederationOperationStatus::Rejected
         );
     }
@@ -1466,7 +1466,7 @@ fn consensus_runtime_finalizes_four_member_order_with_faulty_duplicates() {
             .journal()
             .entries()
             .iter()
-            .map(|entry| entry.status)
+            .map(FederationJournalEntry::status)
             .collect::<Vec<_>>(),
         vec![
             FederationOperationStatus::Accepted,
@@ -1559,7 +1559,7 @@ fn consensus_runtime_finalizes_five_member_sessions_with_silent_member() {
             .journal()
             .entries()
             .iter()
-            .map(|entry| entry.status)
+            .map(FederationJournalEntry::status)
             .collect::<Vec<_>>(),
         vec![
             FederationOperationStatus::Accepted,
@@ -1747,7 +1747,7 @@ fn consensus_runtime_recovery_preserves_finalized_conflict_rejection() {
             .expect("adapter");
     adapter.finalize_unit(unit).expect("finalize conflicts");
     assert_eq!(
-        adapter.journal().entries()[1].status,
+        adapter.journal().entries()[1].status(),
         FederationOperationStatus::Rejected
     );
 
@@ -1763,7 +1763,7 @@ fn consensus_runtime_recovery_preserves_finalized_conflict_rejection() {
 
     assert_eq!(recovered.journal().entries().len(), 2);
     assert_eq!(
-        recovered.journal().entries()[1].status,
+        recovered.journal().entries()[1].status(),
         FederationOperationStatus::Rejected
     );
 }

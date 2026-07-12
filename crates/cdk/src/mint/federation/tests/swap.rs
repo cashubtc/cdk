@@ -389,7 +389,10 @@ async fn apply_federation_swap_persists_accepted_materialization_rows() {
         .iter()
         .find(|entry| entry.operation_id == swap_entry.operation_id)
         .expect("stored swap entry");
-    assert_eq!(stored_swap_entry.status, FederationOperationStatus::Applied);
+    assert_eq!(
+        stored_swap_entry.status(),
+        FederationOperationStatus::Applied
+    );
 }
 
 #[tokio::test]
@@ -459,7 +462,7 @@ async fn apply_federation_swap_rolls_back_late_failure_and_replays() {
             .iter()
             .find(|entry| entry.operation_id == swap_entry.operation_id)
             .expect("swap entry after rollback")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted
     );
 

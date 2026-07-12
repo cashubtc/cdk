@@ -94,7 +94,7 @@ async fn apply_federation_keyset_rotation_marks_operation_applied() {
             .iter()
             .find(|candidate| candidate.operation_id == entry.operation_id)
             .expect("rotation entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }

@@ -412,6 +412,83 @@ impl fmt::Display for FederationOperationStatus {
     }
 }
 
+/// Legal post-consensus application state for one ordered operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FederationApplicationState {
+    /// Operation is accepted and waiting for local application.
+    Accepted {},
+    /// Operation is currently being applied locally.
+    Applying {},
+    /// Operation was applied successfully.
+    Applied {},
+    /// Operation failed for a retryable or ambiguous reason.
+    Failed {},
+    /// Consensus ordered a conflicting operation that cannot be applied locally.
+    ConsensusRejected {},
+    /// Operation was deterministically rejected with its standard Cashu error.
+    Rejected {
+        /// Standard Cashu response returned on replay and wallet fanout.
+        response: ErrorResponse,
+    },
+}
+
+impl FederationApplicationState {
+    /// Construct a legal state from its durable SQL columns.
+    pub fn from_parts(
+        index: u64,
+        status: FederationOperationStatus,
+        rejection: Option<ErrorResponse>,
+    ) -> Result<Self> {
+        match (status, rejection) {
+            (FederationOperationStatus::Accepted, None) => Ok(Self::Accepted {}),
+            (FederationOperationStatus::Applying, None) => Ok(Self::Applying {}),
+            (FederationOperationStatus::Applied, None) => Ok(Self::Applied {}),
+            (FederationOperationStatus::Failed, None) => Ok(Self::Failed {}),
+            (FederationOperationStatus::Rejected, None) => Ok(Self::ConsensusRejected {}),
+            (FederationOperationStatus::Rejected, Some(response)) => {
+                Ok(Self::Rejected { response })
+            }
+            _ => Err(FederationError::JournalRejectionStateMismatch { index }),
+        }
+    }
+
+    /// Construct a state that carries no deterministic business rejection.
+    #[must_use]
+    pub fn from_status(status: FederationOperationStatus) -> Self {
+        match status {
+            FederationOperationStatus::Accepted => Self::Accepted {},
+            FederationOperationStatus::Applying => Self::Applying {},
+            FederationOperationStatus::Applied => Self::Applied {},
+            FederationOperationStatus::Rejected => Self::ConsensusRejected {},
+            FederationOperationStatus::Failed => Self::Failed {},
+        }
+    }
+
+    /// Stable status label represented by this state.
+    #[must_use]
+    pub fn status(&self) -> FederationOperationStatus {
+        match self {
+            Self::Accepted {} => FederationOperationStatus::Accepted,
+            Self::Applying {} => FederationOperationStatus::Applying,
+            Self::Applied {} => FederationOperationStatus::Applied,
+            Self::Failed {} => FederationOperationStatus::Failed,
+            Self::ConsensusRejected {} | Self::Rejected { .. } => {
+                FederationOperationStatus::Rejected
+            }
+        }
+    }
+
+    /// Standard Cashu rejection carried by this state, when rejected.
+    #[must_use]
+    pub fn rejection(&self) -> Option<&ErrorResponse> {
+        match self {
+            Self::Rejected { response } => Some(response),
+            _ => None,
+        }
+    }
+}
+
 /// Consensus evidence attached to a journal entry accepted from an ordering backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FederationJournalConsensusEvidence {
@@ -465,11 +542,8 @@ pub struct FederationJournalEntry {
     /// Ordering-backend evidence for this accepted operation, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consensus_evidence: Option<FederationJournalConsensusEvidence>,
-    /// Standard Cashu error returned when deterministic application rejected the operation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rejection: Option<ErrorResponse>,
-    /// Local application status.
-    pub status: FederationOperationStatus,
+    /// Mutable post-consensus application state, excluded from accepted-order hashing.
+    pub application: FederationApplicationState,
 }
 
 /// Scalar metadata for the latest durable federation journal entry.
@@ -485,12 +559,16 @@ pub struct FederationJournalTip {
 }
 
 impl FederationJournalEntry {
-    fn validate_application_metadata(&self) -> Result<()> {
-        if self.rejection.is_some() && self.status != FederationOperationStatus::Rejected {
-            return Err(FederationError::JournalRejectionStateMismatch { index: self.index });
-        }
+    /// Local application status.
+    #[must_use]
+    pub fn status(&self) -> FederationOperationStatus {
+        self.application.status()
+    }
 
-        Ok(())
+    /// Standard Cashu deterministic rejection, when present.
+    #[must_use]
+    pub fn rejection(&self) -> Option<&ErrorResponse> {
+        self.application.rejection()
     }
 }
 
@@ -715,7 +793,6 @@ impl InMemoryFederationJournal {
                     found: entry.order_digest,
                 });
             }
-            entry.validate_application_metadata()?;
 
             let conflict_keys = entry.envelope.operation.conflict_keys();
             if entry.conflict_keys != conflict_keys {
@@ -731,7 +808,7 @@ impl InMemoryFederationJournal {
             }
 
             for conflict_key in &conflict_keys {
-                if should_reserve_conflict_keys(entry.status) {
+                if application_reserves_conflict_keys(&entry.application) {
                     if let Some(existing_operation_id) = journal.conflict_keys.get(conflict_key) {
                         let finalized_mint_conflict = entry.consensus_evidence.is_some()
                             && matches!(&entry.envelope.operation, FederationOperation::Mint(_));
@@ -755,7 +832,7 @@ impl InMemoryFederationJournal {
             journal
                 .operation_indices
                 .insert(entry.operation_id, entry.index as usize);
-            if should_reserve_conflict_keys(entry.status) {
+            if application_reserves_conflict_keys(&entry.application) {
                 for conflict_key in conflict_keys {
                     journal
                         .conflict_keys
@@ -900,6 +977,7 @@ impl InMemoryFederationJournal {
         let index = self.entries.len() as u64;
         let previous_order_digest = self.latest_order_digest;
         let order_digest = previous_order_digest.append(index, operation_id);
+        let application = FederationApplicationState::from_status(status);
         let entry = FederationJournalEntry {
             index,
             operation_id,
@@ -908,13 +986,12 @@ impl InMemoryFederationJournal {
             previous_order_digest,
             order_digest,
             consensus_evidence,
-            rejection: None,
-            status,
+            application: application.clone(),
         };
 
         self.entries.push(entry.clone());
         self.operation_indices.insert(operation_id, index as usize);
-        if should_reserve_conflict_keys(status) {
+        if application_reserves_conflict_keys(&application) {
             for conflict_key in conflict_keys {
                 self.conflict_keys
                     .entry(conflict_key)
@@ -970,17 +1047,16 @@ impl InMemoryFederationJournal {
             });
         }
 
-        peer_entry.validate_application_metadata()?;
-
-        let outcome = if peer_entry.status == FederationOperationStatus::Rejected {
-            let Some(consensus_evidence) = peer_entry.consensus_evidence else {
+        let outcome = match (&peer_entry.application, peer_entry.consensus_evidence) {
+            (FederationApplicationState::ConsensusRejected {}, None) => {
                 return Err(FederationError::JournalConsensusEvidenceMissing {
                     index: peer_entry.index,
                 });
-            };
-            self.append_finalized_inner(peer_entry.envelope.clone(), consensus_evidence)?
-        } else {
-            self.append_inner(peer_entry.envelope.clone(), peer_entry.consensus_evidence)?
+            }
+            (_, Some(consensus_evidence)) => {
+                self.append_finalized_inner(peer_entry.envelope.clone(), consensus_evidence)?
+            }
+            (_, None) => self.append_inner(peer_entry.envelope.clone(), None)?,
         };
 
         match outcome {
@@ -1000,15 +1076,17 @@ impl InMemoryFederationJournal {
         operation_id: FederationOperationId,
         status: FederationOperationStatus,
     ) -> Result<FederationJournalEntry> {
-        self.update_application_state(operation_id, status, None)
+        self.update_application_state(
+            operation_id,
+            FederationApplicationState::from_status(status),
+        )
     }
 
-    /// Update local application status and its optional standard Cashu rejection.
+    /// Update local post-consensus application state.
     pub fn update_application_state(
         &mut self,
         operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-        rejection: Option<ErrorResponse>,
+        application: FederationApplicationState,
     ) -> Result<FederationJournalEntry> {
         let index = self.operation_indices.get(&operation_id).ok_or_else(|| {
             FederationError::UnknownOperation {
@@ -1019,17 +1097,16 @@ impl InMemoryFederationJournal {
             .entries
             .get_mut(*index)
             .expect("operation index points to an entry");
-        if rejection.is_some() && status != FederationOperationStatus::Rejected {
-            return Err(FederationError::JournalRejectionStateMismatch { index: entry.index });
-        }
-        entry.status = status;
-        entry.rejection = rejection;
+        entry.application = application;
         Ok(entry.clone())
     }
 }
 
-fn should_reserve_conflict_keys(status: FederationOperationStatus) -> bool {
-    !matches!(status, FederationOperationStatus::Rejected)
+fn application_reserves_conflict_keys(application: &FederationApplicationState) -> bool {
+    !matches!(
+        application,
+        FederationApplicationState::ConsensusRejected {}
+    )
 }
 
 fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
@@ -1223,9 +1300,9 @@ mod tests {
             .clone();
 
         assert_eq!(journal.len(), 2);
-        assert_eq!(first_entry.status, FederationOperationStatus::Accepted);
+        assert_eq!(first_entry.status(), FederationOperationStatus::Accepted);
         assert_eq!(
-            conflicting_entry.status,
+            conflicting_entry.status(),
             FederationOperationStatus::Accepted
         );
         assert_eq!(conflicting_entry.index, 1);
@@ -1233,11 +1310,12 @@ mod tests {
         let rejected_entry = journal
             .update_application_state(
                 conflicting_entry.operation_id,
-                FederationOperationStatus::Rejected,
-                Some(rejection.clone()),
+                FederationApplicationState::Rejected {
+                    response: rejection.clone(),
+                },
             )
             .expect("persist mint application rejection");
-        assert_eq!(rejected_entry.rejection, Some(rejection));
+        assert_eq!(rejected_entry.rejection(), Some(&rejection));
         assert_eq!(
             journal
                 .append_finalized_with_consensus_evidence(
@@ -1254,10 +1332,10 @@ mod tests {
             .expect("rebuild journal with rejected conflict");
         assert_eq!(rebuilt.len(), 2);
         assert_eq!(
-            rebuilt.entries()[1].status,
+            rebuilt.entries()[1].status(),
             FederationOperationStatus::Rejected
         );
-        assert_eq!(rebuilt.entries()[1].rejection, rejected_entry.rejection);
+        assert_eq!(rebuilt.entries()[1].application, rejected_entry.application);
     }
 
     #[test]
@@ -1278,8 +1356,11 @@ mod tests {
             .entry()
             .clone();
 
-        assert_eq!(conflicting.status, FederationOperationStatus::Rejected);
-        assert!(conflicting.rejection.is_none());
+        assert_eq!(conflicting.status(), FederationOperationStatus::Rejected);
+        assert_eq!(
+            conflicting.application,
+            FederationApplicationState::ConsensusRejected {}
+        );
     }
 
     #[test]
@@ -1295,7 +1376,7 @@ mod tests {
             .update_status(entry.operation_id, FederationOperationStatus::Applied)
             .expect("status update");
 
-        assert_eq!(updated.status, FederationOperationStatus::Applied);
+        assert_eq!(updated.status(), FederationOperationStatus::Applied);
         assert_eq!(journal.latest_order_digest(), digest);
         assert!(matches!(
             journal.update_status(
@@ -1305,13 +1386,72 @@ mod tests {
             Err(FederationError::UnknownOperation { .. })
         ));
         assert!(matches!(
-            journal.update_application_state(
-                entry.operation_id,
+            FederationApplicationState::from_parts(
+                entry.index,
                 FederationOperationStatus::Applied,
                 Some(ErrorResponse::from(crate::Error::TokenAlreadySpent)),
             ),
             Err(FederationError::JournalRejectionStateMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn business_rejection_keeps_consensus_conflict_reservation_after_replay() {
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append accepted operation")
+            .entry()
+            .clone();
+        journal
+            .update_application_state(
+                entry.operation_id,
+                FederationApplicationState::Rejected {
+                    response: ErrorResponse::from(crate::Error::IssuedQuote),
+                },
+            )
+            .expect("record business rejection");
+
+        assert!(matches!(
+            journal.append(mint_quote_envelope(2)),
+            Err(FederationError::ConflictingOperation { .. })
+        ));
+
+        let mut replayed = InMemoryFederationJournal::from_entries(journal.entries().to_vec())
+            .expect("replay business rejection");
+        assert!(matches!(
+            replayed.append(mint_quote_envelope(2)),
+            Err(FederationError::ConflictingOperation { .. })
+        ));
+    }
+
+    #[test]
+    fn application_state_serializes_every_legal_state_and_rejects_invalid_shapes() {
+        let states = [
+            FederationApplicationState::Accepted {},
+            FederationApplicationState::Applying {},
+            FederationApplicationState::Applied {},
+            FederationApplicationState::Failed {},
+            FederationApplicationState::ConsensusRejected {},
+            FederationApplicationState::Rejected {
+                response: ErrorResponse::from(crate::Error::TokenAlreadySpent),
+            },
+        ];
+
+        for state in states {
+            let encoded = serde_json::to_string(&state).expect("serialize application state");
+            let decoded: FederationApplicationState =
+                serde_json::from_str(&encoded).expect("deserialize application state");
+            assert_eq!(decoded, state);
+        }
+
+        assert!(serde_json::from_str::<FederationApplicationState>(
+            r#"{"state":"applied","response":{"code":11001,"detail":"spent"}}"#,
+        )
+        .is_err());
+        assert!(
+            serde_json::from_str::<FederationApplicationState>(r#"{"state":"rejected"}"#,).is_err()
+        );
     }
 
     #[test]

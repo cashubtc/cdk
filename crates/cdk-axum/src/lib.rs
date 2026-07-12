@@ -478,8 +478,8 @@ fn validate_federation_submit_response(
     operation_id: FederationOperationId,
 ) -> Result<(), cdk::Error> {
     response.validate(operation_id)?;
-    if response.outcome.entry().status == FederationOperationStatus::Rejected {
-        if let Some(rejection) = response.outcome.entry().rejection.clone() {
+    if response.outcome.entry().status() == FederationOperationStatus::Rejected {
+        if let Some(rejection) = response.outcome.entry().rejection().cloned() {
             return Err(cdk::Error::from(rejection));
         }
     }
@@ -804,10 +804,9 @@ fn ensure_catch_up_overlap_matches(
             },
         ));
     }
-    if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status)
-        && should_overlay_local_status_after_aleph_bft_recovery(peer_entry.status)
-        && (local_entry.status != peer_entry.status
-            || local_entry.rejection != peer_entry.rejection)
+    if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status())
+        && should_overlay_local_status_after_aleph_bft_recovery(peer_entry.application.status())
+        && local_entry.application != peer_entry.application
     {
         return Err(cdk::Error::Federation(
             FederationError::CatchUpCertificateMismatch {
@@ -1430,7 +1429,8 @@ mod tests {
         match &mut response.outcome {
             FederationJournalAppendOutcome::Appended(entry)
             | FederationJournalAppendOutcome::Duplicate(entry) => {
-                entry.status = FederationOperationStatus::Rejected;
+                entry.application =
+                    cdk::federation::FederationApplicationState::ConsensusRejected {};
             }
         }
 
@@ -2015,7 +2015,7 @@ fn accepted_federation_journal_entries(
         .iter()
         .filter(|entry| {
             matches!(
-                entry.status,
+                entry.status(),
                 FederationOperationStatus::Accepted | FederationOperationStatus::Applying
             )
         })
@@ -2041,11 +2041,11 @@ fn stale_local_aleph_bft_entries_to_retry(
         .zip(recovered_entries.iter())
         .filter_map(|(local_entry, recovered_entry)| {
             let finalized_entry_is_accepted = matches!(
-                recovered_entry.status,
+                recovered_entry.status(),
                 FederationOperationStatus::Accepted | FederationOperationStatus::Applying
             );
             let local_entry_needs_retry = matches!(
-                local_entry.status,
+                local_entry.status(),
                 FederationOperationStatus::Accepted
                     | FederationOperationStatus::Applying
                     | FederationOperationStatus::Failed
@@ -2544,12 +2544,8 @@ async fn create_federation_runtime_state(
         consensus.journal().entries(),
     )?;
     for entry in &persisted_entries {
-        if should_overlay_local_status_after_aleph_bft_recovery(entry.status) {
-            consensus.update_application_state(
-                entry.operation_id,
-                entry.status,
-                entry.rejection.clone(),
-            )?;
+        if should_overlay_local_status_after_aleph_bft_recovery(entry.status()) {
+            consensus.update_application_state(entry.operation_id, entry.application.clone())?;
         }
     }
     let session_id = consensus.aleph_bft_status()?.session;

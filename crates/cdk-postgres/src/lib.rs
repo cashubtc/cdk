@@ -470,6 +470,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_application_state_persistence() {
+        cdk_common::database::mint::test::federation_application_state_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_application_state_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_aleph_bft_finalized_item_persistence() {
         cdk_common::database::mint::test::federation_aleph_bft_finalized_item_persistence(
             provide_mint_db(unique_federation_test_id(
@@ -811,6 +823,30 @@ mod test {
         for column in ["consensus_evidence_json", "rejection_json"] {
             assert_eq!(journal_columns.get(column), Some(&false));
         }
+
+        let rejection_on_applied = client
+            .execute(
+                r#"
+                INSERT INTO federation_journal_entries
+                (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, rejection_json, status)
+                VALUES (0, 'invalid-rejection', '{}', '[]', 'previous', 'current', '{}', 'applied')
+                "#,
+                &[],
+            )
+            .await;
+        assert!(rejection_on_applied.is_err());
+
+        let unknown_status = client
+            .execute(
+                r#"
+                INSERT INTO federation_journal_entries
+                (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, status)
+                VALUES (1, 'invalid-status', '{}', '[]', 'previous', 'current', 'unknown')
+                "#,
+                &[],
+            )
+            .await;
+        assert!(unknown_status.is_err());
 
         let saga_column_count = client
             .query_one(

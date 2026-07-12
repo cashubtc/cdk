@@ -7,24 +7,24 @@ use std::sync::Arc;
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload, FederationConfig,
-    FederationConfigDigest, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationApplicationState, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
+    FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMaterializedStateDigest, FederationMemberStatusKind, FederationMemberStatusSnapshot,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
@@ -401,13 +401,21 @@ where
     tx.add_federation_journal_entry(&second)
         .await
         .expect("persist second");
-    tx.update_federation_operation_status(first.operation_id, FederationOperationStatus::Applied)
-        .await
-        .expect("update status");
+    tx.set_federation_operation_application_state(
+        first.operation_id,
+        &FederationApplicationState::Applied {},
+    )
+    .await
+    .expect("update status");
     let rejection = ErrorResponse::from(Error::TokenAlreadySpent);
-    tx.reject_federation_operation(second.operation_id, &rejection)
-        .await
-        .expect("reject operation");
+    tx.set_federation_operation_application_state(
+        second.operation_id,
+        &FederationApplicationState::Rejected {
+            response: rejection.clone(),
+        },
+    )
+    .await
+    .expect("reject operation");
     tx.set_federation_member_sequence(member_one, 7)
         .await
         .expect("sequence one");
@@ -435,13 +443,13 @@ where
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].index, 0);
     assert_eq!(entries[0].operation_id, first.operation_id);
-    assert_eq!(entries[0].status, FederationOperationStatus::Applied);
+    assert_eq!(entries[0].status(), FederationOperationStatus::Applied);
     assert_eq!(entries[0].conflict_keys, first.conflict_keys);
     assert_eq!(entries[0].consensus_evidence, Some(first_evidence));
     assert_eq!(entries[1].index, 1);
     assert_eq!(entries[1].operation_id, second.operation_id);
-    assert_eq!(entries[1].status, FederationOperationStatus::Rejected);
-    assert_eq!(entries[1].rejection, Some(rejection.clone()));
+    assert_eq!(entries[1].status(), FederationOperationStatus::Rejected);
+    assert_eq!(entries[1].rejection(), Some(&rejection));
     assert_eq!(entries[1].previous_order_digest, first.order_digest);
 
     let tip = db
@@ -459,7 +467,7 @@ where
         .expect("first entry");
     assert_eq!(first_by_operation_id.index, first.index);
     assert_eq!(
-        first_by_operation_id.status,
+        first_by_operation_id.status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(
@@ -474,10 +482,10 @@ where
         .expect("second entry");
     assert_eq!(second_by_operation_id.index, second.index);
     assert_eq!(
-        second_by_operation_id.status,
+        second_by_operation_id.status(),
         FederationOperationStatus::Rejected
     );
-    assert_eq!(second_by_operation_id.rejection, Some(rejection.clone()));
+    assert_eq!(second_by_operation_id.rejection(), Some(&rejection));
 
     let missing_by_operation_id = db
         .get_federation_journal_entry_by_operation_id(FederationOperationId::from_bytes([99; 32]))
@@ -491,7 +499,7 @@ where
         .expect("catch-up entries");
     assert_eq!(catch_up_entries.len(), 1);
     assert_eq!(catch_up_entries[0].operation_id, second.operation_id);
-    assert_eq!(catch_up_entries[0].rejection, Some(rejection));
+    assert_eq!(catch_up_entries[0].rejection(), Some(&rejection));
 
     let sequences = db
         .get_federation_member_sequences()
@@ -523,6 +531,83 @@ where
         .expect("catch-up certificates from");
     assert_eq!(catch_up_certificates_from.len(), 1);
     assert_eq!(catch_up_certificates_from[0].from_index, 1);
+}
+
+/// Assert every legal journal application state survives database round trips.
+pub async fn federation_application_state_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let expected_states = vec![
+        FederationApplicationState::Accepted {},
+        FederationApplicationState::Applying {},
+        FederationApplicationState::Applied {},
+        FederationApplicationState::Failed {},
+        FederationApplicationState::ConsensusRejected {},
+        FederationApplicationState::Rejected {
+            response: ErrorResponse::from(Error::TokenAlreadySpent),
+        },
+    ];
+    let mut journal = InMemoryFederationJournal::new();
+    let mut entries = Vec::with_capacity(expected_states.len());
+    for index in 0..expected_states.len() {
+        let entry = if index == 4 {
+            appended(
+                journal
+                    .append_finalized_with_consensus_evidence(
+                        mint_quote_envelope("application-state-0", 99),
+                        FederationJournalConsensusEvidence::new(
+                            0,
+                            index as u64,
+                            index as u64,
+                            MemberId::new(1).expect("member one"),
+                            index as u64,
+                        ),
+                    )
+                    .expect("append consensus-rejected conflict"),
+            )
+        } else {
+            appended(
+                journal
+                    .append(mint_quote_envelope(
+                        &format!("application-state-{index}"),
+                        index as u64 + 1,
+                    ))
+                    .expect("append application-state entry"),
+            )
+        };
+        entries.push(entry);
+    }
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    for (entry, application) in entries.iter().zip(expected_states.iter()) {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist application-state entry");
+        tx.set_federation_operation_application_state(entry.operation_id, application)
+            .await
+            .expect("persist application state");
+    }
+    tx.commit().await.expect("commit application states");
+
+    let persisted = db
+        .get_federation_journal_entries()
+        .await
+        .expect("load application states");
+    let persisted_states = persisted
+        .iter()
+        .map(|entry| entry.application.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(persisted_states, expected_states);
+
+    let replayed = InMemoryFederationJournal::from_entries(persisted)
+        .expect("replay every legal application state");
+    let replayed_states = replayed
+        .entries()
+        .iter()
+        .map(|entry| entry.application.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(replayed_states, expected_states);
 }
 
 /// Assert AlephBFT finalized items are durable and can recover adapter state.
@@ -1821,9 +1906,9 @@ where
             tx.add_federation_journal_entry(&entry)
                 .await
                 .expect("persist concurrent entry");
-            tx.update_federation_operation_status(
+            tx.set_federation_operation_application_state(
                 entry.operation_id,
-                FederationOperationStatus::Applied,
+                &FederationApplicationState::Applied {},
             )
             .await
             .expect("update concurrent status");
@@ -1850,7 +1935,7 @@ where
             expected.previous_order_digest
         );
         assert_eq!(persisted.order_digest, expected.order_digest);
-        assert_eq!(persisted.status, FederationOperationStatus::Applied);
+        assert_eq!(persisted.status(), FederationOperationStatus::Applied);
     }
 
     let catch_up_from = ENTRY_COUNT / 2;

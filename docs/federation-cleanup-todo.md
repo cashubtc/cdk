@@ -1780,7 +1780,7 @@ and mintd federation compilation is clean.
 
 ## 26. Model journal application state as one explicit enum
 
-**Status:** Todo
+**Status:** Complete
 
 ### Problem
 
@@ -1803,6 +1803,41 @@ interpret these fields to determine replay and response behavior.
 - `docs/federated-cashu-refactoring-plan.md` section R7.
 - Add serialization and database constraints that reject impossible states and
   verify replay of every valid state.
+
+### Completion record
+
+`FederationJournalEntry` now has one `FederationApplicationState` field rather
+than independently mutable status and rejection fields. The legal states are
+accepted, applying, applied, retryable/ambiguous failed, consensus-conflict
+rejected, and deterministic mint rejected with the existing Cashu
+`ErrorResponse`. The two rejection variants are intentionally distinct:
+consensus-conflict rejection has no wallet error, while mint rejection always
+carries the response reconstructed by public routes and wallet fanout.
+
+The accepted-order fields and digest remain unchanged. Application metadata is
+still post-consensus and stored in the existing journal row; no table,
+consensus item, AlephBFT round, or compatibility layer was added. One typed
+database setter now derives both the existing `status` and `rejection_json`
+columns atomically. SQLite and PostgreSQL fresh federation schemas constrain
+status labels and reject rejection JSON on non-rejected rows. SQL decoding also
+rejects impossible column combinations.
+
+Catch-up now transports and compares the explicit application state. Journal
+reconstruction also preserves the conflict-key reservation of an operation
+that consensus accepted before mint logic rejected it, while a
+consensus-conflict rejection remains non-reserving. This fixes a distinction
+that the former flattened rejected status could not represent after restart.
+Rejected operations remain absent from `completed_operations`, and persisted
+business rejections remain part of the materialized-state digest without
+entering the accepted-order hash.
+
+Serialization rejects extra outcome fields and a business rejection without
+an `ErrorResponse`. Shared database tests round-trip and replay all six legal
+states in a valid journal sequence. Verification passes 329 common tests, 157
+SQLite tests, 100 mint federation tests, the complete permissioned Axum matrix
+of 420 passing tests plus one ignored manual benchmark, and all 28 standalone
+Axum tests. The PostgreSQL federation test target compiles; its runtime suite
+still requires the repository's external PostgreSQL test service.
 
 ## 27. Split federation configuration into setup and active phases
 

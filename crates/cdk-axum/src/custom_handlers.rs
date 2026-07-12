@@ -600,7 +600,7 @@ async fn federation_unpaid_melt_quote_had_accepted_attempt(
         .get_federation_journal_entries()
         .await?;
     for entry in entries {
-        if entry.status != cdk::federation::FederationOperationStatus::Applied {
+        if entry.status() != cdk::federation::FederationOperationStatus::Applied {
             continue;
         }
         let cdk::federation::FederationOperation::Melt(operation) = &entry.envelope.operation
@@ -6705,11 +6705,11 @@ mod tests {
             .expect("journal lookup");
         assert_eq!(entries.len(), 2);
         assert_eq!(
-            entries[0].status,
+            entries[0].status(),
             cdk::federation::FederationOperationStatus::Applied
         );
         assert_eq!(
-            entries[1].status,
+            entries[1].status(),
             cdk::federation::FederationOperationStatus::Rejected
         );
         assert_eq!(state.federation_response_cache_entry_count(), 2);
@@ -7465,7 +7465,9 @@ mod tests {
         assert_eq!(
             journal_entries
                 .iter()
-                .filter(|entry| entry.status == cdk::federation::FederationOperationStatus::Applied)
+                .filter(
+                    |entry| entry.status() == cdk::federation::FederationOperationStatus::Applied
+                )
                 .count(),
             1,
             "exactly one conflicting swap should apply"
@@ -7474,7 +7476,7 @@ mod tests {
             journal_entries
                 .iter()
                 .filter(|entry| matches!(
-                    entry.status,
+                    entry.status(),
                     cdk::federation::FederationOperationStatus::Rejected
                         | cdk::federation::FederationOperationStatus::Failed
                 ))

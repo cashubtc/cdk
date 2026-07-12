@@ -181,7 +181,7 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
         .expect("observation journal lookup")
         .expect("observation journal entry");
     assert_eq!(
-        stored_observation_entry.status,
+        stored_observation_entry.status(),
         FederationOperationStatus::Applied
     );
 
@@ -211,7 +211,7 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
         .expect("quote journal lookup")
         .expect("quote journal entry");
     assert_eq!(
-        stored_quote_entry.status,
+        stored_quote_entry.status(),
         FederationOperationStatus::Applied
     );
 }
@@ -271,7 +271,7 @@ async fn mint_payment_observation_apply_error_rolls_back_observation_and_status(
         .await
         .expect("journal lookup")
         .expect("journal entry");
-    assert_eq!(stored_entry.status, FederationOperationStatus::Accepted);
+    assert_eq!(stored_entry.status(), FederationOperationStatus::Accepted);
 }
 
 #[tokio::test]

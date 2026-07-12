@@ -19,19 +19,19 @@ use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationPaymentObservationPolicy,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
-    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    FederationApplicationState, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMemberStatusKind,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
+    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -5010,7 +5010,7 @@ async fn catch_up_applies_mint_quote_operation_to_local_store() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(
         local_consensus
             .lock()
@@ -5018,7 +5018,7 @@ async fn catch_up_applies_mint_quote_operation_to_local_store() {
             .journal()
             .entry_by_operation_id(operation_id)
             .expect("runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -5088,7 +5088,7 @@ async fn catch_up_applies_payment_quarantine_and_local_status_reports_it() {
     assert_eq!(persisted.len(), 4);
     assert!(persisted
         .iter()
-        .all(|entry| entry.status == FederationOperationStatus::Applied));
+        .all(|entry| entry.status() == FederationOperationStatus::Applied));
 
     let request = signed_status_request(&public_config, &peer_private, local_member, 1);
     let response = post_local_status(State(state), Json(request))
@@ -5185,7 +5185,7 @@ async fn catch_up_applies_melt_quote_operation_to_local_store() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(
         local_consensus
             .lock()
@@ -5193,7 +5193,7 @@ async fn catch_up_applies_melt_quote_operation_to_local_store() {
             .journal()
             .entry_by_operation_id(operation_id)
             .expect("runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -5259,7 +5259,7 @@ async fn catch_up_applies_swap_operation_to_local_store() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(
         local_consensus
             .lock()
@@ -5267,7 +5267,7 @@ async fn catch_up_applies_swap_operation_to_local_store() {
             .journal()
             .entry_by_operation_id(operation_id)
             .expect("runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -5371,10 +5371,10 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(persisted[1].operation_id, conflicting_operation_id);
-    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
-    assert_eq!(persisted[2].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status(), FederationOperationStatus::Rejected);
+    assert_eq!(persisted[2].status(), FederationOperationStatus::Applied);
 
     let runtime_consensus = local_consensus.lock().await;
     assert_eq!(
@@ -5382,7 +5382,7 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
             .journal()
             .entry_by_operation_id(first_operation_id)
             .expect("first runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(
@@ -5390,7 +5390,7 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
             .journal()
             .entry_by_operation_id(conflicting_operation_id)
             .expect("conflicting runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Rejected
     );
     assert_eq!(
@@ -5398,7 +5398,7 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
             .journal()
             .entry_by_operation_id(later_operation_id)
             .expect("later runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -5484,7 +5484,7 @@ async fn catch_up_applies_melt_operation_to_local_store() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(
         local_consensus
             .lock()
@@ -5492,7 +5492,7 @@ async fn catch_up_applies_melt_operation_to_local_store() {
             .journal()
             .entry_by_operation_id(operation_id)
             .expect("runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -5605,14 +5605,14 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
     assert_eq!(persisted.len(), 2);
     assert!(persisted
         .iter()
-        .all(|entry| entry.status == FederationOperationStatus::Applied));
+        .all(|entry| entry.status() == FederationOperationStatus::Applied));
     let runtime = local_consensus.lock().await;
     assert_eq!(
         runtime
             .journal()
             .entry_by_operation_id(melt_operation_id)
             .expect("melt runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(
@@ -5620,7 +5620,7 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
             .journal()
             .entry_by_operation_id(paid_operation_id)
             .expect("paid runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -6702,7 +6702,7 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
     assert_eq!(persisted.len(), 2);
     assert!(persisted
         .iter()
-        .all(|entry| entry.status == FederationOperationStatus::Applied));
+        .all(|entry| entry.status() == FederationOperationStatus::Applied));
 }
 
 #[tokio::test]
@@ -6849,7 +6849,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     assert_eq!(persisted.len(), 6);
     assert!(persisted
         .iter()
-        .all(|entry| entry.status == FederationOperationStatus::Applied));
+        .all(|entry| entry.status() == FederationOperationStatus::Applied));
 
     let quote = state
         .mint
@@ -7069,7 +7069,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         .expect("journal after conflicting mint");
     assert_eq!(entries.len(), 8);
     assert_eq!(entries[7].operation_id, conflicting_operation_id);
-    assert_eq!(entries[7].status, FederationOperationStatus::Rejected);
+    assert_eq!(entries[7].status(), FederationOperationStatus::Rejected);
     assert_eq!(
         state
             .mint
@@ -7252,8 +7252,8 @@ async fn federation_runtime_startup_skips_terminal_rejected_entries() {
     );
     let accepted_entry = adapter.journal().entries()[0].clone();
     let rejected_entry = adapter.journal().entries()[1].clone();
-    assert_eq!(accepted_entry.status, FederationOperationStatus::Accepted);
-    assert_eq!(rejected_entry.status, FederationOperationStatus::Rejected);
+    assert_eq!(accepted_entry.status(), FederationOperationStatus::Accepted);
+    assert_eq!(rejected_entry.status(), FederationOperationStatus::Rejected);
 
     persist_finalized_aleph_bft_history(&state, &adapter).await;
 
@@ -7266,7 +7266,7 @@ async fn federation_runtime_startup_skips_terminal_rejected_entries() {
         .journal()
         .entry_by_operation_id(rejected_entry.operation_id)
         .expect("recovered rejected entry");
-    assert_eq!(recovered.status, FederationOperationStatus::Rejected);
+    assert_eq!(recovered.status(), FederationOperationStatus::Rejected);
     assert_eq!(consensus.peer_status().operation_count, 2);
     drop(consensus);
     let quote = state
@@ -7356,7 +7356,7 @@ async fn federation_runtime_startup_reloads_aleph_bft_finalized_items_fail_close
         entry.operation_id
     );
     assert_eq!(
-        consensus.journal().entries()[0].status,
+        consensus.journal().entries()[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -7489,7 +7489,7 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
     assert_eq!(replayed_entries.len(), 1);
     assert_eq!(replayed_entries[0].operation_id, operation_id);
     assert_eq!(
-        replayed_entries[0].status,
+        replayed_entries[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -7584,7 +7584,10 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
         .expect("stored journal entries");
     assert_eq!(stored_entries.len(), 1);
     assert_eq!(stored_entries[0].operation_id, operation_id);
-    assert_eq!(stored_entries[0].status, FederationOperationStatus::Applied);
+    assert_eq!(
+        stored_entries[0].status(),
+        FederationOperationStatus::Applied
+    );
     let stored_certificates = state
         .mint
         .localstore()
@@ -7604,7 +7607,7 @@ async fn aleph_bft_catch_up_replays_finalized_items_and_applies_entries() {
         1
     );
     assert_eq!(
-        consensus.journal().entries()[0].status,
+        consensus.journal().entries()[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -7679,7 +7682,7 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
     }
     {
         let mut failed_entry = peer_adapter.journal().entries()[0].clone();
-        failed_entry.status = FederationOperationStatus::Failed;
+        failed_entry.application = FederationApplicationState::Failed {};
         let mut tx = state
             .mint
             .localstore()
@@ -7762,11 +7765,11 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
         .await
         .expect("journal lookup")
         .expect("stored journal entry");
-    assert_eq!(stored_entry.status, FederationOperationStatus::Applied);
+    assert_eq!(stored_entry.status(), FederationOperationStatus::Applied);
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(
-        consensus.journal().entries()[0].status,
+        consensus.journal().entries()[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -7981,8 +7984,8 @@ async fn aleph_bft_catch_up_applies_rejected_trailing_entry() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 2);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
-    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status(), FederationOperationStatus::Rejected);
 }
 
 #[tokio::test]
@@ -8537,13 +8540,16 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
         .expect("stored journal entries");
     assert_eq!(stored_entries.len(), 1);
     assert_eq!(stored_entries[0].operation_id, operation_id);
-    assert_eq!(stored_entries[0].status, FederationOperationStatus::Applied);
+    assert_eq!(
+        stored_entries[0].status(),
+        FederationOperationStatus::Applied
+    );
 
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 1);
     assert_eq!(
-        consensus.journal().entries()[0].status,
+        consensus.journal().entries()[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -8597,7 +8603,7 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
     };
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].operation_id, operation_id);
-    assert_eq!(entries[0].status, FederationOperationStatus::Accepted);
+    assert_eq!(entries[0].status(), FederationOperationStatus::Accepted);
 
     let mut tx = state
         .mint
@@ -8631,7 +8637,7 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0].operation_id, operation_id);
     assert_eq!(
-        responses[0].outcome.entry().status,
+        responses[0].outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     let quote = state
@@ -8650,7 +8656,7 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
         .expect("journal entries after duplicate replay");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].operation_id, operation_id);
-    assert_eq!(entries[0].status, FederationOperationStatus::Applied);
+    assert_eq!(entries[0].status(), FederationOperationStatus::Applied);
 }
 
 #[tokio::test]
@@ -8726,23 +8732,23 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
     assert_eq!(responses.len(), 3);
     assert_eq!(responses[0].operation_id, first_operation_id);
     assert_eq!(
-        responses[0].outcome.entry().status,
+        responses[0].outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(responses[1].operation_id, conflicting_operation_id);
     assert_eq!(
-        responses[1].outcome.entry().status,
+        responses[1].outcome.entry().status(),
         FederationOperationStatus::Rejected
     );
     assert_eq!(responses[2].operation_id, later_operation_id);
     assert_eq!(
-        responses[2].outcome.entry().status,
+        responses[2].outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     let notified = waiter.await.expect("waiter task");
     assert_eq!(notified.operation_id, conflicting_operation_id);
     assert_eq!(
-        notified.outcome.entry().status,
+        notified.outcome.entry().status(),
         FederationOperationStatus::Rejected
     );
 
@@ -8777,9 +8783,9 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
-    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
-    assert_eq!(persisted[2].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status(), FederationOperationStatus::Rejected);
+    assert_eq!(persisted[2].status(), FederationOperationStatus::Applied);
 }
 
 #[tokio::test]
@@ -8834,7 +8840,7 @@ async fn federation_aleph_bft_finalized_unit_applies_rejected_trailing_entry() {
     assert_eq!(
         responses
             .iter()
-            .map(|response| response.outcome.entry().status)
+            .map(|response| response.outcome.entry().status())
             .collect::<Vec<_>>(),
         vec![
             FederationOperationStatus::Applied,
@@ -8851,8 +8857,8 @@ async fn federation_aleph_bft_finalized_unit_applies_rejected_trailing_entry() {
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 2);
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
-    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status(), FederationOperationStatus::Rejected);
 }
 
 #[tokio::test]
@@ -9014,7 +9020,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         assert_eq!(
             first_responses
                 .iter()
-                .map(|response| response.outcome.entry().status)
+                .map(|response| response.outcome.entry().status())
                 .collect::<Vec<_>>(),
             vec![FederationOperationStatus::Applied; 6]
         );
@@ -9029,7 +9035,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         assert_eq!(
             second_responses
                 .iter()
-                .map(|response| response.outcome.entry().status)
+                .map(|response| response.outcome.entry().status())
                 .collect::<Vec<_>>(),
             vec![FederationOperationStatus::Rejected; 3]
         );
@@ -9049,8 +9055,8 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
             second_responses[0]
                 .outcome
                 .entry()
-                .rejection
-                .clone()
+                .rejection()
+                .cloned()
                 .map(cdk::Error::from),
             Some(cdk::Error::IssuedQuote)
         ));
@@ -9058,12 +9064,12 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
             second_responses[1]
                 .outcome
                 .entry()
-                .rejection
-                .clone()
+                .rejection()
+                .cloned()
                 .map(cdk::Error::from),
             Some(cdk::Error::TokenAlreadySpent)
         ));
-        assert!(second_responses[2].outcome.entry().rejection.is_none());
+        assert!(second_responses[2].outcome.entry().rejection().is_none());
 
         let replay_responses = state
             .apply_federation_aleph_bft_finalized_unit(second_unit.clone())
@@ -9181,7 +9187,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         assert_eq!(
             persisted
                 .iter()
-                .map(|entry| entry.status)
+                .map(|entry| entry.status())
                 .collect::<Vec<_>>(),
             vec![
                 FederationOperationStatus::Applied,
@@ -9196,14 +9202,14 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
             ]
         );
         assert!(matches!(
-            persisted[6].rejection.clone().map(cdk::Error::from),
+            persisted[6].rejection().cloned().map(cdk::Error::from),
             Some(cdk::Error::IssuedQuote)
         ));
         assert!(matches!(
-            persisted[7].rejection.clone().map(cdk::Error::from),
+            persisted[7].rejection().cloned().map(cdk::Error::from),
             Some(cdk::Error::TokenAlreadySpent)
         ));
-        assert!(persisted[8].rejection.is_none());
+        assert!(persisted[8].rejection().is_none());
     }
 
     let first_entries = first_state
@@ -10319,7 +10325,7 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     wait_for_applied_operation(&first_state, operation_id).await;
@@ -10432,7 +10438,7 @@ async fn aleph_bft_four_live_sessions_finalize_operation_over_private_rest_netwo
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in &states {
@@ -10526,7 +10532,7 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     wait_for_applied_operation(&first_state, operation_id).await;
@@ -10941,7 +10947,7 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in [&first_state, &second_state] {
@@ -11090,7 +11096,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in [&first_state, &second_state] {
@@ -11211,7 +11217,7 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     wait_for_applied_operation(&first_state, operation_id).await;
@@ -11374,7 +11380,7 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(transport.aleph_bft_network_message_reorders_completed(), 1);
@@ -11491,7 +11497,7 @@ async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(transport.aleph_bft_network_message_reorders_completed(), 1);
@@ -11603,7 +11609,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
 
     assert_eq!(response.operation_id, first_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in &states {
@@ -11703,7 +11709,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
 
     assert_eq!(response.operation_id, second_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in &states {
@@ -11983,7 +11989,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
     .expect("honest follow-up response");
     assert_eq!(follow_up.operation_id, follow_up_operation_id);
     assert_eq!(
-        follow_up.outcome.entry().status,
+        follow_up.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
 
@@ -12255,7 +12261,7 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in &states {
@@ -13357,7 +13363,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         .collect::<Vec<_>>();
     let expected_statuses = expected_entries
         .iter()
-        .map(|entry| entry.status)
+        .map(|entry| entry.status())
         .collect::<Vec<_>>();
     let expected_digest = materialized_state_digest(&session.states[0], &expected_entries)
         .await
@@ -13383,7 +13389,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             expected_operation_ids
         );
         assert_eq!(
-            entries.iter().map(|entry| entry.status).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|entry| entry.status())
+                .collect::<Vec<_>>(),
             expected_statuses
         );
         assert_eq!(
@@ -14288,7 +14297,7 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
                     .expect("pending operation lookup");
                 let entry_ids = entries
                     .iter()
-                    .map(|entry| (entry.operation_id, entry.status))
+                    .map(|entry| (entry.operation_id, entry.status()))
                     .collect::<Vec<_>>();
                 let pending_ids = pending
                     .iter()
@@ -14312,7 +14321,7 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for index in [0_usize, 2, 3] {
@@ -14872,7 +14881,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
         .expect("first operation finality before restart");
     assert_eq!(response.operation_id, first_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     wait_for_applied_operation(&first_state, first_operation_id).await;
@@ -14933,7 +14942,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
         .expect("second operation finality after restart");
     assert_eq!(response.operation_id, second_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
 
@@ -15054,7 +15063,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
         .expect("first operation finality before crash-window recovery");
     assert_eq!(response.operation_id, first_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     wait_for_applied_operation(&first_state, first_operation_id).await;
@@ -15198,7 +15207,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
         .expect("second operation finality after backup-only recovery");
     assert_eq!(response.operation_id, second_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
 
@@ -15330,7 +15339,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
         .expect("first five-member operation finality before restart");
     assert_eq!(response.operation_id, first_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     for state in &states {
@@ -15396,7 +15405,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
         .expect("second five-member operation finality after restart");
     assert_eq!(response.operation_id, second_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     let backup_after_restart =
@@ -15415,7 +15424,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
         .expect("third five-member operation finality after restart");
     assert_eq!(response.operation_id, third_operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
 
@@ -15500,7 +15509,7 @@ fn journal_convergence_projection(
                 entry.operation_id,
                 entry.previous_order_digest,
                 entry.order_digest,
-                entry.status,
+                entry.status(),
             )
         })
         .collect()
@@ -15518,7 +15527,7 @@ async fn wait_for_terminal_operation(
                 .get_federation_journal_entry_by_operation_id(operation_id)
                 .await
                 .expect("terminal operation lookup")
-                .map(|entry| entry.status);
+                .map(|entry| entry.status());
             if status.is_some_and(|status| {
                 matches!(
                     status,
@@ -15856,7 +15865,7 @@ async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperati
 
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(
-        response.outcome.entry().status,
+        response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
 
@@ -15892,7 +15901,7 @@ async fn submit_duplicate_latency_probe_mint_quote(state: &MintState) -> Federat
     for response in [first_response, second_response] {
         assert_eq!(response.operation_id, operation_id);
         assert_eq!(
-            response.outcome.entry().status,
+            response.outcome.entry().status(),
             FederationOperationStatus::Applied
         );
     }
@@ -16024,7 +16033,7 @@ async fn operation_applied_within(
                 .expect("journal lookup");
             if entries.iter().any(|entry| {
                 entry.operation_id == operation_id
-                    && entry.status == FederationOperationStatus::Applied
+                    && entry.status() == FederationOperationStatus::Applied
             }) {
                 return;
             }
@@ -17615,7 +17624,7 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
         assert_eq!(responses.len(), 1);
         let response = responses.pop().expect("accepted response");
         assert_eq!(
-            response.outcome.entry().status,
+            response.outcome.entry().status(),
             FederationOperationStatus::Accepted
         );
         response
@@ -17662,7 +17671,7 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
         .expect("duplicate submit response");
     assert_eq!(duplicate_response.operation_id, operation_id);
     assert_eq!(
-        duplicate_response.outcome.entry().status,
+        duplicate_response.outcome.entry().status(),
         FederationOperationStatus::Applied
     );
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
@@ -18289,7 +18298,7 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
         .expect("replayed journal entries");
     assert_eq!(replayed_entries.len(), 1);
     assert_eq!(
-        replayed_entries[0].status,
+        replayed_entries[0].status(),
         FederationOperationStatus::Applied
     );
 
@@ -18310,7 +18319,7 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
         .await;
     assert_eq!(replayed_consensus.peer_status().operation_count, 1);
     assert_eq!(
-        replayed_consensus.journal().entries()[0].status,
+        replayed_consensus.journal().entries()[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -18404,7 +18413,7 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
         .await
         .expect("replayed journal entries");
     assert_eq!(
-        replayed_entries[0].status,
+        replayed_entries[0].status(),
         FederationOperationStatus::Applied
     );
 }
@@ -18438,7 +18447,7 @@ async fn submit_mint_quote_operation_applies_quote_to_local_store() {
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(
         state
             .federation
@@ -18450,7 +18459,7 @@ async fn submit_mint_quote_operation_applies_quote_to_local_store() {
             .journal()
             .entry_by_operation_id(operation_id)
             .expect("runtime entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -18581,14 +18590,13 @@ async fn materialized_state_digest_tracks_rejection_without_changing_ordering_ha
         .into_iter()
         .next()
         .expect("journal entry");
-    spent_entry.status = FederationOperationStatus::Rejected;
-    spent_entry.rejection = Some(cdk_common::error::ErrorResponse::from(
-        cdk::Error::TokenAlreadySpent,
-    ));
+    spent_entry.application = FederationApplicationState::Rejected {
+        response: cdk_common::error::ErrorResponse::from(cdk::Error::TokenAlreadySpent),
+    };
     let mut duplicate_entry = spent_entry.clone();
-    duplicate_entry.rejection = Some(cdk_common::error::ErrorResponse::from(
-        cdk::Error::DuplicateInputs,
-    ));
+    duplicate_entry.application = FederationApplicationState::Rejected {
+        response: cdk_common::error::ErrorResponse::from(cdk::Error::DuplicateInputs),
+    };
 
     assert_eq!(spent_entry.operation_id, duplicate_entry.operation_id);
     assert_eq!(spent_entry.order_digest, duplicate_entry.order_digest);
@@ -18627,15 +18635,19 @@ async fn catch_up_verification_rejects_mismatched_application_rejection() {
         .begin_transaction()
         .await
         .expect("begin rejection transaction");
-    tx.reject_federation_operation(peer_entry.operation_id, &local_rejection)
-        .await
-        .expect("persist local rejection");
+    tx.set_federation_operation_application_state(
+        peer_entry.operation_id,
+        &FederationApplicationState::Rejected {
+            response: local_rejection,
+        },
+    )
+    .await
+    .expect("persist local rejection");
     tx.commit().await.expect("commit local rejection");
 
-    peer_entry.status = FederationOperationStatus::Rejected;
-    peer_entry.rejection = Some(cdk_common::error::ErrorResponse::from(
-        cdk::Error::DuplicateInputs,
-    ));
+    peer_entry.application = FederationApplicationState::Rejected {
+        response: cdk_common::error::ErrorResponse::from(cdk::Error::DuplicateInputs),
+    };
     let error = state
         .verify_federation_catch_up_rejections(&[peer_entry])
         .await
@@ -18685,7 +18697,7 @@ async fn materialized_state_digest_tracks_keyset_rotation_rows() {
             .iter()
             .find(|entry| entry.operation_id == operation_id)
             .expect("rotation entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }
@@ -18996,7 +19008,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
         .iter()
         .find(|entry| entry.operation_id == mint_entry.operation_id)
         .expect("mint entry after failure");
-    assert_eq!(failed_entry.status, FederationOperationStatus::Accepted);
+    assert_eq!(failed_entry.status(), FederationOperationStatus::Accepted);
     let quote = db
         .get_mint_quote(&quote_id)
         .await
@@ -19051,7 +19063,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
             .iter()
             .find(|entry| entry.operation_id == mint_entry.operation_id)
             .expect("replayed mint entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
     let replayed_digest = materialized_state_digest(&restarted_state, &replayed_entries)
@@ -19131,7 +19143,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
             .iter()
             .find(|entry| entry.operation_id == swap_entry.operation_id)
             .expect("swap entry after failure")
-            .status,
+            .status(),
         FederationOperationStatus::Accepted
     );
     assert_eq!(
@@ -19184,7 +19196,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
             .iter()
             .find(|entry| entry.operation_id == swap_entry.operation_id)
             .expect("replayed swap entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
     let replayed_digest = materialized_state_digest(&restarted_state, &replayed_entries)
@@ -19273,7 +19285,7 @@ async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_subm
         .expect("journal entries");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].operation_id, operation_id);
-    assert_eq!(entries[0].status, FederationOperationStatus::Applied);
+    assert_eq!(entries[0].status(), FederationOperationStatus::Applied);
     assert!(state
         .mint
         .localstore()
@@ -19680,7 +19692,7 @@ async fn submit_mint_operation_applies_issuance_and_persists_share() {
             .iter()
             .find(|entry| entry.operation_id == operation_id)
             .expect("mint entry")
-            .status,
+            .status(),
         FederationOperationStatus::Applied
     );
 }

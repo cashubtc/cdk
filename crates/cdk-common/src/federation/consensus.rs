@@ -10,8 +10,8 @@ use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::{
-    FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationConfig,
-    FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationApplicationState, FederationCatchUpCertificate, FederationCatchUpCertificateQuorum,
+    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPeerStatus,
@@ -22,8 +22,6 @@ use super::{
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-use crate::error::ErrorResponse;
 
 const DEFAULT_CATCH_UP_LIMIT: u16 = 100;
 const MAX_CATCH_UP_LIMIT: u16 = 1000;
@@ -2035,15 +2033,14 @@ impl FederationConsensusRuntime {
         self.journal_mut().update_status(operation_id, status)
     }
 
-    /// Update local application status and its optional standard Cashu rejection.
+    /// Update local post-consensus application state.
     pub fn update_application_state(
         &mut self,
         operation_id: FederationOperationId,
-        status: FederationOperationStatus,
-        rejection: Option<ErrorResponse>,
+        application: FederationApplicationState,
     ) -> Result<FederationJournalEntry> {
         self.journal_mut()
-            .update_application_state(operation_id, status, rejection)
+            .update_application_state(operation_id, application)
     }
 }
 

@@ -13,7 +13,7 @@ use cdk_common::database::{
 };
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederatedKeyset, FederationError,
+    generate_trusted_dealer_configs, FederatedKeyset, FederationApplicationState, FederationError,
     FederationJournalConsensusEvidence, FederationJournalDigest, FederationJournalEntry,
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
@@ -711,8 +711,7 @@ fn accepted_entry_without_journal(
         previous_order_digest,
         order_digest,
         consensus_evidence: None,
-        rejection: None,
-        status: FederationOperationStatus::Accepted,
+        application: FederationApplicationState::Accepted {},
     }
 }
 

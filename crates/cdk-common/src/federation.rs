@@ -54,11 +54,12 @@ pub use self::dkg_driver::{
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
 pub use self::journal::{
-    FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
-    FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
-    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
-    FederationMaterializedStateSnapshot, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationOperationStatus, InMemoryFederationJournal,
+    FederationApplicationState, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
+    FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
+    FederationMaterializedStateDigest, FederationMaterializedStateRow,
+    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationStatus,
+    InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,

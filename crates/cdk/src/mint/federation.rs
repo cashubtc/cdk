@@ -14,12 +14,13 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationBlindSignatureShareSet, FederationConfig, FederationConfigDigest, FederationError,
-    FederationId, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
-    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationApplicationState, FederationBlindSignatureShareSet, FederationConfig,
+    FederationConfigDigest, FederationError, FederationId, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
@@ -887,9 +888,9 @@ async fn finish_federation_apply_transaction<T>(
 ) -> Result<T, Error> {
     let outcome = match outcome {
         Ok(value) => transaction
-            .update_federation_operation_status(
+            .set_federation_operation_application_state(
                 entry.operation_id,
-                FederationOperationStatus::Applied,
+                &FederationApplicationState::Applied {},
             )
             .await
             .map(|()| value)
@@ -929,12 +930,12 @@ impl Mint {
             ));
         }
         if matches!(
-            entry.status,
+            entry.status(),
             FederationOperationStatus::Rejected | FederationOperationStatus::Failed
         ) {
             return Err(FederationError::RejectedOperation {
                 operation_id: entry.operation_id,
-                status: entry.status,
+                status: entry.status(),
             }
             .into());
         }
@@ -1028,7 +1029,7 @@ impl Mint {
         let entries = self.localstore.get_federation_journal_entries().await?;
         let applied_rotations = entries
             .iter()
-            .filter(|entry| entry.status == FederationOperationStatus::Applied)
+            .filter(|entry| entry.status() == FederationOperationStatus::Applied)
             .filter(|entry| {
                 matches!(
                     &entry.envelope.operation,
@@ -1047,7 +1048,7 @@ impl Mint {
 
         let mut effective = config.clone();
         for entry in entries {
-            if entry.status != FederationOperationStatus::Applied {
+            if entry.status() != FederationOperationStatus::Applied {
                 continue;
             }
 
@@ -1236,13 +1237,13 @@ impl Mint {
             .get_federation_journal_entry_by_operation_id(entry.operation_id)
             .await?
         {
-            match persisted_entry.status {
+            match persisted_entry.status() {
                 FederationOperationStatus::Applied => return Ok(false),
                 FederationOperationStatus::Rejected => {
                     return Err(Error::Custom(format!(
                         "federation operation {} has local status {} and is not accepted for apply",
                         persisted_entry.operation_id,
-                        federation_operation_status_label(persisted_entry.status)
+                        federation_operation_status_label(persisted_entry.status())
                     )));
                 }
                 FederationOperationStatus::Failed => {
@@ -1252,14 +1253,14 @@ impl Mint {
             }
         }
 
-        match entry.status {
+        match entry.status() {
             FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
             FederationOperationStatus::Applied => return Ok(false),
             FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
                 return Err(Error::Custom(format!(
                     "federation operation {} has local status {} and is not accepted for apply",
                     entry.operation_id,
-                    federation_operation_status_label(entry.status)
+                    federation_operation_status_label(entry.status())
                 )));
             }
         }
@@ -2242,7 +2243,7 @@ fn ensure_same_federation_journal_entry_for_retry(
         return Err(Error::Custom(format!(
             "federation operation {} has local status {} but does not match the accepted consensus entry",
             persisted.operation_id,
-            federation_operation_status_label(persisted.status)
+            federation_operation_status_label(persisted.status())
         )));
     }
 
