@@ -38,12 +38,10 @@ No code was changed as part of the review.
 
 ## Summary
 
-The main risk is that federated mint signing can currently depend on local
-backend timing instead of only on consensus-ordered payment evidence. In a
-federation, members must sign based on the same ordered state. Any path where a
-member independently marks a quote paid before the federation has accepted a
-payment-observation quorum can cause divergent signing decisions or rejected
-operations that are artifacts of timing.
+The four release-blocking findings identified by this review have been fixed on
+the cleanup branch. The remaining active findings are availability,
+defense-in-depth, wallet-hardening, and policy work rather than confirmed
+real-funds safety blockers.
 
 Findings that have since been fixed on the cleanup branch are collected under
 `Resolved Findings` rather than mixed into the active work queue.
@@ -56,68 +54,10 @@ correctness or availability work, `Low` findings are defense-in-depth or UX
 hardening, and `Informational` findings are policy choices rather than defects.
 The confidence percentage measures confidence that the assigned current
 severity is correct; it is not the probability that an exploit will occur.
-The current active tally is four High, six Medium, three Low, and one
-Informational finding.
+The current active tally is six Medium, three Low, and one Informational
+finding.
 
 ## Findings
-
-### P1: Mint Signing Can Depend on Local Backend Timing
-
-Assessment:
-
-- **Status:** Confirmed, with substantial route-level mitigation already in
-  place.
-- **Current severity:** High (94% confidence).
-- **Decision:** Worth addressing before production. Consensus apply itself must
-  enforce the observation-at-or-before-index invariant rather than relying on
-  how current callers caused the quote to become `Paid`.
-
-The federated mint apply path loads local mint quotes and signs when those quote
-states are `Paid`.
-
-Relevant code:
-
-- `crates/cdk/src/mint/federation.rs:1533`
-- `crates/cdk/src/mint/federation.rs:1579`
-- `crates/cdk/src/mint/federation.rs:1630`
-
-However, local quote state can be mutated outside consensus:
-
-- `crates/cdk/src/mint/issue/mod.rs:603` calls `check_mint_quote_paid`.
-- `crates/cdk/src/mint/ln.rs:46` checks the backend and mutates quote payment state.
-- `crates/cdk/src/mint/mod.rs:1046` handles backend payment notifications and updates local quotes.
-
-This creates a timing window:
-
-1. A quote is accepted by consensus.
-2. One member observes backend payment first and locally marks the quote `Paid`.
-3. A wallet submits the mint operation.
-4. That member signs because its local DB says `Paid`.
-5. Another member has not locally observed payment yet and rejects with `UnpaidQuote`.
-
-That violates the federation requirement that signing decisions derive from the
-same consensus-ordered state.
-
-Recommended fix:
-
-- In federation mode, `apply_federation_mint` must require a quorum-satisfied
-  `MintQuotePayment` observation at or before the mint operation index.
-- Do not use raw local quote state as the authority for signing unless it was
-  derived from consensus observations at or before that operation.
-- Local backend checks should submit observations, but should not make a quote
-  mintable before consensus payment evidence allows it.
-
-Tests to add:
-
-- A quote is locally marked `Paid` by backend polling, but no accepted
-  payment-observation quorum exists. A federated mint operation must fail before
-  signing.
-- A payment-observation quorum finalizes after a mint operation index. The older
-  mint operation must not become valid retroactively.
-- A payment-observation quorum finalizes before the mint operation index. Mint
-  signing succeeds deterministically on replay.
-- Members with different local backend timing converge to the same journal
-  apply result.
 
 ### P2: Architecture Tests Were Removed Before Enforceable Boundaries Existed
 
@@ -399,66 +339,6 @@ should also come only from currently validated federation members.
 These findings focus on dead ends, deadlocks, race conditions, and Byzantine
 behavior around federation-mode swap operations.
 
-### P1: Already-Signed Swap Outputs Can Burn Fresh Inputs
-
-Assessment:
-
-- **Status:** Confirmed.
-- **Current severity:** High (99% confidence).
-- **Decision:** Release blocker. Reject cross-operation reuse of already-signed
-  blinded outputs before any fresh input proof is marked spent.
-
-`apply_federation_swap` checks whether blind signatures already exist for the
-requested output blinded messages:
-
-- `crates/cdk/src/mint/federation.rs:1723`
-- `crates/cdk/src/mint/federation.rs:1727`
-
-If a new swap uses fresh unspent inputs but reuses blinded outputs that were
-already signed by an earlier operation, the code can continue, mark the fresh
-inputs as `Spent`, and then skip signing because signatures are already present:
-
-- `crates/cdk/src/mint/federation.rs:1762`
-- `crates/cdk/src/mint/federation.rs:1764`
-
-The HTTP route then tries to return persisted federation signature-share rows
-for this new operation:
-
-- `crates/cdk-axum/src/router_handlers.rs:273`
-- `crates/cdk/src/mint/federation.rs:914`
-
-Those rows may not exist for the new operation, because the signatures belonged
-to an earlier operation. The result is a dead-end swap: fresh inputs can be
-spent while the wallet cannot obtain usable signature shares for the operation.
-
-This also weakens operation provenance. BLS blind signature shares are bound to
-the blinded message, not to the federation operation ID; the operation ID is
-metadata in the share record. A later operation must not be allowed to inherit
-already-persisted output signatures unless it is an exact idempotent replay of
-the same operation.
-
-Recommended fix:
-
-- Reject swap outputs whose blinded messages already have persisted signatures
-  unless the operation is proven to be the exact same accepted operation.
-- Prefer matching the standalone swap saga behavior, where duplicate blinded
-  outputs are detected before final spend.
-- Require persisted signature-share records, blinded messages, completed
-  operation rows, and output signatures to agree on the same operation ID before
-  treating an operation as idempotent.
-
-Tests to add:
-
-- First swap signs output `B`; second swap uses fresh input `A2` and reuses
-  output `B`. The second swap must fail before spending `A2`.
-- Same spent input and same outputs submitted under a different operation ID
-  must be rejected or treated as a terminal duplicate, not applied as a new
-  operation.
-- Persisted response lookup after a rejected duplicate-output swap must not
-  return shares from another operation.
-- Replay of the exact same operation ID returns the original persisted response
-  without additional spending or signing.
-
 ### P2: Swap Operations Have No Consensus Conflict Keys
 
 Assessment:
@@ -570,106 +450,6 @@ These findings focus on federation-mode melt quote creation, accepted melt
 apply, outgoing payment execution, payment observation convergence, change
 signing, and wallet recovery behavior.
 
-### P1: Melt Quote Consensus Does Not Fix the Quote Terms
-
-Assessment:
-
-- **Status:** Confirmed.
-- **Current severity:** High (99% confidence).
-- **Decision:** Release blocker. Consensus must carry canonical quote terms and
-  members must materialize those exact terms without independently regenerating
-  them from local backends during apply.
-
-`FederationMeltQuoteOperation` carries only the quote ID and wallet request:
-
-- `crates/cdk-common/src/federation/operation.rs:468`
-
-During apply, each member independently reconstructs and persists the melt quote
-from its own payment backend:
-
-- `crates/cdk/src/mint/federation.rs:1790`
-- `crates/cdk/src/mint/melt/mod.rs:307`
-
-This is materially weaker than mint quote consensus, where the accepted
-operation includes the quote response. Melt quote generation can differ across
-members in amount, fee reserve, expiry, onchain fee options, request lookup ID,
-or backend-specific metadata. Payment observations later require local quote
-amount and fee reserve to match the observation:
-
-- `crates/cdk/src/mint/federation.rs:2370`
-
-Honest members can therefore accept the same melt quote operation but persist
-different quote terms, then reject each other's payment observations or compute
-different change. Fake-wallet tests can hide this because the fake backend
-returns deterministic quote terms.
-
-Recommended fix:
-
-- Put the full melt quote response or canonical quote terms into
-  `FederationMeltQuoteOperation`, including amount, fee reserve, expiry,
-  payment method, request string, selected fee options, and stable lookup
-  metadata required for later status checks.
-- Materialize exactly the accepted consensus quote terms on every member.
-- Treat local backend quote generation by the proposing member as provisional
-  until the exact terms are accepted by consensus.
-- Reject replay if an existing local quote with the same ID does not match the
-  accepted terms.
-
-Tests to add:
-
-- Two members whose backends return different fee reserves for the same payment
-  request still materialize the exact consensus fee reserve.
-- A non-proposer member does not call quote generation in a way that can alter
-  amount, expiry, or lookup ID after consensus.
-- A mismatched pre-existing local quote is rejected before any melt can reserve
-  inputs.
-- Payment observations using the accepted consensus amount and fee reserve
-  finalize consistently on all members.
-
-### P1: Melt Can Rely on a Local-Only Quote
-
-Assessment:
-
-- **Status:** Confirmed.
-- **Current severity:** High (97% confidence).
-- **Decision:** Release blocker. A melt must prove that its quote was accepted
-  earlier in the ordered journal before reserving proofs or initiating payment.
-
-The public melt quote route creates and persists a local quote before submitting
-the melt quote operation to federation consensus:
-
-- `crates/cdk-axum/src/custom_handlers.rs:917`
-- `crates/cdk/src/mint/melt/mod.rs:284`
-
-The accepted melt path then loads the local quote and validates local state:
-
-- `crates/cdk/src/mint/melt/mod.rs:1275`
-
-I did not see an explicit check that the quote has a prior accepted
-`MeltQuote` journal entry before a `Melt` operation can reserve inputs or
-attempt payment. If quote consensus times out after local quote creation, or a
-member receives a malicious private operation for a locally known but
-non-consensus quote, a melt can be driven by state that is not part of the
-federation order.
-
-Recommended fix:
-
-- `apply_federation_melt` must require an accepted `MeltQuote` entry for the
-  quote ID at or before the melt operation index.
-- Local-only melt quotes must remain provisional and non-spendable in
-  federation mode.
-- The quote operation's accepted terms should be the only authority for melt
-  quote materialization.
-
-Tests to add:
-
-- Local quote exists but no accepted `MeltQuote` operation exists; federated
-  melt fails before reserving inputs.
-- Accepted `Melt` appears before accepted `MeltQuote`; replay rejects or parks
-  it deterministically without payment execution.
-- Quote creation times out after local persistence; paying/melting that quote
-  remains impossible until quote consensus finalizes.
-
 ### P2: Melt Conflict Keys Are Quote-Scoped Only
 
 Assessment:
@@ -774,6 +554,53 @@ These findings were valid when recorded but are resolved on the current cleanup
 branch. They remain here as an audit trail and are no longer part of the active
 work queue or suggested fix order.
 
+### Resolved: Mint Signing Depended on Local Backend Timing
+
+Former assessment: High severity (94% confidence), worthwhile as a production
+release blocker.
+
+Federated mint apply now requires quorum-satisfied `MintQuotePayment` evidence
+at or before the accepted mint operation index. Raw local `Paid` state is no
+longer sufficient to authorize signing, and later payment evidence cannot make
+an older mint operation valid retroactively. Regression coverage includes a
+locally paid quote without consensus evidence and a payment quorum ordered
+after the mint operation.
+
+### Resolved: Already-Signed Swap Outputs Could Burn Fresh Inputs
+
+Former assessment: High severity (99% confidence), worthwhile as a production
+release blocker.
+
+Federated swap apply now rejects cross-operation reuse of persisted output
+signatures while inputs are still unspent. Exact replay is tied to the same
+completed swap operation; a different operation cannot inherit another
+operation's signatures or share provenance. The regression verifies that a
+fresh input remains untouched when its requested output was signed previously.
+
+### Resolved: Melt Quote Consensus Did Not Fix Quote Terms
+
+Former assessment: High severity (99% confidence), worthwhile as a production
+release blocker.
+
+`FederationMeltQuoteOperation` now carries the canonical
+`MeltQuoteCreateResponse` plus only the backend metadata omitted from that
+public response. The proposer prepares without persistence, accepted apply does
+not call a local backend, and one exhaustive converter validates Bolt11,
+Bolt12, onchain, and custom payloads before deterministic materialization using
+accepted journal time. Exact replay preserves progressed quote state, while a
+conflicting pre-existing quote fails closed without rewrite.
+
+### Resolved: Melt Could Rely on a Local-Only Quote
+
+Former assessment: High severity (97% confidence), worthwhile as a production
+release blocker.
+
+Federated quote preparation no longer persists proposer-local quote state
+before consensus. Before any melt reservation, saga creation, or payment work,
+apply requires a matching earlier `MeltQuote` journal entry whose local
+application completed successfully. The check is index-bounded, so a later
+quote entry cannot retroactively authorize an older melt on replay.
+
 ### Resolved: Apply-Time Rejection Conflict-Key State
 
 Consensus rejection and post-consensus business rejection are now represented
@@ -869,29 +696,19 @@ in backend-dependent row order for SQL backends.
 
 ## Suggested Fix Order
 
-1. Make federated mint signing explicitly check payment-observation quorum at or
-   before the mint operation index.
-2. Prevent non-consensus local payment state from making federation quotes
-   mintable.
-3. Reject federated swaps that reuse already-signed outputs under a different
-   operation before spending inputs.
-4. Put full melt quote terms into consensus and materialize those exact terms
-   on every member.
-5. Require an accepted prior `MeltQuote` operation before any federated melt can
-   reserve inputs or attempt payment.
-6. Verify BLS change shares during melt status recovery before aggregation.
-7. Add explicit timeouts to member metadata and keyset validation.
-8. Refresh the valid-member cache after insufficient responses, and add a TTL or
+1. Verify BLS change shares during melt status recovery before aggregation.
+2. Add explicit timeouts to member metadata and keyset validation.
+3. Refresh the valid-member cache after insufficient responses, and add a TTL or
    invalidation policy.
-9. Restrict state-changing quote-status aggregation to validated members.
-10. Add swap input conflict keys so conflicting spends are rejected before
+4. Restrict state-changing quote-status aggregation to validated members.
+5. Add swap input conflict keys so conflicting spends are rejected before
    expensive apply/signing work.
-11. Add melt input conflict keys in addition to quote-scoped conflict keys.
-12. Ensure non-definitive swap apply failures wake waiters with persisted retry
-    status instead of relying on the outer timeout.
-13. Add a production threshold-profile warning or explicit safe-profile opt-in
+6. Add melt input conflict keys in addition to quote-scoped conflict keys.
+7. Ensure non-definitive swap apply failures wake waiters with persisted retry
+   status instead of relying on the outer timeout.
+8. Add a production threshold-profile warning or explicit safe-profile opt-in
     without treating intentionally weak structural configs as invalid.
-14. Synthesize consensus-critical mint info or require a matching threshold view
+9. Synthesize consensus-critical mint info or require a matching threshold view
     for fields that affect wallet behavior.
-15. Replace the removed signing, consensus-gating, commit-order, and production
+10. Replace the removed signing, consensus-gating, commit-order, and production
     feature architecture checks with enforceable typed or behavioral boundaries.

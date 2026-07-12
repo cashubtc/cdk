@@ -119,6 +119,32 @@ Resolved blocking bugs:
   proved activity renewed while quote and journal state remained untouched,
   then restored quorum and converged.
 
+## Recent federation security checkpoint
+
+- Federated mint issuance now requires quorum-satisfied payment observation
+  evidence at or before the accepted mint operation index. A locally paid quote
+  is not sufficient, and later observations cannot retroactively authorize an
+  older mint operation.
+- Federated swap apply rejects cross-operation reuse of already-signed outputs
+  before fresh proofs are inserted or spent. Exact replay remains tied to the
+  completed operation and its persisted signature-share provenance.
+- `FederationMeltQuoteOperation` now follows the mint-quote consensus pattern:
+  it carries the canonical `MeltQuoteCreateResponse` plus only internal backend
+  metadata absent from the public response. The proposer prepares without
+  persistence, apply performs no backend call, and all members materialize the
+  accepted Bolt11, Bolt12, onchain, or custom terms with deterministic journal
+  time.
+- Federated melt apply requires a matching earlier successfully applied
+  `MeltQuote` journal entry before proof reservation, saga creation, or payment
+  work. The check is index-bounded, so a later quote never authorizes an older
+  melt on replay.
+- Focused regressions cover local-only payment state, temporal authorization,
+  signed-output reuse, pre-consensus quote absence, non-proposer backend
+  isolation, exact replay, conflicting local quotes, standalone quote
+  persistence, and normal quote-then-melt operation. The full federation melt
+  module, standalone melt tests, `cdk-common` federation suite, and focused Axum
+  catch-up and route tests pass.
+
 ## Recent consensus checkpoint
 
 - Consensus-application transaction ownership is centralized without changing
@@ -2414,6 +2440,11 @@ Implementation checklist:
 
 - [x] Split melt into consensus-visible stages.
 - [x] `MeltQuote` persists the quote across members.
+- [x] The accepted melt quote operation carries the canonical public quote
+  response and required internal backend metadata. Preparation is provisional,
+  and every member materializes identical terms without a local backend call.
+- [x] A melt can reserve proofs only when the same quote has an earlier
+  successfully applied `MeltQuote` journal entry.
 - [x] Federated melt request validates inputs and change outputs and uses consensus-visible saga/pending state.
 - [x] Keep the current federated melt request name for operation version 1; document `FederationOperation::Melt` as the accepted reserve/execution operation rather than a terminal finality operation.
 - [x] Fake-wallet happy path covers outgoing payment completion.
@@ -2453,6 +2484,9 @@ Tests and success criteria:
   `failed_federation_melt_rolls_back_atomically_and_replays`.
 - [x] Two concurrent melts of the same proofs cannot both pay.
 - [x] Internal melt-to-mint updates the mint quote and melt quote in one accepted operation.
+- [x] Melt quote preparation leaves no durable proposer-local quote before
+  consensus; exact replay is idempotent, conflicting local data fails closed,
+  and a later quote does not authorize an older melt.
 
 ## Milestone 15: networking and peer authentication
 
