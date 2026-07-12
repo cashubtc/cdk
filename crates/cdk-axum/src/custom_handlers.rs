@@ -285,7 +285,8 @@ async fn ensure_federation_mint_quotes_paid_for_signing(
     }
 
     let wait_timeout = state
-        .federation_peer_sync_config
+        .federation
+        .peer_sync_config
         .unwrap_or_default()
         .operation_submission_timeout;
     tokio::time::timeout(
@@ -2250,33 +2251,7 @@ mod tests {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
             #[cfg(feature = "federation")]
-            federation_consensus: None,
-            #[cfg(feature = "federation")]
-            federation_peer_sync_config: None,
-            #[cfg(feature = "federation")]
-            federation_dkg_auto_start_config: None,
-            #[cfg(feature = "federation")]
-            federation_sequences: None,
-            #[cfg(feature = "federation")]
-            federation_sync: None,
-            #[cfg(feature = "federation")]
-            federation_notifications: None,
-            #[cfg(feature = "federation")]
-            federation_private_rest_admission: None,
-            #[cfg(feature = "federation")]
-            federation_dkg_member_admission: None,
-            #[cfg(feature = "federation")]
-            federation_invalid_operation_alerts: None,
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_pending_sequences: None,
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            #[cfg(feature = "federation")]
-            federation_local_finality_test: false,
-            #[cfg(feature = "federation")]
-            federation_manual_finality_test: false,
+            federation: crate::federation::FederationNodeRuntime::disabled(),
         }
     }
 
@@ -2739,7 +2714,8 @@ mod tests {
     ) {
         let unit = {
             let mut consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -2804,34 +2780,35 @@ mod tests {
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
-            federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
-            federation_peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
-            federation_dkg_auto_start_config: None,
-            federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
-                cdk::federation::FederationRestSequenceTracker::new(),
-            ))),
-            federation_sync: Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
-                crate::FederationSyncState::default()
-            } else {
-                crate::FederationSyncState::for_aleph_bft()
-            }))),
-            federation_notifications: Some(Arc::new(
-                crate::FederationOperationNotifications::default(),
-            )),
-            federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
-                crate::FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
-            ))),
-            federation_dkg_member_admission: None,
-            federation_invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
-                crate::FederationInvalidOperationAlertTracker::default(),
-            ))),
-            federation_aleph_bft_pending_sequences: Some(Arc::new(tokio::sync::Mutex::new(
-                HashMap::new(),
-            ))),
-            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            federation_local_finality_test: local_finality_test,
-            federation_manual_finality_test: false,
+            federation: crate::federation::FederationNodeRuntime {
+                consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
+                peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
+                dkg_auto_start_config: None,
+                sequences: Some(Arc::new(tokio::sync::Mutex::new(
+                    cdk::federation::FederationRestSequenceTracker::new(),
+                ))),
+                sync: Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+                    crate::FederationSyncState::default()
+                } else {
+                    crate::FederationSyncState::for_aleph_bft()
+                }))),
+                notifications: Some(Arc::new(crate::FederationOperationNotifications::default())),
+                private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
+                    crate::FederationPeerSyncConfig::default()
+                        .private_rest_inbound_concurrency_limit,
+                ))),
+                dkg_member_admission: None,
+                invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
+                    crate::FederationInvalidOperationAlertTracker::default(),
+                ))),
+                aleph_bft_pending_sequences: Some(Arc::new(
+                    tokio::sync::Mutex::new(HashMap::new()),
+                )),
+                aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+                local_finality_test,
+                manual_finality_test: false,
+            },
         }
     }
 
@@ -2860,8 +2837,8 @@ mod tests {
         let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("recreate federation runtime state from sqlite");
-        state.federation_consensus = consensus;
-        state.federation_sequences = sequences;
+        state.federation.consensus = consensus;
+        state.federation.sequences = sequences;
         state
     }
 
@@ -2881,14 +2858,14 @@ mod tests {
         let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("recreate federation runtime state from sqlite");
-        state.federation_consensus = consensus;
-        state.federation_sequences = sequences;
+        state.federation.consensus = consensus;
+        state.federation.sequences = sequences;
         state
     }
 
     #[cfg(feature = "federation")]
     fn limit_federation_response_cache_to_one(state: &mut MintState) {
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             response_cache_limit: 1,
             ..crate::FederationPeerSyncConfig::default()
         });
@@ -2899,7 +2876,8 @@ mod tests {
         state: &MintState,
     ) -> Vec<cdk::federation::FederationOperationKind> {
         let consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .expect("federation consensus")
             .lock()
@@ -2967,7 +2945,8 @@ mod tests {
         peer_consensus: &FederationAlephBftConsensusAdapter,
     ) {
         let local_consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .expect("federation consensus");
         let request = local_consensus.lock().await.catch_up_request();
@@ -3044,33 +3023,7 @@ mod tests {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
             #[cfg(feature = "federation")]
-            federation_consensus: None,
-            #[cfg(feature = "federation")]
-            federation_peer_sync_config: None,
-            #[cfg(feature = "federation")]
-            federation_dkg_auto_start_config: None,
-            #[cfg(feature = "federation")]
-            federation_sequences: None,
-            #[cfg(feature = "federation")]
-            federation_sync: None,
-            #[cfg(feature = "federation")]
-            federation_notifications: None,
-            #[cfg(feature = "federation")]
-            federation_private_rest_admission: None,
-            #[cfg(feature = "federation")]
-            federation_dkg_member_admission: None,
-            #[cfg(feature = "federation")]
-            federation_invalid_operation_alerts: None,
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_pending_sequences: None,
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            #[cfg(feature = "federation")]
-            federation_local_finality_test: false,
-            #[cfg(feature = "federation")]
-            federation_manual_finality_test: false,
+            federation: crate::federation::FederationNodeRuntime::disabled(),
         }
     }
 
@@ -3642,36 +3595,37 @@ mod tests {
         MintState {
             mint,
             cache: Arc::new(HttpCache::default()),
-            federation_consensus,
-            federation_peer_sync_config: is_federated
-                .then(crate::FederationPeerSyncConfig::default),
-            federation_dkg_auto_start_config: None,
-            federation_sequences,
-            federation_sync: is_federated.then(|| {
-                Arc::new(tokio::sync::Mutex::new(
-                    crate::FederationSyncState::default(),
-                ))
-            }),
-            federation_notifications: is_federated
-                .then(|| Arc::new(crate::FederationOperationNotifications::default())),
-            federation_private_rest_admission: is_federated.then(|| {
-                Arc::new(tokio::sync::Semaphore::new(
-                    crate::FederationPeerSyncConfig::default()
-                        .private_rest_inbound_concurrency_limit,
-                ))
-            }),
-            federation_dkg_member_admission: None,
-            federation_invalid_operation_alerts: is_federated.then(|| {
-                Arc::new(tokio::sync::Mutex::new(
-                    crate::FederationInvalidOperationAlertTracker::default(),
-                ))
-            }),
-            federation_aleph_bft_pending_sequences: is_federated
-                .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
-            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            federation_local_finality_test: is_federated,
-            federation_manual_finality_test: false,
+            federation: crate::federation::FederationNodeRuntime {
+                consensus: federation_consensus,
+                peer_sync_config: is_federated.then(crate::FederationPeerSyncConfig::default),
+                dkg_auto_start_config: None,
+                sequences: federation_sequences,
+                sync: is_federated.then(|| {
+                    Arc::new(tokio::sync::Mutex::new(
+                        crate::FederationSyncState::default(),
+                    ))
+                }),
+                notifications: is_federated
+                    .then(|| Arc::new(crate::FederationOperationNotifications::default())),
+                private_rest_admission: is_federated.then(|| {
+                    Arc::new(tokio::sync::Semaphore::new(
+                        crate::FederationPeerSyncConfig::default()
+                            .private_rest_inbound_concurrency_limit,
+                    ))
+                }),
+                dkg_member_admission: None,
+                invalid_operation_alerts: is_federated.then(|| {
+                    Arc::new(tokio::sync::Mutex::new(
+                        crate::FederationInvalidOperationAlertTracker::default(),
+                    ))
+                }),
+                aleph_bft_pending_sequences: is_federated
+                    .then(|| Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
+                aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+                local_finality_test: is_federated,
+                manual_finality_test: false,
+            },
         }
     }
 
@@ -4420,7 +4374,8 @@ mod tests {
             "halted AlephBFT public route must not append a journal entry"
         );
         let consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .expect("federation consensus")
             .lock()
@@ -4450,7 +4405,8 @@ mod tests {
             "not-ready federation public route must not append a journal entry"
         );
         let consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .expect("federation consensus")
             .lock()
@@ -4627,8 +4583,8 @@ mod tests {
     async fn pending_aleph_bft_mint_quote_is_not_persisted_before_consensus() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             ..crate::FederationPeerSyncConfig::default()
         });
@@ -4663,7 +4619,8 @@ mod tests {
             .expect("pending mint quote lookup")
             .is_none());
         let consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .expect("federation consensus")
             .lock()
@@ -5414,7 +5371,7 @@ mod tests {
             CurrencyUnit::Sat,
         );
         let mut state = create_federated_test_state_with_backend(Arc::new(fake)).await;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             ..crate::FederationPeerSyncConfig::default()
         });
@@ -5568,8 +5525,8 @@ mod tests {
     async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -5614,7 +5571,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -5637,7 +5595,7 @@ mod tests {
             "pending AlephBFT mint must not issue signature shares"
         );
 
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -5695,7 +5653,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -5740,8 +5699,8 @@ mod tests {
     async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -5786,7 +5745,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -5831,7 +5791,7 @@ mod tests {
             "pending AlephBFT single mint must not persist blind signatures"
         );
 
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -5910,7 +5870,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -5955,8 +5916,8 @@ mod tests {
     async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
@@ -6005,7 +5966,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6041,7 +6003,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6103,7 +6066,8 @@ mod tests {
         assert_eq!(state.federation_pending_response_waiter_count(), 0);
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6118,8 +6082,8 @@ mod tests {
     async fn duplicate_post_mint_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
@@ -6167,7 +6131,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6204,7 +6169,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6289,7 +6255,8 @@ mod tests {
         assert_eq!(state.federation_pending_response_waiter_count(), 0);
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6873,8 +6840,8 @@ mod tests {
     async fn post_swap_pending_aleph_bft_retry_returns_persisted_response_after_finality() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -6914,7 +6881,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -6950,7 +6918,7 @@ mod tests {
             "pending AlephBFT swap must not issue signature shares before finality"
         );
 
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -7021,8 +6989,8 @@ mod tests {
     async fn duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
@@ -7089,7 +7057,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -7181,7 +7150,8 @@ mod tests {
         assert_eq!(state.federation_pending_response_waiter_count(), 0);
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -7661,8 +7631,8 @@ mod tests {
     async fn process_melt_pending_aleph_bft_retry_returns_persisted_response_after_finality() {
         let mut state = create_aleph_bft_federated_test_state().await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(10),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -7719,7 +7689,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -7767,7 +7738,7 @@ mod tests {
             "pending AlephBFT melt must not sign change before finality"
         );
 
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
@@ -7862,8 +7833,8 @@ mod tests {
         )
         .await;
         state.mark_federation_healthy().await;
-        state.federation_manual_finality_test = true;
-        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+        state.federation.manual_finality_test = true;
+        state.federation.peer_sync_config = Some(crate::FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(5),
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
@@ -7945,7 +7916,8 @@ mod tests {
         );
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()
@@ -8072,7 +8044,8 @@ mod tests {
         assert_eq!(state.federation_pending_response_waiter_count(), 0);
         {
             let consensus = state
-                .federation_consensus
+                .federation
+                .consensus
                 .as_ref()
                 .expect("federation consensus")
                 .lock()

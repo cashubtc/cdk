@@ -172,12 +172,14 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
         return Ok(FederationAlephBftLiveSessionStartupDecision::NoFederationConfig);
     };
     if state
-        .federation_aleph_bft_live_session
+        .federation
+        .aleph_bft_live_session
         .read()
         .await
         .is_some()
         || state
-            .federation_aleph_bft_network_inbound
+            .federation
+            .aleph_bft_network_inbound
             .read()
             .await
             .is_some()
@@ -185,7 +187,7 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
         return Ok(FederationAlephBftLiveSessionStartupDecision::AlreadyStarted);
     }
 
-    let Some(consensus) = &state.federation_consensus else {
+    let Some(consensus) = &state.federation.consensus else {
         return Ok(FederationAlephBftLiveSessionStartupDecision::MissingConsensusRuntime);
     };
     let session_id = consensus.lock().await.aleph_bft_status()?.session;
@@ -397,7 +399,8 @@ where
         .collect::<Vec<_>>();
     let keychain = CdkAlephBftKeychain::try_new(&public_config, private_config.clone())?;
     let consensus = state
-        .federation_consensus
+        .federation
+        .consensus
         .as_ref()
         .cloned()
         .ok_or_else(|| {
@@ -451,7 +454,7 @@ where
         &network_handle,
         activity_hint.clone(),
     );
-    *state.federation_aleph_bft_network_inbound.write().await = Some(Arc::new(inbound));
+    *state.federation.aleph_bft_network_inbound.write().await = Some(Arc::new(inbound));
 
     let aleph_config = aleph_bft_config(
         NodeCount(public_config.members.len()),
@@ -593,7 +596,7 @@ where
         apply_task,
         completion_watcher_task,
     });
-    *state.federation_aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
+    *state.federation.aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
 
     Ok(Some(handle))
 }
@@ -927,7 +930,8 @@ where
     options.pump_config.validate()?;
 
     if state
-        .federation_aleph_bft_live_session
+        .federation
+        .aleph_bft_live_session
         .read()
         .await
         .is_none()
@@ -935,7 +939,7 @@ where
         return Ok(None);
     }
 
-    let Some(consensus) = state.federation_consensus.as_ref().cloned() else {
+    let Some(consensus) = state.federation.consensus.as_ref().cloned() else {
         return Err(cdk::Error::Custom(
             "AlephBFT live session rotation requires federation consensus runtime".to_string(),
         ));
@@ -956,11 +960,11 @@ where
         next_session
     };
 
-    let previous_handle = state.federation_aleph_bft_live_session.write().await.take();
+    let previous_handle = state.federation.aleph_bft_live_session.write().await.take();
     if let Some(handle) = previous_handle {
         handle.shutdown();
     }
-    *state.federation_aleph_bft_network_inbound.write().await = None;
+    *state.federation.aleph_bft_network_inbound.write().await = None;
 
     {
         let mut consensus = consensus.lock().await;
@@ -1009,7 +1013,8 @@ where
     options.pump_config.validate()?;
 
     if state
-        .federation_aleph_bft_live_session
+        .federation
+        .aleph_bft_live_session
         .read()
         .await
         .is_none()
@@ -1017,7 +1022,7 @@ where
         return Ok(None);
     }
 
-    let Some(consensus) = state.federation_consensus.as_ref().cloned() else {
+    let Some(consensus) = state.federation.consensus.as_ref().cloned() else {
         return Err(cdk::Error::Custom(
             "AlephBFT completed-session rotation requires federation consensus runtime".to_string(),
         ));
@@ -1046,11 +1051,11 @@ where
         next_session
     };
 
-    let previous_handle = state.federation_aleph_bft_live_session.write().await.take();
+    let previous_handle = state.federation.aleph_bft_live_session.write().await.take();
     if let Some(handle) = previous_handle {
         handle.shutdown_for_rotation();
     }
-    *state.federation_aleph_bft_network_inbound.write().await = None;
+    *state.federation.aleph_bft_network_inbound.write().await = None;
 
     tracing::info!(
         completed_session,

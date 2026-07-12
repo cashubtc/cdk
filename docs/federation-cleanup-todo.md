@@ -1169,7 +1169,27 @@ keeps obsolete design decisions alive.
 
 ## 17. Extract a FederationNodeRuntime from Axum MintState
 
-**Status:** Todo
+**Status:** In progress
+
+### Checkpoint 1: explicit runtime ownership
+
+`MintState` no longer owns 13 unrelated federation handles directly. One
+concrete `FederationNodeRuntime` now owns consensus, peer-sync policy, DKG
+admission/config, sequence tracking, readiness, notifications, private REST
+admission, invalid-operation alerts, pending Aleph sequence metadata, inbound
+network state, live-session state, and test finality controls. Standalone mints
+inside a federation-enabled binary use one explicit inert runtime constructor.
+
+All production and test call sites now name the ownership boundary as
+`state.federation.<component>`; no deref trick, dynamic trait, event bus, or
+duplicated handle set was introduced. This checkpoint is behavior-neutral and
+prepares moving lifecycle methods without a single mega-refactor. Both
+federation-enabled and federation-disabled test builds compile, all 332 Axum
+federation tests pass, and all 28 standalone Axum tests pass.
+
+Remaining: move submission/notification, finalization/catch-up, readiness and
+startup recovery, then task startup/shutdown methods onto the concrete runtime
+in reviewable groups. Coordinate live-session task ownership with Item 18.
 
 ### Problem
 

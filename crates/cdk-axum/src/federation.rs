@@ -34,6 +34,7 @@ mod aleph_bft_session;
 mod catch_up_routes;
 mod dkg_driver;
 mod dkg_routes;
+mod node_runtime;
 mod payment_observation;
 mod peer_client;
 mod status_routes;
@@ -71,6 +72,7 @@ use self::dkg_routes::{
     post_dkg_activation, post_dkg_commitment, post_dkg_readiness, post_dkg_reveal,
     post_dkg_secret_share, post_dkg_transcript_signature,
 };
+pub(crate) use self::node_runtime::FederationNodeRuntime;
 use self::payment_observation::payment_observation_report_summaries;
 #[cfg(test)]
 use self::peer_client::FederationRestPeerClient;
@@ -172,7 +174,7 @@ fn acquire_private_rest_admission(
     state: &MintState,
     kind: FederationRestMessageKind,
 ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Response> {
-    let Some(admission) = state.federation_private_rest_admission.as_ref() else {
+    let Some(admission) = state.federation.private_rest_admission.as_ref() else {
         return Ok(None);
     };
     match admission.clone().try_acquire_owned() {
@@ -207,8 +209,8 @@ fn acquire_private_dkg_member_admission(
     sender: cdk::federation::MemberId,
     kind: FederationRestMessageKind,
 ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Response> {
-    let Some(admissions) = state.federation_dkg_member_admission.as_ref() else {
-        if state.federation_dkg_auto_start_config.is_none() {
+    let Some(admissions) = state.federation.dkg_member_admission.as_ref() else {
+        if state.federation.dkg_auto_start_config.is_none() {
             return Ok(None);
         }
         tracing::error!(
@@ -566,7 +568,8 @@ fn federation_runtime_config(
 
 fn federation_sequences(state: &MintState) -> Result<SequenceHandle, Response> {
     state
-        .federation_sequences
+        .federation
+        .sequences
         .clone()
         .ok_or_else(federation_not_configured)
 }

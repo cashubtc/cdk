@@ -166,6 +166,13 @@ Resolved blocking bugs:
   and every current index. Verification passes 21 SQLite and 19 PostgreSQL
   federation tests, 29 catch-up and 8 SQLite restart tests, plus 134 SQLite and
   125 PostgreSQL standalone tests.
+- Axum federation runtime ownership extraction has started with a verified
+  behavior-neutral boundary: `MintState` now contains one concrete
+  `FederationNodeRuntime` instead of 13 consensus, sync, DKG, admission,
+  notification, and live-session fields. Every call site explicitly names the
+  runtime owner; no trait or event bus was added. All 332 Axum federation and
+  28 standalone Axum tests pass. Submission, finalization/catch-up, recovery,
+  and task lifecycle methods remain to move in coherent checkpoints.
 
 ## Recent performance checkpoint
 

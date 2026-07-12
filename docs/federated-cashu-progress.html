@@ -961,6 +961,10 @@
             <p>The 20-file undeployed federation migration chain in each SQL backend is gone. SQLite and PostgreSQL each have one direct final-schema migration creating all 18 current federation tables, the saga operation ID, required journal hashes, optional evidence and rejection metadata, and the complete index set; every earlier standalone migration is untouched. Real catalog and database API tests pass across 21 SQLite federation, 19 PostgreSQL federation, 29 catch-up, 8 restart, 134 standalone SQLite, and 125 standalone PostgreSQL cases.</p>
           </article>
           <article class="item">
+            <h3>Federation node runtime has one owner</h3>
+            <p><code>MintState</code> no longer carries 13 separate consensus, synchronization, DKG, admission, notification, sequence, and live-session fields. A concrete <code>FederationNodeRuntime</code> owns them, standalone mints use an explicit inert runtime, and every call site names that boundary directly. This first behavior-neutral extraction checkpoint passes all 332 Axum federation and 28 standalone Axum tests. Submission, finalization, catch-up, recovery, and task lifecycle methods are the next groups to move.</p>
+          </article>
+          <article class="item">
             <h3>Real payment observations fail closed</h3>
             <p>General federation config construction derives member-quorum finality from the consensus threshold. Fake-wallet testing keeps one-observation finality only through an explicit trusted-dealer/test policy, while production startup rejects that policy without the local development override. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed. Melt observations no longer carry unused free-form failure text that could split otherwise matching failed-payment evidence.</p>
           </article>

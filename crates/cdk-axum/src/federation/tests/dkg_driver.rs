@@ -66,7 +66,7 @@ impl DkgDriverTestFederation {
                 &seed,
             )
             .await;
-            state.federation_dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
+            state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
                 ceremony_id,
                 keyset_spec: keyset_spec.clone(),
                 driver: FederationDkgDriverRunConfig::default(),
@@ -164,7 +164,7 @@ impl DkgDriverTestFederation {
             &member.seed,
         )
         .await;
-        state.federation_dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
+        state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
             ceremony_id: self.ceremony_id,
             keyset_spec: self.keyset_spec.clone(),
             driver: FederationDkgDriverRunConfig::default(),

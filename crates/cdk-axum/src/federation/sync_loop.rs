@@ -626,7 +626,8 @@ where
         Vec<FederationJournalEntry>,
     )> {
         let consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
         let request = {

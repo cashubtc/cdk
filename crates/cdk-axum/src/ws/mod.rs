@@ -245,33 +245,7 @@ mod tests {
             mint,
             cache: Arc::new(HttpCache::default()),
             #[cfg(feature = "federation")]
-            federation_consensus: None,
-            #[cfg(feature = "federation")]
-            federation_peer_sync_config: None,
-            #[cfg(feature = "federation")]
-            federation_dkg_auto_start_config: None,
-            #[cfg(feature = "federation")]
-            federation_sequences: None,
-            #[cfg(feature = "federation")]
-            federation_sync: None,
-            #[cfg(feature = "federation")]
-            federation_notifications: None,
-            #[cfg(feature = "federation")]
-            federation_private_rest_admission: None,
-            #[cfg(feature = "federation")]
-            federation_dkg_member_admission: None,
-            #[cfg(feature = "federation")]
-            federation_invalid_operation_alerts: None,
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_pending_sequences: None,
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            #[cfg(feature = "federation")]
-            federation_aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            #[cfg(feature = "federation")]
-            federation_local_finality_test: false,
-            #[cfg(feature = "federation")]
-            federation_manual_finality_test: false,
+            federation: crate::federation::FederationNodeRuntime::disabled(),
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

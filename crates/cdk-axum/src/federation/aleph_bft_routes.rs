@@ -65,7 +65,8 @@ pub(super) async fn post_aleph_bft_network_message(
     let runtime_config = federation_runtime_config(&state)?;
     let federation_id = runtime_config.federation_id();
     let inbound = state
-        .federation_aleph_bft_network_inbound
+        .federation
+        .aleph_bft_network_inbound
         .read()
         .await
         .clone();

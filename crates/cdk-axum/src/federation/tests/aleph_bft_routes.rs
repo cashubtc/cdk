@@ -66,7 +66,8 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
     let envelope = mint_quote_envelope(&state, &quote_id);
     {
         let consensus = state
-            .federation_consensus
+            .federation
+            .consensus
             .as_ref()
             .expect("consensus handle");
         consensus
@@ -192,7 +193,7 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
     let activity_hint = CdkAlephBftActivityHint::default();
-    *state.federation_aleph_bft_network_inbound.write().await = Some(Arc::new(
+    *state.federation.aleph_bft_network_inbound.write().await = Some(Arc::new(
         CdkAlephBftNetworkInboundHandle::with_activity_hint(0, &handle, activity_hint.clone()),
     ));
     let request = signed_aleph_bft_network_message_request(
@@ -229,7 +230,7 @@ async fn private_aleph_bft_network_message_route_accepts_signed_peer_request() {
 async fn private_aleph_bft_network_message_route_rejects_same_sequence_equivocation() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
-    *state.federation_aleph_bft_network_inbound.write().await =
+    *state.federation.aleph_bft_network_inbound.write().await =
         Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
     let first_request = signed_aleph_bft_network_message_request(
         &public_config,
@@ -347,7 +348,7 @@ async fn private_aleph_bft_network_message_route_rejects_missing_inbound_before_
 async fn private_aleph_bft_network_message_route_rejects_bad_scale_before_sequence() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let (_network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
-    *state.federation_aleph_bft_network_inbound.write().await =
+    *state.federation.aleph_bft_network_inbound.write().await =
         Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
     let request = signed_aleph_bft_network_message_request(
         &public_config,
@@ -380,7 +381,7 @@ async fn private_aleph_bft_network_message_route_rejects_bad_scale_before_sequen
 async fn private_aleph_bft_network_message_route_rejects_trailing_scale_bytes_before_sequence() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
-    *state.federation_aleph_bft_network_inbound.write().await =
+    *state.federation.aleph_bft_network_inbound.write().await =
         Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(0, &handle)));
     let mut message = 42u64.encode();
     message.extend_from_slice(&[99]);
@@ -421,7 +422,7 @@ async fn private_aleph_bft_network_message_route_rejects_trailing_scale_bytes_be
 async fn private_aleph_bft_network_message_route_rejects_session_mismatch_before_sequence() {
     let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let (_network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
-    *state.federation_aleph_bft_network_inbound.write().await =
+    *state.federation.aleph_bft_network_inbound.write().await =
         Some(Arc::new(CdkAlephBftNetworkInboundHandle::new(2, &handle)));
     let request = signed_aleph_bft_network_message_request(
         &public_config,

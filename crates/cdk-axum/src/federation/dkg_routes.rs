@@ -47,7 +47,8 @@ fn active_dkg_config(
     state: &MintState,
 ) -> Result<std::sync::Arc<super::FederationDkgAutoStartConfig>, Response> {
     state
-        .federation_dkg_auto_start_config
+        .federation
+        .dkg_auto_start_config
         .clone()
         .ok_or_else(|| {
             (
