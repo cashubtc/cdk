@@ -410,6 +410,56 @@ pub enum FederationError {
         /// Required quorum threshold.
         required: u16,
     },
+    /// A required federation runtime component is not active.
+    #[error("Federation runtime component is unavailable: {component}")]
+    RuntimeUnavailable {
+        /// Stable name of the unavailable runtime component.
+        component: &'static str,
+    },
+    /// The member is behind a peer and cannot serve authoritative requests.
+    #[error(
+        "Federation member is lagging behind peer {peer}: local_operations={local_operation_count}, peer_operations={peer_operation_count}"
+    )]
+    NodeLagging {
+        /// Peer whose order is ahead of the local member.
+        peer: MemberId,
+        /// Local durable operation count.
+        local_operation_count: u64,
+        /// Peer's advertised durable operation count.
+        peer_operation_count: u64,
+    },
+    /// The member is applying history obtained from a peer.
+    #[error("Federation member is catching up from peer {peer}")]
+    NodeCatchingUp {
+        /// Peer supplying catch-up history.
+        peer: MemberId,
+    },
+    /// The member is waiting for quorum-certified catch-up evidence.
+    #[error(
+        "Federation member is verifying quorum catch-up certificates after catch-up from peer {peer}: operation_count={operation_count}"
+    )]
+    NodeVerifyingCatchUpCertificate {
+        /// Peer that supplied the candidate history.
+        peer: MemberId,
+        /// Candidate durable operation count.
+        operation_count: u64,
+    },
+    /// The member's materialized state has not converged with its ordered history.
+    #[error(
+        "Federation member is waiting for materialized state digest convergence with peer {peer}: operation_count={operation_count}"
+    )]
+    NodeMaterializedStateMismatch {
+        /// Peer whose materialized digest differs.
+        peer: MemberId,
+        /// Durable operation count at which the mismatch was observed.
+        operation_count: u64,
+    },
+    /// The member is halted and cannot serve authoritative requests.
+    #[error("Federation member is halted: {reason}")]
+    NodeHalted {
+        /// Redacted operator-facing halt reason.
+        reason: String,
+    },
     /// A consensus item exceeded the configured canonical size limit.
     #[error("Federation consensus item too large: actual={actual}, max={max}")]
     ConsensusItemTooLarge {
@@ -476,6 +526,14 @@ pub enum FederationError {
         /// Invalid value.
         value: u64,
     },
+    /// The configured consensus threshold does not satisfy AlephBFT's BFT quorum rule.
+    #[error("Invalid AlephBFT consensus threshold: expected={expected}, found={found}")]
+    InvalidAlephBftConsensusThreshold {
+        /// Threshold required by the AlephBFT roster size.
+        expected: u16,
+        /// Threshold configured by the federation.
+        found: u16,
+    },
     /// An AlephBFT unit body hash must be exactly 32 bytes.
     #[error("Invalid federation AlephBFT unit body hash size: expected={expected}, found={found}")]
     InvalidAlephBftUnitBodyHashSize {
@@ -506,6 +564,12 @@ pub enum FederationError {
         /// Found payload session.
         found: u64,
     },
+    /// A peer status omitted the durable AlephBFT finalized-item cursor.
+    #[error("Federation member {member_id} AlephBFT status is missing its finalized-item cursor")]
+    AlephBftFinalizedCursorMissing {
+        /// Member whose status omitted the cursor.
+        member_id: MemberId,
+    },
     /// An AlephBFT session cannot rotate while local units are awaiting finality.
     #[error(
         "Federation AlephBFT session rotation blocked: current_session={current_session}, requested_session={requested_session}, pending_units={pending_units}, pending_items={pending_items}"
@@ -518,6 +582,16 @@ pub enum FederationError {
         /// Locally drained units still waiting for finality.
         pending_units: usize,
         /// Consensus items inside locally drained units still waiting for finality.
+        pending_items: usize,
+    },
+    /// A live-session rotation was requested while operations remained pending.
+    #[error(
+        "Federation AlephBFT session rotation blocked: session={session}, pending_items={pending_items}"
+    )]
+    AlephBftSessionRotationBlocked {
+        /// Session that cannot yet rotate.
+        session: u64,
+        /// Consensus items still awaiting finalization.
         pending_items: usize,
     },
     /// An opaque AlephBFT network message could not be decoded.

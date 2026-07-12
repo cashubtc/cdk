@@ -77,6 +77,7 @@ use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
 };
 use super::aleph_bft_session::AlephBftSessionSupervisorState;
+use super::peer_client::FederationRestPeerClientError;
 use super::*;
 
 mod aleph_bft_routes;
@@ -1429,6 +1430,62 @@ async fn response_error_detail(response: axum::response::Response) -> String {
         .await
         .expect("response body bytes");
     String::from_utf8_lossy(&bytes).to_string()
+}
+
+#[test]
+fn private_federation_error_statuses_preserve_failure_class() {
+    assert_eq!(
+        federation_error_status(&FederationError::RuntimeUnavailable {
+            component: "consensus",
+        }),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        federation_error_status(&FederationError::PendingConsensusMempoolFull {
+            pending: 4,
+            max: 4,
+        }),
+        axum::http::StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        federation_error_status(&FederationError::ConflictingOperation {
+            conflict_key: "quote:test".to_string(),
+            existing_operation_id: "existing".to_string(),
+            attempted_operation_id: "attempted".to_string(),
+        }),
+        axum::http::StatusCode::CONFLICT
+    );
+    assert_eq!(
+        federation_error_status(&FederationError::AlephBftFinalizedItemRecoveryMismatch {
+            reason: "stored state mismatch".to_string(),
+        }),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        federation_error_status(&FederationError::InvalidMemberId(0)),
+        axum::http::StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        federation_error_status(&FederationError::JournalConsensusEvidenceMissing { index: 1 }),
+        axum::http::StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn private_internal_federation_error_hides_diagnostic_detail() {
+    let response =
+        federation_error_response(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+            reason: "secret=internal-value".to_string(),
+        });
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        response_error_detail(response).await,
+        "federation internal error"
+    );
 }
 
 fn private_member(value: u16) -> MemberConfigPrivate {
@@ -3170,6 +3227,7 @@ async fn rest_peer_client_applies_configured_peer_request_timeout() {
         .member(member_id(2))
         .expect("peer member")
         .clone();
+    let expected_member_id = member.member_id;
     let timeout = Duration::from_secs(2);
     let client = FederationRestPeerClient::new_with_config(
         DelayTransport {
@@ -3192,10 +3250,16 @@ async fn rest_peer_client_applies_configured_peer_request_timeout() {
         .expect("peer status task")
         .expect_err("peer status should time out");
 
-    assert!(
-        err.to_string().contains("status request timed out"),
-        "unexpected timeout error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationRestPeerClientError>(),
+        Some(FederationRestPeerClientError::RequestTimeout {
+            member_id,
+            operation,
+            timeout: found_timeout,
+        }) if *member_id == expected_member_id
+            && operation == "status request"
+            && *found_timeout == timeout
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -3206,6 +3270,7 @@ async fn rest_peer_client_applies_configured_operation_submission_timeout() {
         .member(member_id(2))
         .expect("peer member")
         .clone();
+    let expected_member_id = member.member_id;
     let timeout = Duration::from_secs(2);
     let request = FederationSubmitOperationRequest::new(test_operation_envelope(
         federation_id,
@@ -3232,10 +3297,16 @@ async fn rest_peer_client_applies_configured_operation_submission_timeout() {
         .expect("operation submission task")
         .expect_err("operation submission should time out");
 
-    assert!(
-        err.to_string().contains("operation submission timed out"),
-        "unexpected timeout error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationRestPeerClientError>(),
+        Some(FederationRestPeerClientError::RequestTimeout {
+            member_id,
+            operation,
+            timeout: found_timeout,
+        }) if *member_id == expected_member_id
+            && operation == "operation submission"
+            && *found_timeout == timeout
+    ));
 }
 
 #[tokio::test]
@@ -3272,10 +3343,13 @@ async fn rest_peer_client_rejects_outbound_overflow_before_transport_request() {
         .await
         .expect_err("outbound overflow should fail");
 
-    assert!(
-        err.to_string().contains("outbound REST queue is full"),
-        "unexpected overflow error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationRestPeerClientError>(),
+        Some(FederationRestPeerClientError::OutboundAdmissionFull {
+            member_id,
+            operation,
+        }) if *member_id == member.member_id && operation == "status request"
+    ));
     assert!(
         transport.status_requests().is_empty(),
         "overflow must be rejected before sending a REST request"
@@ -4036,13 +4110,10 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         .await
         .expect_err("unsigned response must fail");
 
-    let err = err.to_string();
-    assert!(
-        err.contains(
-            "Federation catch-up certificate mismatch: non-empty catch-up response missing certificate"
-        ),
-        "unexpected unsigned catch-up error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::CatchUpCertificateMismatch { .. })
+    ));
     assert_eq!(
         local_consensus.lock().await.peer_status().operation_count,
         1
@@ -4063,7 +4134,14 @@ async fn lagging_member_refuses_public_federation_submit_until_healthy() {
 
     let blocked = state.submit_federation_envelope(envelope.clone()).await;
 
-    assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+    assert!(matches!(
+        blocked,
+        Err(cdk::Error::Federation(FederationError::NodeLagging {
+            peer,
+            local_operation_count: 0,
+            peer_operation_count: 1,
+        })) if peer == peer_member.member_id
+    ));
     assert!(matches!(
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Lagging { .. })
@@ -4163,11 +4241,13 @@ async fn divergent_member_refuses_public_submit() {
         .await
         .expect_err("lagging non-primary member must not forward public submits");
 
-    assert!(
-        err.to_string()
-            .contains("materialized state digest convergence"),
-        "expected materialized-state readiness error before submission, got: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::NodeMaterializedStateMismatch {
+            peer,
+            operation_count: 1,
+        }) if peer == primary_member.member_id
+    ));
 }
 
 #[tokio::test]
@@ -4224,7 +4304,15 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let blocked = state.submit_federation_envelope(next).await;
-    assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+    assert!(matches!(
+        blocked,
+        Err(cdk::Error::Federation(
+            FederationError::NodeVerifyingCatchUpCertificate {
+                peer,
+                operation_count: 1,
+            }
+        )) if peer == peer_member.member_id
+    ));
 }
 
 #[tokio::test]
@@ -4940,10 +5028,11 @@ async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
     let sync = client.sync_once_from_member(&state, peer_member).await;
 
     let err = sync.expect_err("missing AlephBFT cursor should fail");
-    assert!(
-        err.to_string().contains("missing finalized item cursor"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::AlephBftFinalizedCursorMissing { member_id })
+            if *member_id == peer_member.member_id
+    ));
 }
 
 #[tokio::test]
@@ -8246,10 +8335,10 @@ async fn aleph_bft_catch_up_rejects_journal_entries_without_finalized_item_evide
         )
         .await
         .expect_err("journal-only AlephBFT catch-up should fail");
-    assert!(
-        err.to_string().contains("missing finalized-item evidence"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -8343,11 +8432,10 @@ async fn aleph_bft_catch_up_rejects_incomplete_finalized_unit_page_without_mutat
         )
         .await
         .expect_err("incomplete finalized unit page should fail");
-    assert!(
-        err.to_string()
-            .contains("AlephBFT catch-up made no finalized-item progress"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -8449,11 +8537,10 @@ async fn aleph_bft_catch_up_rejects_reordered_finalized_items_without_mutation()
         )
         .await
         .expect_err("reordered finalized items should fail");
-    assert!(
-        err.to_string()
-            .contains("non-contiguous accepted item index"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -8539,10 +8626,10 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     let err = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect_err("AlephBFT journal mismatch rejected");
-    assert!(
-        err.to_string().contains("journal entry mismatch"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+    ));
 }
 
 #[tokio::test]
@@ -9900,11 +9987,13 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
     )
     .await
     .expect_err("non-empty mempool must block live-session rotation");
-    assert!(
-        err.to_string()
-            .contains("requires empty pending mempool, found 1"),
-        "unexpected rotation error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::AlephBftSessionRotationBlocked {
+            session: 0,
+            pending_items: 1,
+        })
+    ));
     let status = state
         .federation_aleph_bft_status()
         .await
@@ -16317,11 +16406,10 @@ async fn aleph_bft_public_submit_is_not_ready_until_live_session_is_started() {
         .await
         .expect_err("AlephBFT public submit should be gated until a live session is started");
 
-    assert!(
-        err.to_string()
-            .contains("public federation submissions are disabled"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::NodeHalted { .. })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -16363,11 +16451,12 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_live_s
         .await
         .expect_err("healthy sync must not reopen AlephBFT submit without a live session");
 
-    assert!(
-        err.to_string()
-            .contains("public federation submissions are disabled"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::RuntimeUnavailable {
+            component: "AlephBFT live session",
+        })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -16414,11 +16503,12 @@ async fn aleph_bft_live_session_opens_queueing_but_still_waits_for_finalized_uni
         .submit_federation_envelope(envelope.clone())
         .await
         .expect_err("healthy sync without a live AlephBFT session must stay gated");
-    assert!(
-        err.to_string()
-            .contains("public federation submissions are disabled"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::RuntimeUnavailable {
+            component: "AlephBFT live session",
+        })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -17099,11 +17189,10 @@ async fn aleph_bft_startup_does_not_restore_transient_healthy_status() {
         .await
         .expect_err("transient healthy status must not reopen AlephBFT public submit");
 
-    assert!(
-        err.to_string()
-            .contains("public federation submissions are disabled"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::NodeHalted { .. })
+    ));
     assert!(restored_state
         .mint
         .localstore()
@@ -17580,10 +17669,10 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
         ))
         .await
         .expect_err("full response waiter set should reject");
-    assert!(
-        err.to_string().contains("response waiter limit exceeded"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::ResponseWaiterLimitExceeded { waiting: 1, max: 1 })
+    ));
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
@@ -18190,10 +18279,10 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         .await
         .expect_err("full pending mempool should reject new operation");
 
-    assert!(
-        err.to_string().contains("pending consensus mempool full"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err,
+        cdk::Error::Federation(FederationError::PendingConsensusMempoolFull { pending: 1, max: 1 })
+    ));
     assert!(state
         .mint
         .localstore()
@@ -20861,7 +20950,15 @@ async fn startup_requires_catch_up_certificate_quorum_for_replayed_journal() {
             "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
         ))
         .await;
-    assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+    assert!(matches!(
+        blocked,
+        Err(cdk::Error::Federation(
+            FederationError::NodeVerifyingCatchUpCertificate {
+                peer,
+                operation_count: 1,
+            }
+        )) if peer == peer_member
+    ));
 }
 
 #[tokio::test]

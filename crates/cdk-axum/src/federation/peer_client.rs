@@ -7,11 +7,11 @@ use cdk::federation::{
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationConfig, FederationDkgActivationRequest, FederationDkgCommitmentRequest,
     FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_REST_API_VERSION,
+    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    MemberConfigPrivate, MemberConfigPublic, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
@@ -430,19 +430,18 @@ where
             )
             .await?;
         if response.version != FEDERATION_REST_API_VERSION {
-            anyhow::bail!(
-                "federation peer {} returned unsupported REST version {}",
-                member.member_id,
-                response.version
-            );
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: response.version,
+            }
+            .into());
         }
         if response.federation_id != self.federation_id {
-            anyhow::bail!(
-                "federation peer {} returned catch-up for federation {}, expected {}",
-                member.member_id,
-                response.federation_id,
-                self.federation_id
-            );
+            return Err(FederationError::CatchUpFederationMismatch {
+                expected: self.federation_id,
+                found: response.federation_id,
+            }
+            .into());
         }
         response.verify_catch_up_certificate(member)?;
         Ok(response)
@@ -470,10 +469,10 @@ where
 
     fn ensure_configured_peer(&self, member: &MemberConfigPublic) -> anyhow::Result<()> {
         let Some(configured) = self.public_config.members.get(&member.member_id) else {
-            anyhow::bail!(
-                "federation peer {} is not in the configured member roster",
-                member.member_id
-            );
+            return Err(FederationError::UnknownMember {
+                member_id: member.member_id,
+            }
+            .into());
         };
         if configured != member {
             anyhow::bail!(
@@ -551,31 +550,31 @@ fn validate_peer_status(
     status: &FederationPeerStatus,
 ) -> anyhow::Result<()> {
     if status.version != FEDERATION_REST_API_VERSION {
-        anyhow::bail!(
-            "federation peer {} returned unsupported REST version {}",
-            member.member_id,
-            status.version
-        );
+        return Err(FederationError::RestVersionMismatch {
+            expected: FEDERATION_REST_API_VERSION,
+            found: status.version,
+        }
+        .into());
     }
     if status.member_id != member.member_id {
-        anyhow::bail!(
-            "federation peer status member mismatch: expected {}, found {}",
-            member.member_id,
-            status.member_id
-        );
+        return Err(FederationError::MemberIdMismatch {
+            expected: member.member_id,
+            found: status.member_id,
+        }
+        .into());
     }
     if status.federation_id != expected_federation_id {
-        anyhow::bail!(
-            "federation peer status federation mismatch: expected {}, found {}",
-            expected_federation_id,
-            status.federation_id
-        );
+        return Err(FederationError::RestFederationMismatch {
+            expected: expected_federation_id,
+            found: status.federation_id,
+        }
+        .into());
     }
     if status.aleph_bft_next_item_index.is_none() {
-        anyhow::bail!(
-            "federation peer {} AlephBFT status missing finalized item cursor",
-            member.member_id
-        );
+        return Err(FederationError::AlephBftFinalizedCursorMissing {
+            member_id: member.member_id,
+        }
+        .into());
     }
 
     Ok(())

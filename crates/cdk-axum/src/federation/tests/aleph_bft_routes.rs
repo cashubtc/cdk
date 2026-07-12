@@ -505,11 +505,11 @@ async fn federation_peer_client_rejects_aleph_bft_network_unknown_member_before_
         .await
         .expect_err("unknown peer should be rejected");
 
-    assert!(
-        err.to_string()
-            .contains("is not in the configured member roster"),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(
+        err.downcast_ref::<FederationError>(),
+        Some(FederationError::UnknownMember { member_id: found })
+            if *found == unknown_peer.member_id
+    ));
     assert!(transport.aleph_bft_network_message_requests().is_empty());
 }
 

@@ -8,14 +8,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
-    FederationError, FederationJournalCatchUpResponse, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
-    FederationOperationId, FederationPeerStatus, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
-    InMemoryFederationJournal, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    redact_federation_operator_message, FederationCatchUpCertificate,
+    FederationCatchUpCertificateQuorum, FederationCatchUpOperation, FederationError,
+    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
+    FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
+    FederationMaterializedStateSnapshot, FederationOperationId, FederationPeerStatus,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
+    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
 #[cfg(test)]
 use cdk::federation::FederationLocalStatusResponse;
@@ -575,33 +576,64 @@ fn federation_not_configured() -> Response {
 }
 
 fn federation_error_response(err: FederationError) -> Response {
-    let status = match err {
-        FederationError::ConflictingOperation { .. } => StatusCode::CONFLICT,
-        FederationError::OperationFederationMismatch { .. }
-        | FederationError::CatchUpFederationMismatch { .. }
-        | FederationError::CatchUpIndexMismatch { .. }
-        | FederationError::CatchUpDigestMismatch { .. }
-        | FederationError::CatchUpOperationIdMismatch { .. }
-        | FederationError::JournalConflictKeysMismatch { .. } => StatusCode::BAD_REQUEST,
-        _ => StatusCode::BAD_REQUEST,
+    let status = federation_error_status(&err);
+    let diagnostic = redact_federation_operator_message(&err.to_string());
+    tracing::warn!(
+        status = status.as_u16(),
+        "Federation request failed: {diagnostic}"
+    );
+    let message = match status {
+        StatusCode::INTERNAL_SERVER_ERROR => "federation internal error".to_string(),
+        _ => diagnostic,
     };
-    tracing::warn!("Federation request failed: {}", err);
-    (status, err.to_string()).into_response()
+    (status, message).into_response()
+}
+
+fn federation_error_status(err: &FederationError) -> StatusCode {
+    match err {
+        FederationError::ConflictingOperation { .. } => StatusCode::CONFLICT,
+        FederationError::PendingConsensusMempoolFull { .. }
+        | FederationError::ResponseWaiterLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
+        FederationError::ConsensusQuorumUnavailable { .. }
+        | FederationError::RuntimeUnavailable { .. }
+        | FederationError::NodeLagging { .. }
+        | FederationError::NodeCatchingUp { .. }
+        | FederationError::NodeVerifyingCatchUpCertificate { .. }
+        | FederationError::NodeMaterializedStateMismatch { .. }
+        | FederationError::NodeHalted { .. }
+        | FederationError::OperationPendingFinalization { .. }
+        | FederationError::PendingAlephBftFinalization { .. }
+        | FederationError::AlephBftSessionRotationBlocked { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        FederationError::AlephBftFinalizedItemRecoveryMismatch { .. } => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        _ => StatusCode::BAD_REQUEST,
+    }
 }
 
 fn cdk_error_response(err: cdk::Error) -> Response {
     match err {
         cdk::Error::Federation(err) => federation_error_response(err),
         err => {
-            tracing::error!("Federation storage mutation failed: {}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+            let diagnostic = redact_federation_operator_message(&err.to_string());
+            tracing::error!("Federation storage mutation failed: {diagnostic}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "federation internal error",
+            )
+                .into_response()
         }
     }
 }
 
 fn anyhow_response(err: anyhow::Error) -> Response {
-    tracing::error!("Federation status failed: {}", err);
-    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+    let diagnostic = redact_federation_operator_message(&err.to_string());
+    tracing::error!("Federation status failed: {diagnostic}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "federation internal error",
+    )
+        .into_response()
 }
 
 async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
@@ -614,7 +646,9 @@ async fn local_peer_order_status(state: &MintState) -> anyhow::Result<Federation
     let runtime_config = state
         .mint
         .federation_config()
-        .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
+        .ok_or(FederationError::RuntimeUnavailable {
+            component: "mint configuration",
+        })?;
     let tip = state.mint.localstore().get_federation_journal_tip().await?;
     let mut status = match tip {
         Some(tip) => {
@@ -662,7 +696,9 @@ async fn local_peer_status_and_entries(
     let runtime_config = state
         .mint
         .federation_config()
-        .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
+        .ok_or(FederationError::RuntimeUnavailable {
+            component: "mint configuration",
+        })?;
     let journal = durable_federation_journal(state).await?;
     let mut status = FederationPeerStatus::from_journal(
         runtime_config.federation_id(),
@@ -684,7 +720,10 @@ async fn local_finalized_item_cursor(state: &MintState) -> anyhow::Result<u64> {
     return Ok(0);
 
     #[cfg(not(test))]
-    anyhow::bail!("AlephBFT consensus status is unavailable")
+    return Err(FederationError::RuntimeUnavailable {
+        component: "AlephBFT consensus status",
+    }
+    .into());
 }
 
 async fn durable_federation_journal(
@@ -742,20 +781,25 @@ fn verify_catch_up_operation_evidence(
 ) -> anyhow::Result<()> {
     let first = expected
         .first()
-        .ok_or_else(|| anyhow::anyhow!("missing local entries for evidence response"))?;
+        .ok_or_else(|| FederationError::CatchUpCertificateMismatch {
+            reason: "missing local entries for evidence response".to_string(),
+        })?;
     if response.from_index != first.index {
-        anyhow::bail!(
-            "evidence response started at {}, expected {}",
-            response.from_index,
-            first.index
-        );
+        return Err(FederationError::CatchUpIndexMismatch {
+            expected: first.index,
+            found: response.from_index,
+        }
+        .into());
     }
     if response.entries.len() != expected.len() {
-        anyhow::bail!(
-            "evidence response carried {} entries, expected {}",
-            response.entries.len(),
-            expected.len()
-        );
+        return Err(FederationError::CatchUpCertificateMismatch {
+            reason: format!(
+                "evidence response entry count mismatch: expected={}, found={}",
+                expected.len(),
+                response.entries.len()
+            ),
+        }
+        .into());
     }
 
     for (local, peer) in expected.iter().zip(&response.entries) {
@@ -764,11 +808,13 @@ fn verify_catch_up_operation_evidence(
             || peer.previous_order_digest != local.previous_order_digest
             || peer.order_digest != local.order_digest
         {
-            anyhow::bail!(
-                "evidence entry mismatch at local index {} and peer index {}",
-                local.index,
-                peer.index
-            );
+            return Err(FederationError::CatchUpCertificateMismatch {
+                reason: format!(
+                    "evidence entry mismatch at local index {} and peer index {}",
+                    local.index, peer.index
+                ),
+            }
+            .into());
         }
     }
 

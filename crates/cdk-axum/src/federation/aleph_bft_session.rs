@@ -1087,9 +1087,10 @@ where
     }
 
     let Some(consensus) = state.federation.consensus.as_ref().cloned() else {
-        return Err(cdk::Error::Custom(
-            "AlephBFT live session rotation requires federation consensus runtime".to_string(),
-        ));
+        return Err(cdk::federation::FederationError::RuntimeUnavailable {
+            component: "consensus",
+        }
+        .into());
     };
 
     let next_session = {
@@ -1097,9 +1098,13 @@ where
         let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
         let pending = consensus.pending_mempool_len();
         if pending != 0 {
-            return Err(cdk::Error::Custom(format!(
-                "AlephBFT live session rotation requires empty pending mempool, found {pending}"
-            )));
+            return Err(
+                cdk::federation::FederationError::AlephBftSessionRotationBlocked {
+                    session: status.session,
+                    pending_items: pending,
+                }
+                .into(),
+            );
         }
         let next_session = status.session.checked_add(1).ok_or_else(|| {
             cdk::Error::Custom("AlephBFT live session rotation overflowed session id".to_string())
@@ -1115,11 +1120,16 @@ where
 
     {
         let mut consensus = consensus.lock().await;
+        let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
         let pending = consensus.pending_mempool_len();
         if pending != 0 {
-            return Err(cdk::Error::Custom(format!(
-                "AlephBFT live session rotation requires empty pending mempool, found {pending}"
-            )));
+            return Err(
+                cdk::federation::FederationError::AlephBftSessionRotationBlocked {
+                    session: status.session,
+                    pending_items: pending,
+                }
+                .into(),
+            );
         }
         consensus
             .begin_aleph_bft_session(next_session)

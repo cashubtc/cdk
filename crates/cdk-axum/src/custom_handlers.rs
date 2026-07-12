@@ -3911,18 +3911,18 @@ mod tests {
     #[cfg(feature = "federation")]
     fn assert_aleph_bft_error_not_ready(error: &cdk::Error) {
         match error {
-            cdk::Error::Custom(detail)
-                if detail.contains("public federation submissions are disabled") => {}
+            cdk::Error::Federation(cdk::federation::FederationError::NodeHalted { reason })
+                if reason.contains("public federation submissions are disabled") => {}
             _ => panic!("AlephBFT public submit should fail closed, got: {error}"),
         }
     }
 
     #[cfg(feature = "federation")]
-    fn assert_error_not_ready_contains(error: &cdk::Error, expected: &str) {
-        match error {
-            cdk::Error::Custom(detail) if detail.contains(expected) => {}
-            _ => panic!("public route should fail closed with `{expected}`, got: {error}"),
-        }
+    fn assert_catching_up_error(error: &cdk::Error) {
+        assert!(matches!(
+            error,
+            cdk::Error::Federation(cdk::federation::FederationError::NodeCatchingUp { .. })
+        ));
     }
 
     #[cfg(feature = "federation")]
@@ -7799,7 +7799,7 @@ mod tests {
         )
         .await
         .expect_err("melt should fail while catching up");
-        assert_error_not_ready_contains(&melt_error, not_ready);
+        assert_catching_up_error(&melt_error);
         assert_no_federation_public_submit_work(&state, 1).await;
 
         let quote = state

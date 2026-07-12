@@ -9,7 +9,7 @@ use crate::{
     FederationInvalidOperationAlertHandle, FederationNotificationHandle,
     FederationOperationNotificationStats, FederationOperationWaitRegistration,
     FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncHandle,
-    FederationSyncState, FederationSyncStatus, ALEPH_BFT_STARTUP_HALT_REASON,
+    FederationSyncState, FederationSyncStatus,
 };
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
@@ -47,6 +47,62 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) local_finality_test: bool,
     #[cfg(test)]
     pub(crate) manual_finality_test: bool,
+}
+
+fn runtime_unavailable(component: &'static str) -> cdk::Error {
+    FederationError::RuntimeUnavailable { component }.into()
+}
+
+fn finalized_unit_recovery_mismatch(
+    payload: &FederationAlephBftUnitPayload,
+    reason: &str,
+) -> cdk::Error {
+    FederationError::AlephBftFinalizedItemRecoveryMismatch {
+        reason: format!(
+            "{reason}: member={} session={} unit={}",
+            payload.submitting_member, payload.session, payload.unit_index
+        ),
+    }
+    .into()
+}
+
+fn federation_not_ready_error(status: FederationSyncStatus) -> cdk::Error {
+    match status {
+        FederationSyncStatus::Healthy => runtime_unavailable("readiness gate"),
+        FederationSyncStatus::Lagging {
+            peer,
+            local_operation_count,
+            peer_operation_count,
+        } => FederationError::NodeLagging {
+            peer,
+            local_operation_count,
+            peer_operation_count,
+        }
+        .into(),
+        FederationSyncStatus::CatchingUp { peer } => {
+            FederationError::NodeCatchingUp { peer }.into()
+        }
+        FederationSyncStatus::VerifyingCatchUpCertificate {
+            peer,
+            operation_count,
+        } => FederationError::NodeVerifyingCatchUpCertificate {
+            peer,
+            operation_count,
+        }
+        .into(),
+        FederationSyncStatus::MaterializedStateMismatch {
+            peer,
+            operation_count,
+        } => FederationError::NodeMaterializedStateMismatch {
+            peer,
+            operation_count,
+        }
+        .into(),
+        FederationSyncStatus::Halted { reason } => FederationError::NodeHalted {
+            reason: cdk::federation::redact_federation_operator_message(&reason),
+        }
+        .into(),
+    }
 }
 
 impl FederationNodeRuntime {
@@ -88,9 +144,9 @@ impl FederationNodeRuntime {
     }
 
     fn active_mint(&self) -> Result<&Arc<Mint>, cdk::Error> {
-        self.mint.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation runtime is not active for this mint".to_string())
-        })
+        self.mint
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("mint"))
     }
 
     #[cfg(feature = "prometheus")]
@@ -229,10 +285,10 @@ impl FederationNodeRuntime {
         finalized_items.sort_by_key(|item| item.item_index_in_unit);
 
         if finalized_items.len() != payload.items.len() {
-            return Err(cdk::Error::Custom(format!(
-                "AlephBFT finalized unit replay changed item count for member {} session {} unit {}",
-                payload.submitting_member, payload.session, payload.unit_index
-            )));
+            return Err(finalized_unit_recovery_mismatch(
+                payload,
+                "replay changed item count",
+            ));
         }
 
         let mut responses = Vec::new();
@@ -240,36 +296,36 @@ impl FederationNodeRuntime {
             let expected_index_u64 =
                 u64::try_from(expected_index).expect("unit item index fits in u64");
             if finalized_item.item_index_in_unit != expected_index_u64 {
-                return Err(cdk::Error::Custom(format!(
-                    "AlephBFT finalized unit replay changed item order for member {} session {} unit {}",
-                    payload.submitting_member, payload.session, payload.unit_index
-                )));
+                return Err(finalized_unit_recovery_mismatch(
+                    payload,
+                    "replay changed item order",
+                ));
             }
             if finalized_item.unit_body_hash != payload.body_hash {
-                return Err(cdk::Error::Custom(format!(
-                    "AlephBFT finalized unit replay changed body hash for member {} session {} unit {}",
-                    payload.submitting_member, payload.session, payload.unit_index
-                )));
+                return Err(finalized_unit_recovery_mismatch(
+                    payload,
+                    "replay changed body hash",
+                ));
             }
 
             let Some(payload_item) = payload.items.get(expected_index) else {
-                return Err(cdk::Error::Custom(format!(
-                    "AlephBFT finalized unit replay is missing item {} for member {} session {} unit {}",
-                    expected_index, payload.submitting_member, payload.session, payload.unit_index
-                )));
+                return Err(finalized_unit_recovery_mismatch(
+                    payload,
+                    "replay is missing an item",
+                ));
             };
             if finalized_item.item.canonical_bytes()? != payload_item.canonical_bytes()? {
-                return Err(cdk::Error::Custom(format!(
-                    "AlephBFT finalized unit replay changed item body for member {} session {} unit {}",
-                    payload.submitting_member, payload.session, payload.unit_index
-                )));
+                return Err(finalized_unit_recovery_mismatch(
+                    payload,
+                    "replay changed item body",
+                ));
             }
             let payload_operation_id = payload_item.operation_id()?;
             if finalized_item.operation_id != payload_operation_id {
-                return Err(cdk::Error::Custom(format!(
-                    "AlephBFT finalized unit replay changed operation ID for member {} session {} unit {}",
-                    payload.submitting_member, payload.session, payload.unit_index
-                )));
+                return Err(finalized_unit_recovery_mismatch(
+                    payload,
+                    "replay changed operation ID",
+                ));
             }
 
             if let Some(operation_id) = finalized_item.operation_id {
@@ -277,10 +333,10 @@ impl FederationNodeRuntime {
                     .journal()
                     .entry_by_operation_id(operation_id)
                     .ok_or_else(|| {
-                        cdk::Error::Custom(format!(
-                            "AlephBFT finalized unit replay operation {} is missing from the local journal",
-                            operation_id
-                        ))
+                        finalized_unit_recovery_mismatch(
+                            payload,
+                            &format!("operation {operation_id} is missing from the local journal"),
+                        )
                     })?;
                 responses.push(FederationSubmitOperationResponse::from_outcome(
                     FederationJournalAppendOutcome::Duplicate(entry.clone()),
@@ -458,14 +514,12 @@ impl FederationNodeRuntime {
             return Ok(());
         };
         if !status.is_ready() {
-            return Err(cdk::Error::Custom(status.not_ready_message()));
+            return Err(federation_not_ready_error(status));
         }
         if self.live_session_available().await {
             return Ok(());
         }
-        Err(cdk::Error::Custom(
-            ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
-        ))
+        Err(runtime_unavailable("AlephBFT live session"))
     }
 
     pub(crate) async fn network_inbound_active(&self) -> bool {
@@ -512,9 +566,10 @@ impl FederationNodeRuntime {
         session_id: u64,
         operation_id: FederationOperationId,
     ) -> Result<(), cdk::Error> {
-        let status = self.aleph_bft_status().await.ok_or_else(|| {
-            cdk::Error::Custom("AlephBFT activity requires an active consensus runtime".to_string())
-        })?;
+        let status = self
+            .aleph_bft_status()
+            .await
+            .ok_or_else(|| runtime_unavailable("AlephBFT consensus"))?;
         if status.session != session_id {
             return Err(cdk::Error::from(
                 FederationError::AlephBftUnitSessionMismatch {
@@ -528,9 +583,7 @@ impl FederationNodeRuntime {
             .read()
             .await
             .clone()
-            .ok_or_else(|| {
-                cdk::Error::Custom("AlephBFT activity receiver is not available".to_string())
-            })?;
+            .ok_or_else(|| runtime_unavailable("AlephBFT activity receiver"))?;
         handle.mark_peer_activity(operation_id);
         Ok(())
     }
@@ -543,15 +596,14 @@ impl FederationNodeRuntime {
         let operation_label = envelope.operation.kind().to_string();
         let operation_id = envelope.operation_id()?;
         let sync_config = self.peer_sync_config.unwrap_or_default();
-        let notifications = self.notifications.as_ref().ok_or_else(|| {
-            cdk::Error::Custom(
-                "federation operation notifications are unavailable for AlephBFT submit"
-                    .to_string(),
-            )
-        })?;
-        let consensus = self.consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
+        let notifications = self
+            .notifications
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("operation notifications"))?;
+        let consensus = self
+            .consensus
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
         if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
             if matches!(
@@ -658,9 +710,10 @@ impl FederationNodeRuntime {
         }
 
         let unit = {
-            let consensus = self.consensus.as_ref().ok_or_else(|| {
-                cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-            })?;
+            let consensus = self
+                .consensus
+                .as_ref()
+                .ok_or_else(|| runtime_unavailable("consensus"))?;
             consensus.lock().await.next_aleph_bft_unit_payload()?
         };
         if let Some(unit) = unit {
@@ -708,9 +761,7 @@ impl FederationNodeRuntime {
             .active_mint()?
             .federation_config()
             .cloned()
-            .ok_or_else(|| {
-                cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-            })?;
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config().clone();
         if response.version != FEDERATION_REST_API_VERSION {
             return Err(cdk::Error::Federation(
@@ -765,13 +816,12 @@ impl FederationNodeRuntime {
             .active_mint()?
             .federation_config()
             .cloned()
-            .ok_or_else(|| {
-                cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-            })?;
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config().clone();
-        let consensus = self.consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
+        let consensus = self
+            .consensus
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
         let local_entries = consensus.journal().entries().to_vec();
         let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
@@ -969,9 +1019,9 @@ impl FederationNodeRuntime {
         sequence: u64,
     ) -> Result<(), cdk::Error> {
         let mint = self.active_mint()?;
-        let runtime_config = mint.federation_config().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         contribution.validate_sender_receiver(
             runtime_config.public_config(),
             sender,
@@ -1185,9 +1235,9 @@ impl FederationNodeRuntime {
         setup_public_config: &FederationConfig,
     ) -> Result<FederationDkgTranscriptHash, cdk::Error> {
         let mint = self.active_mint()?;
-        let runtime_config = mint.federation_config().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-        })?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let local_member = runtime_config.member_id();
         let keyset_shares = mint
             .localstore()
@@ -1213,9 +1263,7 @@ impl FederationNodeRuntime {
         self.active_mint()?
             .federation_config()
             .map(|config| config.public_config().clone())
-            .ok_or_else(|| {
-                cdk::Error::Custom("federation mint is missing its runtime config".to_string())
-            })
+            .ok_or_else(|| runtime_unavailable("mint configuration"))
     }
 
     async fn load_dkg_setup_state(
@@ -1338,9 +1386,10 @@ impl FederationNodeRuntime {
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
-        let consensus = self.consensus.as_ref().ok_or_else(|| {
-            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
-        })?;
+        let consensus = self
+            .consensus
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
         if let Some(responses) = Self::duplicate_finalized_unit_responses(&consensus, &payload)? {
             drop(consensus);

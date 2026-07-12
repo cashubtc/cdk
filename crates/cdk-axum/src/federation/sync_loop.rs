@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationCatchUpCertificate, FederationCatchUpOperation, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationPeerStatus, MemberConfigPublic, MemberId,
+    FederationCatchUpCertificate, FederationCatchUpOperation, FederationError,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationMaterializedStateDigest, FederationPeerStatus, MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -531,7 +531,10 @@ where
     }
 
     let Some(runtime_config) = state.mint.federation_config() else {
-        anyhow::bail!("mint is not configured as a federation member");
+        return Err(FederationError::RuntimeUnavailable {
+            component: "mint configuration",
+        }
+        .into());
     };
     let public_config = runtime_config.public_config();
     let required = usize::from(public_config.threshold_params.consensus_threshold);
@@ -645,11 +648,11 @@ where
         FederationJournalCatchUpResponse,
         Vec<FederationJournalEntry>,
     )> {
-        let consensus = state
-            .federation
-            .consensus
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
+        let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
+            FederationError::RuntimeUnavailable {
+                component: "consensus",
+            }
+        })?;
         let request = {
             let consensus = consensus.lock().await;
             let mut request = consensus
@@ -721,12 +724,10 @@ where
                             member.member_id, before_status.operation_count, before_finalized_item
                         ))
                         .await;
-                    anyhow::bail!(
-                        "federation peer {} returned no catch-up progress from operation {} / finalized item {}",
-                        member.member_id,
-                        before_status.operation_count,
-                        before_finalized_item
-                    );
+                    return Err(FederationError::CatchUpNoProgress {
+                        index: before_status.operation_count,
+                    }
+                    .into());
                 }
             }
         }
@@ -741,11 +742,12 @@ where
                     member.member_id, peer_status.operation_count
                 ))
                 .await;
-            anyhow::bail!(
-                "federation peer {} digest mismatch at operation count {}",
-                member.member_id,
-                peer_status.operation_count
-            );
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: peer_status.operation_count.saturating_sub(1),
+                expected: local_status.latest_order_digest,
+                found: peer_status.latest_order_digest,
+            }
+            .into());
         }
 
         if let (true, Some(expected_materialized_state_digest)) = (
@@ -828,12 +830,11 @@ fn status_finalized_cursor_increased(
 }
 
 fn aleph_bft_next_item_index(status: &FederationPeerStatus) -> anyhow::Result<Option<u64>> {
-    Ok(Some(status.aleph_bft_next_item_index.ok_or_else(|| {
-        anyhow::anyhow!(
-            "federation peer {} AlephBFT status missing finalized item cursor",
-            status.member_id
-        )
-    })?))
+    Ok(Some(status.aleph_bft_next_item_index.ok_or(
+        FederationError::AlephBftFinalizedCursorMissing {
+            member_id: status.member_id,
+        },
+    )?))
 }
 
 fn format_aleph_bft_next_item_index(status: &FederationPeerStatus) -> String {
@@ -870,9 +871,9 @@ async fn wait_for_local_materialized_state_digest(
     state
         .mark_federation_materialized_state_mismatch(member.member_id, operation_count)
         .await;
-    anyhow::bail!(
-        "federation peer {} materialized state digest mismatch at operation count {}",
-        member.member_id,
-        operation_count
-    )
+    Err(FederationError::NodeMaterializedStateMismatch {
+        peer: member.member_id,
+        operation_count,
+    }
+    .into())
 }

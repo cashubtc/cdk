@@ -989,6 +989,10 @@
             <p>General federation config construction derives member-quorum finality from the consensus threshold. Fake-wallet testing keeps one-observation finality only through an explicit trusted-dealer/test policy, while production startup rejects that policy without the local development override. The public config records only the behavior CDK enforces: a required count of authenticated matching observations. Unimplemented shared-backend, origin-proof, threshold-gateway, and onchain-proof labels have been removed. Melt observations no longer carry unused free-form failure text that could split otherwise matching failed-payment evidence.</p>
           </article>
           <article class="item">
+            <h3>Infrastructure failures have typed decisions</h3>
+            <p>Runtime availability, synchronization readiness, peer status, catch-up progress, finalized cursors, replay recovery, AlephBFT quorum configuration, bounded admission, and session rotation now retain structured federation errors through their decision boundaries. Private member REST consistently maps conflict, rate-limit, unavailable, malformed, and internal classes to stable HTTP statuses, redacts operator diagnostics, and hides internal response detail. Public Cashu routes still use the ordinary <code>ErrorResponse</code> pipeline, business rejections remain unchanged, and runtime failures remain ambiguous to existing wallet sagas. A broader parallel runtime/consensus/transport error hierarchy was rejected because existing transport and storage errors already cover those leaf layers without display-text control flow. Verification passes all 334 shared tests, 415 unaffected tests from the complete Axum federation run plus all six changed readiness cases in focused reruns, and all 28 standalone Axum tests.</p>
+          </article>
+          <article class="item">
             <h3>Feature-off compatibility</h3>
             <p>The first Rust scaffold is gated so normal standalone builds do not see federation mint fields or APIs.</p>
           </article>

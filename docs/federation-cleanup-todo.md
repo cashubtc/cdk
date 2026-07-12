@@ -2508,7 +2508,14 @@ production federation binary.
 
 ## 39. Replace free-form federation infrastructure errors with typed errors
 
-**Status:** Todo
+**Status:** Completed
+
+**Decision:** Apply this selectively at classification boundaries. Do not add
+parallel `FederationRuntimeError`, `FederationConsensusError`, and
+`FederationTransportError` taxonomies merely to wrap diagnostics. Existing
+Cashu business errors, wallet ambiguity messages, storage errors, and leaf
+startup diagnostics remain in their established types when no caller branches
+on their display text.
 
 ### Problem
 
@@ -2533,6 +2540,47 @@ business errors and federation infrastructure failures.
 - `docs/federated-cashu-refactoring-plan.md` section R14.
 - Remove string matching from tests and verify retryable, ambiguous, rejected,
   unavailable, and internal failures remain correctly separated.
+
+### Implementation result
+
+- Added structured variants to the existing `FederationError` for inactive
+  runtime components, each non-ready synchronization state, missing finalized
+  cursors, invalid AlephBFT quorum configuration, and session rotation blocked
+  by pending operations. The variants retain member, operation-count, session,
+  threshold, and component fields where those values govern control flow.
+- `FederationNodeRuntime` no longer constructs `Error::Custom` for readiness,
+  missing runtime handles, activity admission, consensus submission, catch-up,
+  DKG runtime access, or duplicate finalized-unit recovery. Replay corruption
+  uses the existing typed finalized-item recovery error.
+- Peer status and catch-up validation now reuse typed REST, member, federation,
+  cursor, digest, no-progress, and materialized-state errors. The existing
+  private REST timeout/backpressure error remains the transport authority;
+  tests downcast it instead of parsing prose.
+- Private member REST maps typed conflicts to `409`, bounded admission to
+  `429`, unavailable/readiness failures to `503`, malformed requests to `400`,
+  and local recovery invariants to `500`. Internal response bodies are generic;
+  operator diagnostics pass through the existing secret/path redactor.
+- Public Cashu routes still use the normal `Error -> ErrorResponse` conversion.
+  Runtime failures remain ambiguous under the unchanged wallet classifier,
+  canonical business rejections remain authoritative, and halted-route details
+  preserve the already-redacted operator reason.
+- SQL adapters keep the established storage error type. Wallet collectors keep
+  final `InvalidMintResponse` diagnostics only after typed quorum decisions;
+  neither layer classifies errors by display text, so wrapping them again would
+  increase code without improving behavior.
+
+### Verification
+
+- All 334 `cdk-common` federation-enabled library tests pass, including the new
+  runtime-unavailability ambiguity regression.
+- The complete federation-enabled Axum run passed 415 unaffected tests and
+  identified six stale public-readiness wording expectations; after preserving
+  the redacted halt detail and matching direct errors by variant, all six pass
+  in focused reruns. The one manual benchmark remains ignored.
+- Focused peer timeout/backpressure, cursor, catch-up, readiness, replay,
+  mempool, waiter, session-rotation, HTTP classification/redaction, and
+  AlephBFT-threshold tests pass.
+- All 28 standalone Axum library tests pass with federation disabled.
 
 ## 40. Split oversized federation test modules by subsystem
 

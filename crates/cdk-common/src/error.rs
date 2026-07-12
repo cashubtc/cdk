@@ -693,6 +693,20 @@ mod tests {
         assert!(response.detail.contains("terminal status rejected"));
     }
 
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_runtime_unavailability_remains_ambiguous() {
+        let err = Error::Federation(crate::federation::FederationError::RuntimeUnavailable {
+            component: "consensus",
+        });
+
+        assert!(!err.is_definitive_failure());
+        let response = ErrorResponse::from(err);
+
+        assert_eq!(response.code, ErrorCode::Unknown(50000));
+        assert!(!Error::from(response).is_definitive_failure());
+    }
+
     #[test]
     fn test_max_outputs_and_inputs_error_responses_decode() {
         let max_inputs = Error::from(ErrorResponse {

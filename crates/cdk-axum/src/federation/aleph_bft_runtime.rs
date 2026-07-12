@@ -214,10 +214,11 @@ impl CdkAlephBftKeychain {
         let expected_consensus_threshold = u16::try_from(node_count.consensus_threshold().0)
             .map_err(|_| cdk::Error::Custom("AlephBFT node count exceeds u16".to_string()))?;
         if public_config.threshold_params.consensus_threshold != expected_consensus_threshold {
-            return Err(cdk::Error::Custom(format!(
-                "AlephBFT keychain requires BFT consensus threshold {}, found {}",
-                expected_consensus_threshold, public_config.threshold_params.consensus_threshold
-            )));
+            return Err(FederationError::InvalidAlephBftConsensusThreshold {
+                expected: expected_consensus_threshold,
+                found: public_config.threshold_params.consensus_threshold,
+            }
+            .into());
         }
 
         let mut members_by_node = Vec::with_capacity(public_config.members.len());
@@ -1322,10 +1323,13 @@ mod tests {
         let err = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
             .expect_err("non-BFT threshold must fail");
 
-        assert!(
-            err.to_string().contains("BFT consensus threshold 4"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            err,
+            cdk::Error::Federation(FederationError::InvalidAlephBftConsensusThreshold {
+                expected: 4,
+                found: 3,
+            })
+        ));
     }
 
     #[test]
