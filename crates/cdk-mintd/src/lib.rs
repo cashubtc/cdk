@@ -1540,10 +1540,23 @@ fn federation_bdk_local_config(
             "unknown federation.onchain_wallet.chain_source_type {source}; expected bitcoinrpc or esplora"
         ),
     };
+    let source_scope = match wallet.chain_source_scope.to_ascii_lowercase().as_str() {
+        "independent" => cdk_bdk::FederatedChainSourceScope::Independent,
+        "shared" => cdk_bdk::FederatedChainSourceScope::Shared,
+        scope => bail!(
+            "unknown federation.onchain_wallet.chain_source_scope {scope}; expected independent or shared"
+        ),
+    };
+    let source_id = wallet
+        .chain_source_id
+        .clone()
+        .unwrap_or_else(|| chain_source.opaque_source_id());
+    let observation_source = cdk_bdk::FederatedChainSourceDescriptor::new(source_scope, source_id)?;
     Ok(Some(cdk_bdk::FederatedBdkLocalConfig {
         chain_source,
         storage_root: work_dir.join("federation-wallet"),
         sync_interval: std::time::Duration::from_secs(wallet.sync_interval_secs),
+        observation_source,
     }))
 }
 
@@ -4527,9 +4540,31 @@ engine = "sqlite"
             .expect("valid local config")
             .expect("enabled local config");
         assert_eq!(local.chain_source.kind(), cdk_bdk::ChainSourceKind::Esplora);
+        assert_eq!(
+            local.observation_source.scope,
+            cdk_bdk::FederatedChainSourceScope::Independent
+        );
+        assert!(!local.observation_source.source_id.contains("private-token"));
         let debug = format!("{local:?}");
         assert!(!debug.contains("private-token"));
         assert!(!debug.contains(&work_dir.path().to_string_lossy().to_string()));
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .chain_source_scope = "unknown".to_string();
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("unknown source scope must fail")
+            .to_string()
+            .contains("chain_source_scope"));
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .chain_source_scope = "independent".to_string();
 
         settings
             .federation

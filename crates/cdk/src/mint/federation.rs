@@ -16,15 +16,15 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAddressAllocationOperation, FederationAddressKeychain, FederationApplicationState,
-    FederationBlindSignatureShareSet, FederationChainObservation, FederationConfig,
-    FederationConfigDigest, FederationError, FederationFrostApplicationId, FederationId,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltOperation,
-    FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationAddressAllocationOperation, FederationAddressAllocationScope,
+    FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
+    FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
+    FederationFrostApplicationId, FederationId, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
@@ -49,6 +49,11 @@ use super::Mint;
 use super::MintInput;
 use crate::fees::calculate_fee;
 use crate::types::PaymentProcessorKey;
+
+use self::chain_observation::{
+    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+    CHAIN_OBSERVATION_STATE_KEY,
+};
 
 struct FederationActiveMeltPayment {
     active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
@@ -118,6 +123,47 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn config_digest(&self) -> FederationConfigDigest {
         self.config_digest
+    }
+
+    /// Return the single active CDK on-chain FROST application.
+    ///
+    /// Quote routing is intentionally unambiguous. Future FROST-backed payment
+    /// applications must add an explicit selector instead of depending on list
+    /// order.
+    pub fn active_cdk_onchain_application(
+        &self,
+    ) -> Result<&cdk_common::federation::FederationFrostApplicationConfig, Error> {
+        let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+            FederationError::AddressAllocationInvalid {
+                reason: "federation has no accepted FROST wallet configuration".to_string(),
+            }
+        })?;
+        let mut active = wallet
+            .cdk_onchain_applications
+            .iter()
+            .filter(|application| {
+                application.state == cdk_common::federation::FederationFrostEpochState::Active
+                    && wallet
+                        .active_epochs
+                        .application_key_epochs
+                        .get(&application.application_id)
+                        == Some(&application.application_key_epoch)
+            });
+        let application =
+            active
+                .next()
+                .ok_or_else(|| FederationError::AddressAllocationInvalid {
+                    reason: "federation has no active CDK on-chain application".to_string(),
+                })?;
+        if active.next().is_some() {
+            return Err(FederationError::AddressAllocationInvalid {
+                reason:
+                    "federation has multiple active CDK on-chain applications without a selector"
+                        .to_string(),
+            }
+            .into());
+        }
+        Ok(application)
     }
 
     /// Build and authorize one consensus-controlled descriptor allocation.
@@ -1076,6 +1122,31 @@ impl Mint {
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
+        if quote.payment_method.is_onchain() && config.public_config().frost_wallet.is_some() {
+            if quote.unit != CurrencyUnit::Sat {
+                return Err(Error::UnsupportedUnit);
+            }
+            let Some(payment) = self
+                .federation_chain_observation_state()
+                .await?
+                .quote_payment_at_or_before(&quote.id.to_string(), u64::MAX)?
+            else {
+                return Ok(None);
+            };
+            if payment.amount_sat <= quote.amount_paid().value() {
+                return Ok(None);
+            }
+            return Ok(Some(FederationMintQuotePaymentObservation {
+                quote: quote.id.to_string(),
+                observer: config.member_id(),
+                method: quote.payment_method.clone(),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(payment.amount_sat),
+                amount_issued: quote.amount_issued().into(),
+                payment_id: Some(PaymentIdentifier::PaymentId(payment.payment_id)),
+                payment_proof: None,
+            }));
+        }
         if quote.state() == MintQuoteState::Issued {
             return Ok(None);
         }
@@ -1630,11 +1701,17 @@ impl Mint {
         let policy = *config
             .public_config()
             .payment_verification_policy(candidate.context());
+        let mut latest_by_observer = HashMap::new();
+        let mut eligible = observations
+            .iter()
+            .filter(|record| record.operation_index <= max_operation_index)
+            .collect::<Vec<_>>();
+        eligible.sort_by_key(|record| record.operation_index);
+        for record in eligible {
+            latest_by_observer.insert(record.observation.observer(), &record.observation);
+        }
         let quorum = candidate.quorum(
-            observations
-                .iter()
-                .filter(|record| record.operation_index <= max_operation_index)
-                .map(|record| &record.observation),
+            latest_by_observer.values().copied(),
             policy.required_matching_observations(),
         );
 
@@ -1686,6 +1763,8 @@ impl Mint {
         entry: &FederationJournalEntry,
         operation: &FederationMintQuoteOperation,
     ) -> Result<(), Error> {
+        self.validate_federation_onchain_mint_quote_allocation(operation)
+            .await?;
         let proposed_quote = mint_quote_from_federation_operation(
             operation,
             federation_accepted_logical_time(entry),
@@ -1731,6 +1810,76 @@ impl Mint {
             self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
 
+        Ok(())
+    }
+
+    async fn validate_federation_onchain_mint_quote_allocation(
+        &self,
+        operation: &FederationMintQuoteOperation,
+    ) -> Result<(), Error> {
+        let Some(runtime) = self.federation_config() else {
+            return Ok(());
+        };
+        if runtime.public_config().frost_wallet.is_none()
+            || !matches!(operation.request, MintQuoteRequest::Onchain(_))
+        {
+            return Ok(());
+        }
+        let (MintQuoteRequest::Onchain(request), MintQuoteResponse::Onchain(response)) =
+            (&operation.request, &operation.response)
+        else {
+            return Err(Error::InvalidPaymentMethod);
+        };
+        let quote_id = quote_id_from_federation(&operation.quote)?;
+        if operation.request_lookup_id != PaymentIdentifier::QuoteId(quote_id)
+            || response.unit != request.unit
+            || response.pubkey != request.pubkey
+            || response.expiry.is_some()
+            || response.amount_paid != Amount::ZERO
+            || response.amount_issued != Amount::ZERO
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+
+        let application = runtime.active_cdk_onchain_application()?;
+        let allocation = self
+            .federation_address_allocation(
+                FederationAddressAllocationScope {
+                    application_id: application.application_id,
+                    application_key_epoch: application.application_key_epoch,
+                },
+                &operation.quote,
+            )
+            .await?
+            .ok_or_else(|| FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote has no accepted address allocation"
+                    .to_string(),
+            })?;
+        if allocation.keychain != FederationAddressKeychain::External {
+            return Err(FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote requires an external address allocation"
+                    .to_string(),
+            }
+            .into());
+        }
+        let wallet = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or(Error::Internal)?;
+        let script = wallet.derive_cdk_onchain_script(
+            runtime.public_config(),
+            application.application_id,
+            application.application_key_epoch,
+            allocation.keychain,
+            allocation.derivation_index,
+        )?;
+        let expected_address =
+            cdk_common::bitcoin::Address::from_script(script.as_script(), application.network)
+                .map_err(|_| Error::InvalidPaymentRequest)?;
+        if response.request != expected_address.to_string() {
+            return Err(Error::InvalidPaymentRequest);
+        }
         Ok(())
     }
 
@@ -1799,6 +1948,25 @@ impl Mint {
         let journal_entries = self.localstore.get_federation_journal_entries().await?;
         let mut tx = self.localstore.begin_transaction().await?;
         let outcome = async {
+            let mut quote = tx.get_mint_quote(&quote_id).await?;
+            if quote.is_none()
+                && observation.method.is_onchain()
+                && self
+                    .federation_config()
+                    .is_some_and(|runtime| runtime.public_config().frost_wallet.is_some())
+            {
+                return Err(Error::UnknownQuote);
+            }
+            if let Some(quote) = quote.as_deref() {
+                self.validate_federation_onchain_payment_observation(
+                    &mut tx,
+                    quote,
+                    observation,
+                    record.operation_index,
+                    false,
+                )
+                .await?;
+            }
             tx.add_federation_payment_observation(&record).await?;
             let observations = tx
                 .get_federation_payment_observations(
@@ -1807,7 +1975,7 @@ impl Mint {
                 )
                 .await?;
             let mut paid_notification = None;
-            if let Some(mut quote) = tx.get_mint_quote(&quote_id).await? {
+            if let Some(mut quote) = quote.take() {
                 if let Some(amount_paid) = self
                     .apply_mint_payment_observations_to_quote(
                         &mut tx,
@@ -1863,6 +2031,14 @@ impl Mint {
 
             let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
             if can_finalize && !is_quarantined && observed_paid > quote.amount_paid() {
+                self.validate_federation_onchain_payment_observation(
+                    tx,
+                    quote,
+                    observation,
+                    record.operation_index,
+                    true,
+                )
+                .await?;
                 let additional_amount = observed_paid
                     .checked_sub(&quote.amount_paid())
                     .map_err(|_| Error::AmountOverflow)?;
@@ -1889,6 +2065,71 @@ impl Mint {
         }
 
         Ok(paid_notification)
+    }
+
+    async fn validate_federation_onchain_payment_observation(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &MintQuote,
+        observation: &FederationMintQuotePaymentObservation,
+        max_operation_index: u64,
+        mark_liability: bool,
+    ) -> Result<(), Error> {
+        let Some(runtime) = self.federation_config() else {
+            return Ok(());
+        };
+        if runtime.public_config().frost_wallet.is_none() || !quote.payment_method.is_onchain() {
+            return Ok(());
+        }
+        if quote.unit != CurrencyUnit::Sat
+            || observation.method != quote.payment_method
+            || observation.state != MintQuoteState::Paid
+            || observation.payment_proof.is_some()
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        let bytes = tx
+            .kv_read(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                CHAIN_OBSERVATION_STATE_KEY,
+            )
+            .await?
+            .ok_or_else(|| FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation has no wallet UTXO projection".to_string(),
+            })?;
+        let mut state =
+            cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?;
+        let payment = state
+            .quote_payment_at_or_before(&observation.quote, max_operation_index)?
+            .ok_or_else(|| FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation has no accepted spendable output".to_string(),
+            })?;
+        if u64::from(observation.amount_paid) != payment.amount_sat
+            || observation.payment_id != Some(PaymentIdentifier::PaymentId(payment.payment_id))
+        {
+            return Err(FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation does not match accepted wallet outputs"
+                    .to_string(),
+            }
+            .into());
+        }
+        if mark_liability {
+            state.mark_quote_liability_issued_at_or_before(
+                &observation.quote,
+                max_operation_index,
+                payment.amount_sat,
+                payment.payment_id,
+            )?;
+            tx.kv_write(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                CHAIN_OBSERVATION_STATE_KEY,
+                &state.to_bytes()?,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn apply_federation_mint(

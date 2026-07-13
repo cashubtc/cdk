@@ -1,5 +1,6 @@
 use core::fmt;
 
+use bdk_wallet::bitcoin::hashes::{sha256, Hash};
 use bdk_wallet::bitcoin::Transaction;
 use bdk_wallet::chain::BlockId;
 use cdk_common::redact::url_for_logs;
@@ -202,6 +203,22 @@ impl ChainSource {
             #[allow(unreachable_patterns)]
             _ => unreachable!("ChainSource must have at least one feature enabled"),
         }
+    }
+
+    /// Return a stable opaque identity for diagnostics without exposing an endpoint.
+    #[must_use]
+    pub fn opaque_source_id(&self) -> String {
+        let identity = match self {
+            #[cfg(feature = "esplora")]
+            Self::Esplora(config) => format!("esplora:{}", config.url),
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(config) => {
+                format!("bitcoin-rpc:{}:{}", config.host, config.port)
+            }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("ChainSource must have at least one feature enabled"),
+        };
+        format!("source-{}", sha256::Hash::hash(identity.as_bytes()))
     }
 
     pub(crate) async fn sync_engine_once(

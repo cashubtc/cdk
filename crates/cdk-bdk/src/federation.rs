@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bdk_wallet::bitcoin::hashes::{sha256, Hash};
-use bdk_wallet::bitcoin::{Network, ScriptBuf};
+use bdk_wallet::bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, TxOut};
 use bdk_wallet::KeychainKind;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -17,6 +17,49 @@ const FEDERATED_WALLET_NAMESPACE_VERSION: u16 = 1;
 const FEDERATED_WALLET_NAMESPACE_DOMAIN: &[u8] = b"cdk/bdk/federated-wallet-namespace/v1";
 const FEDERATED_WALLET_DIRECTORY: &str = "federation-bdk-v1";
 const MAX_SYNC_FAILURES: u32 = 1_000_000;
+
+/// Operational independence classification for a local chain source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederatedChainSourceScope {
+    /// Member-operated infrastructure.
+    Independent,
+    /// Infrastructure intentionally shared by multiple members.
+    Shared,
+}
+
+/// Opaque source identity safe to attach to consensus observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederatedChainSourceDescriptor {
+    /// Operational independence classification.
+    pub scope: FederatedChainSourceScope,
+    /// Bounded opaque identifier; never an endpoint or credential.
+    pub source_id: String,
+}
+
+impl FederatedChainSourceDescriptor {
+    /// Construct a bounded, redacted descriptor.
+    pub fn new(
+        scope: FederatedChainSourceScope,
+        source_id: impl Into<String>,
+    ) -> Result<Self, Error> {
+        let source = Self {
+            scope,
+            source_id: source_id.into(),
+        };
+        if source.source_id.is_empty()
+            || source.source_id.len() > 128
+            || !source
+                .source_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(Error::InvalidConfig(
+                "federated chain source id must be bounded and opaque".to_string(),
+            ));
+        }
+        Ok(source)
+    }
+}
 
 /// Public descriptor branch used after a consensus allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +88,8 @@ pub struct FederatedBdkLocalConfig {
     pub storage_root: PathBuf,
     /// Delay between independent local synchronization attempts.
     pub sync_interval: Duration,
+    /// Opaque local source identity and operational independence classification.
+    pub observation_source: FederatedChainSourceDescriptor,
 }
 
 impl fmt::Debug for FederatedBdkLocalConfig {
@@ -54,6 +99,7 @@ impl fmt::Debug for FederatedBdkLocalConfig {
             .field("source", &self.chain_source.kind())
             .field("storage_root", &"<redacted>")
             .field("sync_interval", &self.sync_interval)
+            .field("source_scope", &self.observation_source.scope)
             .finish()
     }
 }
@@ -224,12 +270,39 @@ pub struct FederatedWalletSyncStatus {
     pub consecutive_failures: u32,
 }
 
+/// Confirmed block evidence from one member's local BDK graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FederatedWalletOutputConfirmation {
+    /// Block containing the output transaction.
+    pub block_hash: BlockHash,
+    /// Height of the containing block.
+    pub block_height: u32,
+    /// Confirmation depth relative to the local persisted tip.
+    pub confirmation_depth: u32,
+}
+
+/// One descriptor-owned output observed in the member-local BDK graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederatedWalletOutput {
+    /// Descriptor branch that recognized the output.
+    pub keychain: FederatedWalletKeychain,
+    /// Non-hardened descriptor child index.
+    pub derivation_index: u32,
+    /// Transaction output identifier.
+    pub outpoint: OutPoint,
+    /// Exact value and script.
+    pub txout: TxOut,
+    /// Block evidence, or `None` while unconfirmed.
+    pub confirmation: Option<FederatedWalletOutputConfirmation>,
+}
+
 /// One member's isolated watch-only BDK wallet.
 #[derive(Clone)]
 pub struct FederatedBdkWallet {
     engine: BdkWalletEngine,
     scope: FederatedWalletScope,
     status: Arc<RwLock<FederatedWalletSyncStatus>>,
+    observation_source: FederatedChainSourceDescriptor,
     #[allow(dead_code)]
     database_dir: Arc<PathBuf>,
 }
@@ -250,6 +323,19 @@ impl FederatedBdkWallet {
         config: FederatedWalletConfig,
         chain_source: ChainSource,
         storage_root: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let source_id = chain_source.opaque_source_id();
+        let observation_source =
+            FederatedChainSourceDescriptor::new(FederatedChainSourceScope::Independent, source_id)?;
+        Self::open_with_observation_source(config, chain_source, storage_root, observation_source)
+    }
+
+    /// Open with an explicit redacted chain-source diagnostic classification.
+    pub fn open_with_observation_source(
+        config: FederatedWalletConfig,
+        chain_source: ChainSource,
+        storage_root: impl AsRef<Path>,
+        observation_source: FederatedChainSourceDescriptor,
     ) -> Result<Self, Error> {
         let scope = config.scope;
         let namespace = scope.namespace();
@@ -275,6 +361,7 @@ impl FederatedBdkWallet {
                 last_success_unix: None,
                 consecutive_failures: 0,
             })),
+            observation_source,
             database_dir: Arc::new(database_dir),
         })
     }
@@ -289,6 +376,12 @@ impl FederatedBdkWallet {
     #[must_use]
     pub fn scope(&self) -> FederatedWalletScope {
         self.scope
+    }
+
+    /// Redacted source identity attached to this member's observations.
+    #[must_use]
+    pub fn observation_source(&self) -> &FederatedChainSourceDescriptor {
+        &self.observation_source
     }
 
     /// Persist every accepted external and internal script through the supplied
@@ -399,6 +492,40 @@ impl FederatedBdkWallet {
             .script_pubkey()
     }
 
+    /// Return all descriptor-owned outputs with bounded local chain evidence.
+    pub async fn observed_outputs(&self) -> Vec<FederatedWalletOutput> {
+        let wallet = self.engine.wallet_with_db.lock().await;
+        let tip_height = wallet.wallet.latest_checkpoint().height();
+        wallet
+            .wallet
+            .list_output()
+            .map(|output| {
+                let confirmation = match output.chain_position {
+                    bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } => {
+                        Some(FederatedWalletOutputConfirmation {
+                            block_hash: anchor.block_id.hash,
+                            block_height: anchor.block_id.height,
+                            confirmation_depth: tip_height
+                                .saturating_sub(anchor.block_id.height)
+                                .saturating_add(1),
+                        })
+                    }
+                    bdk_wallet::chain::ChainPosition::Unconfirmed { .. } => None,
+                };
+                FederatedWalletOutput {
+                    keychain: match output.keychain {
+                        KeychainKind::External => FederatedWalletKeychain::External,
+                        KeychainKind::Internal => FederatedWalletKeychain::Internal,
+                    },
+                    derivation_index: output.derivation_index,
+                    outpoint: output.outpoint,
+                    txout: output.txout,
+                    confirmation,
+                }
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     fn database_dir(&self) -> &Path {
         self.database_dir.as_path()
@@ -501,6 +628,12 @@ mod tests {
             let unspent = wallet.engine().list_unspent().await;
             assert_eq!(unspent.len(), 1);
             assert_eq!(unspent[0].txout.value.to_sat(), 50_000);
+            let observed = wallet.observed_outputs().await;
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].keychain, FederatedWalletKeychain::External);
+            assert_eq!(observed[0].derivation_index, 0);
+            assert_eq!(observed[0].txout.value.to_sat(), 50_000);
+            assert_eq!(observed[0].confirmation, None);
         }
         assert_eq!(
             wallets[0].sync_status().await.source,

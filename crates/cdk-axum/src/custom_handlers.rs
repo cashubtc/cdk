@@ -89,6 +89,24 @@ async fn create_mint_quote_for_route(
         {
             return Ok((response, Some(request_lookup_id)));
         }
+        if matches!(request, cdk::mint::MintQuoteRequest::Onchain(_)) {
+            state.mint.check_mint_request_acceptable(&request).await?;
+            let runtime = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+            let application = runtime.active_cdk_onchain_application()?;
+            let address = state
+                .allocate_federation_onchain_address(
+                    &quote_id.to_string(),
+                    application.application_id,
+                    application.application_key_epoch,
+                    cdk::federation::FederationAddressKeychain::External,
+                )
+                .await?;
+            let (response, request_lookup_id) = state
+                .mint
+                .prepare_federation_onchain_mint_quote(quote_id, request, address)
+                .await?;
+            return Ok((response, Some(request_lookup_id)));
+        }
         let (response, request_lookup_id) = state
             .mint
             .prepare_federation_mint_quote(quote_id, request)

@@ -2904,10 +2904,11 @@ fn initialize_accepted_federation_onchain_wallets(
                 &application.internal_descriptor,
                 application.network,
             )?;
-            let wallet = FederatedBdkWallet::open(
+            let wallet = FederatedBdkWallet::open_with_observation_source(
                 config,
                 local_config.chain_source.clone(),
                 &local_config.storage_root,
+                local_config.observation_source.clone(),
             )?;
             let sync_wallet = wallet.clone();
             let sync_interval = local_config.sync_interval;

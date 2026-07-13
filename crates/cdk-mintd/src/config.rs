@@ -1204,6 +1204,11 @@ pub struct FederationOnchainWallet {
     /// `bitcoinrpc` or `esplora`.
     #[serde(default = "default_federation_onchain_source_type")]
     pub chain_source_type: String,
+    /// `independent` for a member-operated source or `shared` for common infrastructure.
+    #[serde(default = "default_federation_onchain_source_scope")]
+    pub chain_source_scope: String,
+    /// Optional stable opaque source label; endpoints and credentials are forbidden.
+    pub chain_source_id: Option<String>,
     /// Esplora endpoint, required for the Esplora source.
     pub esplora_url: Option<String>,
     /// Maximum parallel Esplora requests.
@@ -1228,6 +1233,8 @@ impl Default for FederationOnchainWallet {
         Self {
             enabled: false,
             chain_source_type: default_federation_onchain_source_type(),
+            chain_source_scope: default_federation_onchain_source_scope(),
+            chain_source_id: None,
             esplora_url: None,
             esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
             bitcoind_rpc_host: None,
@@ -1242,6 +1249,11 @@ impl Default for FederationOnchainWallet {
 #[cfg(feature = "federation")]
 fn default_federation_onchain_source_type() -> String {
     "bitcoinrpc".to_string()
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_onchain_source_scope() -> String {
+    "independent".to_string()
 }
 
 /// Dealer-free DKG auto-start settings for one federation member.

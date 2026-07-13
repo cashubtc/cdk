@@ -527,6 +527,7 @@ mod test {
             SELECT name
             FROM migrations
             WHERE name LIKE '%federation%'
+            ORDER BY name
             "#,
         )
         .expect("federation migration query")
@@ -538,7 +539,10 @@ mod test {
         .collect::<Vec<_>>();
         assert_eq!(
             federation_migrations,
-            vec!["20260712000000_create_federation_schema.sql".to_owned()]
+            vec![
+                "20260712000000_create_federation_schema.sql".to_owned(),
+                "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
+            ]
         );
 
         let journal_columns = query("PRAGMA table_info(federation_journal_entries)")

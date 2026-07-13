@@ -49,7 +49,7 @@ pub use self::chain_observation::{
     FederationChainObservationOutcome, FederationChainObservationState,
     FederationChainSourceDescriptor, FederationChainSourceScope, FederationChainSourceSummary,
     FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
-    FederationWalletUtxo, FederationWalletUtxoState,
+    FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
 };
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,

@@ -14,9 +14,9 @@ use super::address_allocation::{
 };
 use super::finish_federation_apply_transaction;
 
-const CHAIN_OBSERVATION_PRIMARY_NAMESPACE: &str = "federation";
-const CHAIN_OBSERVATION_SECONDARY_NAMESPACE: &str = "chain_observation";
-const CHAIN_OBSERVATION_STATE_KEY: &str = "state_v1";
+pub(super) const CHAIN_OBSERVATION_PRIMARY_NAMESPACE: &str = "federation";
+pub(super) const CHAIN_OBSERVATION_SECONDARY_NAMESPACE: &str = "chain_observation";
+pub(super) const CHAIN_OBSERVATION_STATE_KEY: &str = "state_v1";
 
 impl Mint {
     /// Load the complete validated consensus wallet UTXO projection.

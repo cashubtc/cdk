@@ -415,6 +415,8 @@ max_delay_time = 3
 # [federation.onchain_wallet]
 # enabled = false
 # chain_source_type = "bitcoinrpc" # or "esplora"
+# chain_source_scope = "independent" # use "shared" for common infrastructure
+# chain_source_id = "member-1-bitcoin" # optional opaque label; never an endpoint
 # bitcoind_rpc_host = "127.0.0.1"
 # bitcoind_rpc_port = 18443
 # bitcoind_rpc_user = "rpc-user"

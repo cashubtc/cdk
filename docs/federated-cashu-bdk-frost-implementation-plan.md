@@ -110,6 +110,11 @@ federation partially ready.
   operation envelope is now version 3 with updated golden vectors. The UTXO
   projection, quorum/reorg rules, and persistence stay isolated; existing quote,
   payment-observation, saga, issuance, and standalone BDK flows are unchanged.
+- Milestone 9 found that payment-observation conflict keys and their SQL unique
+  index assumed one terminal report per member. Cumulative on-chain deposits
+  need ordered revisions, so only `PaymentId`-backed on-chain observations now
+  use commitment-specific conflicts and latest-per-member quorum; existing
+  Bolt11 semantics remain unchanged. Preserve the migration and revision tests.
 
 ## 1. Problem and setting
 
@@ -1027,38 +1032,64 @@ wallet without introducing a parallel quote or recovery model.
 
 **Work:**
 
-- [ ] Route federation on-chain incoming-payment creation through consensus
+- [x] Route federation on-chain incoming-payment creation through consensus
   address allocation.
-- [ ] Preserve existing `CreateIncomingPaymentResponse`, quote ID, amount,
+- [x] Preserve existing `CreateIncomingPaymentResponse`, quote ID, amount,
   expiry, and notification contracts.
-- [ ] Associate confirmed accepted UTXOs with the correct mint quote.
-- [ ] Submit normal federation mint payment observations only after accepted
+- [x] Associate confirmed accepted UTXOs with the correct mint quote.
+- [x] Submit normal federation mint payment observations only after accepted
   confirmation policy is satisfied.
-- [ ] Prevent one deposit from paying multiple quotes unless the protocol
+- [x] Prevent one deposit from paying multiple quotes unless the protocol
   explicitly supports and accounts for that case.
-- [ ] Preserve overpayment, underpayment, duplicate payment, and multiple-UTXO
+- [x] Preserve overpayment, underpayment, duplicate payment, and multiple-UTXO
   policy explicitly.
-- [ ] Reuse existing mint quote state and wallet saga behavior.
-- [ ] Keep standalone on-chain mint quote behavior unchanged.
+- [x] Reuse existing mint quote state and wallet saga behavior.
+- [x] Keep standalone on-chain mint quote behavior unchanged.
 
 **Success criteria:**
 
-- [ ] A federation address can receive a regtest payment and satisfy exactly one
+- [x] A federation address can receive a regtest payment and satisfy exactly one
   on-chain mint quote after required confirmation and observation quorum.
-- [ ] The wallet receives ordinary Cashu mint quote states and can mint BLS
+- [x] The wallet receives ordinary Cashu mint quote states and can mint BLS
   e-cash through the existing federation connector.
-- [ ] Restart and member failover do not create a second address or quote.
+- [x] Restart and member failover do not create a second address or quote.
 
 **Required tests:**
 
-- [ ] Happy-path on-chain quote, deposit, confirmation, observation, and mint.
-- [ ] Slow confirmation and member observation delay.
-- [ ] Underpayment, overpayment, duplicate transaction, and multiple UTXOs.
-- [ ] Wrong address, wrong network, and unrelated wallet transaction.
-- [ ] Reorg before payment acceptance.
-- [ ] Interrupted wallet/client mint recovery.
-- [ ] One member offline during allocation and payment observation.
-- [ ] Standalone BDK mint regressions.
+- [x] Happy-path on-chain quote, deposit, confirmation, observation, and mint.
+- [x] Slow confirmation and member observation delay.
+- [x] Underpayment, overpayment, duplicate transaction, and multiple UTXOs.
+- [x] Wrong address, wrong network, and unrelated wallet transaction.
+- [x] Reorg before payment acceptance.
+- [x] Interrupted wallet/client mint recovery.
+- [x] One member offline during allocation and payment observation.
+- [x] Standalone BDK mint regressions.
+
+**Milestone record:** completed on 2026-07-13. Federation on-chain quote
+creation now substitutes only the incoming-payment address step: consensus
+allocates the derivation index, the handler independently derives and verifies
+the exact P2TR address, and the ordinary mint-quote operation persists the
+existing request and response types. The isolated BDK adapter reports owned
+outputs with bounded, opaque independent/shared source identity; the existing
+payment-observation worker translates only accepted allocations into canonical
+chain evidence and submits ordinary federation quote-payment observations after
+confirmation and member quorum. Quote credit is the exact cumulative satoshi
+value of immutable accepted outpoints, committed by a stable payment ID and
+attributed to one quote. NUT-30 quotes are amountless, so partial and additional
+payments increase cumulative credit, duplicates are idempotent, and issuance
+cannot exceed the ordinary quote accounting; every contributing UTXO is marked
+as a liability atomically with quote credit. A pre-acceptance reorg blocks
+credit, while a post-liability reorg raises the sticky wallet alarm and blocks
+further credit. The existing quote state, notifications, NUT-20 authorization,
+BLS issuance, recovery, and standalone BDK flows remain in place; no parallel
+quote or saga was introduced. The only shared-domain gap was support for
+cumulative payment-observation revisions: a narrow conflict-key and SQL-index
+migration now permits `PaymentId`-backed on-chain revisions and quorum selects
+each member's latest accepted report, while Bolt11 behavior is unchanged. No
+new federation operation payload or envelope bump was required. Focused
+five-member delay/offline, wrong-address/network, duplicate, multiple-UTXO,
+reorg, issuance, and restart tests pass, along with all 353 `cdk-common`
+federation tests, 116 CDK federation mint tests, and 110 `cdk-bdk` tests.
 
 ### Milestone 10: define payment intents, batches, and transaction proposals
 

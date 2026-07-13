@@ -215,6 +215,15 @@ pub enum FederationOperationConflictKey {
         /// Member that observed the payment state.
         observer: MemberId,
     },
+    /// A cumulative on-chain payment revision is unique by its output commitment.
+    MintQuotePaymentRevision {
+        /// Quote ID being observed.
+        quote: String,
+        /// Member that observed the cumulative payment.
+        observer: MemberId,
+        /// Commitment to the exact accepted output set.
+        payment_id: [u8; 32],
+    },
     /// One melt quote ID may only map to one quote request.
     MeltQuote {
         /// Quote ID assigned by the federation.
@@ -1498,11 +1507,22 @@ impl FederationOperation {
                 quote: operation.quote.clone(),
             }],
             Self::MintQuotePayment(observation) => {
-                vec![FederationOperationConflictKey::MintQuotePayment {
-                    quote: observation.quote.clone(),
-                    state: observation.state,
-                    observer: observation.observer,
-                }]
+                match (&observation.method, &observation.payment_id) {
+                    (method, Some(PaymentIdentifier::PaymentId(payment_id)))
+                        if method.is_onchain() =>
+                    {
+                        vec![FederationOperationConflictKey::MintQuotePaymentRevision {
+                            quote: observation.quote.clone(),
+                            observer: observation.observer,
+                            payment_id: *payment_id,
+                        }]
+                    }
+                    _ => vec![FederationOperationConflictKey::MintQuotePayment {
+                        quote: observation.quote.clone(),
+                        state: observation.state,
+                        observer: observation.observer,
+                    }],
+                }
             }
             Self::Mint(operation) => operation
                 .request

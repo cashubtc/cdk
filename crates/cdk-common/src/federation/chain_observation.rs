@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::{BlockHash, OutPoint, Script, TxOut};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,7 @@ use super::{
 const CHAIN_OBSERVATION_STATE_VERSION: u16 = 1;
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_SOURCE_ID_BYTES: usize = 128;
+const ONCHAIN_QUOTE_PAYMENT_DOMAIN: &[u8] = b"cdk-federation-onchain-quote-payment-v1";
 
 /// Whether multiple members are backed by one operational chain source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -396,6 +398,17 @@ pub struct FederationChainSourceSummary {
     pub shared_sources: u16,
 }
 
+/// Exact accepted wallet outputs that currently fund one on-chain mint quote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationOnchainQuotePayment {
+    /// Cumulative amount credited to the quote in satoshis.
+    pub amount_sat: u64,
+    /// Canonically ordered outputs contributing to the cumulative amount.
+    pub outpoints: Vec<OutPoint>,
+    /// Domain-separated commitment used as the normal payment identifier.
+    pub payment_id: [u8; 32],
+}
+
 /// Result of applying one accepted chain observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FederationChainObservationOutcome {
@@ -453,6 +466,88 @@ impl FederationChainObservationState {
     /// Iterate over materialized UTXOs in canonical outpoint order.
     pub fn utxos(&self) -> impl Iterator<Item = &FederationWalletUtxo> {
         self.utxos.values()
+    }
+
+    /// Return the canonical cumulative payment for a quote at a journal boundary.
+    ///
+    /// Only outputs whose accepted evidence already satisfies confirmation and
+    /// member-observation policy are included. Reorged or quarantined outputs
+    /// fail closed and do not contribute.
+    pub fn quote_payment_at_or_before(
+        &self,
+        quote: &str,
+        max_operation_index: u64,
+    ) -> Result<Option<FederationOnchainQuotePayment>> {
+        if quote.is_empty() || quote.len() > MAX_QUOTE_ID_BYTES {
+            return Err(invalid_state("on-chain quote payment key is invalid"));
+        }
+        self.validate()?;
+        if self
+            .utxos
+            .values()
+            .any(|utxo| utxo.allocation.quote == quote && utxo.liability_alarm)
+        {
+            return Err(invalid_state(
+                "on-chain quote payment is halted by a liability alarm",
+            ));
+        }
+
+        let mut amount_sat = 0_u64;
+        let mut outpoints = Vec::new();
+        let mut engine = sha256::Hash::engine();
+        engine.input(ONCHAIN_QUOTE_PAYMENT_DOMAIN);
+        engine.input(&(quote.len() as u64).to_be_bytes());
+        engine.input(quote.as_bytes());
+
+        for utxo in self.utxos.values().filter(|utxo| {
+            utxo.allocation.quote == quote
+                && utxo_is_spendable_at_or_before(utxo, max_operation_index)
+        }) {
+            amount_sat = amount_sat
+                .checked_add(utxo.txout.value.to_sat())
+                .ok_or_else(|| invalid_state("on-chain quote payment amount overflow"))?;
+            outpoints.push(utxo.outpoint);
+            engine.input(&utxo.outpoint.txid.to_byte_array());
+            engine.input(&utxo.outpoint.vout.to_be_bytes());
+            engine.input(&utxo.txout.value.to_sat().to_be_bytes());
+            engine.input(&(utxo.txout.script_pubkey.len() as u64).to_be_bytes());
+            engine.input(utxo.txout.script_pubkey.as_bytes());
+        }
+
+        if outpoints.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(FederationOnchainQuotePayment {
+            amount_sat,
+            outpoints,
+            payment_id: sha256::Hash::from_engine(engine).to_byte_array(),
+        }))
+    }
+
+    /// Atomically associate accepted Cashu liability with an exact quote payment.
+    ///
+    /// The expected amount and commitment prevent a stale or synthetic payment
+    /// observation from marking a different set of wallet outputs.
+    pub fn mark_quote_liability_issued_at_or_before(
+        &mut self,
+        quote: &str,
+        max_operation_index: u64,
+        expected_amount_sat: u64,
+        expected_payment_id: [u8; 32],
+    ) -> Result<Vec<OutPoint>> {
+        let payment = self
+            .quote_payment_at_or_before(quote, max_operation_index)?
+            .ok_or_else(|| invalid_state("liability has no accepted on-chain quote payment"))?;
+        if payment.amount_sat != expected_amount_sat || payment.payment_id != expected_payment_id {
+            return Err(invalid_state(
+                "liability does not match the accepted on-chain quote payment",
+            ));
+        }
+        for outpoint in &payment.outpoints {
+            self.mark_liability_issued(*outpoint)?;
+        }
+        Ok(payment.outpoints)
     }
 
     /// Apply one accepted deposit observation after allocation/script validation.
@@ -777,6 +872,34 @@ fn confirmation_depth(observation: &FederationDepositObservation) -> u32 {
         .map_or(0, |confirmation| confirmation.confirmation_depth)
 }
 
+fn utxo_is_spendable_at_or_before(utxo: &FederationWalletUtxo, max_operation_index: u64) -> bool {
+    if utxo.state == FederationWalletUtxoState::Quarantined
+        || utxo
+            .reorg_observations
+            .values()
+            .any(|evidence| evidence.operation_index <= max_operation_index)
+    {
+        return false;
+    }
+
+    utxo.observations
+        .values()
+        .filter(|evidence| {
+            evidence.operation_index <= max_operation_index
+                && matches!(
+                    &evidence.observation,
+                    FederationChainObservation::Deposit(observation)
+                        if observation.confirmation.is_some_and(|confirmation| {
+                            confirmation.confirmation_depth >= utxo.minimum_confirmations
+                                && utxo.block
+                                    == Some((confirmation.block_hash, confirmation.block_height))
+                        })
+                )
+        })
+        .count()
+        >= usize::from(utxo.required_observers)
+}
+
 fn quarantine(utxo: &mut FederationWalletUtxo, observer: MemberId) {
     utxo.conflicting_observers.insert(observer);
     utxo.state = FederationWalletUtxoState::Quarantined;
@@ -919,6 +1042,112 @@ mod tests {
         assert_eq!(utxo.state, FederationWalletUtxoState::Spendable);
         assert_eq!(utxo.matching_confirmed_observers(), 2);
         assert_eq!(utxo.source_summary().independent_sources, 2);
+    }
+
+    #[test]
+    fn quote_payment_is_cumulative_exact_and_bound_to_accepted_outputs() {
+        let mut state = FederationChainObservationState::new();
+        for (operation, observer) in [(2, 1), (3, 2)] {
+            let evidence = observation(
+                observer,
+                Some(block(9, 100, 2)),
+                FederationChainSourceScope::Independent,
+            );
+            apply(&mut state, &evidence, operation);
+        }
+        assert!(state
+            .quote_payment_at_or_before("quote-1", 2)
+            .expect("historical payment")
+            .is_none());
+        let first = state
+            .quote_payment_at_or_before("quote-1", 3)
+            .expect("first payment")
+            .expect("spendable payment");
+        assert_eq!(first.amount_sat, 50_000);
+        assert_eq!(first.outpoints, vec![outpoint(3)]);
+        assert_eq!(
+            state
+                .quote_payment_at_or_before("quote-1", u64::MAX)
+                .expect("replayed payment")
+                .expect("payment"),
+            first,
+            "duplicate scans cannot add a second payment"
+        );
+
+        let (accepted_allocation, _) = allocation();
+        for (operation, observer) in [(4, 1), (5, 2)] {
+            let mut evidence = observation(
+                observer,
+                Some(block(10, 101, 2)),
+                FederationChainSourceScope::Independent,
+            );
+            evidence.outpoint = outpoint(4);
+            evidence.txout.value = Amount::from_sat(20_000);
+            state
+                .apply_deposit(
+                    &evidence,
+                    &accepted_allocation,
+                    ScriptBuf::from_bytes(vec![0x51]).as_script(),
+                    2,
+                    2,
+                    FederationOperationId::from_bytes([operation; 32]),
+                    u64::from(operation),
+                )
+                .expect("second output");
+        }
+        assert_eq!(
+            state
+                .quote_payment_at_or_before("quote-1", 4)
+                .expect("delayed observer")
+                .expect("first output remains")
+                .amount_sat,
+            50_000
+        );
+        let cumulative = state
+            .quote_payment_at_or_before("quote-1", 5)
+            .expect("cumulative payment")
+            .expect("payment");
+        assert_eq!(cumulative.amount_sat, 70_000);
+        assert_eq!(cumulative.outpoints.len(), 2);
+        assert!(state
+            .mark_quote_liability_issued_at_or_before("quote-1", 5, 69_999, cumulative.payment_id,)
+            .is_err());
+        state
+            .mark_quote_liability_issued_at_or_before(
+                "quote-1",
+                5,
+                cumulative.amount_sat,
+                cumulative.payment_id,
+            )
+            .expect("exact liability");
+        assert!(cumulative.outpoints.iter().all(|outpoint| state
+            .utxo(*outpoint)
+            .expect("liability output")
+            .liability_issued));
+
+        let reorg = FederationDepositReorgObservation {
+            outpoint: outpoint(4),
+            disconnected_block_hash: BlockHash::from_byte_array([10; 32]),
+            disconnected_block_height: 101,
+            observer: member(1),
+            source: FederationChainSourceDescriptor::new(
+                FederationChainSourceScope::Independent,
+                "source-1",
+            )
+            .expect("source"),
+        };
+        state
+            .apply_reorg(&reorg, FederationOperationId::from_bytes([6; 32]), 6)
+            .expect("reorg");
+        assert!(state
+            .quote_payment_at_or_before("quote-1", u64::MAX)
+            .is_err());
+        assert!(
+            state
+                .utxo(outpoint(4))
+                .expect("reorged output")
+                .liability_alarm
+        );
     }
 
     #[test]

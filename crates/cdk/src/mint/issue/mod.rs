@@ -3,8 +3,9 @@ use std::sync::Arc;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
-    Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
-    IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
+    Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CreateIncomingPaymentResponse,
+    CustomIncomingPaymentOptions, IncomingPaymentOptions, OnchainIncomingPaymentOptions,
+    PaymentIdentifier, WaitPaymentResponse,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
@@ -230,6 +231,37 @@ impl Mint {
             .await
     }
 
+    /// Prepare a federation on-chain quote from a consensus-allocated address.
+    ///
+    /// This preserves the ordinary quote representation while bypassing only
+    /// the standalone backend's local address reveal. The accepted federation
+    /// mint-quote operation remains the sole persistence boundary.
+    #[cfg(feature = "federation")]
+    #[instrument(skip_all)]
+    pub async fn prepare_federation_onchain_mint_quote(
+        &self,
+        quote_id: QuoteId,
+        mint_quote_request: MintQuoteRequest,
+        address: String,
+    ) -> Result<(MintQuoteResponse<QuoteId>, PaymentIdentifier), Error> {
+        if !matches!(mint_quote_request, MintQuoteRequest::Onchain(_)) || address.is_empty() {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        let incoming = CreateIncomingPaymentResponse {
+            request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+            request: address,
+            expiry: None,
+            extra_json: None,
+        };
+        self.create_mint_quote_with_incoming_response(
+            mint_quote_request,
+            quote_id,
+            false,
+            Some(incoming),
+        )
+        .await
+    }
+
     async fn create_mint_quote(
         &self,
         mint_quote_request: MintQuoteRequest,
@@ -242,6 +274,22 @@ impl Mint {
         ),
         Error,
     > {
+        self.create_mint_quote_with_incoming_response(
+            mint_quote_request,
+            quote_id,
+            persist_immediately,
+            None,
+        )
+        .await
+    }
+
+    async fn create_mint_quote_with_incoming_response(
+        &self,
+        mint_quote_request: MintQuoteRequest,
+        quote_id: QuoteId,
+        persist_immediately: bool,
+        incoming_response: Option<CreateIncomingPaymentResponse>,
+    ) -> Result<(MintQuoteResponse<QuoteId>, PaymentIdentifier), Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_mint_quote");
 
@@ -263,7 +311,7 @@ impl Mint {
             let payment_backend =
                 self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
-            let payment_options = match mint_quote_request {
+            let payment_options = match mint_quote_request.clone() {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
                     if let Some(ref desc) = bolt11_request.description {
                         if desc.len() > MAX_REQUEST_FIELD_LEN {
@@ -380,13 +428,25 @@ impl Mint {
                 }
             };
 
-            let create_invoice_response = payment_backend
-                .create_incoming_payment_request(payment_options)
-                .await
-                .map_err(|err| {
-                    tracing::error!("Could not create invoice: {}", err);
-                    Error::InvalidPaymentRequest
-                })?;
+            let create_invoice_response = match incoming_response {
+                Some(response) => {
+                    if !matches!(mint_quote_request, MintQuoteRequest::Onchain(_))
+                        || response.request_lookup_id
+                            != PaymentIdentifier::QuoteId(quote_id.clone())
+                        || response.request.is_empty()
+                    {
+                        return Err(Error::InvalidPaymentRequest);
+                    }
+                    response
+                }
+                None => payment_backend
+                    .create_incoming_payment_request(payment_options)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Could not create invoice: {}", err);
+                        Error::InvalidPaymentRequest
+                    })?,
+            };
 
             let now = unix_time();
             let quote = MintQuote::new(
@@ -1352,6 +1412,36 @@ mod batch_mint_tests {
             )
             .await
             .unwrap());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_onchain_quote_uses_preallocated_address_without_backend_reveal() {
+        let mint = create_test_mint().await;
+        let quote_id = QuoteId::new();
+        let signing_key = cdk_common::SecretKey::generate();
+        let request =
+            super::MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
+                unit: CurrencyUnit::Sat,
+                pubkey: signing_key.public_key(),
+            });
+        let address = "bcrt1-consensus-allocated-test-address".to_string();
+        let (response, lookup_id) = mint
+            .prepare_federation_onchain_mint_quote(quote_id.clone(), request, address.clone())
+            .await
+            .expect("prepared federation quote");
+        let super::MintQuoteResponse::Onchain(response) = response else {
+            panic!("on-chain response");
+        };
+        assert_eq!(response.quote, quote_id.clone());
+        assert_eq!(response.request, address);
+        assert_eq!(lookup_id, PaymentIdentifier::QuoteId(quote_id.clone()));
+        assert!(mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_none());
     }
 
     async fn configure_nut29(

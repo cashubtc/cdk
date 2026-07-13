@@ -237,3 +237,345 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
         );
     }
 }
+
+#[tokio::test]
+async fn accepted_onchain_outputs_pay_one_quote_and_reuse_existing_mint_flow() {
+    let (mut runtime, application_id) = runtime_with_address_application();
+    let mut second_runtime = second_member_runtime_with_address_application();
+    runtime.public_config.payment_observation_policy =
+        FederationPaymentObservationPolicy::member_quorum(2);
+    second_runtime.public_config.payment_observation_policy =
+        FederationPaymentObservationPolicy::member_quorum(2);
+    let (mint, store) = federated_test_mint(runtime.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_id = QuoteId::new();
+
+    let allocation_entry = appended_entry(
+        &mut journal,
+        runtime
+            .address_allocation_operation(
+                quote_id.to_string(),
+                application_id,
+                3,
+                cdk_common::federation::FederationAddressKeychain::External,
+            )
+            .expect("allocation operation"),
+    );
+    persist_and_apply_entry(&mint, &allocation_entry).await;
+    let allocation = mint
+        .federation_address_allocation(
+            cdk_common::federation::FederationAddressAllocationScope {
+                application_id,
+                application_key_epoch: 3,
+            },
+            &quote_id.to_string(),
+        )
+        .await
+        .expect("allocation lookup")
+        .expect("allocation");
+    let application = runtime
+        .active_cdk_onchain_application()
+        .expect("active application");
+    let script = runtime
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .expect("wallet config")
+        .derive_cdk_onchain_script(
+            runtime.public_config(),
+            application_id,
+            3,
+            allocation.keychain,
+            allocation.derivation_index,
+        )
+        .expect("allocated script");
+    let address =
+        cdk_common::bitcoin::Address::from_script(script.as_script(), application.network)
+            .expect("allocated address")
+            .to_string();
+    let wallet_key = SecretKey::from_slice(&[23; 32]).expect("wallet key");
+    let quote_request =
+        MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
+            unit: CurrencyUnit::Sat,
+            pubkey: wallet_key.public_key(),
+        });
+    let quote_response =
+        MintQuoteResponse::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainResponse {
+            quote: quote_id.to_string(),
+            request: address.clone(),
+            unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Onchain),
+            expiry: None,
+            pubkey: wallet_key.public_key(),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+        });
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime.operation_envelope(FederationOperation::MintQuote(
+            FederationMintQuoteOperation {
+                quote: quote_id.to_string(),
+                request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+                request: quote_request,
+                response: quote_response,
+            },
+        )),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    let stored_quote = store
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(stored_quote.request, address);
+    assert_eq!(stored_quote.state(), MintQuoteState::Unpaid);
+
+    let first_chain_entry = appended_entry(
+        &mut journal,
+        runtime
+            .chain_observation_operation(confirmed_observation(
+                &runtime,
+                application_id,
+                &allocation,
+                runtime.member_id(),
+                2,
+            ))
+            .expect("first chain observation"),
+    );
+    persist_and_apply_entry(&mint, &first_chain_entry).await;
+    assert!(mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("delayed payment probe")
+        .is_none());
+    let second_chain_entry = appended_entry(
+        &mut journal,
+        second_runtime
+            .chain_observation_operation(confirmed_observation(
+                &second_runtime,
+                application_id,
+                &allocation,
+                second_runtime.member_id(),
+                3,
+            ))
+            .expect("second chain observation"),
+    );
+    persist_and_apply_entry(&mint, &second_chain_entry).await;
+
+    let first_payment = mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("payment probe")
+        .expect("accepted payment");
+    assert_eq!(first_payment.amount_paid, Amount::from(25_000));
+    let mut second_payment = first_payment.clone();
+    second_payment.observer = second_runtime.member_id();
+    let first_payment_entry = appended_entry(
+        &mut journal,
+        runtime.operation_envelope(FederationOperation::MintQuotePayment(first_payment)),
+    );
+    let second_payment_entry = appended_entry(
+        &mut journal,
+        second_runtime.operation_envelope(FederationOperation::MintQuotePayment(second_payment)),
+    );
+    persist_and_apply_entry(&mint, &first_payment_entry).await;
+    assert_eq!(
+        store
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote")
+            .state(),
+        MintQuoteState::Unpaid,
+        "one member observation cannot credit the quote"
+    );
+    persist_and_apply_entry(&mint, &second_payment_entry).await;
+    let paid_quote = store
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("paid quote lookup")
+        .expect("paid quote");
+    assert_eq!(paid_quote.state(), MintQuoteState::Paid);
+    assert_eq!(paid_quote.amount_paid().value(), 25_000);
+    let outpoint = OutPoint::new(Txid::from_byte_array([41; 32]), 1);
+    assert!(
+        mint.federation_chain_observation_state()
+            .await
+            .expect("wallet state")
+            .utxo(outpoint)
+            .expect("payment output")
+            .liability_issued
+    );
+    assert!(mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("duplicate probe")
+        .is_none());
+
+    let keyset = runtime.public_config().keysets[0].clone();
+    let output = output_for_keyset(&keyset, b"federated on-chain mint output");
+    let mut mint_request = MintRequest {
+        quote: quote_id.clone(),
+        outputs: vec![output.clone()],
+        signature: None,
+    };
+    mint_request
+        .sign(&wallet_key)
+        .expect("ordinary NUT-20 mint signature");
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime
+            .mint_operation(MintInput::Single(mint_request))
+            .expect("ordinary mint operation"),
+    );
+    persist_and_apply_entry(&mint, &mint_entry).await;
+    assert!(store
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("mint signature")
+        .first()
+        .is_some_and(Option::is_some));
+
+    let second_outpoint = OutPoint::new(Txid::from_byte_array([43; 32]), 0);
+    for (member_runtime, depth) in [(&runtime, 2), (&second_runtime, 3)] {
+        let mut observation = confirmed_observation(
+            member_runtime,
+            application_id,
+            &allocation,
+            member_runtime.member_id(),
+            depth,
+        );
+        let FederationChainObservation::Deposit(deposit) = &mut observation else {
+            panic!("deposit observation");
+        };
+        deposit.outpoint = second_outpoint;
+        deposit.txout.value = BitcoinAmount::from_sat(5_000);
+        deposit.confirmation = Some(FederationDepositConfirmation {
+            block_hash: BlockHash::from_byte_array([44; 32]),
+            block_height: 201,
+            confirmation_depth: depth,
+        });
+        let entry = appended_entry(
+            &mut journal,
+            member_runtime
+                .chain_observation_operation(observation)
+                .expect("additional chain observation"),
+        );
+        persist_and_apply_entry(&mint, &entry).await;
+    }
+    let updated_payment = mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("updated payment probe")
+        .expect("additional accepted payment");
+    assert_eq!(updated_payment.amount_paid, Amount::from(30_000));
+    assert_eq!(updated_payment.amount_issued, Amount::from(1));
+    let mut second_updated_payment = updated_payment.clone();
+    second_updated_payment.observer = second_runtime.member_id();
+    for (member_runtime, observation) in [
+        (&runtime, updated_payment),
+        (&second_runtime, second_updated_payment),
+    ] {
+        let entry = appended_entry(
+            &mut journal,
+            member_runtime.operation_envelope(FederationOperation::MintQuotePayment(observation)),
+        );
+        persist_and_apply_entry(&mint, &entry).await;
+    }
+    assert_eq!(
+        store
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("updated quote lookup")
+            .expect("updated quote")
+            .amount_paid()
+            .value(),
+        30_000
+    );
+    assert!(
+        mint.federation_chain_observation_state()
+            .await
+            .expect("updated wallet state")
+            .utxo(second_outpoint)
+            .expect("additional output")
+            .liability_issued
+    );
+
+    let wrong_quote_id = QuoteId::new();
+    let wrong_allocation_entry = appended_entry(
+        &mut journal,
+        runtime
+            .address_allocation_operation(
+                wrong_quote_id.to_string(),
+                application_id,
+                3,
+                cdk_common::federation::FederationAddressKeychain::External,
+            )
+            .expect("wrong-address allocation"),
+    );
+    persist_and_apply_entry(&mint, &wrong_allocation_entry).await;
+    let wrong_quote_entry = appended_entry(
+        &mut journal,
+        runtime.operation_envelope(FederationOperation::MintQuote(
+            FederationMintQuoteOperation {
+                quote: wrong_quote_id.to_string(),
+                request_lookup_id: PaymentIdentifier::QuoteId(wrong_quote_id.clone()),
+                request: MintQuoteRequest::Onchain(
+                    cdk_common::nuts::nut30::MintQuoteOnchainRequest {
+                        unit: CurrencyUnit::Sat,
+                        pubkey: wallet_key.public_key(),
+                    },
+                ),
+                response: MintQuoteResponse::Onchain(
+                    cdk_common::nuts::nut30::MintQuoteOnchainResponse {
+                        quote: wrong_quote_id.to_string(),
+                        request: "bcrt1-unrelated-or-wrong-network-address".to_string(),
+                        unit: CurrencyUnit::Sat,
+                        method: PaymentMethod::Known(KnownMethod::Onchain),
+                        expiry: None,
+                        pubkey: wallet_key.public_key(),
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        updated_at: 0,
+                    },
+                ),
+            },
+        )),
+    );
+    persist_journal_entry(&store, &wrong_quote_entry).await;
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&wrong_quote_entry))
+            .await,
+        Err(cdk_common::Error::InvalidPaymentRequest)
+    ));
+    assert!(store
+        .get_mint_quote(&wrong_quote_id)
+        .await
+        .expect("wrong quote lookup")
+        .is_none());
+
+    drop(mint);
+    let restarted = restart_federated_test_mint(runtime, store).await;
+    let restarted_quote = restarted
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("restart quote lookup")
+        .expect("restart quote");
+    assert_eq!(restarted_quote.request, address);
+    assert_eq!(restarted_quote.amount_paid().value(), 30_000);
+    assert_eq!(
+        restarted
+            .federation_address_allocation(
+                cdk_common::federation::FederationAddressAllocationScope {
+                    application_id,
+                    application_key_epoch: 3,
+                },
+                &quote_id.to_string(),
+            )
+            .await
+            .expect("restart allocation"),
+        Some(allocation)
+    );
+}
