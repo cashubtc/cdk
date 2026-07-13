@@ -747,8 +747,8 @@ mod tests {
 
     #[test]
     fn trusted_dealer_rejects_bls_identity_key() {
-        let params = ThresholdParams::with_bft_consensus(1, 1).expect("params");
-        let member = TrustedDealerMember::new(
+        let params = ThresholdParams::with_bft_consensus(2, 1).expect("params");
+        let invalid_member = TrustedDealerMember::new(
             member_id(1),
             MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
             MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
@@ -756,7 +756,11 @@ mod tests {
         );
 
         assert!(matches!(
-            generate_trusted_dealer_configs(params, vec![member], vec![keyset_spec()]),
+            generate_trusted_dealer_configs(
+                params,
+                vec![invalid_member, member(member_id(2))],
+                vec![keyset_spec()],
+            ),
             Err(FederationError::InvalidIdentityKeyKind { member_id: id }) if id == member_id(1)
         ));
     }

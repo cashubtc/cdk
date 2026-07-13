@@ -63,12 +63,18 @@ use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 use super::FederationRuntimeConfig;
 
 fn runtime_config() -> FederationRuntimeConfig {
-    let member = TrustedDealerMember::new(
-        cdk_common::federation::MemberId::new(1).expect("member id"),
-        MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
-        MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
-        SecretKey::from_slice(&[1; 32]).expect("identity secret"),
-    );
+    let members = (1..=2)
+        .map(|id| {
+            TrustedDealerMember::new(
+                cdk_common::federation::MemberId::new(id).expect("member id"),
+                MintUrl::from_str(&format!("https://mint{id}.example.com"))
+                    .expect("public mint url"),
+                MintUrl::from_str(&format!("https://fed{id}.example.com"))
+                    .expect("federation api url"),
+                SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
+            )
+        })
+        .collect();
     let keyset = TrustedDealerKeysetSpec::new(
         CurrencyUnit::Sat,
         true,
@@ -80,8 +86,8 @@ fn runtime_config() -> FederationRuntimeConfig {
         )]),
     );
     let bundle = generate_trusted_dealer_configs(
-        ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-        vec![member],
+        ThresholdParams::with_bft_consensus(2, 1).expect("params"),
+        members,
         vec![keyset],
     )
     .expect("trusted dealer bundle");
@@ -96,12 +102,18 @@ fn runtime_config() -> FederationRuntimeConfig {
 }
 
 fn runtime_config_with_inactive_rotation_keyset() -> FederationRuntimeConfig {
-    let member = TrustedDealerMember::new(
-        cdk_common::federation::MemberId::new(1).expect("member id"),
-        MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
-        MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
-        SecretKey::from_slice(&[1; 32]).expect("identity secret"),
-    );
+    let members = (1..=2)
+        .map(|id| {
+            TrustedDealerMember::new(
+                cdk_common::federation::MemberId::new(id).expect("member id"),
+                MintUrl::from_str(&format!("https://mint{id}.example.com"))
+                    .expect("public mint url"),
+                MintUrl::from_str(&format!("https://fed{id}.example.com"))
+                    .expect("federation api url"),
+                SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
+            )
+        })
+        .collect();
     let old_keyset = TrustedDealerKeysetSpec::new(
         CurrencyUnit::Sat,
         true,
@@ -123,8 +135,8 @@ fn runtime_config_with_inactive_rotation_keyset() -> FederationRuntimeConfig {
         )]),
     );
     let bundle = generate_trusted_dealer_configs(
-        ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-        vec![member],
+        ThresholdParams::with_bft_consensus(2, 1).expect("params"),
+        members,
         vec![old_keyset, next_keyset],
     )
     .expect("trusted dealer bundle");
@@ -921,6 +933,28 @@ fn melt_quote_op(
     )
 }
 
+fn locally_elected_melt_operation<T>(
+    runtime_config: &FederationRuntimeConfig,
+    mut candidate: impl FnMut(u16) -> (MeltRequest<QuoteId>, T),
+) -> (FederationOperationEnvelope, T) {
+    for attempt in 0..64_u16 {
+        let (request, fixture) = candidate(attempt);
+        let envelope = runtime_config
+            .melt_operation(request)
+            .expect("melt operation");
+        let operation_id = envelope.operation_id().expect("melt operation ID");
+        if runtime_config
+            .public_config()
+            .elected_melt_payment_member(operation_id)
+            == Some(runtime_config.member_id())
+        {
+            return (envelope, fixture);
+        }
+    }
+
+    panic!("failed to construct a locally elected melt operation");
+}
+
 async fn setup_pending_federated_melt(
     mint: &Mint,
     localstore: &Arc<MintSqliteDatabase>,
@@ -948,18 +982,15 @@ async fn setup_pending_federated_melt_with_label(
     );
     persist_and_apply_entry(mint, &quote_entry).await;
 
-    let proofs = vec![
-        proof_for_runtime(runtime_config, &format!("{label}-input-one")),
-        proof_for_runtime(runtime_config, &format!("{label}-input-two")),
-    ];
-    let input_ys = proofs.ys().expect("melt input ys");
-    let melt_request = MeltRequest::new(quote.clone(), proofs, None);
-    let melt_entry = appended_entry(
-        journal,
-        runtime_config
-            .melt_operation(melt_request)
-            .expect("melt operation"),
-    );
+    let (melt_envelope, input_ys) = locally_elected_melt_operation(runtime_config, |attempt| {
+        let proofs = vec![
+            proof_for_runtime(runtime_config, &format!("{label}-{attempt}-input-one")),
+            proof_for_runtime(runtime_config, &format!("{label}-{attempt}-input-two")),
+        ];
+        let input_ys = proofs.ys().expect("melt input ys");
+        (MeltRequest::new(quote.clone(), proofs, None), input_ys)
+    });
+    let melt_entry = appended_entry(journal, melt_envelope);
     persist_and_apply_entry(mint, &melt_entry).await;
 
     let pending_quote = localstore

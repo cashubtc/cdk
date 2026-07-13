@@ -16,6 +16,11 @@ mod signing;
 mod transport;
 mod trusted_dealer;
 
+/// Minimum number of members in a federation.
+///
+/// A one-node deployment has no remote consensus participant and must use
+/// standalone mint mode instead of advertising an inoperable federation.
+pub const FEDERATION_MIN_MEMBERS: u16 = 2;
 /// Maximum members admitted into one dealer-free federation DKG ceremony.
 ///
 /// This keeps the all-to-all participant state and public reveal dimensions
@@ -348,6 +353,16 @@ pub enum FederationError {
     /// Member IDs are non-zero u16 values.
     #[error("Invalid federation member id: {0}")]
     InvalidMemberId(u16),
+    /// Federation mode requires at least two consensus participants.
+    #[error(
+        "Federation requires at least {minimum} members; found {found}; use standalone mint mode for a one-node deployment"
+    )]
+    InsufficientMembers {
+        /// Configured federation member count.
+        found: u16,
+        /// Minimum supported federation member count.
+        minimum: u16,
+    },
     /// Threshold parameters must be non-zero and no greater than the member count.
     #[error(
         "Invalid federation threshold params: members={members}, signature_threshold={signature_threshold}, consensus_threshold={consensus_threshold}"
@@ -1801,6 +1816,13 @@ mod tests {
     fn threshold_params_validate_bft_defaults() {
         let params = ThresholdParams::with_bft_consensus(5, 3).expect("params");
         assert_eq!(params.consensus_threshold, 4);
+        assert!(matches!(
+            ThresholdParams::with_bft_consensus(1, 1),
+            Err(FederationError::InsufficientMembers {
+                found: 1,
+                minimum: FEDERATION_MIN_MEMBERS
+            })
+        ));
         assert!(matches!(
             ThresholdParams::new(5, 4, 3),
             Err(FederationError::InvalidThresholdParams {

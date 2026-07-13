@@ -2382,7 +2382,7 @@ mod tests {
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
-    fn single_member_trusted_dealer_bundle() -> (
+    fn two_member_trusted_dealer_bundle() -> (
         cdk_common::federation::TrustedDealerConfigBundle,
         cdk_common::federation::MemberId,
     ) {
@@ -2404,6 +2404,13 @@ mod tests {
             MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
             SecretKey::from_slice(&[1; 32]).expect("identity secret"),
         );
+        let peer_id = MemberId::new(2).expect("peer id");
+        let peer = TrustedDealerMember::new(
+            peer_id,
+            MintUrl::from_str("https://mint2.example.com").expect("peer public mint url"),
+            MintUrl::from_str("https://fed2.example.com").expect("peer federation api url"),
+            SecretKey::from_slice(&[2; 32]).expect("peer identity secret"),
+        );
         let keyset = TrustedDealerKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -2415,8 +2422,8 @@ mod tests {
             )]),
         );
         let bundle = generate_trusted_dealer_configs(
-            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-            vec![member],
+            ThresholdParams::with_bft_consensus(2, 1).expect("params"),
+            vec![member, peer],
             vec![keyset],
         )
         .expect("trusted dealer bundle");
@@ -2431,7 +2438,7 @@ mod tests {
     ))]
     #[test]
     fn production_startup_rejects_trusted_dealer_transcript() {
-        let (bundle, _) = single_member_trusted_dealer_bundle();
+        let (bundle, _) = two_member_trusted_dealer_bundle();
         let err = validate_federation_setup_method_startup_policy(&bundle.public_config)
             .expect_err("production startup must reject trusted-dealer setup");
         assert!(err.to_string().contains("test-only"));
@@ -2444,7 +2451,7 @@ mod tests {
     ))]
     #[test]
     fn test_utils_startup_accepts_trusted_dealer_transcript() {
-        let (bundle, _) = single_member_trusted_dealer_bundle();
+        let (bundle, _) = two_member_trusted_dealer_bundle();
         validate_federation_setup_method_startup_policy(&bundle.public_config)
             .expect("test-utils build accepts trusted-dealer setup");
     }
@@ -2604,42 +2611,11 @@ mod tests {
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
     async fn configure_federation_loads_aleph_bft_runtime_config() {
-        use std::collections::BTreeMap;
-        use std::str::FromStr;
-
         use cdk::mint::{FederationMode, MintBuilder};
-        use cdk_common::federation::{
-            generate_trusted_dealer_configs, FederationPaymentObservationPolicy, MemberId,
-            ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
-        };
-        use cdk_common::mint_url::MintUrl;
-        use cdk_common::nuts::nut01::BlsSecretKey;
-        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+        use cdk_common::federation::FederationPaymentObservationPolicy;
         use cdk_sqlite::mint::memory;
 
-        let member_id = MemberId::new(1).expect("member id");
-        let member = TrustedDealerMember::new(
-            member_id,
-            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
-            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
-            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
-        );
-        let keyset = TrustedDealerKeysetSpec::new(
-            CurrencyUnit::Sat,
-            true,
-            0,
-            None,
-            BTreeMap::from([(
-                Amount::from(1),
-                vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
-            )]),
-        );
-        let mut bundle = generate_trusted_dealer_configs(
-            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-            vec![member],
-            vec![keyset],
-        )
-        .expect("trusted dealer bundle");
+        let (mut bundle, member_id) = two_member_trusted_dealer_bundle();
         bundle.public_config.payment_observation_policy =
             FederationPaymentObservationPolicy::member_quorum(
                 bundle.public_config.threshold_params.consensus_threshold,
@@ -2682,6 +2658,59 @@ mod tests {
         assert_eq!(builder.federation_mode(), FederationMode::Member);
         let runtime_config = builder.federation_config().expect("runtime config");
         assert_eq!(runtime_config.member_id(), member_id);
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_federation_rejects_one_member_before_router_startup() {
+        use cdk::mint::MintBuilder;
+        use cdk_common::federation::{MemberId, ThresholdParams};
+        use cdk_sqlite::mint::memory;
+
+        let (mut bundle, member_id) = two_member_trusted_dealer_bundle();
+        bundle
+            .public_config
+            .members
+            .remove(&MemberId::new(2).expect("peer member ID"));
+        bundle.public_config.threshold_params = ThresholdParams {
+            member_count: 1,
+            signature_threshold: 1,
+            consensus_threshold: 1,
+        };
+        bundle.public_config.setup_transcript = None;
+        let private_config = bundle
+            .private_configs
+            .get(&member_id)
+            .expect("private config");
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "one_member",
+            serde_json::to_string(&bundle.public_config).expect("public config JSON"),
+            serde_json::to_string(private_config).expect("private config JSON"),
+        );
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                allow_development_payment_observation_policy: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
+                dkg: config::FederationDkg::default(),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+
+        let err = configure_federation(&settings, MintBuilder::new(localstore))
+            .expect_err("one-member federation must fail before router startup");
+
+        assert!(
+            err.chain()
+                .any(|cause| cause.to_string().contains("at least 2 members")),
+            "operator error should explain the federation member minimum: {err}"
+        );
 
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
@@ -2846,7 +2875,7 @@ mod tests {
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
     async fn federation_dkg_lifecycle_requires_explicit_atomic_replacement() {
-        let (mut bundle, member_id) = single_member_trusted_dealer_bundle();
+        let (mut bundle, member_id) = two_member_trusted_dealer_bundle();
         bundle.public_config.keysets.clear();
         bundle.public_config.setup_transcript = None;
         let private_config = bundle
@@ -3138,7 +3167,7 @@ mod tests {
         use cdk::mint::MintBuilder;
         use cdk_sqlite::mint::memory;
 
-        let (bundle, member_id) = single_member_trusted_dealer_bundle();
+        let (bundle, member_id) = two_member_trusted_dealer_bundle();
         let mut public_config_json =
             serde_json::to_value(&bundle.public_config).expect("public config json");
         public_config_json
@@ -3190,7 +3219,7 @@ mod tests {
         use cdk::mint::{FederationMode, MintBuilder};
         use cdk_sqlite::mint::memory;
 
-        let (bundle, member_id) = single_member_trusted_dealer_bundle();
+        let (bundle, member_id) = two_member_trusted_dealer_bundle();
         let private_config_json = serde_json::to_string(
             bundle
                 .private_configs
@@ -3256,7 +3285,7 @@ mod tests {
         use cdk::mint::MintBuilder;
         use cdk_sqlite::mint::memory;
 
-        let (bundle, member_id) = single_member_trusted_dealer_bundle();
+        let (bundle, member_id) = two_member_trusted_dealer_bundle();
         let private_config_json = serde_json::to_string(
             bundle
                 .private_configs
@@ -3328,42 +3357,11 @@ mod tests {
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
     async fn configure_federation_rejects_non_v3_keysets() {
-        use std::collections::BTreeMap;
-        use std::str::FromStr;
-
         use cdk::mint::MintBuilder;
-        use cdk_common::federation::{
-            generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-            TrustedDealerMember,
-        };
-        use cdk_common::mint_url::MintUrl;
-        use cdk_common::nuts::nut01::BlsSecretKey;
-        use cdk_common::{Amount, CurrencyUnit, Id, SecretKey};
+        use cdk_common::Id;
         use cdk_sqlite::mint::memory;
 
-        let member_id = MemberId::new(1).expect("member id");
-        let member = TrustedDealerMember::new(
-            member_id,
-            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
-            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
-            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
-        );
-        let keyset = TrustedDealerKeysetSpec::new(
-            CurrencyUnit::Sat,
-            true,
-            0,
-            None,
-            BTreeMap::from([(
-                Amount::from(1),
-                vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
-            )]),
-        );
-        let bundle = generate_trusted_dealer_configs(
-            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-            vec![member],
-            vec![keyset],
-        )
-        .expect("trusted dealer bundle");
+        let (bundle, member_id) = two_member_trusted_dealer_bundle();
         let private_config_json = serde_json::to_string(
             bundle
                 .private_configs

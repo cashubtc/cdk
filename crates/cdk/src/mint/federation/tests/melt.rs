@@ -1200,18 +1200,21 @@ async fn apply_federation_melt_retries_failed_quote_state_with_payment_attempt()
     persist_and_apply_entry(&mint, &quote_entry).await;
     set_melt_quote_state(&localstore, &quote, MeltQuoteState::Failed).await;
 
-    let inputs = vec![
-        proof_for_runtime(&runtime_config, "failed quote retry input one"),
-        proof_for_runtime(&runtime_config, "failed quote retry input two"),
-    ];
-    let input_ys = inputs.ys().expect("failed quote retry input ys");
-    let request = MeltRequest::new(quote.clone(), inputs, None);
-    let melt_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .melt_operation(request)
-            .expect("failed quote retry melt operation"),
-    );
+    let (melt_envelope, input_ys) = locally_elected_melt_operation(&runtime_config, |attempt| {
+        let inputs = vec![
+            proof_for_runtime(
+                &runtime_config,
+                &format!("failed quote retry {attempt} input one"),
+            ),
+            proof_for_runtime(
+                &runtime_config,
+                &format!("failed quote retry {attempt} input two"),
+            ),
+        ];
+        let input_ys = inputs.ys().expect("failed quote retry input ys");
+        (MeltRequest::new(quote.clone(), inputs, None), input_ys)
+    });
+    let melt_entry = appended_entry(&mut journal, melt_envelope);
 
     persist_and_apply_entry(&mint, &melt_entry).await;
 
@@ -1290,23 +1293,27 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
-    let inputs = vec![
-        proof_for_runtime(&runtime_config, "unknown backend input one"),
-        proof_for_runtime(&runtime_config, "unknown backend input two"),
-    ];
-    let input_ys = inputs.ys().expect("unknown backend input ys");
-    let mut change_output = output_for_runtime(&runtime_config, b"unknown backend change");
-    change_output.amount = Amount::ZERO;
-    let melt_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .melt_operation(MeltRequest::new(
-                quote.clone(),
-                inputs,
-                Some(vec![change_output.clone()]),
-            ))
-            .expect("unknown backend melt operation"),
-    );
+    let (melt_envelope, (input_ys, change_output)) =
+        locally_elected_melt_operation(&runtime_config, |attempt| {
+            let inputs = vec![
+                proof_for_runtime(
+                    &runtime_config,
+                    &format!("unknown backend {attempt} input one"),
+                ),
+                proof_for_runtime(
+                    &runtime_config,
+                    &format!("unknown backend {attempt} input two"),
+                ),
+            ];
+            let input_ys = inputs.ys().expect("unknown backend input ys");
+            let mut change_output = output_for_runtime(&runtime_config, b"unknown backend change");
+            change_output.amount = Amount::ZERO;
+            (
+                MeltRequest::new(quote.clone(), inputs, Some(vec![change_output.clone()])),
+                (input_ys, change_output),
+            )
+        });
+    let melt_entry = appended_entry(&mut journal, melt_envelope);
     persist_and_apply_entry(&mint, &melt_entry).await;
     assert!(mint
         .probe_federation_melt_quote_payment(&quote)
@@ -1497,22 +1504,26 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
-    let proofs = vec![
-        proof_for_runtime(&runtime_config, "reserve-before-payment-input-one"),
-        proof_for_runtime(&runtime_config, "reserve-before-payment-input-two"),
-    ];
-    let input_ys = proofs.ys().expect("reserve-before-payment input ys");
+    let (melt_envelope, input_ys) = locally_elected_melt_operation(&runtime_config, |attempt| {
+        let proofs = vec![
+            proof_for_runtime(
+                &runtime_config,
+                &format!("reserve-before-payment-{attempt}-input-one"),
+            ),
+            proof_for_runtime(
+                &runtime_config,
+                &format!("reserve-before-payment-{attempt}-input-two"),
+            ),
+        ];
+        let input_ys = proofs.ys().expect("reserve-before-payment input ys");
+        (MeltRequest::new(quote.clone(), proofs, None), input_ys)
+    });
     *expected_reserve.lock().await = Some(ExpectedMeltReserve {
         quote: quote.clone(),
         input_ys: input_ys.clone(),
     });
 
-    let melt_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .melt_operation(MeltRequest::new(quote.clone(), proofs, None))
-            .expect("melt operation"),
-    );
+    let melt_entry = appended_entry(&mut journal, melt_envelope);
     persist_and_apply_entry(&mint, &melt_entry).await;
 
     assert_eq!(make_payment_calls.load(Ordering::Relaxed), 0);
@@ -1598,28 +1609,36 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
-    let proofs = vec![
-        proof_for_runtime(&runtime_config, "paid-finalizing-input-one"),
-        proof_for_runtime(&runtime_config, "paid-finalizing-input-two"),
-        proof_for_runtime(&runtime_config, "paid-finalizing-input-three"),
-    ];
-    let input_ys = proofs.ys().expect("paid finalizing input ys");
+    let (melt_envelope, (input_ys, change_output)) =
+        locally_elected_melt_operation(&runtime_config, |attempt| {
+            let proofs = vec![
+                proof_for_runtime(
+                    &runtime_config,
+                    &format!("paid-finalizing-{attempt}-input-one"),
+                ),
+                proof_for_runtime(
+                    &runtime_config,
+                    &format!("paid-finalizing-{attempt}-input-two"),
+                ),
+                proof_for_runtime(
+                    &runtime_config,
+                    &format!("paid-finalizing-{attempt}-input-three"),
+                ),
+            ];
+            let input_ys = proofs.ys().expect("paid finalizing input ys");
+            let mut change_output =
+                output_for_runtime(&runtime_config, b"paid finalizing change output");
+            change_output.amount = Amount::ZERO;
+            (
+                MeltRequest::new(quote.clone(), proofs, Some(vec![change_output.clone()])),
+                (input_ys, change_output),
+            )
+        });
     *expected_reserve.lock().await = Some(ExpectedMeltReserve {
         quote: quote.clone(),
         input_ys: input_ys.clone(),
     });
-    let mut change_output = output_for_runtime(&runtime_config, b"paid finalizing change output");
-    change_output.amount = Amount::ZERO;
-    let melt_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .melt_operation(MeltRequest::new(
-                quote.clone(),
-                proofs,
-                Some(vec![change_output.clone()]),
-            ))
-            .expect("paid finalizing melt operation"),
-    );
+    let melt_entry = appended_entry(&mut journal, melt_envelope);
     persist_journal_entry(&localstore, &melt_entry).await;
 
     assert_eq!(

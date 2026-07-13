@@ -92,7 +92,7 @@ or explicitly ruled out with a deterministic regression before production use.
 
 | Finding | Assessment | Severity | Confidence | Recommended disposition |
 | --- | --- | --- | ---: | --- |
-| P1 | Confirmed configuration/startup contradiction | Medium | 98% | Fix before production if one-member configs remain accepted; otherwise reject them at setup/startup. |
+| P1 | One-member federation configs are rejected by the shared threshold invariant | Resolved (was Medium) | 98% | Complete: one-node deployments must use standalone mode. |
 | P2 | Confirmed task-publication and generation race | Medium | 95% | Fix before production with ordered activation and generation-scoped cleanup. |
 | P3 | Confirmed unbounded projection work relative to total mint history | Medium | 99% | Add keyed/batched reads; defer only with explicit realistic history bounds and benchmarks. |
 | P4 | Retry starvation confirmed; restart-loss subclaim not proven | Medium | 82% | Add bounded retry fairness and observability; do not restore durable gossip rows without a failed convergence reproduction. |
@@ -112,11 +112,8 @@ or explicitly ruled out with a deterministic regression before production use.
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
 | P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
 
-There are no remaining Critical or High findings. P1 remains a
-production-startup blocker if the product continues
-to claim one-member federation support even though its general security impact
-is Medium. P5 should not remain an open broad transaction-refactor request in
-its current wording.
+There are no remaining Critical or High findings. P5 should not remain an open
+broad transaction-refactor request in its current wording.
 
 ## Open Findings
 
@@ -135,6 +132,20 @@ This became an unavoidable configuration trap when the cleanup removed the
 in-memory consensus backend. A configuration that passes validation and mintd
 startup must not produce a permanently halted mint.
 
+**Resolution:** Federation mode now has one shared minimum-member invariant:
+`ThresholdParams::validate` rejects `member_count < 2` with an explicit error
+that directs a one-node operator to standalone mode. Because public config
+construction, trusted-dealer generation, dealer-free DKG roster construction,
+runtime config loading, wallet import, and mint-info advertisement all validate
+the same threshold type, none of those paths can construct or publish a
+one-member federation. Mintd therefore rejects the config before router
+startup, instead of starting a permanently unavailable HTTP service.
+
+Federation test fixtures that used one node only as a shortcut now use at least
+two members. Melt-payment tests explicitly construct an operation for which the
+local member is the deterministic elected payment actor; this preserves the
+behavior under test without reintroducing the invalid production shape.
+
 Relevant code:
 
 - `crates/cdk-common/src/federation/config.rs:322`
@@ -144,24 +155,18 @@ Relevant code:
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:476`
 - `crates/cdk-axum/src/federation/node_runtime.rs:544`
 
-TODO:
+Verification:
 
-- [ ] Decide explicitly whether production federation mode supports a
-  single-member federation.
-- [ ] If unsupported, reject `member_count < 2` in federation-specific config
-  or mintd startup validation with a clear operator-facing error.
-- [ ] If supported, allow a one-node AlephBFT session to start and finalize
-  operations without a remote network peer.
-- [ ] Ensure DKG/setup configuration follows the same member-count rule as
-  runtime activation.
-- [ ] Ensure the public federation config endpoint never advertises a config
-  that mintd cannot operate.
-- [ ] Add a full mintd/router startup test for a one-member config; do not limit
-  coverage to `MintBuilder` construction.
-- [ ] Add a test proving the chosen behavior is explicit: startup fails, or a
-  mint quote and one state-changing operation reach finality.
-- [ ] Add a regression test proving normal multi-member startup remains
-  unchanged.
+- `threshold_params_validate_bft_defaults` proves a one-member threshold is
+  rejected with the dedicated minimum-member error.
+- `configure_federation_rejects_one_member_before_router_startup` loads public
+  and private files through mintd's production configuration path and proves
+  startup fails with the operator-facing error before router construction.
+- `configure_federation_loads_aleph_bft_runtime_config` remains the positive
+  multi-member startup regression.
+- The federation-enabled `cdk-common` suite, mint federation suite, and focused
+  DKG transport-policy regression exercise shared config, runtime, and setup
+  paths with the new invariant.
 
 Acceptance criteria:
 
@@ -1623,13 +1628,10 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or High
-findings, nine Medium findings (P1, P2, P3, P4, P8, P11, P13, P14, P18), and two Low
-findings (P5, P19). P15 is complete under the accepted fresh-database policy;
-P17 is closed as superseded by P14's cut-through registry reset.
-
-P1 must still be resolved before production if one-member configs remain accepted,
-even though its general security severity is Medium.
+P1/P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or High
+findings, eight Medium findings (P2, P3, P4, P8, P11, P13, P14, P18), and two
+Low findings (P5, P19). P15 is complete under the accepted fresh-database
+policy; P17 is closed as superseded by P14's cut-through registry reset.
 
 P14 is a one-time reset of every federation-owned format to its clean initial
 v1, including the current CLI registry shape, followed by removal of legacy

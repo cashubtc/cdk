@@ -87,8 +87,8 @@ fn bundle() -> cdk_common::federation::TrustedDealerConfigBundle {
     BUNDLE
         .get_or_init(|| {
             generate_trusted_dealer_configs(
-                ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-                vec![member(member_id(1))],
+                ThresholdParams::with_bft_consensus(2, 1).expect("params"),
+                vec![member(member_id(1)), member(member_id(2))],
                 vec![TrustedDealerKeysetSpec::new(
                     CurrencyUnit::Sat,
                     true,

@@ -1724,16 +1724,20 @@ mod tests {
 
     #[cfg(feature = "federation")]
     fn test_federation_runtime_config() -> cdk::mint::FederationRuntimeConfig {
-        let member = cdk::federation::TrustedDealerMember::new(
-            cdk::federation::MemberId::new(1).expect("member id"),
-            "https://mint1.example.com"
-                .parse::<cdk::mint_url::MintUrl>()
-                .expect("public mint url"),
-            "https://fed1.example.com"
-                .parse::<cdk::mint_url::MintUrl>()
-                .expect("federation api url"),
-            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
-        );
+        let members = (1..=2)
+            .map(|id| {
+                cdk::federation::TrustedDealerMember::new(
+                    cdk::federation::MemberId::new(id).expect("member id"),
+                    format!("https://mint{id}.example.com")
+                        .parse::<cdk::mint_url::MintUrl>()
+                        .expect("public mint url"),
+                    format!("https://fed{id}.example.com")
+                        .parse::<cdk::mint_url::MintUrl>()
+                        .expect("federation api url"),
+                    SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
+                )
+            })
+            .collect();
         let keyset = cdk::federation::TrustedDealerKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -1755,8 +1759,8 @@ mod tests {
             ]),
         );
         let bundle = cdk::federation::generate_trusted_dealer_configs(
-            cdk::federation::ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-            vec![member],
+            cdk::federation::ThresholdParams::with_bft_consensus(2, 1).expect("params"),
+            members,
             vec![keyset],
         )
         .expect("trusted dealer bundle");

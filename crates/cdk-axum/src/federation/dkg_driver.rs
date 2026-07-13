@@ -1181,9 +1181,19 @@ mod tests {
             federation_api_url: MintUrl::from_str(federation_api_url).expect("federation API URL"),
             identity_public_key: identity.public_key(),
         };
+        let peer_id = MemberId::new(2).expect("peer ID");
+        let peer_identity = SecretKey::from_slice(&[2; 32]).expect("peer identity key");
+        let peer = MemberConfigPublic {
+            member_id: peer_id,
+            public_mint_url: MintUrl::from_str("https://peer-mint.example.com")
+                .expect("peer mint URL"),
+            federation_api_url: MintUrl::from_str("https://peer-fed.example.com")
+                .expect("peer federation API URL"),
+            identity_public_key: peer_identity.public_key(),
+        };
         let public_config = FederationConfig::new(
-            ThresholdParams::with_bft_consensus(1, 1).expect("thresholds"),
-            BTreeMap::from([(member_id, member)]),
+            ThresholdParams::with_bft_consensus(2, 1).expect("thresholds"),
+            BTreeMap::from([(member_id, member), (peer_id, peer)]),
             Vec::new(),
         )
         .expect("setup config");

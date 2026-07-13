@@ -17,7 +17,7 @@ use super::operation::{
 use super::{
     append_bytes, append_str, FederationError, Result, FEDERATION_CONFIG_DIGEST_VERSION,
     FEDERATION_INVITE_PREFIX, FEDERATION_INVITE_VERSION, FEDERATION_KEYSET_ROTATION_PROOF_VERSION,
-    FEDERATION_ROSTER_HASH_VERSION, FEDERATION_WALLET_PROTOCOL_VERSION,
+    FEDERATION_MIN_MEMBERS, FEDERATION_ROSTER_HASH_VERSION, FEDERATION_WALLET_PROTOCOL_VERSION,
 };
 use crate::nuts::nut01::{
     aggregate_public_key_shares, verify_blind_signature_share, BlsAggregatePublicKey,
@@ -320,8 +320,13 @@ impl ThresholdParams {
 
     /// Validate threshold parameters.
     pub fn validate(&self) -> Result<()> {
-        if self.member_count == 0
-            || self.signature_threshold == 0
+        if self.member_count < FEDERATION_MIN_MEMBERS {
+            return Err(FederationError::InsufficientMembers {
+                found: self.member_count,
+                minimum: FEDERATION_MIN_MEMBERS,
+            });
+        }
+        if self.signature_threshold == 0
             || self.consensus_threshold == 0
             || self.signature_threshold > self.member_count
             || self.consensus_threshold > self.member_count
