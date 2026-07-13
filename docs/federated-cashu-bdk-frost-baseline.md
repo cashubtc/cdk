@@ -96,3 +96,12 @@ The federated implementation must preserve these standalone contracts while
 moving shared address, UTXO, accepted-transaction, signature, and confirmation
 authority into the federation state machine described by the architecture
 decision.
+
+## Milestone 22: root and application key rotation and federation preparation
+
+**Status: invalidated — not planned.** Root, application, and federation key
+rotation are out of scope for this implementation. Supporting rotation would
+require substantially more lifecycle and recovery complexity, including a new
+coordinated DKG for the other ceremony outputs such as BLS shares. There is
+nothing to implement for this milestone; it must be skipped and must not be
+treated as deferred implementation work.
