@@ -27,7 +27,10 @@ use cdk_common::{
 use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
 use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 
-use super::{FederatedMintConnector, FederatedMintConnectorConfig, FederationWalletConnector};
+use super::{
+    FederatedMintConnector, FederatedMintConnectorConfig, FederationWalletConnector,
+    FEDERATION_CATCH_UP_MAX_RETRIES,
+};
 use crate::dhke::verify_bls_blind_signature;
 use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
 use crate::nuts::nut00::{KnownMethod, PaymentMethod, ProofsMethods};
@@ -503,6 +506,13 @@ fn pending_finalization_error(byte: u8) -> crate::Error {
     })
 }
 
+fn federation_catch_up_error(member: MemberId) -> crate::Error {
+    crate::Error::MintErrorResponse(cdk_common::error::ErrorResponse::new(
+        cdk_common::error::ErrorCode::FederationCatchUp,
+        format!("federation member {member} is catching up"),
+    ))
+}
+
 fn member_connectors(
     bundle: &TrustedDealerConfigBundle,
     outputs: &[BlindedMessage],
@@ -578,6 +588,14 @@ struct PostMintConcurrencyProbeConnector {
     total_calls: Arc<AtomicUsize>,
 }
 
+struct ActiveCallGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveCallGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl fmt::Debug for PostMintConcurrencyProbeConnector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PostMintConcurrencyProbeConnector")
@@ -612,7 +630,7 @@ impl PostMintConcurrencyProbeConnector {
         ))
     }
 
-    fn record_active_call(&self) {
+    fn record_active_call(&self) -> ActiveCallGuard {
         let active = self.active_calls.fetch_add(1, Ordering::SeqCst) + 1;
         self.total_calls.fetch_add(1, Ordering::SeqCst);
         let mut observed = self.max_active_calls.load(Ordering::SeqCst);
@@ -627,6 +645,7 @@ impl PostMintConcurrencyProbeConnector {
                 Err(current) => observed = current,
             }
         }
+        ActiveCallGuard(self.active_calls.clone())
     }
 }
 
@@ -676,9 +695,8 @@ impl MintConnector for PostMintConcurrencyProbeConnector {
         _method: &PaymentMethod,
         _request: MintRequest<String>,
     ) -> Result<MintResponse, crate::Error> {
-        self.record_active_call();
+        let _active_call = self.record_active_call();
         tokio::time::sleep(self.delay).await;
-        self.active_calls.fetch_sub(1, Ordering::SeqCst);
         Ok(self.response.clone())
     }
 
@@ -3165,6 +3183,190 @@ async fn federated_mint_connector_retries_retryable_member_request_failure() {
 }
 
 #[tokio::test]
+async fn federated_mint_connector_fans_signing_request_out_to_every_member() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+    let mut observed_connectors = Vec::new();
+
+    for id in [
+        member_id(1),
+        member_id(2),
+        member_id(3),
+        member_id(4),
+        member_id(5),
+    ] {
+        let connector = Arc::new(MockMintConnector::new());
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        if id == member_id(1) {
+            connector.set_post_swap_response(Err(crate::Error::Timeout));
+        } else {
+            connector.set_post_swap_response(Ok(SwapResponse {
+                signatures: share_response(&bundle, id, &outputs).signatures,
+            }));
+        }
+        observed_connectors.push(connector.clone());
+        connectors.insert(id, connector as Arc<dyn MintConnector + Send + Sync>);
+    }
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_max_retries: 0,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let request = SwapRequest::new(Vec::new(), outputs.clone());
+    let response = connector
+        .post_swap(request.clone())
+        .await
+        .expect("three compatible shares from the full roster");
+
+    assert_aggregate_response_valid(
+        &bundle,
+        &outputs,
+        &MintResponse {
+            signatures: response.signatures,
+        },
+    );
+    for member in observed_connectors {
+        assert_eq!(
+            member.captured_swap_requests(),
+            vec![request.clone()],
+            "every configured federation member must receive the signing request"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_mint_connector_waits_for_catching_up_member_with_identical_request() {
+    let bundle = threshold_four_bundle();
+    let outputs = vec![blinded_output_for_keyset_amount(
+        &active_keyset(&bundle),
+        1,
+        b"catch-up retry output",
+    )];
+    let advertised = advertised_keyset(&bundle);
+    let request = SwapRequest::new(Vec::new(), outputs.clone());
+    let mut connectors = BTreeMap::new();
+
+    for id in [member_id(1), member_id(2)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: share_response(&bundle, id, &outputs).signatures,
+        }));
+        connectors.insert(
+            id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let catching_up_member = Arc::new(MockMintConnector::new());
+    set_member_advertisement_with_keyset(
+        &catching_up_member,
+        &bundle,
+        member_id(3),
+        advertised.clone(),
+    );
+    catching_up_member.push_post_swap_response(Err(federation_catch_up_error(member_id(3))));
+    catching_up_member.push_post_swap_response(Err(federation_catch_up_error(member_id(3))));
+    catching_up_member.push_post_swap_response(Ok(SwapResponse {
+        signatures: share_response(&bundle, member_id(3), &outputs).signatures,
+    }));
+    connectors.insert(
+        member_id(3),
+        catching_up_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let rejecting_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(
+        &rejecting_member,
+        &bundle,
+        member_id(4),
+        advertised,
+    );
+    rejecting_member.set_post_swap_response(Err(crate::Error::InvalidPaymentMethod));
+    connectors.insert(
+        member_id(4),
+        Arc::new(rejecting_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let response = connector
+        .post_swap(request.clone())
+        .await
+        .expect("catching-up member should become available before the retry deadline");
+
+    assert_aggregate_response_valid(
+        &bundle,
+        &outputs,
+        &MintResponse {
+            signatures: response.signatures,
+        },
+    );
+    assert_eq!(
+        catching_up_member.captured_swap_requests(),
+        vec![request.clone(), request.clone(), request],
+        "catch-up retries must reuse the exact deterministic request"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_mint_connector_returns_typed_ambiguous_error_after_catch_up_deadline() {
+    let bundle = threshold_five_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let request = SwapRequest::new(Vec::new(), outputs.clone());
+    let mut connectors = BTreeMap::new();
+
+    for id in [member_id(1), member_id(2)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: share_response(&bundle, id, &outputs).signatures,
+        }));
+        connectors.insert(
+            id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let mut catching_up_members = Vec::new();
+    for id in [member_id(3), member_id(4), member_id(5)] {
+        let connector = Arc::new(MockMintConnector::new());
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        for _ in 0..=FEDERATION_CATCH_UP_MAX_RETRIES {
+            connector.push_post_swap_response(Err(federation_catch_up_error(id)));
+        }
+        catching_up_members.push(connector.clone());
+        connectors.insert(id, connector as Arc<dyn MintConnector + Send + Sync>);
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let error = connector
+        .post_swap(request.clone())
+        .await
+        .expect_err("two shares cannot satisfy a three-share threshold");
+
+    assert!(matches!(error, crate::Error::FederationCatchUp { .. }));
+    assert!(!error.is_definitive_failure());
+    for member in catching_up_members {
+        let requests = member.captured_swap_requests();
+        assert_eq!(
+            requests.len(),
+            usize::from(FEDERATION_CATCH_UP_MAX_RETRIES) + 1
+        );
+        assert!(requests.iter().all(|candidate| candidate == &request));
+    }
+}
+
+#[tokio::test]
 async fn federated_mint_connector_retries_rate_limited_member_request() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);
@@ -4117,7 +4319,7 @@ async fn federated_mint_connector_honors_configured_fanout_concurrency() {
     assert_eq!(max_active_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         total_calls.load(Ordering::SeqCst),
-        usize::from(bundle.public_config.threshold_params.signature_threshold)
+        bundle.public_config.members.len()
     );
     assert_eq!(active_calls.load(Ordering::SeqCst), 0);
 }

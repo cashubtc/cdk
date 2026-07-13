@@ -4509,6 +4509,43 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         .expect("quorum-verified member can submit");
 }
 
+#[tokio::test]
+async fn equal_height_peer_sync_does_not_enter_catch_up() {
+    let (state, public_config, local_private, _) =
+        federation_route_state_with_local_private().await;
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let status = FederationPeerStatus::new_with_materialized_state_digest(
+        public_config.federation_id,
+        peer_member.member_id,
+        0,
+        None,
+        FederationJournalDigest::genesis(),
+        cdk::federation::FederationMaterializedStateDigest::genesis(),
+    );
+    let transport = MockFederationTransport::default().with_status_response(status);
+    let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+        .expect("peer client");
+
+    let synced = client
+        .sync_once_from_member(&state, peer_member)
+        .await
+        .expect("equal-height sync poll");
+
+    assert_eq!(synced.operation_count, 0);
+    assert!(transport.catch_up_requests().is_empty());
+    assert_eq!(
+        state
+            .federation_sync_transition_stats()
+            .await
+            .expect("sync transition stats"),
+        crate::FederationSyncTransitionStats::default()
+    );
+    assert!(matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    ));
+}
+
 #[tokio::test(start_paused = true)]
 async fn peer_sync_round_backs_off_failed_peer_until_retry_delay() {
     let (state, public_config, local_private, _) =
@@ -14907,6 +14944,22 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         .ensure_federation_ready_for_authoritative_read()
         .await
         .expect("caught-up value-operation member is ready");
+    for (index, state) in session.states.iter().enumerate() {
+        let stats = state
+            .federation_sync_transition_stats()
+            .await
+            .expect("value-operation sync transition stats");
+        if index == offline_index {
+            assert!(stats.lagging > 0);
+            assert!(stats.catching_up > 0);
+        } else {
+            assert_eq!(
+                stats,
+                crate::FederationSyncTransitionStats::default(),
+                "only the intentionally offline member should enter catch-up"
+            );
+        }
+    }
     assert_eq!(
         make_payment_calls
             .iter()
@@ -16783,6 +16836,166 @@ async fn start_multi_member_aleph_bft_live_session_with_payment_policy(
         },
         make_payment_calls,
     ))
+}
+
+async fn submit_healthy_federation_swap_batch(
+    session: &MultiMemberAlephBftLiveSession,
+    first_index: usize,
+    count: usize,
+    parallelism: usize,
+) -> Vec<FederationOperationId> {
+    let config = session.states[0]
+        .mint
+        .federation_config()
+        .expect("stress federation config")
+        .clone();
+    let operations = (first_index..first_index + count)
+        .map(|index| {
+            let envelope = config
+                .swap_operation(cdk::nuts::SwapRequest::new(
+                    vec![proof_for_amount(
+                        &session.states[0],
+                        1,
+                        &format!("healthy-stress-input-{index}"),
+                    )],
+                    vec![swap_output(
+                        &session.states[0],
+                        &format!("healthy-stress-output-{index}"),
+                    )],
+                ))
+                .expect("stress swap envelope");
+            let operation_id = envelope.operation_id().expect("stress swap operation id");
+            (operation_id, envelope)
+        })
+        .collect::<Vec<_>>();
+
+    for chunk in operations.chunks(parallelism) {
+        let mut submissions = tokio::task::JoinSet::new();
+        for (offset, (operation_id, envelope)) in chunk.iter().cloned().enumerate() {
+            let state = session.states[(first_index + offset) % session.states.len()].clone();
+            submissions.spawn(async move {
+                let response = state
+                    .submit_federation_envelope_to_consensus(envelope)
+                    .await
+                    .expect("healthy stress swap submission");
+                assert_eq!(response.operation_id, operation_id);
+                assert_eq!(
+                    response.outcome.entry().status(),
+                    FederationOperationStatus::Applied
+                );
+            });
+        }
+        while let Some(result) = submissions.join_next().await {
+            result.expect("healthy stress swap task");
+        }
+    }
+
+    operations
+        .into_iter()
+        .map(|(operation_id, _)| operation_id)
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "process-level federation stress regression"]
+async fn aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let session = start_five_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        pump_config,
+        1_000,
+    ))
+    .await
+    .expect("five-member healthy stress session");
+
+    let mut operation_ids = submit_healthy_federation_swap_batch(&session, 0, 10, 5).await;
+    operation_ids.extend(submit_healthy_federation_swap_batch(&session, 10, 20, 10).await);
+
+    for operation_id in &operation_ids {
+        for state in &session.states {
+            wait_for_applied_operation_with_context(
+                state,
+                *operation_id,
+                "healthy stress convergence",
+            )
+            .await;
+        }
+    }
+
+    let expected_entries = session.states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("healthy stress journal");
+    assert_eq!(expected_entries.len(), operation_ids.len());
+    assert!(expected_entries
+        .iter()
+        .all(|entry| entry.status() == FederationOperationStatus::Applied));
+    let expected_order = expected_entries
+        .iter()
+        .map(|entry| entry.operation_id)
+        .collect::<Vec<_>>();
+    let expected_digest = materialized_state_digest(&session.states[0], &expected_entries)
+        .await
+        .expect("healthy stress materialized digest");
+    let mut heights = Vec::new();
+
+    for state in &session.states {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("member healthy stress journal");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.operation_id)
+                .collect::<Vec<_>>(),
+            expected_order
+        );
+        assert_eq!(
+            materialized_state_digest(state, &entries)
+                .await
+                .expect("member healthy stress materialized digest"),
+            expected_digest
+        );
+        assert_eq!(
+            state
+                .federation_sync_transition_stats()
+                .await
+                .expect("member sync transition stats"),
+            crate::FederationSyncTransitionStats::default(),
+            "healthy load must not enter lagging or catch-up states"
+        );
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
+        heights.push(
+            state
+                .federation
+                .consensus
+                .as_ref()
+                .expect("member consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+        );
+    }
+
+    let minimum_height = heights.iter().min().copied().expect("minimum member height");
+    let maximum_height = heights.iter().max().copied().expect("maximum member height");
+    assert_eq!(
+        maximum_height - minimum_height,
+        0,
+        "healthy stress members must converge without height skew"
+    );
 }
 
 async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperationId {

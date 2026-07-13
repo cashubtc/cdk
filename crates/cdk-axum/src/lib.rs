@@ -1092,6 +1092,17 @@ impl FederationSyncStatus {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FederationSyncState {
     status: FederationSyncStatus,
+    #[cfg(test)]
+    transition_stats: FederationSyncTransitionStats,
+}
+
+#[cfg(all(test, feature = "federation"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FederationSyncTransitionStats {
+    pub(crate) lagging: u64,
+    pub(crate) catching_up: u64,
+    pub(crate) verifying_catch_up_certificate: u64,
+    pub(crate) materialized_state_mismatch: u64,
 }
 
 #[cfg(feature = "federation")]
@@ -1101,11 +1112,18 @@ impl FederationSyncState {
             status: FederationSyncStatus::Halted {
                 reason: ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
             },
+            #[cfg(test)]
+            transition_stats: FederationSyncTransitionStats::default(),
         }
     }
 
     fn status(&self) -> FederationSyncStatus {
         self.status.clone()
+    }
+
+    #[cfg(test)]
+    fn transition_stats(&self) -> FederationSyncTransitionStats {
+        self.transition_stats
     }
 
     fn finish_startup_revalidation(
@@ -1137,6 +1155,10 @@ impl FederationSyncState {
         local_operation_count: u64,
         peer_operation_count: u64,
     ) {
+        #[cfg(test)]
+        {
+            self.transition_stats.lagging = self.transition_stats.lagging.saturating_add(1);
+        }
         self.status = FederationSyncStatus::Lagging {
             peer,
             local_operation_count,
@@ -1145,6 +1167,11 @@ impl FederationSyncState {
     }
 
     fn mark_catching_up(&mut self, peer: MemberId) {
+        #[cfg(test)]
+        {
+            self.transition_stats.catching_up =
+                self.transition_stats.catching_up.saturating_add(1);
+        }
         self.status = FederationSyncStatus::CatchingUp { peer };
     }
 
@@ -1156,6 +1183,13 @@ impl FederationSyncState {
                 ..
             } if peer_operation_count > operation_count => {}
             _ => {
+                #[cfg(test)]
+                {
+                    self.transition_stats.verifying_catch_up_certificate = self
+                        .transition_stats
+                        .verifying_catch_up_certificate
+                        .saturating_add(1);
+                }
                 self.status = FederationSyncStatus::VerifyingCatchUpCertificate {
                     peer,
                     operation_count,
@@ -1176,6 +1210,13 @@ impl FederationSyncState {
                 ..
             } if pending_operation_count > operation_count => {}
             _ => {
+                #[cfg(test)]
+                {
+                    self.transition_stats.materialized_state_mismatch = self
+                        .transition_stats
+                        .materialized_state_mismatch
+                        .saturating_add(1);
+                }
                 self.status = FederationSyncStatus::MaterializedStateMismatch {
                     peer,
                     operation_count,
@@ -1809,6 +1850,14 @@ impl MintState {
 
     pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
         self.federation.sync_status().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn federation_sync_transition_stats(
+        &self,
+    ) -> Option<FederationSyncTransitionStats> {
+        let sync = self.federation.sync.as_ref()?;
+        Some(sync.lock().await.transition_stats())
     }
 
     pub(crate) async fn mark_federation_lagging(

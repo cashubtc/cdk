@@ -255,6 +255,12 @@ pub enum Error {
     /// Quote is pending
     #[error("Quote pending")]
     PendingQuote,
+    /// A federation member is temporarily unable to answer while it catches up.
+    #[error("{detail}")]
+    FederationCatchUp {
+        /// Human-readable member readiness detail returned by the mint.
+        detail: String,
+    },
     /// Timed out waiting for a pending melt to complete.
     ///
     /// If the most recent backend status check failed, its error message is
@@ -662,6 +668,24 @@ mod tests {
     }
 
     #[test]
+    fn federation_catch_up_error_code_round_trips_as_retryable() {
+        let response = ErrorResponse::new(
+            ErrorCode::FederationCatchUp,
+            "federation member is catching up".to_string(),
+        );
+        let json = serde_json::to_string(&response).expect("serialize federation catch-up error");
+        let decoded =
+            ErrorResponse::from_json(&json).expect("deserialize federation catch-up error");
+        let error = Error::from(decoded.clone());
+
+        assert_eq!(decoded, response);
+        assert_eq!(decoded.code.to_code(), 40001);
+        assert!(error.is_federation_catch_up());
+        assert!(!error.is_definitive_failure());
+        assert_eq!(ErrorResponse::from(error), response);
+    }
+
+    #[test]
     fn retained_mint_error_response_preserves_exact_payload_and_classification() {
         let response = ErrorResponse::new(
             ErrorCode::TokenAlreadySpent,
@@ -691,6 +715,26 @@ mod tests {
         assert!(response.detail.contains("pending AlephBFT finalization"));
         assert!(response.detail.contains("retry the exact same request"));
         assert!(!Error::from(response).is_definitive_failure());
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_sync_readiness_maps_to_catch_up_error_code() {
+        let err = Error::Federation(
+            crate::federation::FederationError::NodeCatchingUp {
+                peer: crate::federation::MemberId::new(2).expect("member id"),
+            },
+        );
+
+        assert!(err.is_federation_catch_up());
+        assert!(!err.is_definitive_failure());
+        let response = ErrorResponse::from(err);
+
+        assert_eq!(response.code, ErrorCode::FederationCatchUp);
+        assert!(response.detail.contains("catching up"));
+        let decoded = Error::from(response);
+        assert!(decoded.is_federation_catch_up());
+        assert!(!decoded.is_definitive_failure());
     }
 
     #[cfg(feature = "federation")]
@@ -883,6 +927,7 @@ impl Error {
             | Self::Internal
             | Self::UnknownPaymentState
             | Self::PendingQuote
+            | Self::FederationCatchUp { .. }
             | Self::TokenPending
             | Self::CouldNotGetMintInfo
             | Self::UnknownErrorResponse(_)
@@ -951,6 +996,24 @@ impl Error {
             Self::Payment(_) => false, // Payment errors could be ambiguous? assume ambiguous to be safe
 
             // Catch-all
+            _ => false,
+        }
+    }
+
+    /// Return whether this error means a federation member is temporarily catching up.
+    pub fn is_federation_catch_up(&self) -> bool {
+        match self {
+            Self::FederationCatchUp { .. } => true,
+            Self::MintErrorResponse(response) => {
+                response.code == ErrorCode::FederationCatchUp
+            }
+            #[cfg(feature = "federation")]
+            Self::Federation(
+                crate::federation::FederationError::NodeLagging { .. }
+                | crate::federation::FederationError::NodeCatchingUp { .. }
+                | crate::federation::FederationError::NodeVerifyingCatchUpCertificate { .. }
+                | crate::federation::FederationError::NodeMaterializedStateMismatch { .. },
+            ) => true,
             _ => false,
         }
     }
@@ -1072,6 +1135,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::QuotePending,
                 detail: err.to_string(),
             },
+            Error::FederationCatchUp { .. } => ErrorResponse {
+                code: ErrorCode::FederationCatchUp,
+                detail: err.to_string(),
+            },
             #[cfg(feature = "federation")]
             Error::Federation(
                 federation_error @ crate::federation::FederationError::OperationPendingFinalization {
@@ -1079,6 +1146,16 @@ impl From<Error> for ErrorResponse {
                 },
             ) => ErrorResponse {
                 code: ErrorCode::QuotePending,
+                detail: federation_error.to_string(),
+            },
+            #[cfg(feature = "federation")]
+            Error::Federation(
+                federation_error @ (crate::federation::FederationError::NodeLagging { .. }
+                | crate::federation::FederationError::NodeCatchingUp { .. }
+                | crate::federation::FederationError::NodeVerifyingCatchUpCertificate { .. }
+                | crate::federation::FederationError::NodeMaterializedStateMismatch { .. }),
+            ) => ErrorResponse {
+                code: ErrorCode::FederationCatchUp,
                 detail: federation_error.to_string(),
             },
             Error::TokenPending => ErrorResponse {
@@ -1407,6 +1484,8 @@ impl From<ErrorResponse> for Error {
             ErrorCode::BlindAuthFailed => Self::BlindAuthFailed,
             ErrorCode::BatMintMaxExceeded => Self::InsufficientBlindAuthTokens,
             ErrorCode::BatRateLimitExceeded => Self::InsufficientBlindAuthTokens,
+            // 40xxx - Federation errors
+            ErrorCode::FederationCatchUp => Self::FederationCatchUp { detail: err.detail },
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -1513,6 +1592,10 @@ pub enum ErrorCode {
     /// Concurrent update detected
     ConcurrentUpdate,
 
+    // 40xxx - Federation errors
+    /// Federation member is temporarily catching up (40001)
+    FederationCatchUp,
+
     /// Unknown error code
     Unknown(u16),
 }
@@ -1563,6 +1646,8 @@ impl ErrorCode {
             31002 => Self::BlindAuthFailed,
             31003 => Self::BatMintMaxExceeded,
             31004 => Self::BatRateLimitExceeded,
+            // 40xxx - Federation errors
+            40001 => Self::FederationCatchUp,
             _ => Self::Unknown(code),
         }
     }
@@ -1612,6 +1697,8 @@ impl ErrorCode {
             Self::BlindAuthFailed => 31002,
             Self::BatMintMaxExceeded => 31003,
             Self::BatRateLimitExceeded => 31004,
+            // 40xxx - Federation errors
+            Self::FederationCatchUp => 40001,
             Self::ConcurrentUpdate => 50000,
             Self::Unknown(code) => *code,
         }

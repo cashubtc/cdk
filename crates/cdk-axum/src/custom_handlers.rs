@@ -6135,6 +6135,45 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_swap_reports_typed_federation_catch_up_error() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let peer = config
+            .public_config()
+            .members
+            .keys()
+            .copied()
+            .find(|member| *member != config.member_id())
+            .expect("peer member");
+        state.mark_federation_catching_up(peer).await;
+        let request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "catch-up-swap-input")],
+            outputs_for_amount_with_label(&state, 2, "catch-up-swap-output"),
+        );
+
+        let response = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state),
+            Json(request),
+        )
+        .await
+        .expect_err("catching-up member must fail closed with a retryable Cashu error");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("catch-up error body");
+        let error: cdk_common::error::ErrorResponse =
+            serde_json::from_slice(&bytes).expect("Cashu error response");
+        assert_eq!(
+            error.code,
+            cdk_common::error::ErrorCode::FederationCatchUp
+        );
+        assert!(error.detail.contains("catching up"));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_aleph_bft_public_route_fails_closed_before_queueing() {
         let state = create_aleph_bft_federated_test_state().await;
         let request = cdk::nuts::SwapRequest::new(

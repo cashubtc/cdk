@@ -42,6 +42,9 @@ use self::validation::{
     validate_member_advertised_keyset,
 };
 
+const FEDERATION_CATCH_UP_MAX_RETRIES: u16 = 100;
+const FEDERATION_CATCH_UP_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// Wallet mint connector that fans out signing requests to federation members.
 ///
 /// The connector preserves the existing wallet-to-mint protocol surface: member
@@ -221,6 +224,20 @@ impl<R> FederationMemberResults<R> {
 
     fn threshold_rejection(&self, threshold: usize) -> Option<ErrorResponse> {
         threshold_rejection(&self.failures, threshold).cloned()
+    }
+
+    fn catch_up_error(&self) -> Option<Error> {
+        (!self.failures.is_empty()
+            && self
+                .failures
+                .iter()
+                .all(|failure| failure.error.is_federation_catch_up()))
+        .then(|| Error::FederationCatchUp {
+            detail: format!(
+                "federation members did not finish catching up before the wallet retry deadline: {}",
+                self.failure_summary()
+            ),
+        })
     }
 }
 
@@ -540,7 +557,11 @@ impl FederatedMintConnector {
             .fanout_concurrency
             .min(member_connectors.len())
             .max(1);
-        let start_call = |member_id: MemberId, attempt: u16, fut: Fut| async move {
+        let start_call =
+            |member_id: MemberId, attempt: u16, retry_delay: Option<Duration>, fut: Fut| async move {
+            if let Some(retry_delay) = retry_delay {
+                tokio::time::sleep(retry_delay).await;
+            }
             let result = match per_member_timeout {
                 Some(timeout) => match tokio::time::timeout(timeout, fut).await {
                     Ok(result) => result,
@@ -563,6 +584,7 @@ impl FederatedMintConnector {
             pending.push(start_call(
                 *member_id,
                 0,
+                None,
                 call_member(*member_id, connector.clone()),
             ));
         }
@@ -571,11 +593,18 @@ impl FederatedMintConnector {
             match result {
                 Ok(response) => responses.push((member_id, response)),
                 Err(err) => {
-                    if !err.is_definitive_failure() && attempt < max_member_retries {
+                    let catch_up_retry = err.is_federation_catch_up();
+                    let retry_limit = if catch_up_retry {
+                        max_member_retries.max(FEDERATION_CATCH_UP_MAX_RETRIES)
+                    } else {
+                        max_member_retries
+                    };
+                    if !err.is_definitive_failure() && attempt < retry_limit {
                         if let Some(connector) = member_connectors.get(&member_id).cloned() {
                             pending.push(start_call(
                                 member_id,
                                 attempt.saturating_add(1),
+                                catch_up_retry.then_some(FEDERATION_CATCH_UP_RETRY_DELAY),
                                 call_member(member_id, connector),
                             ));
                             continue;
@@ -586,13 +615,6 @@ impl FederatedMintConnector {
                 }
             }
 
-            if stop_after(&responses, &failures) {
-                return FederationMemberResults {
-                    responses,
-                    failures,
-                };
-            }
-
             while pending.len() < concurrency {
                 let Some((member_id, connector)) = members.next() else {
                     break;
@@ -600,8 +622,27 @@ impl FederatedMintConnector {
                 pending.push(start_call(
                     *member_id,
                     0,
+                    None,
                     call_member(*member_id, connector.clone()),
                 ));
+            }
+
+            if members.len() == 0 && stop_after(&responses, &failures) {
+                // Poll every already-scheduled member once before returning. This starts
+                // the full default fanout without making threshold liveness wait for a
+                // slow minority.
+                while let Some((member_id, _, result)) =
+                    pending.next().now_or_never().flatten()
+                {
+                    match result {
+                        Ok(response) => responses.push((member_id, response)),
+                        Err(err) => failures.push(FederationMemberFailure::new(member_id, err)),
+                    }
+                }
+                return FederationMemberResults {
+                    responses,
+                    failures,
+                };
             }
         }
 
@@ -726,7 +767,7 @@ impl FederatedMintConnector {
             }
         }
 
-        Ok(connectors)
+        Ok(self.member_connectors.clone())
     }
 
     async fn validate_member_active_keysets_with_mint_info(
@@ -896,6 +937,10 @@ impl FederatedMintConnector {
 
         if let Some(rejection) = results.threshold_rejection(threshold) {
             return Err(Error::from(rejection));
+        }
+
+        if let Some(catch_up_error) = results.catch_up_error() {
+            return Err(catch_up_error);
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -2177,11 +2222,11 @@ impl MintConnector for FederatedMintConnector {
         self.public_config
             .validate_blinded_outputs(&request.outputs)
             .map_err(map_federation_validation_error)?;
-        let member_connectors = self.validate_member_active_keysets().await?;
+        self.validate_member_active_keysets().await?;
 
         let member_responses = self
             .collect_mint_responses(
-                &member_connectors,
+                &self.member_connectors,
                 &request.outputs,
                 ShareAmountValidation::Exact,
                 |connector| {
@@ -2232,11 +2277,11 @@ impl MintConnector for FederatedMintConnector {
         self.public_config
             .validate_blinded_outputs(&request.outputs)
             .map_err(map_federation_validation_error)?;
-        let member_connectors = self.validate_member_active_keysets().await?;
+        self.validate_member_active_keysets().await?;
 
         let member_responses = self
             .collect_mint_responses(
-                &member_connectors,
+                &self.member_connectors,
                 &request.outputs,
                 ShareAmountValidation::Exact,
                 |connector| {
@@ -2349,11 +2394,11 @@ impl MintConnector for FederatedMintConnector {
         self.public_config
             .validate_blinded_outputs(request.outputs())
             .map_err(map_federation_validation_error)?;
-        let member_connectors = self.validate_member_active_keysets().await?;
+        self.validate_member_active_keysets().await?;
 
         let member_responses = self
             .collect_mint_responses(
-                &member_connectors,
+                &self.member_connectors,
                 request.outputs(),
                 ShareAmountValidation::Exact,
                 |connector| {
@@ -2404,10 +2449,10 @@ impl MintConnector for FederatedMintConnector {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let member_connectors = self.validate_member_active_keysets().await?;
+        self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_check_state_responses(&member_connectors, &request, |connector| {
+            .collect_check_state_responses(&self.member_connectors, &request, |connector| {
                 let request = request.clone();
                 async move { connector.post_check_state(request).await }
             })
@@ -2420,10 +2465,10 @@ impl MintConnector for FederatedMintConnector {
         self.public_config
             .validate_blinded_restore_outputs(&request.outputs)
             .map_err(map_federation_validation_error)?;
-        let member_connectors = self.validate_member_active_keysets().await?;
+        self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_restore_responses(&member_connectors, &request.outputs, |connector| {
+            .collect_restore_responses(&self.member_connectors, &request.outputs, |connector| {
                 let request = request.clone();
                 async move { connector.post_restore(request).await }
             })
