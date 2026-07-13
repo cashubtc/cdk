@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, EsploraConfig};
 use crate::error::Error;
-use crate::CdkBdk;
+use crate::{BdkWalletEngine, CdkBdk};
 
 const MIN_ESPLORA_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_ESPLORA_BACKOFF: Duration = Duration::from_secs(300);
@@ -18,6 +18,30 @@ fn next_esplora_backoff(backoff: &mut Duration) -> Duration {
     let current = *backoff;
     *backoff = (*backoff * 2).min(MAX_ESPLORA_BACKOFF);
     current
+}
+
+pub(crate) async fn sync_esplora_once(
+    engine: &BdkWalletEngine,
+    config: &EsploraConfig,
+) -> Result<(), Error> {
+    let client = Builder::new(&config.url)
+        .build_async()
+        .map_err(|err| Error::Esplora(err.to_string()))?;
+    let request = {
+        let wallet_with_db = engine.wallet_with_db.lock().await;
+        wallet_with_db.wallet.start_sync_with_revealed_spks()
+    };
+    let update = client
+        .sync(request, config.parallel_requests)
+        .await
+        .map_err(|err| Error::Esplora(err.to_string()))?;
+    let mut wallet_with_db = engine.wallet_with_db.lock().await;
+    wallet_with_db
+        .wallet
+        .apply_update_events(update)
+        .map_err(|err| Error::Wallet(err.to_string()))?;
+    wallet_with_db.persist()?;
+    Ok(())
 }
 
 pub(crate) async fn sync_esplora(
@@ -81,7 +105,7 @@ pub(crate) async fn sync_esplora(
 
                 // Phase A (short lock): build the sync request.
                 let sync_request = {
-                    let w = cdk_bdk.wallet_with_db.lock().await;
+                    let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
                     w.wallet.start_sync_with_revealed_spks()
                 };
 
@@ -112,7 +136,7 @@ pub(crate) async fn sync_esplora(
                 // Phase C (short lock): apply the update and persist.
                 let apply_result = {
                     let apply_start = Instant::now();
-                    let mut w = cdk_bdk.wallet_with_db.lock().await;
+                    let mut w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
                     let res = w
                         .wallet
                         .apply_update_events(sync_update)
@@ -144,7 +168,7 @@ pub(crate) async fn sync_esplora(
                 }
 
                 let tip = {
-                    let w = cdk_bdk.wallet_with_db.lock().await;
+                    let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
                     w.wallet.latest_checkpoint().block_id()
                 };
                 tracing::info!(

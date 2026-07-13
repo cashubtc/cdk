@@ -1,9 +1,6 @@
 use std::str::FromStr;
 
-use bdk_wallet::bitcoin::Address;
-use bdk_wallet::chain::ChainPosition;
-use bdk_wallet::rusqlite::Connection;
-use bdk_wallet::{KeychainKind, PersistedWallet};
+use bdk_wallet::KeychainKind;
 use cdk_common::payment::{Event, PaymentIdentifier, WaitPaymentResponse};
 use cdk_common::{Amount, CurrencyUnit, QuoteId};
 
@@ -46,27 +43,25 @@ impl CdkBdk {
         Ok(())
     }
 
-    pub(crate) fn confirmed_receive_intents_from_record(
+    pub(crate) async fn confirmed_receive_intents_from_record(
         &self,
         persisted_intents: &[receive_intent::record::ReceiveIntentRecord],
-        wallet: &PersistedWallet<Connection>,
     ) -> Vec<ReceiveIntent<receive_state::Detected>> {
-        persisted_intents
-            .iter()
-            .filter_map(|persisted| {
-                let ReceiveIntentAny::Detected(intent) = receive_intent::from_record(persisted);
-                if self.txid_has_required_confirmations(
-                    wallet,
+        let mut confirmed = Vec::new();
+        for persisted in persisted_intents {
+            let ReceiveIntentAny::Detected(intent) = receive_intent::from_record(persisted);
+            if self
+                .txid_has_required_confirmations(
                     &intent.state.txid,
                     "receive_intent",
                     &intent.intent_id.to_string(),
-                ) {
-                    Some(intent)
-                } else {
-                    None
-                }
-            })
-            .collect()
+                )
+                .await
+            {
+                confirmed.push(intent);
+            }
+        }
+        confirmed
     }
 
     pub(crate) async fn scan_for_new_payments(&self) -> Result<(), Error> {
@@ -83,45 +78,24 @@ impl CdkBdk {
         let address_set: std::collections::HashSet<String> =
             tracked_addresses.into_iter().collect();
 
-        let wallet_with_db = self.wallet_with_db.lock().await;
-        tracing::debug!(
-            wallet_balance = ?wallet_with_db.wallet.balance(),
-            checkpoint_height = wallet_with_db.wallet.latest_checkpoint().height(),
-            "Inspecting wallet outputs for tracked receive payments"
-        );
-
-        let utxos: Vec<_> = wallet_with_db
-            .wallet
-            .list_output()
+        let utxos = self
+            .wallet_engine
+            .confirmed_outputs()
+            .await
+            .into_iter()
             .filter_map(|o| {
-                let derived_address =
-                    Address::from_script(o.txout.script_pubkey.as_script(), self.network)
-                        .ok()
-                        .map(|address| address.to_string());
-
                 if o.keychain != KeychainKind::External {
                     return None;
                 }
-
-                let ChainPosition::Confirmed { anchor, .. } = &o.chain_position else {
-                    return None;
-                };
-
-                derived_address
-                    .filter(|address| address_set.contains(address))
-                    .map(|address| {
-                        (
-                            address,
-                            o.outpoint.txid.to_string(),
-                            o.outpoint.to_string(),
-                            o.txout.value.to_sat(),
-                            anchor.block_id.height,
-                        )
-                    })
+                address_set.contains(&o.address).then_some((
+                    o.address,
+                    o.txid,
+                    o.outpoint,
+                    o.amount_sat,
+                    o.block_height,
+                ))
             })
-            .collect();
-
-        drop(wallet_with_db);
+            .collect::<Vec<_>>();
 
         for (address, txid, outpoint, amount_sat, block_height) in utxos {
             if self.should_ignore_receive_amount(amount_sat) {
@@ -188,11 +162,9 @@ impl CdkBdk {
             return Ok(());
         }
 
-        let wallet_with_db = self.wallet_with_db.lock().await;
-        let to_finalize =
-            self.confirmed_receive_intents_from_record(&all_persisted, &wallet_with_db.wallet);
-
-        drop(wallet_with_db);
+        let to_finalize = self
+            .confirmed_receive_intents_from_record(&all_persisted)
+            .await;
 
         self.finalize_receive_intents(to_finalize).await
     }

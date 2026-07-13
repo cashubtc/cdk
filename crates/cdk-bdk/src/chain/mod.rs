@@ -170,6 +170,22 @@ impl ChainSource {
         }
     }
 
+    pub(crate) async fn sync_engine_once(
+        &self,
+        engine: &crate::BdkWalletEngine,
+    ) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "esplora")]
+            ChainSource::Esplora(config) => esplora::sync_esplora_once(engine, config).await,
+            #[cfg(feature = "bitcoin-rpc")]
+            ChainSource::BitcoinRpc(config) => {
+                bitcoin_rpc::sync_bitcoin_rpc_once(engine, config).await
+            }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("ChainSource must have at least one feature enabled"),
+        }
+    }
+
     pub async fn sync_wallet(
         &self,
         cdk_bdk: &crate::CdkBdk,

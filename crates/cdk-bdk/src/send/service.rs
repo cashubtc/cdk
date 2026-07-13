@@ -93,15 +93,9 @@ impl CdkBdk {
         let intent_id = intent.intent_id;
         let txid = intent.state.txid.clone();
 
-        let has_confs = {
-            let wallet_with_db = self.wallet_with_db.lock().await;
-            self.txid_has_required_confirmations(
-                &wallet_with_db.wallet,
-                &txid,
-                "send_intent_recovery",
-                &intent_id.to_string(),
-            )
-        };
+        let has_confs = self
+            .txid_has_required_confirmations(&txid, "send_intent_recovery", &intent_id.to_string())
+            .await;
 
         if has_confs {
             tracing::warn!(
@@ -173,7 +167,7 @@ impl CdkBdk {
         &self,
         tx: Transaction,
     ) -> Result<BroadcastOutcome, BroadcastFailure> {
-        self.chain_source.broadcast(tx).await
+        self.wallet_engine.broadcast_classified(tx).await
     }
 
     pub(crate) fn log_broadcast_failure(
@@ -412,23 +406,19 @@ impl CdkBdk {
         };
 
         // 1. Build the PSBT
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
-        let mut tx_builder = wallet_with_db.wallet.build_tx();
-        for (address, amount) in recipients {
-            tx_builder.add_recipient(address, bdk_wallet::bitcoin::Amount::from_sat(amount));
-        }
-        tx_builder.fee_rate(fee_rate);
-
-        let mut psbt = match tx_builder.finish() {
+        let recipients = recipients
+            .into_iter()
+            .map(|(address, amount)| (address.script_pubkey(), amount))
+            .collect::<Vec<_>>();
+        let mut psbt = match self.wallet_engine.build_psbt(&recipients, fee_rate).await {
             Ok(psbt) => psbt,
             Err(e) => {
                 tracing::error!("Failed to build batch PSBT: {}", e);
 
                 let error_text = e.to_string();
-                drop(wallet_with_db);
                 self.fail_send_intents(&intents, &error_text).await;
 
-                return Err(Error::Wallet(e.to_string()));
+                return Err(e);
             }
         };
 
@@ -438,7 +428,6 @@ impl CdkBdk {
             Err(e) => {
                 let err = Error::Wallet(e.to_string());
                 let reason = err.to_string();
-                drop(wallet_with_db);
                 self.fail_send_intents(&intents, &reason).await;
                 return Err(err);
             }
@@ -452,45 +441,16 @@ impl CdkBdk {
             Err(e) => {
                 tracing::warn!("Fee allocation failed, cancelling batch: {}", e);
                 let reason = e.to_string();
-                drop(wallet_with_db);
                 self.fail_send_intents(&intents, &reason).await;
                 return Err(e);
             }
         };
 
-        // Persist wallet state after build
-        if let Err(e) = wallet_with_db.persist() {
-            let err = Error::Database(e);
+        // 2. Sign
+        if let Err(err) = self.wallet_engine.sign_psbt_locally(&mut psbt).await {
             let reason = err.to_string();
-            drop(wallet_with_db);
             self.fail_send_intents(&intents, &reason).await;
             return Err(err);
-        }
-
-        // 2. Sign
-        let signed = match wallet_with_db.wallet.sign(&mut psbt, Default::default()) {
-            Ok(signed) => signed,
-            Err(e) => {
-                let err = Error::Wallet(e.to_string());
-                let reason = err.to_string();
-                drop(wallet_with_db);
-                self.fail_send_intents(&intents, &reason).await;
-                return Err(err);
-            }
-        };
-        if !signed {
-            let reason = Error::CouldNotSign.to_string();
-            drop(wallet_with_db);
-            self.fail_send_intents(&intents, &reason).await;
-            return Err(Error::CouldNotSign);
-        }
-
-        if let Err(e) = wallet_with_db.persist() {
-            tracing::warn!(
-                "Could not persist BDK wallet after signing batch {}; continuing with persisted send batch recovery path: {}",
-                batch_id,
-                e
-            );
         }
 
         // Extract final transaction
@@ -505,6 +465,7 @@ impl CdkBdk {
         // concurrent melts each call `finish()` against the same UTXO view
         // and pick the same input, causing double-spends rejected by bitcoind.
         let apply_time = crate::util::unix_now();
+        let mut wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
         wallet_with_db
             .wallet
             .apply_unconfirmed_txs([(tx.clone(), apply_time)]);
@@ -545,7 +506,7 @@ impl CdkBdk {
             // an orphaned unconfirmed tx. Downstream failures all leave a
             // durable Signed/Broadcast record that recovery can replay.
             let evict_time = apply_time.saturating_add(1);
-            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            let mut wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
             wallet_with_db
                 .wallet
                 .apply_evicted_txs([(txid, evict_time)]);
@@ -666,22 +627,20 @@ impl CdkBdk {
             })
             .collect();
 
-        let wallet_with_db = self.wallet_with_db.lock().await;
-
         let mut to_finalize = Vec::new();
 
         for intent in awaiting {
-            if self.txid_has_required_confirmations(
-                &wallet_with_db.wallet,
-                &intent.state.txid,
-                "send_intent",
-                &intent.intent_id.to_string(),
-            ) {
+            if self
+                .txid_has_required_confirmations(
+                    &intent.state.txid,
+                    "send_intent",
+                    &intent.intent_id.to_string(),
+                )
+                .await
+            {
                 to_finalize.push(intent);
             }
         }
-
-        drop(wallet_with_db);
 
         for intent in to_finalize {
             self.finalize_send_intent_and_emit(intent).await?;
@@ -740,7 +699,7 @@ impl CdkBdk {
         // `get_tx`), then drop the lock before any network I/O so the
         // sync loop is never blocked on Esplora latency.
         let candidates: Vec<(Uuid, String, Transaction)> = {
-            let wallet_with_db = self.wallet_with_db.lock().await;
+            let wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
             batches
                 .into_iter()
                 .filter_map(|rec| {
@@ -794,7 +753,7 @@ impl CdkBdk {
                     // Apply the now-broadcast tx to BDK's tx graph so the
                     // next batch cycle doesn't reselect its inputs.
                     let apply_time = crate::util::unix_now();
-                    let mut wallet_with_db = self.wallet_with_db.lock().await;
+                    let mut wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
                     wallet_with_db
                         .wallet
                         .apply_unconfirmed_txs([(tx, apply_time)]);

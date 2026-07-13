@@ -74,6 +74,10 @@ federation partially ready.
   Core RPC call. The integration-only client now mines in bounded 100-block
   calls; preserve this with the batch-splitting unit test and the on-chain
   regtest baseline.
+- Milestone 1 external Taproot finalization must not treat BDK's finalizer as a
+  signature verifier. The watch-only engine verifies the sighash, tweaked key,
+  spent script, and Schnorr signature before finalization; preserve the missing,
+  malformed, wrong-key, and wrong-sighash tests.
 
 ## 1. Problem and setting
 
@@ -458,39 +462,49 @@ mnemonic ownership without changing standalone behavior.
 
 **Work:**
 
-- [ ] Introduce a typed descriptor configuration accepted by the reusable BDK
+- [x] Introduce a typed descriptor configuration accepted by the reusable BDK
   engine.
-- [ ] Support loading and creating a persisted watch-only BDK wallet from
+- [x] Support loading and creating a persisted watch-only BDK wallet from
   external and internal public descriptors.
-- [ ] Extract chain sync, fee estimation, wallet persistence, transaction graph,
+- [x] Extract chain sync, fee estimation, wallet persistence, transaction graph,
   receive scanning, and broadcast behind reusable components.
-- [ ] Separate PSBT construction from PSBT signing and finalization.
-- [ ] Keep the existing mnemonic/BIP84 constructor as a thin standalone adapter.
-- [ ] Keep existing `MintPayment` behavior and event semantics unchanged for
+- [x] Separate PSBT construction from PSBT signing and finalization.
+- [x] Keep the existing mnemonic/BIP84 constructor as a thin standalone adapter.
+- [x] Keep existing `MintPayment` behavior and event semantics unchanged for
   standalone `CdkBdk`.
-- [ ] Define a narrow interface for applying accepted address indexes and
+- [x] Define a narrow interface for applying accepted address indexes and
   accepted signed transactions to BDK local state.
-- [ ] Prevent watch-only code paths from calling `Wallet::sign()`.
-- [ ] Avoid copying send/receive saga code; extract only abstractions proven
+- [x] Prevent watch-only code paths from calling `Wallet::sign()`.
+- [x] Avoid copying send/receive saga code; extract only abstractions proven
   necessary by the federated caller.
 
 **Success criteria:**
 
-- [ ] A watch-only wallet can derive addresses, sync, list UTXOs, build a PSBT,
+- [x] A watch-only wallet can derive addresses, sync, list UTXOs, build a PSBT,
   accept externally supplied signatures, finalize, and broadcast.
-- [ ] Standalone BDK produces equivalent behavior and passes all prior tests.
-- [ ] The watch-only database contains no mnemonic, xprv, FROST share, or nonce.
-- [ ] No async federation operation is hidden inside a BDK signer callback.
+- [x] Standalone BDK produces equivalent behavior and passes all prior tests.
+- [x] The watch-only database contains no mnemonic, xprv, FROST share, or nonce.
+- [x] No async federation operation is hidden inside a BDK signer callback.
 
 **Required tests:**
 
-- [ ] Create/load/restart watch-only external and internal descriptors.
-- [ ] Reveal addresses through a target index and verify idempotent persistence.
-- [ ] Build an unsigned PSBT without private keys.
-- [ ] Insert an externally generated valid signature and finalize the PSBT.
-- [ ] Reject missing, malformed, wrong-key, and wrong-sighash signatures.
-- [ ] Run all existing `cdk-bdk` tests unchanged.
-- [ ] Run standalone BDK regtest mint, melt, restart, and rebroadcast tests.
+- [x] Create/load/restart watch-only external and internal descriptors.
+- [x] Reveal addresses through a target index and verify idempotent persistence.
+- [x] Build an unsigned PSBT without private keys.
+- [x] Insert an externally generated valid signature and finalize the PSBT.
+- [x] Reject missing, malformed, wrong-key, and wrong-sighash signatures.
+- [x] Run all existing `cdk-bdk` tests unchanged.
+- [x] Run standalone BDK regtest mint, melt, restart, and rebroadcast tests.
+
+**Milestone record:** completed on 2026-07-13. `BdkWalletEngine` now owns
+descriptor validation, watch-only persistence, one-shot chain sync, fee/UTXO
+snapshots, address-index application, PSBT construction, external Taproot
+verification/finalization, accepted-transaction application, and broadcast.
+The existing mnemonic-backed `CdkBdk` is a local-signing adapter over the same
+engine. The focused watch-only suite passed 5 tests, the full crate passed 104
+tests, the SQLite Bitcoin Core regtest suite passed 14 tests, and no-dependency
+clippy passed with warnings denied. Workspace dependency clippy remains blocked
+by pre-existing warnings in `cashu`; no unrelated lint changes were included.
 
 ### Milestone 2: select FROST and define the reusable root-key boundary
 

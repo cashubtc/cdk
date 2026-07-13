@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chain::{BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome};
 use crate::error::Error;
-use crate::{CdkBdk, WalletWithDb};
+use crate::{BdkWalletEngine, CdkBdk, WalletWithDb};
 
 pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, Error> {
     let client = Client::new(
@@ -83,6 +83,31 @@ pub(crate) async fn apply_and_persist_chunk(
     Ok(())
 }
 
+pub(crate) async fn sync_bitcoin_rpc_once(
+    engine: &BdkWalletEngine,
+    config: &BitcoinRpcConfig,
+) -> Result<(), Error> {
+    let client = Client::new(
+        &format!("http://{}:{}", config.host, config.port),
+        Auth::UserPass(config.user.clone(), config.password.clone()),
+    )?;
+    let checkpoint = {
+        let wallet_with_db = engine.wallet_with_db.lock().await;
+        wallet_with_db.wallet.latest_checkpoint()
+    };
+    let start_height = checkpoint.height();
+    let mut emitter = Emitter::new(&client, checkpoint, start_height, NO_EXPECTED_MEMPOOL_TXS);
+    let mut chunk = Vec::with_capacity(100);
+
+    while let Some(block) = emitter.next_block()? {
+        chunk.push(block);
+        if chunk.len() == 100 {
+            apply_and_persist_chunk(&engine.wallet_with_db, &mut chunk, u64::MAX).await?;
+        }
+    }
+    apply_and_persist_chunk(&engine.wallet_with_db, &mut chunk, u64::MAX).await
+}
+
 pub(crate) async fn sync_bitcoin_rpc(
     cdk_bdk: &CdkBdk,
     config: &BitcoinRpcConfig,
@@ -141,7 +166,7 @@ pub(crate) async fn sync_bitcoin_rpc(
 
                 // Snapshot the wallet checkpoint under a brief lock.
                 let checkpoint = {
-                    let w = cdk_bdk.wallet_with_db.lock().await;
+                    let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
                     w.wallet.latest_checkpoint()
                 };
                 let start_height = checkpoint.height();
@@ -163,7 +188,7 @@ pub(crate) async fn sync_bitcoin_rpc(
                             chunk.push(block);
                             if chunk.len() >= apply_chunk_size {
                                 if let Err(e) = apply_and_persist_chunk(
-                                    &cdk_bdk.wallet_with_db,
+                                    &cdk_bdk.wallet_engine.wallet_with_db,
                                     &mut chunk,
                                     warn_ms,
                                 )
@@ -208,7 +233,7 @@ pub(crate) async fn sync_bitcoin_rpc(
 
                 if !chunk.is_empty() {
                     if let Err(e) = apply_and_persist_chunk(
-                        &cdk_bdk.wallet_with_db,
+                        &cdk_bdk.wallet_engine.wallet_with_db,
                         &mut chunk,
                         warn_ms,
                     )
@@ -230,7 +255,7 @@ pub(crate) async fn sync_bitcoin_rpc(
 
                 if any_applied {
                     let tip = {
-                        let w = cdk_bdk.wallet_with_db.lock().await;
+                        let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
                         w.wallet.latest_checkpoint().block_id()
                     };
                     tracing::info!(

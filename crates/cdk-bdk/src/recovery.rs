@@ -48,7 +48,7 @@ impl CdkBdk {
     async fn apply_recovered_send_tx(&self, batch_id: Uuid, context: &str, tx: &Transaction) {
         let txid = tx.compute_txid();
         let apply_time = crate::util::unix_now();
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let mut wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
 
         wallet_with_db
             .wallet
@@ -745,7 +745,7 @@ mod tests {
     }
 
     async fn wallet_relevant_send_tx_bytes(backend: &CdkBdk) -> Vec<u8> {
-        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let mut wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
         let funding_script = wallet_with_db
             .wallet
             .reveal_next_address(KeychainKind::External)
@@ -815,7 +815,7 @@ mod tests {
 
     async fn assert_wallet_knows_tx(backend: &CdkBdk, txid: &str) {
         let parsed_txid = bdk_wallet::bitcoin::Txid::from_str(txid).expect("test txid must parse");
-        let wallet_with_db = backend.wallet_with_db.lock().await;
+        let wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
         assert!(
             wallet_with_db.wallet.get_tx(parsed_txid).is_some(),
             "recovered transaction must be applied to the BDK wallet graph"

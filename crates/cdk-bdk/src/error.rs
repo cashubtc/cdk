@@ -29,6 +29,18 @@ pub enum Error {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// Invalid public descriptor configuration
+    #[error("Invalid descriptor: {0}")]
+    InvalidDescriptor(String),
+
+    /// Local signing was attempted through a watch-only engine
+    #[error("Local signing is disabled for this watch-only wallet")]
+    LocalSigningDisabled,
+
+    /// An externally signed PSBT failed validation or finalization
+    #[error("Invalid external signature: {0}")]
+    ExternalSignature(String),
+
     /// Unsupported payment type for onchain backend
     #[error("Unsupported payment type for onchain backend")]
     UnsupportedOnchain,
