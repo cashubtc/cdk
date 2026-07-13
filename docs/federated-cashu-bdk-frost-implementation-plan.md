@@ -78,6 +78,9 @@ federation partially ready.
   stopped safely at the existing external-settlement saga boundary but did not
   materialize a canonical payment intent. Keep the focused, atomic intent write
   in final melt apply; do not replace the existing quote, proof, or saga flow.
+- Milestone 13 key-manager construction is a restart boundary and burns every
+  nonterminal nonce record. Wire one long-lived manager per participant process;
+  never reconstruct it per REST request or payment backend.
 - Milestone 5 found that the Milestone 3 application registration omitted its
   key epoch even though the plan required epoch-separated rotation. The small
   fix stays inside `cdk-frost`/`cdk-frost-bip32`: application derivation,
@@ -1278,49 +1281,85 @@ restarts, coordinator failover, and every application sharing a root epoch.
 
 **Work:**
 
-- [ ] Define signing session ID from federation ID, root key epoch, application
+- [x] Define signing session ID from federation ID, root key epoch, application
   ID, application key epoch, application derivation context, authorization
   reference, message/transcript commitment, attempt, and signer set. The CDK
   adapter additionally binds accepted operation ID, transaction ID, input index,
   and sighash type.
-- [ ] Add private local nonce records with generated, reserved, commitment-sent,
+- [x] Add private local nonce records with generated, reserved, commitment-sent,
   share-produced, consumed, and burned terminal states.
-- [ ] Keep one nonce store and reservation namespace per participant key manager,
+- [x] Keep one nonce store and reservation namespace per participant key manager,
   not independent nonce stores in each payment backend or application adapter.
-- [ ] Generate nonce material from a cryptographically secure RNG independent of
+- [x] Generate nonce material from a cryptographically secure RNG independent of
   DKG and identity keys.
-- [ ] Persist nonce reservation before returning a round-one commitment.
-- [ ] Atomically consume or burn nonce state before or with round-two share
+- [x] Persist nonce reservation before returning a round-one commitment.
+- [x] Atomically consume or burn nonce state before or with round-two share
   release.
-- [ ] Burn reservations after ambiguous response, abort, timeout, signer-set
+- [x] Burn reservations after ambiguous response, abort, timeout, signer-set
   change, invalid package, or restart recovery.
-- [ ] Reject duplicate round-one requests that change any session field.
-- [ ] Define safe idempotent response behavior for exact authenticated retries.
-- [ ] Exclude nonce material from snapshots, logs, metrics labels, and support
+- [x] Reject duplicate round-one requests that change any session field.
+- [x] Define safe idempotent response behavior for exact authenticated retries.
+- [x] Exclude nonce material from snapshots, logs, metrics labels, and support
   bundles.
-- [ ] Add bounded cleanup for terminal nonce metadata without deleting evidence
+- [x] Add bounded cleanup for terminal nonce metadata without deleting evidence
   needed to prevent replay.
 
 **Success criteria:**
 
-- [ ] No code path can use one nonce to produce shares for two packages.
-- [ ] Two applications using the same root epoch cannot collide, reuse, or claim
+- [x] No code path can use one nonce to produce shares for two packages.
+- [x] Two applications using the same root epoch cannot collide, reuse, or claim
   each other's nonce records.
-- [ ] Exact retries are safe and conflicting retries fail closed.
-- [ ] Restart at every nonce state cannot resurrect reusable material.
-- [ ] Concurrent requests for the same input cannot reserve two active attempts
+- [x] Exact retries are safe and conflicting retries fail closed.
+- [x] Restart at every nonce state cannot resurrect reusable material.
+- [x] Concurrent requests for the same input cannot reserve two active attempts
   without an explicit new attempt transition.
 
 **Required tests:**
 
-- [ ] Normal reserve, commitment, share, consume lifecycle.
-- [ ] Duplicate exact round-one and round-two requests.
-- [ ] Changed application, derivation context, authorization, message, signer
+- [x] Normal reserve, commitment, share, consume lifecycle.
+- [x] Duplicate exact round-one and round-two requests.
+- [x] Changed application, derivation context, authorization, message, signer
   set, attempt, input, or operation under the same session.
-- [ ] Crash before/after commitment and before/after share persistence.
-- [ ] Timeout, abort, coordinator loss, and signer substitution.
-- [ ] Concurrent request race and database transaction failure injection.
-- [ ] Secret-redaction and terminal-record cleanup tests.
+- [x] Crash before/after commitment and before/after share persistence.
+- [x] Timeout, abort, coordinator loss, and signer substitution.
+- [x] Concurrent request race and database transaction failure injection.
+- [x] Secret-redaction and terminal-record cleanup tests.
+
+**Milestone record:** completed on 2026-07-13. The application-neutral
+`cdk-frost` key manager now owns one nonce namespace across every registered
+consumer. `SigningSessionContext` hashes the federation, root epoch, complete
+application registration and key epoch, derivation binding, authoritative
+authorization reference, exact message commitment, attempt, and ordered signer
+set. Its attempt-independent slot prevents concurrent attempts until the prior
+attempt is explicitly burned. The CDK transaction layer supplies a separately
+typed authorization commitment over the accepted operation, proposal, txid,
+input index, sighash type, and independently recomputed sighash.
+
+Nonce records use a versioned validated codec and sealed secret payloads with
+generated, reserved, commitment-sent, signing-locked, share-produced, consumed,
+and burned states. A strict transition graph and revision CAS prevent skipped
+or reversed states. Reservation and commitment state are durable before round
+one leaves the member. Round two decrypts locally, durably removes reusable
+secret state before cryptographic use, persists the exact package/share, then
+marks consumed before responding. Exact round-one and consumed round-two
+retries return cached public results; changed packages, applications, signer
+sets, attempts, or authorization data fail closed. Restart recovery burns every
+nonterminal record.
+
+`RedbNonceStore` provides the production transactional local store; its path
+and record debug output are redacted, and it is separate from public federation
+snapshots and mint business state. `MemoryNonceStore` remains test-only.
+Terminal cleanup retains permanent session/nonce tombstones while discarding
+detailed retry metadata. Twenty-one `cdk-frost` tests pass, including
+deterministic threshold signing, exact retries, restart at partial states,
+signer/attempt conflicts, concurrent reservation, injected failure at every
+persistence boundary, durable close/reopen, codec tampering, redaction, and
+tombstone cleanup. All 369 enabled `cdk-common` tests and 122 CDK federation
+mint tests also pass, as do the full workspace check and strict `cdk-frost`
+clippy. Strict `cdk-common` clippy remains blocked by pre-existing findings; it
+passes when those existing categories are held at their baseline. The `typos`
+binary is not installed in this environment, so that optional check could not
+run.
 
 ### Milestone 14: add authenticated, application-aware FROST round transport
 

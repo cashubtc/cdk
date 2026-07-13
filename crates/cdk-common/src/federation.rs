@@ -120,7 +120,8 @@ pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
 pub use self::transaction_proposal::{
-    FederationAcceptedTransaction, FederationAcceptedTransactionState, FederationOnchainBatchId,
+    FederationAcceptedTransaction, FederationAcceptedTransactionState,
+    FederationFrostSigningAuthorizationReference, FederationOnchainBatchId,
     FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
     FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
     FederationOnchainPaymentIntentState, FederationTaprootSighashType,

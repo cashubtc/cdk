@@ -220,6 +220,17 @@ impl SigningSessionId {
 pub struct NonceId([u8; 32]);
 
 impl NonceId {
+    /// Construct a non-zero nonce identifier from canonical bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, Error> {
+        if bytes == [0; 32] {
+            return Err(Error::malformed(
+                "nonce identifier",
+                "identifier cannot be all zeroes",
+            ));
+        }
+        Ok(Self(bytes))
+    }
+
     pub(crate) fn from_bytes_unchecked(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -693,6 +704,11 @@ pub struct SignatureShare {
 }
 
 impl SignatureShare {
+    /// Root key epoch bound to the share.
+    pub fn root_epoch(&self) -> RootKeyEpoch {
+        self.root_epoch
+    }
+
     /// Participant that produced the share.
     pub fn participant(&self) -> MemberId {
         self.participant

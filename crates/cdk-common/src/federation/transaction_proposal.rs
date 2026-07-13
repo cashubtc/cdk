@@ -30,6 +30,8 @@ const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-inten
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
 const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v1";
 const PSBT_CONSENSUS_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-psbt-consensus-v1";
+const FROST_SIGNING_AUTHORIZATION_HASH_DOMAIN: &[u8] =
+    b"cdk-federation-frost-signing-authorization-v1";
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_DESTINATION_SCRIPT_BYTES: usize = 10_000;
 const MAX_FEE_TIER: u32 = 255;
@@ -366,6 +368,18 @@ impl FederationTaprootSighashType {
             Self::AllAnyoneCanPay => bitcoin::sighash::TapSighashType::AllPlusAnyoneCanPay,
             Self::NoneAnyoneCanPay => bitcoin::sighash::TapSighashType::NonePlusAnyoneCanPay,
             Self::SingleAnyoneCanPay => bitcoin::sighash::TapSighashType::SinglePlusAnyoneCanPay,
+        }
+    }
+
+    fn consensus_code(self) -> u8 {
+        match self {
+            Self::Default => 0,
+            Self::All => 1,
+            Self::None => 2,
+            Self::Single => 3,
+            Self::AllAnyoneCanPay => 4,
+            Self::NoneAnyoneCanPay => 5,
+            Self::SingleAnyoneCanPay => 6,
         }
     }
 }
@@ -931,6 +945,88 @@ pub struct FederationAcceptedTransaction {
     pub accepted_operation_index: u64,
     /// Sticky transaction lifecycle.
     pub state: FederationAcceptedTransactionState,
+}
+
+/// CDK-specific authoritative reference committed into one FROST input slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FederationFrostSigningAuthorizationReference {
+    accepted_operation_id: FederationOperationId,
+    proposal_id: FederationTransactionProposalId,
+    txid: Txid,
+    input_index: u32,
+    sighash_type: FederationTaprootSighashType,
+    sighash: [u8; 32],
+}
+
+impl FederationFrostSigningAuthorizationReference {
+    /// Build a reference only from an internally consistent accepted transaction.
+    pub fn new(accepted: &FederationAcceptedTransaction, input_index: usize) -> Result<Self> {
+        if accepted.state != FederationAcceptedTransactionState::Accepted {
+            return Err(invalid(
+                "FROST signing authorization requires an active accepted transaction",
+            ));
+        }
+        accepted.proposal.validate()?;
+        validate_policy_audit(&accepted.proposal, &accepted.policy_audit)?;
+        let input_index = u32::try_from(input_index)
+            .map_err(|_| invalid("FROST signing input index does not fit u32"))?;
+        let sighash = accepted
+            .policy_audit
+            .taproot_sighashes
+            .get(input_index as usize)
+            .copied()
+            .ok_or_else(|| invalid("FROST signing input index is out of bounds"))?;
+        Ok(Self {
+            accepted_operation_id: accepted.accepted_operation_id,
+            proposal_id: accepted.policy_audit.proposal_id,
+            txid: accepted.policy_audit.txid,
+            input_index,
+            sighash_type: accepted.proposal.sighash_type,
+            sighash,
+        })
+    }
+
+    /// Consensus operation that authorized the transaction.
+    pub fn accepted_operation_id(self) -> FederationOperationId {
+        self.accepted_operation_id
+    }
+
+    /// Exact accepted proposal identity.
+    pub fn proposal_id(self) -> FederationTransactionProposalId {
+        self.proposal_id
+    }
+
+    /// Bitcoin transaction identity of the exact unsigned transaction.
+    pub fn txid(self) -> Txid {
+        self.txid
+    }
+
+    /// Input-specific signing slot.
+    pub fn input_index(self) -> u32 {
+        self.input_index
+    }
+
+    /// Accepted Taproot sighash mode.
+    pub fn sighash_type(self) -> FederationTaprootSighashType {
+        self.sighash_type
+    }
+
+    /// Independently recomputed input sighash used as the message commitment.
+    pub fn sighash(self) -> [u8; 32] {
+        self.sighash
+    }
+
+    /// Canonical authorization commitment supplied to the FROST key manager.
+    pub fn commitment(self) -> [u8; 32] {
+        let mut payload = Vec::with_capacity(32 + 32 + 32 + 4 + 1 + 32);
+        payload.extend_from_slice(&self.accepted_operation_id.to_bytes());
+        payload.extend_from_slice(&self.proposal_id.to_bytes());
+        payload.extend_from_slice(&self.txid.to_byte_array());
+        payload.extend_from_slice(&self.input_index.to_be_bytes());
+        payload.push(self.sighash_type.consensus_code());
+        payload.extend_from_slice(&self.sighash);
+        canonical_hash(FROST_SIGNING_AUTHORIZATION_HASH_DOMAIN, &payload)
+    }
 }
 
 /// Result of adding an intent or accepting a transaction to durable state.
@@ -1755,6 +1851,57 @@ mod tests {
                 .collect(),
             taproot_sighashes: vec![[9; 32]; proposal.selected_inputs.len()],
         }
+    }
+
+    #[test]
+    fn frost_signing_authorization_binds_operation_transaction_input_and_sighash() {
+        let proposal = proposal();
+        let accepted = FederationAcceptedTransaction {
+            policy_audit: policy_audit(&proposal),
+            proposal,
+            accepted_operation_id: FederationOperationId::from_bytes([3; 32]),
+            accepted_operation_index: 42,
+            state: FederationAcceptedTransactionState::Accepted,
+        };
+        let reference = FederationFrostSigningAuthorizationReference::new(&accepted, 0)
+            .expect("signing authorization reference");
+        assert_eq!(reference.input_index(), 0);
+        assert_eq!(reference.sighash(), [9; 32]);
+        let mut variants = Vec::new();
+        let mut changed = reference;
+        changed.accepted_operation_id = FederationOperationId::from_bytes([4; 32]);
+        variants.push(changed.commitment());
+        let mut changed = reference;
+        changed.proposal_id = FederationTransactionProposalId::from_bytes([5; 32]);
+        variants.push(changed.commitment());
+        let mut changed = reference;
+        changed.txid = Txid::from_byte_array([6; 32]);
+        variants.push(changed.commitment());
+        let mut changed = reference;
+        changed.input_index = 1;
+        variants.push(changed.commitment());
+        let mut changed = reference;
+        changed.sighash_type = FederationTaprootSighashType::All;
+        variants.push(changed.commitment());
+        let mut changed = reference;
+        changed.sighash = [7; 32];
+        variants.push(changed.commitment());
+        assert!(variants
+            .iter()
+            .all(|commitment| commitment != &reference.commitment()));
+        assert_eq!(
+            variants.iter().copied().collect::<BTreeSet<_>>().len(),
+            variants.len()
+        );
+
+        let mut inactive = accepted.clone();
+        inactive.state = FederationAcceptedTransactionState::Abandoned;
+        assert!(FederationFrostSigningAuthorizationReference::new(&inactive, 0).is_err());
+        assert!(FederationFrostSigningAuthorizationReference::new(
+            &accepted,
+            accepted.proposal.selected_inputs.len(),
+        )
+        .is_err());
     }
 
     #[test]

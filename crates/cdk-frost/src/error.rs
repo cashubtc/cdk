@@ -43,6 +43,12 @@ pub enum Error {
     /// A request does not belong to the expected signing session.
     #[error("wrong signing session")]
     WrongSession,
+    /// A signing session context or attempt transition is invalid.
+    #[error("invalid signing session: {0}")]
+    InvalidSigningSession(String),
+    /// Durable nonce persistence failed closed.
+    #[error("nonce persistence failed: {0}")]
+    NoncePersistence(String),
     /// A nonce commitment is invalid, unknown, or already consumed.
     #[error("invalid nonce commitment: {0}")]
     InvalidCommitment(String),

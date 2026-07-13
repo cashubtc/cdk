@@ -778,7 +778,8 @@ mod tests {
     use crate::{
         ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
         ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest,
-        NonceCommitmentSet, ParticipantKeyManager, SigningDerivation, SigningSessionId,
+        NonceCommitmentSet, ParticipantKeyManager, SecretEncryptionKey, SigningAuthorizationScope,
+        SigningDerivation, SigningSessionContext, SigningSessionId,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -958,7 +959,15 @@ mod tests {
             let mut managers = roots
                 .into_iter()
                 .map(|root| {
-                    let mut manager = ParticipantKeyManager::new(root);
+                    let participant = root.participant();
+                    let nonce_key = SecretEncryptionKey::new(
+                        [profile
+                            .wrapping_add(participant.get() as u8)
+                            .wrapping_add(1); 32],
+                    )
+                    .expect("nonce storage key");
+                    let mut manager = ParticipantKeyManager::new_in_memory(root, nonce_key)
+                        .expect("participant key manager");
                     manager
                         .register_application(TestAdapter(registration))
                         .expect("register application");
@@ -992,13 +1001,32 @@ mod tests {
             assert_eq!(managers[0].root_public_package().encode(), root_before);
             let session = SigningSessionId::from_bytes([profile; 32]).expect("session");
             let message = [profile.wrapping_add(1); 32];
+            let signing_scope = SigningAuthorizationScope::new(
+                [profile.wrapping_add(30); 32],
+                managers[0].root_public_package().epoch(),
+                registration,
+                SigningDerivation::application_key().binding(),
+                session.to_bytes(),
+                message,
+            )
+            .expect("signing scope");
+            let signing_context = SigningSessionContext::new(
+                signing_scope,
+                0,
+                managers
+                    .iter()
+                    .take(usize::from(threshold))
+                    .map(ParticipantKeyManager::participant),
+            )
+            .expect("signing context");
+            let session = signing_context.session_id();
             let mut rng = ChaCha20Rng::from_seed([profile.wrapping_add(2); 32]);
             let commitments = managers
                 .iter_mut()
                 .take(threshold.into())
                 .map(|manager| {
                     manager
-                        .commit_nonce(registration.id(), session, &mut rng)
+                        .commit_nonce(&signing_context, &mut rng)
                         .expect("commit nonce")
                 })
                 .collect::<Vec<_>>();

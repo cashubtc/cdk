@@ -5,9 +5,14 @@ use std::fmt;
 
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::rand_core::{CryptoRng, RngCore};
+use sha2::{Digest, Sha256};
 
 use crate::canonical::{
     derive_signing_public, identifier, library_signing_public_package, CanonicalRootKeyPackage,
+};
+use crate::nonce::{
+    DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle, NonceRecord,
+    NonceReservation, SigningSessionContext,
 };
 use crate::types::{
     derive_nonce_id, AggregateSignature, ApplicationId, ApplicationRegistration,
@@ -15,7 +20,7 @@ use crate::types::{
     DerivedSigningPublicPackage, NonceCommitment, NonceCommitmentSet, NonceId, SignatureMode,
     SignatureShare, SigningDerivation, SigningSessionId, MAX_COMMITMENT_BYTES,
 };
-use crate::Error;
+use crate::{sealed, Error, SecretEncryptionKey};
 
 /// Reviewed application adapter that authorizes typed signing requests.
 ///
@@ -38,20 +43,13 @@ struct RegisteredApplication {
     public: DerivedPublicPackage,
 }
 
-struct PendingNonce {
-    registration: ApplicationRegistration,
-    session_id: SigningSessionId,
-    derivation: SigningDerivation,
-    nonces: frost::round1::SigningNonces,
-    public: NonceCommitment,
-}
-
 /// Participant-local owner of one root share, registered applications, and
 /// single-use nonce state.
 pub struct ParticipantKeyManager {
     root: CanonicalRootKeyPackage,
     applications: BTreeMap<ApplicationId, RegisteredApplication>,
-    pending_nonces: BTreeMap<NonceId, PendingNonce>,
+    nonce_store: Box<dyn DurableNonceStore>,
+    nonce_encryption_key: SecretEncryptionKey,
 }
 
 impl fmt::Debug for ParticipantKeyManager {
@@ -62,24 +60,55 @@ impl fmt::Debug for ParticipantKeyManager {
             .field("root_epoch", &self.root.public().epoch())
             .field("root_share", &"<redacted>")
             .field("registered_applications", &self.applications.keys())
-            .field("pending_nonce_count", &self.pending_nonces.len())
+            .field("nonce_store", &"<private durable state>")
             .finish()
     }
 }
 
 impl ParticipantKeyManager {
-    /// Take ownership of an activated canonical root package.
-    pub fn new(root: CanonicalRootKeyPackage) -> Self {
-        Self {
+    /// Construct a key manager with an in-memory store for tests and prototypes.
+    ///
+    /// Production integrations must use [`ParticipantKeyManager::with_nonce_store`].
+    pub fn new_in_memory(
+        root: CanonicalRootKeyPackage,
+        nonce_encryption_key: SecretEncryptionKey,
+    ) -> Result<Self, Error> {
+        Self::with_nonce_store(root, nonce_encryption_key, MemoryNonceStore::default())
+    }
+
+    /// Take ownership of an activated root package and one participant-wide
+    /// durable nonce namespace.
+    pub fn with_nonce_store<S>(
+        root: CanonicalRootKeyPackage,
+        nonce_encryption_key: SecretEncryptionKey,
+        nonce_store: S,
+    ) -> Result<Self, Error>
+    where
+        S: DurableNonceStore,
+    {
+        let manager = Self {
             root,
             applications: BTreeMap::new(),
-            pending_nonces: BTreeMap::new(),
-        }
+            nonce_store: Box::new(nonce_store),
+            nonce_encryption_key,
+        };
+        manager.recover_after_restart()?;
+        Ok(manager)
+    }
+
+    /// Participant-wide nonce store used by every registered application.
+    pub fn nonce_store(&self) -> &dyn DurableNonceStore {
+        self.nonce_store.as_ref()
     }
 
     /// Return the immutable application-neutral public root package.
     pub fn root_public_package(&self) -> &crate::RootPublicPackage {
         self.root.public()
+    }
+
+    /// Local participant identifier that owns this root share and nonce store.
+    pub fn participant(&self) -> crate::MemberId {
+        self.root.participant()
     }
 
     /// Register a reviewed application adapter exactly once.
@@ -120,47 +149,47 @@ impl ParticipantKeyManager {
     /// commitment.
     pub fn commit_nonce<R>(
         &mut self,
-        application_id: ApplicationId,
-        session_id: SigningSessionId,
+        context: &SigningSessionContext,
         rng: &mut R,
     ) -> Result<NonceCommitment, Error>
     where
         R: CryptoRng + RngCore,
     {
-        self.commit_nonce_for_derivation(
-            application_id,
-            session_id,
-            SigningDerivation::application_key(),
-            rng,
-        )
+        self.commit_nonce_for_derivation(context, SigningDerivation::application_key(), rng)
     }
 
     /// Generate a single-use nonce for one exact child derivation and final
     /// signature mode.
     pub fn commit_nonce_for_derivation<R>(
         &mut self,
-        application_id: ApplicationId,
-        session_id: SigningSessionId,
+        context: &SigningSessionContext,
         derivation: SigningDerivation,
         rng: &mut R,
     ) -> Result<NonceCommitment, Error>
     where
         R: CryptoRng + RngCore,
     {
+        let registration = context.registration();
         let application = self
             .applications
-            .get(&application_id)
+            .get(&registration.id())
             .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
-        if self.pending_nonces.values().any(|nonce| {
-            nonce.registration.id() == application_id && nonce.session_id == session_id
-        }) {
-            return Err(Error::InvalidCommitment(
-                "a nonce already exists for this application session".to_string(),
+        if application.adapter.registration() != registration
+            || context.root_epoch() != self.root.public().epoch()
+            || context.derivation_binding() != derivation.binding()
+            || context.signer_set().len() < usize::from(self.root.public().threshold())
+            || !context.signer_set().contains(&self.root.participant())
+            || context
+                .signer_set()
+                .iter()
+                .any(|member| !self.root.public().verifying_shares().contains_key(member))
+        {
+            return Err(Error::InvalidSigningSession(
+                "session does not match the root, application, derivation, threshold, or participant"
+                    .to_string(),
             ));
         }
-        let derived = self
-            .root
-            .derive_signing_target(application.adapter.registration(), &derivation)?;
+        let derived = self.root.derive_signing_target(registration, &derivation)?;
         let (nonces, commitments) = frost::round1::commit(derived.key.signing_share(), rng);
         let encoded = commitments
             .serialize()
@@ -173,37 +202,58 @@ impl ParticipantKeyManager {
         }
         let nonce_id = derive_nonce_id(
             self.root.public().epoch(),
-            application.adapter.registration(),
-            session_id,
+            registration,
+            context.session_id(),
             derivation.binding(),
             self.root.participant(),
             &encoded,
         );
-        if self.pending_nonces.contains_key(&nonce_id) {
-            return Err(Error::InvalidCommitment(
-                "nonce identifier collision".to_string(),
-            ));
-        }
         let public = NonceCommitment {
             root_epoch: self.root.public().epoch(),
-            registration: application.adapter.registration(),
-            session_id,
+            registration,
+            session_id: context.session_id(),
             derivation_binding: derivation.binding(),
             nonce_id,
             participant: self.root.participant(),
             commitments: encoded,
         };
-        self.pending_nonces.insert(
+        let serialized_nonces = nonces
+            .serialize()
+            .map_err(|error| Error::Frost(error.to_string()))?;
+        let encrypted_nonces = sealed::seal(
+            &self.nonce_encryption_key,
+            &nonce_secret_aad(context, nonce_id, self.root.participant()),
+            &serialized_nonces,
+            rng,
+        )?;
+        let generated = NonceRecord::generated(
+            context.clone(),
             nonce_id,
-            PendingNonce {
-                registration: application.adapter.registration(),
-                session_id,
-                derivation,
-                nonces,
-                public: public.clone(),
-            },
+            derivation,
+            public.clone(),
+            encrypted_nonces,
         );
-        Ok(public)
+        match self.nonce_store.reserve(generated.clone())? {
+            NonceReservation::Existing(existing) => {
+                if existing.context() != context
+                    || existing.derivation() != generated.derivation()
+                    || existing.lifecycle() != &NonceLifecycle::CommitmentSent
+                {
+                    return Err(Error::InvalidCommitment(
+                        "signing session already exists in a non-retryable state".to_string(),
+                    ));
+                }
+                Ok(existing.commitment().clone())
+            }
+            NonceReservation::Inserted => {
+                let reserved = generated.transition(NonceLifecycle::Reserved, true, None)?;
+                self.nonce_store
+                    .compare_and_swap(&generated, reserved.clone())?;
+                let sent = reserved.transition(NonceLifecycle::CommitmentSent, true, None)?;
+                self.nonce_store.compare_and_swap(&reserved, sent)?;
+                Ok(public)
+            }
+        }
     }
 
     /// Authorize a request through its registered adapter, consume the local
@@ -214,83 +264,227 @@ impl ParticipantKeyManager {
         request: &AuthorizationRequest,
         commitment_set: &NonceCommitmentSet,
     ) -> Result<SignatureShare, Error> {
-        let application = self
-            .applications
-            .get(&request.application_id())
-            .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
-        let registration = application.adapter.registration();
-        if request.application_key_epoch() != registration.key_epoch()
-            || request.derivation_version() != registration.derivation_version()
-        {
-            return Err(Error::Application(
-                "request uses another application key epoch or derivation version".to_string(),
-            ));
-        }
-        let pending = self
-            .pending_nonces
-            .get(&nonce_id)
-            .ok_or_else(|| Error::InvalidCommitment("nonce is unknown or consumed".to_string()))?;
-        if pending.registration != registration || pending.session_id != request.session_id() {
-            return Err(Error::WrongSession);
-        }
-        let authorized = application.adapter.authorize(request)?;
-        if authorized.derivation() != &pending.derivation {
-            return Err(Error::WrongSession);
-        }
-        validate_commitment_set(
-            commitment_set,
-            self.root.public().epoch(),
-            registration,
-            request.session_id(),
-            pending.derivation.binding(),
-            self.root.public().threshold(),
-        )?;
-        let own_commitment = commitment_set
-            .commitments()
-            .get(&self.root.participant())
-            .ok_or_else(|| {
-                Error::InvalidCommitment("local participant is absent from signer set".to_string())
-            })?;
-        if own_commitment != &pending.public {
-            return Err(Error::InvalidCommitment(
-                "coordinator supplied another local commitment".to_string(),
-            ));
-        }
-        let signing_package = signing_package(commitment_set, &authorized.message())?;
-        let derived = self
-            .root
-            .derive_signing_target(registration, &pending.derivation)?;
-
-        // Removal happens before the secret nonce is used. Every subsequent
-        // outcome consumes it and retry requires a fresh commitment.
-        let pending = self
-            .pending_nonces
-            .remove(&nonce_id)
-            .ok_or_else(|| Error::InvalidCommitment("nonce was consumed".to_string()))?;
-        let share = match pending.derivation.signature_mode() {
-            SignatureMode::Plain => {
-                frost::round2::sign(&signing_package, &pending.nonces, &derived.key)
+        let record = self
+            .nonce_store
+            .load_nonce(nonce_id)?
+            .ok_or_else(|| Error::InvalidCommitment("nonce is unknown".to_string()))?;
+        let validated = (|| {
+            let application = self
+                .applications
+                .get(&request.application_id())
+                .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
+            let registration = application.adapter.registration();
+            if request.application_key_epoch() != registration.key_epoch()
+                || request.derivation_version() != registration.derivation_version()
+            {
+                return Err(Error::Application(
+                    "request uses another application key epoch or derivation version".to_string(),
+                ));
             }
+            if record.context().registration() != registration
+                || record.context().session_id() != request.session_id()
+            {
+                return Err(Error::WrongSession);
+            }
+            let authorized = application.adapter.authorize(request)?;
+            if authorized.derivation() != record.derivation()
+                || authorized.message() != record.context().message_commitment()
+            {
+                return Err(Error::WrongSession);
+            }
+            validate_commitment_set(
+                commitment_set,
+                self.root.public().epoch(),
+                registration,
+                request.session_id(),
+                record.derivation().binding(),
+                self.root.public().threshold(),
+            )?;
+            let commitment_signers = commitment_set
+                .commitments()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            if commitment_signers != record.context().signer_set() {
+                return Err(Error::InvalidCommitment(
+                    "commitment signer set differs from the accepted session".to_string(),
+                ));
+            }
+            let own_commitment = commitment_set
+                .commitments()
+                .get(&self.root.participant())
+                .ok_or_else(|| {
+                    Error::InvalidCommitment(
+                        "local participant is absent from signer set".to_string(),
+                    )
+                })?;
+            if own_commitment != record.commitment() {
+                return Err(Error::InvalidCommitment(
+                    "coordinator supplied another local commitment".to_string(),
+                ));
+            }
+            let package_hash =
+                signing_package_hash(request.session_id(), &authorized.message(), commitment_set)?;
+            Ok((registration, authorized, package_hash))
+        })();
+        let (registration, authorized, package_hash) = match validated {
+            Ok(validated) => validated,
+            Err(error) => {
+                self.burn_record(&record, NonceBurnReason::InvalidPackage)?;
+                return Err(error);
+            }
+        };
+
+        match record.lifecycle() {
+            NonceLifecycle::Consumed {
+                package_hash: consumed_hash,
+            } if consumed_hash == &package_hash => {
+                return record.cached_share().cloned().ok_or_else(|| {
+                    Error::InvalidCommitment(
+                        "consumed nonce retry metadata was unavailable".to_string(),
+                    )
+                });
+            }
+            NonceLifecycle::CommitmentSent => {}
+            _ => {
+                return Err(Error::InvalidCommitment(
+                    "nonce is not available for round two".to_string(),
+                ));
+            }
+        }
+
+        let nonces = (|| {
+            let encrypted = record.encrypted_nonces().ok_or_else(|| {
+                Error::InvalidCommitment("nonce secret is unavailable before round two".to_string())
+            })?;
+            let serialized_nonces = sealed::open(
+                &self.nonce_encryption_key,
+                &nonce_secret_aad(record.context(), nonce_id, self.root.participant()),
+                encrypted,
+            )?;
+            frost::round1::SigningNonces::deserialize(&serialized_nonces)
+                .map_err(|error| Error::Frost(error.to_string()))
+        })();
+        let nonces = match nonces {
+            Ok(nonces) => nonces,
+            Err(error) => {
+                self.burn_record(&record, NonceBurnReason::InternalFailure)?;
+                return Err(error);
+            }
+        };
+        let signing = record.transition(NonceLifecycle::Signing { package_hash }, false, None)?;
+        if let Err(error) = self.nonce_store.compare_and_swap(&record, signing.clone()) {
+            if let Some(latest) = self.nonce_store.load_nonce(nonce_id)? {
+                if let NonceLifecycle::Consumed {
+                    package_hash: latest_hash,
+                } = latest.lifecycle()
+                {
+                    if latest_hash == &package_hash {
+                        return latest.cached_share().cloned().ok_or_else(|| {
+                            Error::InvalidCommitment(
+                                "consumed nonce retry metadata was unavailable".to_string(),
+                            )
+                        });
+                    }
+                }
+            }
+            return Err(error);
+        }
+
+        let signing_package = match signing_package(commitment_set, &authorized.message()) {
+            Ok(package) => package,
+            Err(error) => {
+                self.burn_record(&signing, NonceBurnReason::InternalFailure)?;
+                return Err(error);
+            }
+        };
+        let derived = match self
+            .root
+            .derive_signing_target(registration, signing.derivation())
+        {
+            Ok(derived) => derived,
+            Err(error) => {
+                self.burn_record(&signing, NonceBurnReason::InternalFailure)?;
+                return Err(error);
+            }
+        };
+        let share_result = match signing.derivation().signature_mode() {
+            SignatureMode::Plain => frost::round2::sign(&signing_package, &nonces, &derived.key),
             SignatureMode::TaprootKeyPath { merkle_root } => frost::round2::sign_with_tweak(
                 &signing_package,
-                &pending.nonces,
+                &nonces,
                 &derived.key,
                 merkle_root.as_ref().map(|root| root.as_slice()),
             ),
-        }
-        .map_err(|err| Error::InvalidShare(err.to_string()))?;
-        let share = share
-            .serialize()
-            .try_into()
-            .map_err(|_| Error::Internal("FROST signature share is not 32 bytes".to_string()))?;
-        Ok(SignatureShare {
+        };
+        let share = match share_result {
+            Ok(share) => share,
+            Err(error) => {
+                self.burn_record(&signing, NonceBurnReason::InternalFailure)?;
+                return Err(Error::InvalidShare(error.to_string()));
+            }
+        };
+        let share = match share.serialize().try_into() {
+            Ok(share) => share,
+            Err(_) => {
+                self.burn_record(&signing, NonceBurnReason::InternalFailure)?;
+                return Err(Error::Internal(
+                    "FROST signature share is not 32 bytes".to_string(),
+                ));
+            }
+        };
+        let share = SignatureShare {
             root_epoch: self.root.public().epoch(),
             registration,
             session_id: request.session_id(),
-            derivation_binding: pending.derivation.binding(),
+            derivation_binding: signing.derivation().binding(),
             participant: self.root.participant(),
             share,
-        })
+        };
+        let produced = signing.transition(
+            NonceLifecycle::ShareProduced { package_hash },
+            false,
+            Some(share.clone()),
+        )?;
+        self.nonce_store
+            .compare_and_swap(&signing, produced.clone())?;
+        let consumed = produced.transition(
+            NonceLifecycle::Consumed { package_hash },
+            false,
+            Some(share.clone()),
+        )?;
+        self.nonce_store.compare_and_swap(&produced, consumed)?;
+        Ok(share)
+    }
+
+    /// Permanently burn one nonce after abort, timeout, ambiguity, or failover.
+    pub fn burn_nonce(&self, nonce_id: NonceId, reason: NonceBurnReason) -> Result<(), Error> {
+        let record = self
+            .nonce_store
+            .load_nonce(nonce_id)?
+            .ok_or_else(|| Error::InvalidCommitment("nonce is unknown".to_string()))?;
+        self.burn_record(&record, reason)
+    }
+
+    /// Compact old terminal detail while preserving replay tombstones.
+    pub fn cleanup_terminal_nonces(&self, retain_detailed: usize) -> Result<usize, Error> {
+        self.nonce_store.compact_terminal(retain_detailed)
+    }
+
+    /// Burn every nonterminal record during process restart recovery.
+    pub fn recover_after_restart(&self) -> Result<(), Error> {
+        for record in self.nonce_store.nonterminal_records()? {
+            self.burn_record(&record, NonceBurnReason::RestartRecovery)?;
+        }
+        Ok(())
+    }
+
+    fn burn_record(&self, record: &NonceRecord, reason: NonceBurnReason) -> Result<(), Error> {
+        if record.lifecycle().is_terminal() {
+            return Ok(());
+        }
+        let burned = record.transition(NonceLifecycle::Burned { reason }, false, None)?;
+        self.nonce_store.compare_and_swap(record, burned)
     }
 
     /// Verify and aggregate shares for an already-authorized 32-byte message.
@@ -412,6 +606,38 @@ impl ParticipantKeyManager {
     ) -> Result<DerivedSigningPublicPackage, Error> {
         derive_signing_public(self.public_package(application_id)?, derivation)
     }
+}
+
+fn nonce_secret_aad(
+    context: &SigningSessionContext,
+    nonce_id: NonceId,
+    participant: crate::MemberId,
+) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(8 + 32 + 32 + 32 + 2);
+    aad.extend_from_slice(b"CDKFNON1");
+    aad.extend_from_slice(&context.slot_id().to_bytes());
+    aad.extend_from_slice(&context.session_id().to_bytes());
+    aad.extend_from_slice(&nonce_id.to_bytes());
+    aad.extend_from_slice(&participant.get().to_be_bytes());
+    aad
+}
+
+fn signing_package_hash(
+    session_id: SigningSessionId,
+    message: &[u8; 32],
+    set: &NonceCommitmentSet,
+) -> Result<[u8; 32], Error> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"cdk/frost/signing-package/v1");
+    hasher.update(session_id.to_bytes());
+    hasher.update(message);
+    hasher.update((set.commitments().len() as u16).to_be_bytes());
+    for commitment in set.commitments().values() {
+        let encoded = commitment.encode();
+        hasher.update((encoded.len() as u16).to_be_bytes());
+        hasher.update(encoded);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn validate_commitment_set(

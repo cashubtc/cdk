@@ -6,6 +6,8 @@ mod canonical;
 mod dkg;
 mod error;
 mod key_manager;
+mod nonce;
+mod nonce_redb;
 mod sealed;
 mod types;
 mod wire;
@@ -20,6 +22,12 @@ pub use crate::dkg::{
 };
 pub use crate::error::Error;
 pub use crate::key_manager::{ApplicationAuthorization, ParticipantKeyManager};
+pub use crate::nonce::{
+    DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle, NonceRecord,
+    NonceReservation, NonceTombstone, SigningAuthorizationScope, SigningSessionContext,
+    SigningSlotId, DEFAULT_TERMINAL_NONCE_RETENTION,
+};
+pub use crate::nonce_redb::RedbNonceStore;
 pub use crate::sealed::{EncryptedSecret, SecretEncryptionKey};
 pub use crate::types::{
     AggregateSignature, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,

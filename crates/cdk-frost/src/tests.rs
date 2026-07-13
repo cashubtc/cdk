@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, Secp256k1};
 use frost_secp256k1_tr as frost;
@@ -9,9 +11,11 @@ use sha2::{Digest, Sha256};
 use crate::canonical::CanonicalRootKeyPackage;
 use crate::{
     ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
-    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, Error, MemberId,
-    NonceCommitmentSet, ParticipantKeyManager, RootKeyEpoch, RootPublicPackage, SignatureMode,
-    SignatureShare, SigningDerivation, SigningSessionId,
+    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DurableNonceStore,
+    Error, MemberId, MemoryNonceStore, NonceBurnReason, NonceCommitmentSet, NonceId,
+    NonceLifecycle, NonceRecord, NonceReservation, ParticipantKeyManager, RedbNonceStore,
+    RootKeyEpoch, RootPublicPackage, SecretEncryptionKey, SignatureMode, SignatureShare,
+    SigningAuthorizationScope, SigningDerivation, SigningSessionContext, SigningSessionId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -160,6 +164,32 @@ fn session(byte: u8) -> SigningSessionId {
     SigningSessionId::from_bytes([byte; 32]).expect("session")
 }
 
+fn signing_context(
+    registration: ApplicationRegistration,
+    derivation: &SigningDerivation,
+    legacy_session: SigningSessionId,
+    message: [u8; 32],
+    signer_indexes: &[usize],
+) -> SigningSessionContext {
+    let scope = SigningAuthorizationScope::new(
+        [0xf0; 32],
+        RootKeyEpoch::new(1).expect("root epoch"),
+        registration,
+        derivation.binding(),
+        legacy_session.to_bytes(),
+        message,
+    )
+    .expect("signing authorization scope");
+    SigningSessionContext::new(
+        scope,
+        0,
+        signer_indexes
+            .iter()
+            .map(|index| MemberId::new((*index + 1) as u16).expect("signer member")),
+    )
+    .expect("signing context")
+}
+
 fn authorized_request(
     registration: ApplicationRegistration,
     session: SigningSessionId,
@@ -184,6 +214,21 @@ fn authorized_request(
 }
 
 fn managers(max_signers: u16, threshold: u16, seed: u8) -> Vec<ParticipantKeyManager> {
+    managers_with_store(max_signers, threshold, seed, |_| {
+        MemoryNonceStore::default()
+    })
+}
+
+fn managers_with_store<S, F>(
+    max_signers: u16,
+    threshold: u16,
+    seed: u8,
+    mut store_for_member: F,
+) -> Vec<ParticipantKeyManager>
+where
+    S: DurableNonceStore,
+    F: FnMut(MemberId) -> S,
+{
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
     let (shares, public) = frost::keys::generate_with_dealer(
         max_signers,
@@ -227,7 +272,13 @@ fn managers(max_signers: u16, threshold: u16, seed: u8) -> Vec<ParticipantKeyMan
                 transcript,
             )
             .expect("canonical root package");
-            let mut manager = ParticipantKeyManager::new(root);
+            let nonce_key = SecretEncryptionKey::new(
+                [seed.wrapping_add(member.get() as u8).wrapping_add(1); 32],
+            )
+            .expect("nonce storage key");
+            let mut manager =
+                ParticipantKeyManager::with_nonce_store(root, nonce_key, store_for_member(member))
+                    .expect("participant key manager");
             manager
                 .register_application(WalletTestAdapter {
                     registration: wallet_registration(),
@@ -249,6 +300,63 @@ fn managers(max_signers: u16, threshold: u16, seed: u8) -> Vec<ParticipantKeyMan
         .collect()
 }
 
+#[derive(Debug, Clone, Default)]
+struct FailingNonceStore {
+    inner: MemoryNonceStore,
+    fail_mutation: Arc<Mutex<Option<usize>>>,
+}
+
+impl FailingNonceStore {
+    fn arm(&self, mutation: usize) {
+        *self.fail_mutation.lock().expect("failure lock") = Some(mutation);
+    }
+
+    fn fail_if_armed(&self) -> Result<(), Error> {
+        let mut failure = self.fail_mutation.lock().expect("failure lock");
+        match failure.as_mut() {
+            Some(remaining) if *remaining == 1 => {
+                *failure = None;
+                Err(Error::NoncePersistence(
+                    "injected durable transaction failure".to_string(),
+                ))
+            }
+            Some(remaining) => {
+                *remaining -= 1;
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+impl DurableNonceStore for FailingNonceStore {
+    fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error> {
+        self.fail_if_armed()?;
+        self.inner.reserve(record)
+    }
+
+    fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error> {
+        self.inner.load_nonce(nonce_id)
+    }
+
+    fn compare_and_swap(
+        &self,
+        expected: &NonceRecord,
+        replacement: NonceRecord,
+    ) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner.compare_and_swap(expected, replacement)
+    }
+
+    fn nonterminal_records(&self) -> Result<Vec<NonceRecord>, Error> {
+        self.inner.nonterminal_records()
+    }
+
+    fn compact_terminal(&self, retain_detailed: usize) -> Result<usize, Error> {
+        self.inner.compact_terminal(retain_detailed)
+    }
+}
+
 fn sign_with_subset(
     managers: &mut [ParticipantKeyManager],
     signer_indexes: &[usize],
@@ -267,12 +375,20 @@ fn sign_with_subset(
         .public_package(registration.id())
         .expect("public package")
         .clone();
+    let context = signing_context(
+        registration,
+        &SigningDerivation::application_key(),
+        session_id,
+        message,
+        signer_indexes,
+    );
+    let session_id = context.session_id();
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
     let commitments = signer_indexes
         .iter()
         .map(|index| {
             managers[*index]
-                .commit_nonce(registration.id(), session_id, &mut rng)
+                .commit_nonce(&context, &mut rng)
                 .expect("nonce commitment")
         })
         .collect::<Vec<_>>();
@@ -331,19 +447,15 @@ fn additively_derived_taproot_target_signs_and_rejects_target_swaps() {
     let mut managers = managers(5, 3, 31);
     let registration = derived_registration();
     let derivation = derived_signing_derivation();
-    let session_id = session(31);
     let message = [31; 32];
+    let context = signing_context(registration, &derivation, session(31), message, &[0, 1, 2]);
+    let session_id = context.session_id();
     let mut rng = ChaCha20Rng::from_seed([31; 32]);
     let commitments = managers[..3]
         .iter_mut()
         .map(|manager| {
             manager
-                .commit_nonce_for_derivation(
-                    registration.id(),
-                    session_id,
-                    derivation.clone(),
-                    &mut rng,
-                )
+                .commit_nonce_for_derivation(&context, derivation.clone(), &mut rng)
                 .expect("derived nonce")
         })
         .collect::<Vec<_>>();
@@ -376,7 +488,7 @@ fn additively_derived_taproot_target_signs_and_rejects_target_swaps() {
     .expect("derived aggregate");
     assert_eq!(
         hex_bytes(&signature.to_bytes()),
-        "accdf22f4b35d36f1c676f3724ae18990d36f0bc5d30b114da8c3cc805c9c20537d7230b3bd0ea932ba617b331caeec32b4f3a2b269b1356dfd2f66d9f385252"
+        "89c6b2725df6cb48282d7a62c7f39822c7a59ed9c1f9a4e010b50e3cd683e0c232d5436373fdf29fa939e2f80c9c39e4cf7e50eede29ac8ea1962a1d8c069984"
     );
     let secp = Secp256k1::verification_only();
     let key = PublicKey::from_slice(&target.output_group_key()).expect("output key");
@@ -442,25 +554,34 @@ fn different_threshold_subsets_sign_without_root_reconstruction() {
 fn threshold_minus_one_and_wrong_application_are_rejected() {
     let mut managers = managers(3, 2, 11);
     let registration = wallet_registration();
+    let message = [9; 32];
+    let context = signing_context(
+        registration,
+        &SigningDerivation::application_key(),
+        session(12),
+        message,
+        &[0, 1],
+    );
+    let session_id = context.session_id();
     let mut rng = ChaCha20Rng::from_seed([55; 32]);
     let commitment = managers[0]
-        .commit_nonce(registration.id(), session(12), &mut rng)
+        .commit_nonce(&context, &mut rng)
         .expect("commitment");
     let set = NonceCommitmentSet::new([commitment.clone()]).expect("set");
-    let request = authorized_request(registration, session(12), [9; 32], b"wallet-test-policy/v1");
+    let request = authorized_request(registration, session_id, message, b"wallet-test-policy/v1");
     assert!(matches!(
         managers[0].sign_share(commitment.nonce_id(), &request, &set),
         Err(Error::InsufficientThreshold { .. })
     ));
 
     let second = managers[1]
-        .commit_nonce(registration.id(), session(12), &mut rng)
+        .commit_nonce(&context, &mut rng)
         .expect("second commitment");
     let full_set = NonceCommitmentSet::new([commitment.clone(), second]).expect("threshold set");
     let wrong = authorized_request(
         compatibility_registration(),
-        session(12),
-        [9; 32],
+        session_id,
+        message,
         b"compatibility-policy/v1",
     );
     assert!(matches!(
@@ -471,7 +592,7 @@ fn threshold_minus_one_and_wrong_application_are_rejected() {
         registration.id(),
         registration.key_epoch(),
         ApplicationDerivationVersion::new(2).expect("version"),
-        session(12),
+        session_id,
         vec![],
     )
     .expect("request");
@@ -483,7 +604,7 @@ fn threshold_minus_one_and_wrong_application_are_rejected() {
         registration.id(),
         ApplicationKeyEpoch::new(2).expect("key epoch"),
         registration.derivation_version(),
-        session(12),
+        session_id,
         vec![],
     )
     .expect("request");
@@ -564,23 +685,32 @@ fn hex_bytes(bytes: &[u8]) -> String {
 fn invalid_authorization_does_not_expose_a_digest_signing_api() {
     let mut managers = managers(3, 2, 13);
     let registration = wallet_registration();
+    let message = [13; 32];
+    let context = signing_context(
+        registration,
+        &SigningDerivation::application_key(),
+        session(13),
+        message,
+        &[0, 1],
+    );
+    let session_id = context.session_id();
     let mut rng = ChaCha20Rng::from_seed([56; 32]);
     let commitments = [0, 1]
         .into_iter()
         .map(|index| {
             managers[index]
-                .commit_nonce(registration.id(), session(13), &mut rng)
+                .commit_nonce(&context, &mut rng)
                 .expect("commitment")
         })
         .collect::<Vec<_>>();
     let set = NonceCommitmentSet::new(commitments.clone()).expect("set");
-    let mut invalid_payload = [13; 32].to_vec();
+    let mut invalid_payload = message.to_vec();
     invalid_payload.extend_from_slice(&[0; 32]);
     let invalid = AuthorizationRequest::new(
         registration.id(),
         registration.key_epoch(),
         registration.derivation_version(),
-        session(13),
+        session_id,
         invalid_payload,
     )
     .expect("invalid authorization request");
@@ -588,15 +718,11 @@ fn invalid_authorization_does_not_expose_a_digest_signing_api() {
         managers[0].sign_share(commitments[0].nonce_id(), &invalid, &set),
         Err(Error::Application(_))
     ));
-    let valid = authorized_request(
-        registration,
-        session(13),
-        [13; 32],
-        b"wallet-test-policy/v1",
-    );
-    managers[0]
-        .sign_share(commitments[0].nonce_id(), &valid, &set)
-        .expect("unused nonce remains valid after failed authorization");
+    let valid = authorized_request(registration, session_id, message, b"wallet-test-policy/v1");
+    assert!(matches!(
+        managers[0].sign_share(commitments[0].nonce_id(), &valid, &set),
+        Err(Error::InvalidCommitment(_))
+    ));
 }
 
 #[test]
@@ -612,10 +738,16 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
         b"wallet-test-policy/v1",
         60,
     );
+    let signed_session = set
+        .commitments()
+        .values()
+        .next()
+        .expect("signed commitment")
+        .session_id();
 
     assert!(ParticipantKeyManager::aggregate(
         &public,
-        session(14),
+        signed_session,
         &[15; 32],
         &set,
         shares.clone(),
@@ -624,10 +756,14 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
 
     let mut invalid_share = shares.clone();
     invalid_share[0].share[0] ^= 1;
-    assert!(
-        ParticipantKeyManager::aggregate(&public, session(14), &message, &set, invalid_share,)
-            .is_err()
-    );
+    assert!(ParticipantKeyManager::aggregate(
+        &public,
+        signed_session,
+        &message,
+        &set,
+        invalid_share,
+    )
+    .is_err());
 
     let mut other_managers = managers(5, 3, 15);
     let other_public = other_managers[0]
@@ -638,26 +774,29 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
     wrong_group.group_key = other_public.group_key;
     assert!(ParticipantKeyManager::aggregate(
         &wrong_group,
-        session(14),
+        signed_session,
         &message,
         &set,
         shares.clone(),
     )
     .is_err());
 
+    let extra_context = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(16),
+        [16; 32],
+        &[0, 1, 3],
+    );
     let extra = other_managers[3]
-        .commit_nonce(
-            wallet_registration().id(),
-            session(16),
-            &mut ChaCha20Rng::from_seed([61; 32]),
-        )
+        .commit_nonce(&extra_context, &mut ChaCha20Rng::from_seed([61; 32]))
         .expect("extra commitment");
     let mut mismatched_commitments = set.commitments().values().cloned().collect::<Vec<_>>();
     mismatched_commitments.push(extra);
     let mismatched_set = NonceCommitmentSet::new(mismatched_commitments).expect("set");
     assert!(ParticipantKeyManager::aggregate(
         &public,
-        session(14),
+        signed_session,
         &message,
         &mismatched_set,
         shares,
@@ -666,13 +805,20 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
 
     let mut signer_set_managers = managers(5, 3, 20);
     let registration = wallet_registration();
-    let signer_session = session(20);
+    let signer_context = signing_context(
+        registration,
+        &SigningDerivation::application_key(),
+        session(20),
+        [20; 32],
+        &[0, 1, 2, 3],
+    );
+    let signer_session = signer_context.session_id();
     let mut rng = ChaCha20Rng::from_seed([63; 32]);
     let signer_commitments = [0, 1, 2, 3]
         .into_iter()
         .map(|index| {
             signer_set_managers[index]
-                .commit_nonce(registration.id(), signer_session, &mut rng)
+                .commit_nonce(&signer_context, &mut rng)
                 .expect("signer-set commitment")
         })
         .collect::<Vec<_>>();
@@ -735,11 +881,19 @@ fn canonical_wire_round_trips_and_rejects_mutations() {
     assert!(RootPublicPackage::decode(&duplicate).is_err());
 
     let mut rng = ChaCha20Rng::from_seed([62; 32]);
+    let wire_context = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(17),
+        [17; 32],
+        &[0, 1],
+    );
+    let wire_session = wire_context.session_id();
     let commitments = [0, 1]
         .into_iter()
         .map(|index| {
             managers[index]
-                .commit_nonce(wallet_registration().id(), session(17), &mut rng)
+                .commit_nonce(&wire_context, &mut rng)
                 .expect("commitment")
         })
         .collect::<Vec<_>>();
@@ -754,7 +908,7 @@ fn canonical_wire_round_trips_and_rejects_mutations() {
         .expect("structural set");
     let invalid_request = authorized_request(
         wallet_registration(),
-        session(17),
+        wire_session,
         [17; 32],
         b"wallet-test-policy/v1",
     );
@@ -770,12 +924,12 @@ fn canonical_wire_round_trips_and_rejects_mutations() {
     let set = NonceCommitmentSet::new(commitments.clone()).expect("set");
     let request = authorized_request(
         wallet_registration(),
-        session(17),
+        wire_session,
         [17; 32],
         b"wallet-test-policy/v1",
     );
-    let share = managers[0]
-        .sign_share(commitments[0].nonce_id(), &request, &set)
+    let share = managers[1]
+        .sign_share(commitments[1].nonce_id(), &request, &set)
         .expect("share");
     assert_eq!(
         SignatureShare::decode(&share.encode()).expect("share decode"),
@@ -822,18 +976,25 @@ fn public_wire_decoders_reject_truncation_and_trailing_bytes_property() {
     let mut managers = managers(3, 2, 19);
     let root = managers[0].root_public_package().encode();
     let mut rng = ChaCha20Rng::from_seed([64; 32]);
+    let property_context = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(21),
+        [21; 32],
+        &[0, 1],
+    );
     let commitments = [0, 1]
         .into_iter()
         .map(|index| {
             managers[index]
-                .commit_nonce(wallet_registration().id(), session(21), &mut rng)
+                .commit_nonce(&property_context, &mut rng)
                 .expect("commitment")
         })
         .collect::<Vec<_>>();
     let commitment_set = NonceCommitmentSet::new(commitments.clone()).expect("set");
     let request = authorized_request(
         wallet_registration(),
-        session(21),
+        property_context.session_id(),
         [21; 32],
         b"wallet-test-policy/v1",
     );
@@ -852,6 +1013,615 @@ fn public_wire_decoders_reject_truncation_and_trailing_bytes_property() {
     assert_truncation_and_trailing_rejected(&share, |bytes| {
         SignatureShare::decode(bytes).map(|_| ())
     });
+}
+
+#[test]
+fn signing_session_ids_bind_every_scope_attempt_and_signer_field() {
+    let registration = wallet_registration();
+    let alternate_registration = ApplicationRegistration::new(
+        registration.id(),
+        ApplicationKeyEpoch::new(2).expect("alternate key epoch"),
+        registration.derivation_version(),
+        registration.authorization_policy(),
+    )
+    .expect("alternate registration");
+    let member_one = MemberId::new(1).expect("member one");
+    let member_two = MemberId::new(2).expect("member two");
+    let member_three = MemberId::new(3).expect("member three");
+    let make = |federation_id,
+                root_epoch,
+                registration,
+                derivation_binding,
+                authorization_reference,
+                message,
+                attempt,
+                signers| {
+        let scope = SigningAuthorizationScope::new(
+            federation_id,
+            root_epoch,
+            registration,
+            derivation_binding,
+            authorization_reference,
+            message,
+        )
+        .expect("authorization scope");
+        SigningSessionContext::new(scope, attempt, signers).expect("session context")
+    };
+    let base = make(
+        [1; 32],
+        RootKeyEpoch::new(1).expect("root epoch"),
+        registration,
+        [2; 32],
+        [3; 32],
+        [4; 32],
+        0,
+        vec![member_one, member_two],
+    );
+    let variants = [
+        make(
+            [9; 32],
+            base.root_epoch(),
+            registration,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            0,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            RootKeyEpoch::new(2).expect("alternate root epoch"),
+            registration,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            0,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            base.root_epoch(),
+            alternate_registration,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            0,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            base.root_epoch(),
+            registration,
+            [8; 32],
+            [3; 32],
+            [4; 32],
+            0,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            base.root_epoch(),
+            registration,
+            [2; 32],
+            [8; 32],
+            [4; 32],
+            0,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            base.root_epoch(),
+            registration,
+            [2; 32],
+            [3; 32],
+            [8; 32],
+            0,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            base.root_epoch(),
+            registration,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            1,
+            vec![member_one, member_two],
+        ),
+        make(
+            [1; 32],
+            base.root_epoch(),
+            registration,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            0,
+            vec![member_one, member_three],
+        ),
+    ];
+    let session_ids = std::iter::once(base.session_id())
+        .chain(variants.iter().map(SigningSessionContext::session_id))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(session_ids.len(), variants.len() + 1);
+    assert_eq!(variants[6].slot_id(), base.slot_id());
+    assert_eq!(variants[7].slot_id(), base.slot_id());
+    assert!(variants[..6]
+        .iter()
+        .all(|variant| variant.slot_id() != base.slot_id()));
+    let invalid_scope = SigningAuthorizationScope::new(
+        [1; 32],
+        base.root_epoch(),
+        registration,
+        [2; 32],
+        [3; 32],
+        [4; 32],
+    )
+    .expect("invalid-order scope");
+    assert!(SigningSessionContext::new(invalid_scope, 0, [member_two, member_one],).is_err());
+}
+
+#[test]
+fn durable_nonce_lifecycle_retries_attempts_and_cleanup_fail_closed() {
+    let stores = (0..3)
+        .map(|_| FailingNonceStore::default())
+        .collect::<Vec<_>>();
+    let stores_for_managers = stores.clone();
+    let mut managers = managers_with_store(3, 2, 70, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let registration = wallet_registration();
+    let message = [70; 32];
+    let context = signing_context(
+        registration,
+        &SigningDerivation::application_key(),
+        session(70),
+        message,
+        &[0, 1],
+    );
+    let mut rng = ChaCha20Rng::from_seed([71; 32]);
+    let first = managers[0]
+        .commit_nonce(&context, &mut rng)
+        .expect("first commitment");
+    assert_eq!(
+        managers[0]
+            .commit_nonce(&context, &mut rng)
+            .expect("exact round-one retry"),
+        first
+    );
+    let second = managers[1]
+        .commit_nonce(&context, &mut rng)
+        .expect("second commitment");
+    let first_record = stores[0]
+        .load_nonce(first.nonce_id())
+        .expect("load first record")
+        .expect("first record");
+    assert_eq!(first_record.lifecycle(), &NonceLifecycle::CommitmentSent);
+    let durable_bytes = first_record.to_bytes().expect("durable nonce bytes");
+    assert_eq!(
+        NonceRecord::from_bytes(&durable_bytes).expect("durable nonce decode"),
+        first_record
+    );
+    let mut malformed =
+        serde_json::from_slice::<serde_json::Value>(&durable_bytes).expect("nonce record json");
+    malformed["lifecycle"] = serde_json::json!({
+        "state": "consumed",
+        "data": {"package_hash": vec![7; 32]}
+    });
+    assert!(NonceRecord::from_bytes(
+        &serde_json::to_vec(&malformed).expect("malformed nonce bytes")
+    )
+    .is_err());
+    let skipped_round_two = first_record
+        .transition(
+            NonceLifecycle::Consumed {
+                package_hash: [7; 32],
+            },
+            false,
+            None,
+        )
+        .expect("construct invalid transition");
+    assert!(stores[0]
+        .compare_and_swap(&first_record, skipped_round_two)
+        .is_err());
+    let record_debug = format!("{first_record:?}");
+    assert!(record_debug.contains("<sealed>"));
+    assert!(!record_debug.contains("SigningNonces"));
+
+    let next_scope = SigningAuthorizationScope::new(
+        context.federation_id(),
+        context.root_epoch(),
+        context.registration(),
+        context.derivation_binding(),
+        context.authorization_reference(),
+        context.message_commitment(),
+    )
+    .expect("next attempt scope");
+    let next_attempt =
+        SigningSessionContext::new(next_scope, 1, context.signer_set().iter().copied())
+            .expect("next attempt");
+    assert!(managers[1].commit_nonce(&next_attempt, &mut rng).is_err());
+    managers[1]
+        .burn_nonce(second.nonce_id(), NonceBurnReason::CoordinatorLost)
+        .expect("burn superseded attempt");
+    let replacement = managers[1]
+        .commit_nonce(&next_attempt, &mut rng)
+        .expect("explicit replacement attempt");
+    assert_ne!(replacement.nonce_id(), second.nonce_id());
+
+    let set = NonceCommitmentSet::new([first.clone(), second]).expect("commitment set");
+    let request = authorized_request(
+        registration,
+        context.session_id(),
+        message,
+        b"wallet-test-policy/v1",
+    );
+    let share = managers[0]
+        .sign_share(first.nonce_id(), &request, &set)
+        .expect("signature share");
+    assert_eq!(
+        managers[0]
+            .sign_share(first.nonce_id(), &request, &set)
+            .expect("exact round-two retry"),
+        share
+    );
+    assert!(matches!(
+        stores[0]
+            .load_nonce(first.nonce_id())
+            .expect("load consumed")
+            .expect("consumed record")
+            .lifecycle(),
+        NonceLifecycle::Consumed { .. }
+    ));
+    assert_eq!(
+        managers[0]
+            .cleanup_terminal_nonces(0)
+            .expect("compact terminal record"),
+        1
+    );
+    assert!(stores[0].load_nonce(first.nonce_id()).is_err());
+    assert!(stores[0]
+        .inner
+        .tombstone(first.nonce_id())
+        .expect("load tombstone")
+        .is_some());
+}
+
+#[test]
+fn restart_and_transaction_failures_never_resurrect_nonce_material() {
+    for failed_mutation in 1..=3 {
+        let stores = (0..3)
+            .map(|_| FailingNonceStore::default())
+            .collect::<Vec<_>>();
+        let stores_for_managers = stores.clone();
+        let mut managers = managers_with_store(3, 2, 80 + failed_mutation as u8, move |member| {
+            stores_for_managers[usize::from(member.get() - 1)].clone()
+        });
+        let context = signing_context(
+            wallet_registration(),
+            &SigningDerivation::application_key(),
+            session(80 + failed_mutation as u8),
+            [80 + failed_mutation as u8; 32],
+            &[0, 1],
+        );
+        stores[0].arm(failed_mutation);
+        assert!(managers[0]
+            .commit_nonce(&context, &mut ChaCha20Rng::from_seed([83; 32]))
+            .is_err());
+        let records = stores[0]
+            .nonterminal_records()
+            .expect("round-one partial records");
+        if failed_mutation == 1 {
+            assert!(records.is_empty());
+        } else {
+            assert_eq!(records.len(), 1);
+            managers[0]
+                .recover_after_restart()
+                .expect("round-one restart recovery");
+            assert!(matches!(
+                stores[0]
+                    .load_nonce(records[0].nonce_id())
+                    .expect("load recovered record")
+                    .expect("recovered record")
+                    .lifecycle(),
+                NonceLifecycle::Burned {
+                    reason: NonceBurnReason::RestartRecovery
+                }
+            ));
+        }
+    }
+
+    for failed_mutation in 1..=3 {
+        let stores = (0..3)
+            .map(|_| FailingNonceStore::default())
+            .collect::<Vec<_>>();
+        let stores_for_managers = stores.clone();
+        let mut managers = managers_with_store(3, 2, 90 + failed_mutation as u8, move |member| {
+            stores_for_managers[usize::from(member.get() - 1)].clone()
+        });
+        let registration = wallet_registration();
+        let message = [90 + failed_mutation as u8; 32];
+        let context = signing_context(
+            registration,
+            &SigningDerivation::application_key(),
+            session(90 + failed_mutation as u8),
+            message,
+            &[0, 1],
+        );
+        let mut rng = ChaCha20Rng::from_seed([94; 32]);
+        let first = managers[0]
+            .commit_nonce(&context, &mut rng)
+            .expect("first commitment");
+        let second = managers[1]
+            .commit_nonce(&context, &mut rng)
+            .expect("second commitment");
+        let set = NonceCommitmentSet::new([first.clone(), second]).expect("commitment set");
+        let request = authorized_request(
+            registration,
+            context.session_id(),
+            message,
+            b"wallet-test-policy/v1",
+        );
+        stores[0].arm(failed_mutation);
+        assert!(managers[0]
+            .sign_share(first.nonce_id(), &request, &set)
+            .is_err());
+        let record = stores[0]
+            .load_nonce(first.nonce_id())
+            .expect("load failed round-two record")
+            .expect("failed round-two record");
+        match failed_mutation {
+            1 => assert_eq!(record.lifecycle(), &NonceLifecycle::CommitmentSent),
+            2 => assert!(matches!(record.lifecycle(), NonceLifecycle::Signing { .. })),
+            3 => assert!(matches!(
+                record.lifecycle(),
+                NonceLifecycle::ShareProduced { .. }
+            )),
+            _ => unreachable!("bounded failure cases"),
+        }
+        managers[0]
+            .recover_after_restart()
+            .expect("round-two restart recovery");
+        assert!(matches!(
+            stores[0]
+                .load_nonce(first.nonce_id())
+                .expect("load burned record")
+                .expect("burned record")
+                .lifecycle(),
+            NonceLifecycle::Burned {
+                reason: NonceBurnReason::RestartRecovery
+            }
+        ));
+    }
+}
+
+#[test]
+fn abort_timeout_ambiguity_and_signer_substitution_burn_records() {
+    let stores = (0..3)
+        .map(|_| FailingNonceStore::default())
+        .collect::<Vec<_>>();
+    let stores_for_managers = stores.clone();
+    let mut managers = managers_with_store(3, 2, 108, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let reasons = [
+        NonceBurnReason::Aborted,
+        NonceBurnReason::AmbiguousResponse,
+        NonceBurnReason::Timeout,
+        NonceBurnReason::CoordinatorLost,
+        NonceBurnReason::SignerSetChanged,
+    ];
+    let mut rng = ChaCha20Rng::from_seed([109; 32]);
+    for (index, reason) in reasons.into_iter().enumerate() {
+        let marker = index as u8 + 1;
+        let scope = SigningAuthorizationScope::new(
+            [108; 32],
+            RootKeyEpoch::new(1).expect("root epoch"),
+            wallet_registration(),
+            SigningDerivation::application_key().binding(),
+            [marker; 32],
+            [marker.wrapping_add(20); 32],
+        )
+        .expect("burn scope");
+        let context = SigningSessionContext::new(
+            scope,
+            0,
+            [
+                MemberId::new(1).expect("member one"),
+                MemberId::new(2).expect("member two"),
+            ],
+        )
+        .expect("burn context");
+        let commitment = managers[0]
+            .commit_nonce(&context, &mut rng)
+            .expect("burn commitment");
+        managers[0]
+            .burn_nonce(commitment.nonce_id(), reason)
+            .expect("burn nonce");
+        assert_eq!(
+            stores[0]
+                .load_nonce(commitment.nonce_id())
+                .expect("load burned nonce")
+                .expect("burned nonce")
+                .lifecycle(),
+            &NonceLifecycle::Burned { reason }
+        );
+    }
+
+    let registration = wallet_registration();
+    let message = [119; 32];
+    let original = signing_context(
+        registration,
+        &SigningDerivation::application_key(),
+        session(119),
+        message,
+        &[0, 1],
+    );
+    let substituted_scope = SigningAuthorizationScope::new(
+        original.federation_id(),
+        original.root_epoch(),
+        original.registration(),
+        original.derivation_binding(),
+        original.authorization_reference(),
+        original.message_commitment(),
+    )
+    .expect("substituted scope");
+    let substituted = SigningSessionContext::new(
+        substituted_scope,
+        original.attempt(),
+        [
+            MemberId::new(1).expect("member one"),
+            MemberId::new(3).expect("member three"),
+        ],
+    )
+    .expect("substituted context");
+    let first = managers[0]
+        .commit_nonce(&original, &mut rng)
+        .expect("original commitment");
+    let substituted_commitment = managers[2]
+        .commit_nonce(&substituted, &mut rng)
+        .expect("substituted commitment");
+    let mixed =
+        NonceCommitmentSet::new([first.clone(), substituted_commitment]).expect("mixed set");
+    let request = authorized_request(
+        registration,
+        original.session_id(),
+        message,
+        b"wallet-test-policy/v1",
+    );
+    assert!(managers[0]
+        .sign_share(first.nonce_id(), &request, &mixed)
+        .is_err());
+    assert_eq!(
+        stores[0]
+            .load_nonce(first.nonce_id())
+            .expect("load substituted record")
+            .expect("substituted record")
+            .lifecycle(),
+        &NonceLifecycle::Burned {
+            reason: NonceBurnReason::InvalidPackage,
+        }
+    );
+}
+
+#[test]
+fn concurrent_session_reservation_has_one_atomic_winner() {
+    let source_stores = (0..3)
+        .map(|_| FailingNonceStore::default())
+        .collect::<Vec<_>>();
+    let stores_for_managers = source_stores.clone();
+    let mut managers = managers_with_store(3, 2, 101, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let context = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(101),
+        [101; 32],
+        &[0, 1],
+    );
+    source_stores[0].arm(2);
+    assert!(managers[0]
+        .commit_nonce(&context, &mut ChaCha20Rng::from_seed([102; 32]))
+        .is_err());
+    let record = source_stores[0]
+        .nonterminal_records()
+        .expect("load source records")
+        .into_iter()
+        .next()
+        .expect("source generated record");
+    let competing_store = MemoryNonceStore::default();
+    let results = (0..8)
+        .map(|_| {
+            let store = competing_store.clone();
+            let record = record.clone();
+            thread::spawn(move || store.reserve(record).expect("atomic reservation"))
+        })
+        .map(|handle| handle.join().expect("reservation thread"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, NonceReservation::Inserted))
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, NonceReservation::Existing(_)))
+            .count(),
+        7
+    );
+    assert_eq!(
+        competing_store
+            .nonterminal_records()
+            .expect("competing records")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn redb_nonce_store_survives_reopen_and_compacts_to_replay_tombstone() {
+    let source_stores = (0..3)
+        .map(|_| FailingNonceStore::default())
+        .collect::<Vec<_>>();
+    let stores_for_managers = source_stores.clone();
+    let mut managers = managers_with_store(3, 2, 105, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let context = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(105),
+        [105; 32],
+        &[0, 1],
+    );
+    source_stores[0].arm(2);
+    assert!(managers[0]
+        .commit_nonce(&context, &mut ChaCha20Rng::from_seed([106; 32]))
+        .is_err());
+    let record = source_stores[0]
+        .nonterminal_records()
+        .expect("load source records")
+        .into_iter()
+        .next()
+        .expect("source generated record");
+
+    let directory = tempfile::tempdir().expect("temporary nonce directory");
+    let database_path = directory.path().join("participant-nonces.redb");
+    {
+        let store = RedbNonceStore::open(&database_path).expect("open redb store");
+        assert_eq!(
+            store.reserve(record.clone()).expect("reserve in redb"),
+            NonceReservation::Inserted
+        );
+    }
+    let store = RedbNonceStore::open(&database_path).expect("reopen redb store");
+    assert_eq!(
+        store
+            .load_nonce(record.nonce_id())
+            .expect("load reopened record")
+            .expect("reopened record"),
+        record
+    );
+    let burned = record
+        .transition(
+            NonceLifecycle::Burned {
+                reason: NonceBurnReason::Timeout,
+            },
+            false,
+            None,
+        )
+        .expect("burned replacement");
+    store
+        .compare_and_swap(&record, burned)
+        .expect("terminal redb transition");
+    assert_eq!(store.compact_terminal(0).expect("compact redb record"), 1);
+    drop(store);
+    let reopened = RedbNonceStore::open(&database_path).expect("reopen compacted store");
+    assert!(reopened.load_nonce(record.nonce_id()).is_err());
+    assert!(reopened.reserve(record).is_err());
 }
 
 fn assert_truncation_and_trailing_rejected(
