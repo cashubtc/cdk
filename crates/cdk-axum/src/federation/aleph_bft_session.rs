@@ -11,7 +11,8 @@ use aleph_bft::{
     NodeCount, Terminator,
 };
 use cdk::federation::{
-    FederationAlephBftActivityRequest, FederationOperationId, MemberConfigPublic, MemberId,
+    FederationAlephBftActivityRequest, FederationError, FederationOperationId, MemberConfigPublic,
+    MemberId,
 };
 use cdk_common::database::DynMintDatabase;
 use cdk_http_client::{Async, Transport};
@@ -30,8 +31,9 @@ use super::aleph_bft_network::{
     CdkAlephBftNetworkInboundHandle, CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
 };
 use super::aleph_bft_runtime::{
-    CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
-    CdkAlephBftSessionIo, CdkAlephBftTokioSpawnHandle, CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE,
+    CdkAlephBftActivityHint, CdkAlephBftFinalizedUnit, CdkAlephBftKeychain, CdkAlephBftNetwork,
+    CdkAlephBftNetworkData, CdkAlephBftSessionIo, CdkAlephBftTokioSpawnHandle,
+    CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE,
 };
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
@@ -674,6 +676,7 @@ where
         Arc::clone(&db),
         session_id,
         activity_hint.clone(),
+        keychain.clone(),
     )
     .await?;
     let pending_activity_operation_ids = pending_aleph_bft_operation_ids(&db, session_id).await?;
@@ -1641,20 +1644,43 @@ where
 
 async fn run_federation_aleph_bft_finalized_unit_apply_loop(
     state: MintState,
-    mut finalized_units: tokio::sync::mpsc::UnboundedReceiver<
-        cdk::federation::FederationAlephBftUnitPayload,
-    >,
+    mut finalized_units: tokio::sync::mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
     fail_next_finalized_payload_apply: bool,
 ) -> Result<(), cdk::Error> {
-    while let Some(payload) = finalized_units.recv().await {
+    while let Some(finalized_unit) = finalized_units.recv().await {
+        let creator = finalized_unit.creator();
+        let round = finalized_unit.round();
+        let operation_ids = finalized_unit.operation_ids().to_vec();
+        let payload = match finalized_unit.into_authenticated_payload() {
+            Ok(payload) => payload,
+            Err(err) => {
+                tracing::warn!(
+                    %creator,
+                    round,
+                    "Ignoring malformed finalized AlephBFT unit: {}",
+                    err
+                );
+                continue;
+            }
+        };
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyLoopReceived,
-            payload.operation_ids.iter().copied(),
+            operation_ids,
         );
         if fail_next_finalized_payload_apply {
             return Err(cdk::Error::AmountOverflow);
         }
-        apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await?;
+        match apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await {
+            Ok(()) => {}
+            Err(cdk::Error::Federation(FederationError::DuplicateAlephBftUnit { .. })) => {
+                tracing::warn!(
+                    %creator,
+                    round,
+                    "Ignoring duplicate finalized AlephBFT unit"
+                );
+            }
+            Err(err) => return Err(err),
+        }
     }
     Ok(())
 }

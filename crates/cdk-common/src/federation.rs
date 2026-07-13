@@ -75,15 +75,16 @@ pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationBalanceAudit, FederationOperationConflictKey,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationPaymentObservation, FederationPaymentObservationEvidenceGroup,
-    FederationPaymentObservationEvidenceGroupSummary, FederationPaymentObservationQuarantine,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationQuarantineRecord,
-    FederationPaymentObservationQuorum, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportAction,
-    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
-    FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
+    FederationOperation, FederationOperationAuthorization, FederationOperationBalanceAudit,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationSignature, FederationPaymentObservation,
+    FederationPaymentObservationEvidenceGroup, FederationPaymentObservationEvidenceGroupSummary,
+    FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationQuorum,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationReportSummary, FederationSwapOperation,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
@@ -950,6 +951,36 @@ pub enum FederationError {
         expected: u16,
         /// Found operation envelope version.
         found: u16,
+    },
+    /// A consensus operation did not carry durable member authorization.
+    #[error("Federation operation is missing member authorization")]
+    OperationAuthorizationMissing,
+    /// A federation operation signature must be exactly 64 bytes.
+    #[error("Invalid federation operation signature size: expected={expected}, found={found}")]
+    InvalidOperationSignatureSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation operation signature could not be decoded as Schnorr.
+    #[error("Invalid federation operation signature encoding")]
+    InvalidOperationSignature,
+    /// A federation operation had an invalid member identity signature.
+    #[error("Federation operation signature verification failed for member {member_id}")]
+    OperationSignatureVerificationFailed {
+        /// Author whose signature was checked.
+        member_id: MemberId,
+    },
+    /// An operation's claimed member identity did not match its authenticated author.
+    #[error(
+        "Federation operation author mismatch: author={author}, claimed_member={claimed_member}"
+    )]
+    OperationAuthorMismatch {
+        /// Member that signed the operation.
+        author: MemberId,
+        /// Member identity claimed inside the operation payload.
+        claimed_member: MemberId,
     },
     /// Consensus item used an unsupported payload version.
     #[error("Federation consensus item version mismatch: expected={expected}, found={found}")]

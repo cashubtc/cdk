@@ -12,12 +12,13 @@ use std::collections::BTreeSet;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
 use super::{
     FederatedKeyset, FederationConfig, FederationError, FederationId,
-    FederationPaymentObservationContext, MemberId, Result,
+    FederationPaymentObservationContext, MemberConfigPrivate, MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -28,6 +29,8 @@ use crate::{
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
+const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
+    b"cdk-federation-operation-authorization-v1";
 
 /// Version of the federation operation envelope format.
 pub const FEDERATION_OPERATION_VERSION: u16 = 1;
@@ -1573,6 +1576,99 @@ fn outputs_amount(
         .map_err(|_| FederationError::BalanceAuditAmountOverflow { operation_kind })
 }
 
+/// Schnorr signature authenticating the federation member that authored an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FederationOperationSignature([u8; 64]);
+
+impl FederationOperationSignature {
+    /// Create an operation signature from raw Schnorr bytes.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 64] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidOperationSignatureSize {
+                    expected: 64,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse an operation signature from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this signature as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 64] {
+        self.0
+    }
+
+    /// Return this signature as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+
+    fn as_schnorr(self) -> Result<Signature> {
+        Signature::from_slice(&self.0).map_err(|_| FederationError::InvalidOperationSignature)
+    }
+}
+
+impl fmt::Display for FederationOperationSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationOperationSignature {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationOperationSignature {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationOperationSignature {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Durable, receiver-independent member authorization for an operation envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationOperationAuthorization {
+    /// Federation member that authored the operation.
+    pub author: MemberId,
+    /// Signature over the author and canonical unsigned operation envelope.
+    pub signature: FederationOperationSignature,
+}
+
+#[derive(Serialize)]
+struct FederationUnsignedOperationEnvelope<'a> {
+    version: u16,
+    federation_id: FederationId,
+    operation: &'a FederationOperation,
+}
+
 /// Versioned envelope that binds an operation to one federation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1583,6 +1679,9 @@ pub struct FederationOperationEnvelope {
     pub federation_id: FederationId,
     /// Operation payload.
     pub operation: FederationOperation,
+    /// Receiver-independent member authorization required at consensus admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<FederationOperationAuthorization>,
 }
 
 impl FederationOperationEnvelope {
@@ -1593,7 +1692,79 @@ impl FederationOperationEnvelope {
             version: FEDERATION_OPERATION_VERSION,
             federation_id,
             operation,
+            authorization: None,
         }
+    }
+
+    /// Sign this operation with the authoring federation member's identity key.
+    pub fn authorize(mut self, private_config: &MemberConfigPrivate) -> Result<Self> {
+        if let Some(federation_id) = private_config.federation_id {
+            if federation_id != self.federation_id {
+                return Err(FederationError::FederationIdMismatch {
+                    expected: self.federation_id,
+                    found: federation_id,
+                });
+            }
+        }
+        let author = private_config.member_id;
+        let transcript = self.authorization_transcript(author)?;
+        let signature = private_config
+            .identity_secret_key
+            .sign_no_aux_rand(&transcript)?;
+        self.authorization = Some(FederationOperationAuthorization {
+            author,
+            signature: FederationOperationSignature(signature.serialize()),
+        });
+        Ok(self)
+    }
+
+    /// Verify the durable member authorization and operation-specific author binding.
+    pub fn verify_authorization(&self, public_config: &FederationConfig) -> Result<MemberId> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: public_config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        let authorization = self
+            .authorization
+            .ok_or(FederationError::OperationAuthorizationMissing)?;
+        let member =
+            public_config
+                .member(authorization.author)
+                .ok_or(FederationError::UnknownMember {
+                    member_id: authorization.author,
+                })?;
+        let transcript = self.authorization_transcript(authorization.author)?;
+        let signature = authorization.signature.as_schnorr()?;
+        member
+            .identity_public_key
+            .verify(&transcript, &signature)
+            .map_err(|_| FederationError::OperationSignatureVerificationFailed {
+                member_id: authorization.author,
+            })?;
+
+        let claimed_observer = match &self.operation {
+            FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
+            FederationOperation::MeltQuotePayment(observation) => Some(observation.observer),
+            FederationOperation::MintQuote(_)
+            | FederationOperation::Mint(_)
+            | FederationOperation::MeltQuote(_)
+            | FederationOperation::PaymentObservationQuarantine(_)
+            | FederationOperation::Melt(_)
+            | FederationOperation::Swap(_)
+            | FederationOperation::KeysetRotation(_) => None,
+        };
+        if let Some(claimed_observer) = claimed_observer {
+            if claimed_observer != authorization.author {
+                return Err(FederationError::OperationAuthorMismatch {
+                    author: authorization.author,
+                    claimed_member: claimed_observer,
+                });
+            }
+        }
+
+        Ok(authorization.author)
     }
 
     /// Decode a JSON operation envelope and reject unsupported versions.
@@ -1647,7 +1818,7 @@ impl FederationOperationEnvelope {
     /// Compute the domain-separated operation ID.
     pub fn operation_id(&self) -> Result<FederationOperationId> {
         self.ensure_supported_version()?;
-        let canonical = self.canonical_bytes()?;
+        let canonical = self.unsigned_canonical_bytes()?;
         Ok(operation_id_from_canonical(&canonical))
     }
 
@@ -1663,6 +1834,22 @@ impl FederationOperationEnvelope {
         }
 
         Ok(false)
+    }
+
+    fn unsigned_canonical_bytes(&self) -> Result<Vec<u8>> {
+        canonical_json_bytes(&FederationUnsignedOperationEnvelope {
+            version: self.version,
+            federation_id: self.federation_id,
+            operation: &self.operation,
+        })
+    }
+
+    fn authorization_transcript(&self, author: MemberId) -> Result<Vec<u8>> {
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, FEDERATION_OPERATION_AUTHORIZATION_VERSION);
+        append_hash_bytes(&mut transcript, &author.get().to_be_bytes());
+        append_hash_bytes(&mut transcript, &self.unsigned_canonical_bytes()?);
+        Ok(transcript)
     }
 }
 

@@ -238,6 +238,8 @@ pub enum FederationAlephBftFinalizedItemStatus {
     Accepted,
     /// The item wraps an operation already seen in finalized order.
     DuplicateOperation,
+    /// The operation failed durable member-authentication checks.
+    RejectedInvalidOperation,
 }
 
 /// One consensus item after AlephBFT finalized its containing unit.
@@ -947,6 +949,7 @@ pub(crate) struct FederationAlephBftFinalizationHandler {
     next_item_index: u64,
     max_unit_payload_bytes: usize,
     allowed_members: Option<BTreeSet<MemberId>>,
+    operation_config: Option<FederationConfig>,
     finalized_units: BTreeSet<(u64, MemberId, u64)>,
     finalized_operation_ids: BTreeSet<FederationOperationId>,
 }
@@ -980,6 +983,7 @@ impl FederationAlephBftFinalizationHandler {
             next_item_index,
             max_unit_payload_bytes,
             allowed_members: None,
+            operation_config: None,
             finalized_units: BTreeSet::new(),
             finalized_operation_ids: BTreeSet::new(),
         })
@@ -1011,6 +1015,7 @@ impl FederationAlephBftFinalizationHandler {
         session: u64,
         max_unit_payload_bytes: usize,
         allowed_members: Option<BTreeSet<MemberId>>,
+        operation_config: Option<FederationConfig>,
         finalized_items: &[FederationAlephBftFinalizedItem],
     ) -> Result<Self> {
         ensure_non_zero_consensus_limit("max_unit_payload_bytes", max_unit_payload_bytes)?;
@@ -1070,6 +1075,20 @@ impl FederationAlephBftFinalizationHandler {
                 });
             }
 
+            if let (Some(operation_config), FederationConsensusItem::Operation(envelope)) =
+                (&operation_config, &finalized_item.item)
+            {
+                let authorization_valid = envelope.verify_authorization(operation_config).is_ok();
+                let marked_rejected = finalized_item.status
+                    == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation;
+                if authorization_valid == marked_rejected {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "finalized operation authentication does not match its status"
+                            .to_string(),
+                    });
+                }
+            }
+
             match (finalized_item.status, finalized_item.operation_id) {
                 (FederationAlephBftFinalizedItemStatus::Accepted, Some(operation_id)) => {
                     if !finalized_operation_ids.insert(operation_id) {
@@ -1089,6 +1108,13 @@ impl FederationAlephBftFinalizationHandler {
                 (FederationAlephBftFinalizedItemStatus::DuplicateOperation, None) => {
                     return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
                         reason: "non-operation finalized item cannot be a duplicate operation"
+                            .to_string(),
+                    });
+                }
+                (FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation, Some(_)) => {}
+                (FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation, None) => {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "non-operation finalized item cannot be an invalid operation"
                             .to_string(),
                     });
                 }
@@ -1211,6 +1237,7 @@ impl FederationAlephBftFinalizationHandler {
             next_item_index,
             max_unit_payload_bytes,
             allowed_members,
+            operation_config,
             finalized_units,
             finalized_operation_ids,
         })
@@ -1307,15 +1334,23 @@ impl FederationAlephBftFinalizationHandler {
 
         for (item_index_in_unit, item) in payload.items.into_iter().enumerate() {
             let operation_id = item.operation_id()?;
-            let status = match operation_id {
-                Some(operation_id) => {
+            let status = match (&item, operation_id) {
+                (FederationConsensusItem::Operation(envelope), Some(_))
+                    if self
+                        .operation_config
+                        .as_ref()
+                        .is_some_and(|config| envelope.verify_authorization(config).is_err()) =>
+                {
+                    FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+                }
+                (_, Some(operation_id)) => {
                     if self.finalized_operation_ids.insert(operation_id) {
                         FederationAlephBftFinalizedItemStatus::Accepted
                     } else {
                         FederationAlephBftFinalizedItemStatus::DuplicateOperation
                     }
                 }
-                None => FederationAlephBftFinalizedItemStatus::Accepted,
+                (_, None) => FederationAlephBftFinalizedItemStatus::Accepted,
             };
             items.push(FederationAlephBftFinalizedItem {
                 accepted_item_index: self.next_item_index,
@@ -1462,7 +1497,14 @@ impl FederationConsensusRuntime {
         session: u64,
         finalized_items: Vec<FederationAlephBftFinalizedItem>,
     ) -> Result<Self> {
-        Self::recover_inner(federation_id, local_member, session, None, finalized_items)
+        Self::recover_inner(
+            federation_id,
+            local_member,
+            session,
+            None,
+            None,
+            finalized_items,
+        )
     }
 
     /// Recover a runtime with a roster-bound finalization guard.
@@ -1481,6 +1523,25 @@ impl FederationConsensusRuntime {
             local_member,
             session,
             Some(allowed_members.into_iter().collect()),
+            None,
+            finalized_items,
+        )
+    }
+
+    fn recover_authenticated_from_finalized_items(
+        public_config: FederationConfig,
+        local_member: MemberId,
+        session: u64,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        public_config.validate()?;
+        let allowed_members = public_config.members.keys().copied().collect();
+        Self::recover_inner(
+            public_config.federation_id,
+            local_member,
+            session,
+            Some(allowed_members),
+            Some(public_config),
             finalized_items,
         )
     }
@@ -1490,6 +1551,7 @@ impl FederationConsensusRuntime {
         local_member: MemberId,
         session: u64,
         allowed_members: Option<BTreeSet<MemberId>>,
+        operation_config: Option<FederationConfig>,
         finalized_items: Vec<FederationAlephBftFinalizedItem>,
     ) -> Result<Self> {
         let finalization_handler =
@@ -1498,15 +1560,20 @@ impl FederationConsensusRuntime {
                 session,
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
                 allowed_members,
+                operation_config,
                 &finalized_items,
             )?;
         let mut journal = InMemoryFederationJournal::new();
         for finalized_item in &finalized_items {
-            if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
-                journal.append_finalized_with_consensus_evidence(
-                    envelope.clone(),
-                    finalized_item.consensus_evidence(),
-                )?;
+            if finalized_item.status
+                != FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+            {
+                if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
+                    journal.append_finalized_with_consensus_evidence(
+                        envelope.clone(),
+                        finalized_item.consensus_evidence(),
+                    )?;
+                }
             }
         }
 
@@ -1693,14 +1760,18 @@ impl FederationConsensusRuntime {
         let mut responses = Vec::new();
 
         for finalized_item in outcome.items {
-            if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
-                let response = FederationSubmitOperationResponse::from_outcome(
-                    self.journal.append_finalized_with_consensus_evidence(
-                        envelope.clone(),
-                        finalized_item.consensus_evidence(),
-                    )?,
-                );
-                responses.push(response);
+            if finalized_item.status
+                != FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+            {
+                if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
+                    let response = FederationSubmitOperationResponse::from_outcome(
+                        self.journal.append_finalized_with_consensus_evidence(
+                            envelope.clone(),
+                            finalized_item.consensus_evidence(),
+                        )?,
+                    );
+                    responses.push(response);
+                }
             }
             self.finalized_items.push(finalized_item);
         }
@@ -1881,6 +1952,26 @@ pub struct FederationQuorumVerifiedCatchUp {
 }
 
 impl FederationConsensusRuntime {
+    /// Recover an authenticated AlephBFT runtime from retained finalized items.
+    pub fn authenticated_aleph_bft_from_finalized_items(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        session: u64,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        validate_runtime_roster(
+            public_config.members.keys().copied(),
+            public_config.threshold_params.consensus_threshold,
+            member_id,
+        )?;
+        Self::recover_authenticated_from_finalized_items(
+            public_config.clone(),
+            member_id,
+            session,
+            finalized_items,
+        )
+    }
+
     /// Recover an AlephBFT runtime from retained finalized items.
     pub fn aleph_bft_from_finalized_items<I>(
         federation_id: FederationId,

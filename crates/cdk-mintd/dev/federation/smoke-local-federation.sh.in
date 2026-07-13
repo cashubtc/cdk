@@ -892,7 +892,10 @@ wait_for_converged
 wait_for_catch_up_certificate_quorum "$RESTART_MEMBER"
 
 stop_member "$QUARANTINE_OFFLINE_MEMBER"
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
+run_smoke_operations \
+  --private-config "$(member_private_config "$PRIMARY_MEMBER")" \
+  --conflicting-private-config "$(member_private_config "$RESTART_MEMBER")" \
+  --scenario quarantine-mint-conflict
 wait_for_quarantine_report "$PRIMARY_MEMBER"
 
 start_member "$QUARANTINE_OFFLINE_MEMBER"

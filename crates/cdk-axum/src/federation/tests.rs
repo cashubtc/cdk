@@ -2078,12 +2078,10 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         .await
         .expect("payment processor");
     let mint = builder.build_with_seed(db, seed).await.expect("mint");
-    let consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
-        runtime_config.federation_id(),
+    let consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+        runtime_config.public_config(),
         runtime_config.member_id(),
         0,
-        public_config.members.keys().copied(),
-        public_config.threshold_params.consensus_threshold,
         Vec::new(),
     )
     .expect("AlephBFT consensus runtime");
@@ -2908,6 +2906,8 @@ fn payment_observation_envelope(federation_id: FederationId) -> FederationOperat
             payment_proof: Some("fake-wallet-paid".to_string()),
         }),
     )
+    .authorize(&private_member(1))
+    .expect("authorize payment observation")
 }
 
 fn oversized_payment_observation_envelope(
@@ -2920,6 +2920,8 @@ fn oversized_payment_observation_envelope(
     observation.payment_proof =
         Some("x".repeat(cdk::federation::FEDERATION_MAX_OPERATION_ENVELOPE_BYTES));
     envelope
+        .authorize(&private_member(1))
+        .expect("reauthorize oversized payment observation")
 }
 
 fn mint_quote_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOperationEnvelope {
@@ -3044,6 +3046,8 @@ fn mint_payment_observation_envelope_for_member(
             payment_proof: Some(payment_proof.to_string()),
         }),
     )
+    .authorize(&private_member(observer))
+    .expect("authorize member payment observation")
 }
 
 fn mint_output(state: &MintState, quote_id: &QuoteId) -> BlindedMessage {
@@ -3288,6 +3292,8 @@ fn test_operation_envelope(
             },
         ),
     )
+    .authorize(&private_member(1))
+    .expect("authorize test operation")
 }
 
 fn test_operation_envelope_for_state(
@@ -3962,12 +3968,12 @@ async fn admission_validation_uses_effective_config_after_keyset_rotation() {
         .expect("inactive rotation keyset")
         .clone();
     rotated_keyset.active = true;
-    let rotation = FederationOperationEnvelope::new(
-        public_config.federation_id,
-        FederationOperation::KeysetRotation(FederationKeysetRotationOperation {
+    let runtime_config = state.mint.federation_config().expect("federation config");
+    let rotation = runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+        FederationKeysetRotationOperation {
             keyset: rotated_keyset.clone(),
-        }),
-    );
+        },
+    ));
     state
         .submit_federation_envelope(rotation)
         .await
@@ -3978,15 +3984,14 @@ async fn admission_validation_uses_effective_config_after_keyset_rotation() {
         rotated_keyset.id,
         PublicKey::from(BlsG1PublicKey::hash_to_curve(b"rotated admission output")),
     );
-    let swap = FederationOperationEnvelope::new(
-        public_config.federation_id,
-        FederationOperation::Swap(cdk::federation::FederationSwapOperation {
+    let swap = runtime_config.operation_envelope(FederationOperation::Swap(
+        cdk::federation::FederationSwapOperation {
             request: cdk::nuts::SwapRequest::new(
                 vec![proof_for_amount(&state, 1, "rotated-admission-input")],
                 vec![output],
             ),
-        }),
-    );
+        },
+    ));
 
     let static_err = state
         .mint
@@ -7969,15 +7974,14 @@ async fn aleph_bft_catch_up_retries_failed_local_finalized_overlap() {
         .finalize_unit(suffix_unit)
         .expect("finalize suffix peer unit");
 
-    let mut local_consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
-        public_config.federation_id,
-        local_private.member_id,
-        0,
-        public_config.members.keys().copied(),
-        public_config.threshold_params.consensus_threshold,
-        peer_adapter.finalized_items()[..1].to_vec(),
-    )
-    .expect("local recovered AlephBFT consensus");
+    let mut local_consensus =
+        FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+            &public_config,
+            local_private.member_id,
+            0,
+            peer_adapter.finalized_items()[..1].to_vec(),
+        )
+        .expect("local recovered AlephBFT consensus");
     local_consensus
         .update_status(stale_operation_id, FederationOperationStatus::Failed)
         .expect("mark local operation failed");
@@ -19664,10 +19668,13 @@ async fn materialized_state_digest_tracks_keyset_rotation_rows() {
         .await
         .expect("before digest");
     let keyset = public_config.keysets[0].clone();
-    let envelope = FederationOperationEnvelope::new(
-        public_config.federation_id,
-        FederationOperation::KeysetRotation(FederationKeysetRotationOperation { keyset }),
-    );
+    let envelope = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .operation_envelope(FederationOperation::KeysetRotation(
+            FederationKeysetRotationOperation { keyset },
+        ));
     let operation_id = envelope.operation_id().expect("operation id");
 
     state

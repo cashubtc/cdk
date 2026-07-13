@@ -11,13 +11,14 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use aleph_bft::{
-    DataProvider, FinalizationHandler, Hasher as AlephHasher, Index, Keychain, LocalIO,
-    MultiKeychain, Network, NetworkData, NodeCount, NodeIndex, OrderedUnit, Recipient,
-    SignatureSet, SpawnHandle, TaskHandle, UnitFinalizationHandler,
+    DataProvider, Hasher as AlephHasher, Index, Keychain, LocalIO, MultiKeychain, Network,
+    NetworkData, NodeCount, NodeIndex, OrderedUnit, Recipient, SignatureSet, SpawnHandle,
+    TaskHandle, UnitFinalizationHandler,
 };
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationConfig, FederationConsensusRuntime, FederationError,
-    MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FederationId, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use cdk::nuts::SecretKey;
 use cdk_common::database::DynMintDatabase;
@@ -181,6 +182,7 @@ impl CdkAlephBftSignature {
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftKeychain {
+    federation_id: FederationId,
     private_config: MemberConfigPrivate,
     members_by_node: Vec<(MemberId, MemberConfigPublic)>,
     local_index: NodeIndex,
@@ -239,6 +241,7 @@ impl CdkAlephBftKeychain {
         }))?;
 
         Ok(Self {
+            federation_id: public_config.federation_id,
             private_config,
             members_by_node,
             local_index,
@@ -251,6 +254,11 @@ impl CdkAlephBftKeychain {
         self.members_by_node
             .get(node.0)
             .map(|(member_id, _)| *member_id)
+    }
+
+    /// Return the federation authenticated by this keychain.
+    pub(crate) fn federation_id(&self) -> FederationId {
+        self.federation_id
     }
 
     /// Return the federation member config represented by a given AlephBFT node index.
@@ -585,52 +593,112 @@ impl DataProvider for CdkAlephBftDataProvider {
     }
 }
 
+/// A finalized CDK payload plus identity and ordering metadata authenticated by AlephBFT.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct CdkAlephBftFinalizedUnit {
+    payload: FederationAlephBftUnitPayload,
+    federation_id: FederationId,
+    session: u64,
+    creator: MemberId,
+    round: u16,
+    unit_hash: [u8; 32],
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftFinalizedUnit {
+    /// Return operation IDs for latency tracking before consuming this unit.
+    pub(crate) fn operation_ids(&self) -> &[cdk::federation::FederationOperationId] {
+        &self.payload.operation_ids
+    }
+
+    /// Return the authenticated member that created the ordered AlephBFT unit.
+    pub(crate) fn creator(&self) -> MemberId {
+        self.creator
+    }
+
+    /// Return the authenticated AlephBFT round used as the member-local unit index.
+    pub(crate) fn round(&self) -> u16 {
+        self.round
+    }
+
+    /// Return the authenticated AlephBFT unit hash.
+    pub(crate) fn unit_hash(&self) -> [u8; 32] {
+        self.unit_hash
+    }
+
+    /// Replace untrusted payload metadata with the authenticated AlephBFT context.
+    pub(crate) fn into_authenticated_payload(
+        self,
+    ) -> Result<FederationAlephBftUnitPayload, FederationError> {
+        if self.payload.items.is_empty() {
+            return Err(FederationError::EmptyAlephBftUnit);
+        }
+        let payload = FederationAlephBftUnitPayload::new(
+            self.federation_id,
+            self.creator,
+            self.session,
+            u64::from(self.round),
+            self.payload.items,
+        )?;
+        payload.ensure_within_size_limit(FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES)?;
+        Ok(payload)
+    }
+}
+
 /// Finalization handler that hands ordered CDK units back to the mint runtime.
 #[derive(Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftFinalizationHandler {
-    finalized_units: mpsc::UnboundedSender<FederationAlephBftUnitPayload>,
+    finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
     activity_hint: CdkAlephBftActivityHint,
+    keychain: CdkAlephBftKeychain,
+    session: u64,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftFinalizationHandler {
     /// Create a handler that forwards finalized unit payloads to an async apply loop.
     pub(crate) fn new(
-        finalized_units: mpsc::UnboundedSender<FederationAlephBftUnitPayload>,
+        finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
+        keychain: CdkAlephBftKeychain,
+        session: u64,
     ) -> Self {
-        Self::with_activity_hint(finalized_units, CdkAlephBftActivityHint::default())
+        Self::with_activity_hint(
+            finalized_units,
+            CdkAlephBftActivityHint::default(),
+            keychain,
+            session,
+        )
     }
 
     fn with_activity_hint(
-        finalized_units: mpsc::UnboundedSender<FederationAlephBftUnitPayload>,
+        finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
         activity_hint: CdkAlephBftActivityHint,
+        keychain: CdkAlephBftKeychain,
+        session: u64,
     ) -> Self {
         Self {
             finalized_units,
             activity_hint,
+            keychain,
+            session,
         }
     }
-}
 
-impl FinalizationHandler<CdkAlephBftData> for CdkAlephBftFinalizationHandler {
-    fn data_finalized(&mut self, data: CdkAlephBftData) {
+    fn record_finalized_data(&self, data: &CdkAlephBftData) {
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::FinalizedDataReceived,
             data.payload().operation_ids.iter().copied(),
         );
-        let payload = data.into_payload();
         self.activity_hint.mark_network_activity_finalized(
-            std::iter::once(payload.body_hash.to_bytes()).chain(
-                payload
+            std::iter::once(data.payload().body_hash.to_bytes()).chain(
+                data.payload()
                     .operation_ids
                     .iter()
                     .map(|operation_id| operation_id.to_bytes()),
             ),
         );
-        if self.finalized_units.send(payload).is_err() {
-            tracing::warn!("AlephBFT finalized CDK unit receiver is closed");
-        }
     }
 }
 
@@ -641,7 +709,25 @@ impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
     fn batch_finalized(&mut self, batch: Vec<OrderedUnit<Self::Data, Self::Hasher>>) {
         for unit in batch {
             if let Some(data) = unit.data {
-                self.data_finalized(data);
+                self.record_finalized_data(&data);
+                let Some(creator) = self.keychain.member_for_node(unit.creator) else {
+                    tracing::warn!(
+                        creator_index = unit.creator.0,
+                        "AlephBFT finalized a unit for an unknown creator index"
+                    );
+                    continue;
+                };
+                let finalized_unit = CdkAlephBftFinalizedUnit {
+                    payload: data.into_payload(),
+                    federation_id: self.keychain.federation_id(),
+                    session: self.session,
+                    creator,
+                    round: unit.round,
+                    unit_hash: unit.hash,
+                };
+                if self.finalized_units.send(finalized_unit).is_err() {
+                    tracing::warn!("AlephBFT finalized CDK unit receiver is closed");
+                }
             }
         }
     }
@@ -975,7 +1061,7 @@ pub(crate) type CdkAlephBftLocalIo = LocalIO<
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftSessionIo {
     local_io: CdkAlephBftLocalIo,
-    finalized_units: mpsc::UnboundedReceiver<FederationAlephBftUnitPayload>,
+    finalized_units: mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
 }
 
 impl fmt::Debug for CdkAlephBftSessionIo {
@@ -993,6 +1079,7 @@ impl CdkAlephBftSessionIo {
         db: DynMintDatabase,
         session_id: u64,
         activity_hint: CdkAlephBftActivityHint,
+        keychain: CdkAlephBftKeychain,
     ) -> Result<Self, cdk::Error> {
         let backup = CdkAlephBftDbBackup::new(db, session_id);
         let unit_loader = backup.try_reader().await?;
@@ -1000,8 +1087,12 @@ impl CdkAlephBftSessionIo {
         let data_provider =
             CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint.clone());
         let (sender, finalized_units) = mpsc::unbounded_channel();
-        let finalization_handler =
-            CdkAlephBftFinalizationHandler::with_activity_hint(sender, activity_hint);
+        let finalization_handler = CdkAlephBftFinalizationHandler::with_activity_hint(
+            sender,
+            activity_hint,
+            keychain,
+            session_id,
+        );
         let local_io = LocalIO::new_with_unit_finalization_handler(
             data_provider,
             finalization_handler,
@@ -1020,7 +1111,7 @@ impl CdkAlephBftSessionIo {
         self,
     ) -> (
         CdkAlephBftLocalIo,
-        mpsc::UnboundedReceiver<FederationAlephBftUnitPayload>,
+        mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
     ) {
         (self.local_io, self.finalized_units)
     }
@@ -1134,8 +1225,8 @@ mod tests {
     use std::str::FromStr;
 
     use aleph_bft::{
-        DataProvider, FinalizationHandler, Index, Keychain, MultiKeychain, Network, OrderedUnit,
-        PartialMultisignature, Recipient, SpawnHandle, UnitFinalizationHandler,
+        DataProvider, Index, Keychain, MultiKeychain, Network, OrderedUnit, PartialMultisignature,
+        Recipient, SpawnHandle, UnitFinalizationHandler,
     };
     use cdk::federation::{
         FederationAlephBftUnitPayload, FederationConfig, FederationConsensusDefaultItem,
@@ -1220,11 +1311,19 @@ mod tests {
         data: Option<CdkAlephBftData>,
         round: u16,
     ) -> OrderedUnit<CdkAlephBftData, CdkAlephBftHasher> {
+        ordered_unit_for_creator(data, NodeIndex(0), round)
+    }
+
+    fn ordered_unit_for_creator(
+        data: Option<CdkAlephBftData>,
+        creator: NodeIndex,
+        round: u16,
+    ) -> OrderedUnit<CdkAlephBftData, CdkAlephBftHasher> {
         OrderedUnit {
             data,
             parents: Vec::new(),
             hash: [u8::try_from(round).expect("round fits in hash byte"); 32],
-            creator: NodeIndex(0),
+            creator,
             round,
         }
     }
@@ -1552,20 +1651,36 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_finalization_handler_forwards_payloads() {
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
         let payload = module_fact_payload(2);
         let data = CdkAlephBftData::try_from_payload(payload.clone()).expect("data");
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let activity_hint = CdkAlephBftActivityHint::default();
         activity_hint.mark_network_activity([payload.body_hash.to_bytes()]);
-        let mut handler =
-            CdkAlephBftFinalizationHandler::with_activity_hint(sender, activity_hint.clone());
+        let mut handler = CdkAlephBftFinalizationHandler::with_activity_hint(
+            sender,
+            activity_hint.clone(),
+            keychain,
+            9,
+        );
         assert!(activity_hint.is_active());
 
-        handler.data_finalized(data);
-        let finalized = receiver.recv().await.expect("finalized payload");
+        handler.batch_finalized(vec![ordered_unit_for_creator(Some(data), NodeIndex(1), 7)]);
+        let finalized_unit = receiver.recv().await.expect("finalized payload");
+        assert_eq!(finalized_unit.creator(), member_id(2));
+        assert_eq!(finalized_unit.round(), 7);
+        assert_eq!(finalized_unit.unit_hash(), [7; 32]);
+        let finalized = finalized_unit
+            .into_authenticated_payload()
+            .expect("authenticated payload");
 
         assert_eq!(finalized.body_hash, payload.body_hash);
-        assert_eq!(finalized.unit_index, payload.unit_index);
+        assert_eq!(finalized.federation_id, public_config.federation_id);
+        assert_eq!(finalized.submitting_member, member_id(2));
+        assert_eq!(finalized.session, 9);
+        assert_eq!(finalized.unit_index, 7);
         assert!(activity_hint.is_active());
         tokio::time::sleep(CDK_ALEPH_BFT_FINALIZATION_ACTIVITY_GRACE + Duration::from_millis(25))
             .await;
@@ -1574,6 +1689,9 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_finalization_shortens_operation_activity_tail() {
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
         let envelope = mint_quote_envelope("quote-peer-activity");
         let operation_id = envelope.operation_id().expect("operation id");
         let payload = FederationAlephBftUnitPayload::new(
@@ -1588,10 +1706,14 @@ mod tests {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let activity_hint = CdkAlephBftActivityHint::default();
         activity_hint.mark_network_activity([operation_id.to_bytes()]);
-        let mut handler =
-            CdkAlephBftFinalizationHandler::with_activity_hint(sender, activity_hint.clone());
+        let mut handler = CdkAlephBftFinalizationHandler::with_activity_hint(
+            sender,
+            activity_hint.clone(),
+            keychain,
+            0,
+        );
 
-        handler.data_finalized(data);
+        handler.batch_finalized(vec![ordered_unit(Some(data), 0)]);
         receiver.recv().await.expect("finalized payload");
         tokio::time::sleep(CDK_ALEPH_BFT_FINALIZATION_ACTIVITY_GRACE + Duration::from_millis(25))
             .await;
@@ -1601,12 +1723,15 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_finalization_handler_forwards_batch_payloads() {
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
         let first = module_fact_payload(3);
         let second = module_fact_payload(4);
         let first_data = CdkAlephBftData::try_from_payload(first.clone()).expect("first data");
         let second_data = CdkAlephBftData::try_from_payload(second.clone()).expect("second data");
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let mut handler = CdkAlephBftFinalizationHandler::new(sender);
+        let mut handler = CdkAlephBftFinalizationHandler::new(sender, keychain, 11);
 
         handler.batch_finalized(vec![
             ordered_unit(None, 0),
@@ -1614,12 +1739,64 @@ mod tests {
             ordered_unit(Some(second_data), 2),
         ]);
 
-        let first_finalized = receiver.recv().await.expect("first finalized payload");
-        let second_finalized = receiver.recv().await.expect("second finalized payload");
+        let first_finalized = receiver
+            .recv()
+            .await
+            .expect("first finalized payload")
+            .into_authenticated_payload()
+            .expect("authenticated first payload");
+        let second_finalized = receiver
+            .recv()
+            .await
+            .expect("second finalized payload")
+            .into_authenticated_payload()
+            .expect("authenticated second payload");
 
-        assert_eq!(first_finalized.unit_index, first.unit_index);
-        assert_eq!(second_finalized.unit_index, second.unit_index);
+        assert_eq!(first_finalized.federation_id, public_config.federation_id);
+        assert_eq!(first_finalized.session, 11);
+        assert_eq!(first_finalized.unit_index, 1);
+        assert_eq!(second_finalized.unit_index, 2);
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_finalized_payload_does_not_block_the_next_ordered_unit() {
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
+        let empty =
+            FederationAlephBftUnitPayload::new(federation_id(99), member_id(4), 88, 77, Vec::new())
+                .expect("empty payload");
+        let valid = module_fact_payload(6);
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let mut handler = CdkAlephBftFinalizationHandler::new(sender, keychain, 12);
+
+        handler.batch_finalized(vec![
+            ordered_unit(
+                Some(CdkAlephBftData::try_from_payload(empty).expect("empty data")),
+                3,
+            ),
+            ordered_unit(
+                Some(CdkAlephBftData::try_from_payload(valid).expect("valid data")),
+                4,
+            ),
+        ]);
+
+        let malformed = receiver.recv().await.expect("malformed finalized unit");
+        assert!(matches!(
+            malformed.into_authenticated_payload(),
+            Err(FederationError::EmptyAlephBftUnit)
+        ));
+        let next = receiver
+            .recv()
+            .await
+            .expect("next finalized unit")
+            .into_authenticated_payload()
+            .expect("authenticated next payload");
+        assert_eq!(next.federation_id, public_config.federation_id);
+        assert_eq!(next.submitting_member, member_id(1));
+        assert_eq!(next.session, 12);
+        assert_eq!(next.unit_index, 4);
     }
 
     #[test]
@@ -1710,11 +1887,15 @@ mod tests {
         let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
         let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
         let activity_hint = CdkAlephBftActivityHint::default();
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
         let session_io = CdkAlephBftSessionIo::from_db(
             Arc::clone(&consensus),
             Arc::clone(&db),
             103,
             activity_hint.clone(),
+            keychain,
         )
         .await
         .expect("session io");
@@ -1732,9 +1913,12 @@ mod tests {
             .await
             .expect("write next backup bytes");
         unit_saver.flush().await.expect("flush next backup bytes");
-        finalization_handler.data_finalized(
-            CdkAlephBftData::try_from_payload(module_fact_payload(5)).expect("finalized data"),
-        );
+        finalization_handler.batch_finalized(vec![ordered_unit(
+            Some(
+                CdkAlephBftData::try_from_payload(module_fact_payload(5)).expect("finalized data"),
+            ),
+            5,
+        )]);
 
         assert_eq!(loaded, b"persisted".to_vec());
         assert_eq!(
@@ -1750,6 +1934,8 @@ mod tests {
                 .recv()
                 .await
                 .expect("forwarded finalized unit")
+                .into_authenticated_payload()
+                .expect("authenticated finalized unit")
                 .unit_index,
             5
         );

@@ -122,6 +122,9 @@ fn aleph_bft_finalized_item_status_to_str(
     match status {
         FederationAlephBftFinalizedItemStatus::Accepted => "accepted",
         FederationAlephBftFinalizedItemStatus::DuplicateOperation => "duplicate_operation",
+        FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation => {
+            "rejected_invalid_operation"
+        }
     }
 }
 

@@ -1941,15 +1941,10 @@ mod tests {
             .unwrap();
         mint.start().await.unwrap();
 
-        let consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
-            runtime_config.federation_id(),
+        let consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+            runtime_config.public_config(),
             runtime_config.member_id(),
             0,
-            runtime_config.public_config().members.keys().copied(),
-            runtime_config
-                .public_config()
-                .threshold_params
-                .consensus_threshold,
             Vec::new(),
         )
         .expect("AlephBFT consensus runtime");
@@ -2889,9 +2884,8 @@ mod tests {
                             "direct-route member is not in federation mode".to_string(),
                         )
                     })?;
-                let envelope = FederationOperationEnvelope::new(
-                    config.federation_id(),
-                    FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
+                let envelope = config.operation_envelope(FederationOperation::MeltQuotePayment(
+                    FederationMeltQuotePaymentObservation {
                         quote: observed_payment.quote.clone(),
                         observer: config.member_id(),
                         method: observed_payment.method.clone(),
@@ -2900,8 +2894,8 @@ mod tests {
                         fee_reserve: observed_payment.fee_reserve,
                         payment_id: observed_payment.payment_id.clone(),
                         payment_proof: observed_payment.payment_proof.clone(),
-                    }),
-                );
+                    },
+                ));
 
                 for state in &self.states {
                     state
@@ -3386,10 +3380,8 @@ mod tests {
 
             let state = threshold_member_state(Arc::clone(mint)).await;
             let config = state.mint.federation_config().expect("federation config");
-            let envelope = FederationOperationEnvelope::new(
-                config.federation_id(),
-                FederationOperation::MeltQuotePayment(observation.clone()),
-            );
+            let envelope = config
+                .operation_envelope(FederationOperation::MeltQuotePayment(observation.clone()));
             finalize_local_test_operation(&state, envelope).await;
         }
     }

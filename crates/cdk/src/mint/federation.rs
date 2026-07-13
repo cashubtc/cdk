@@ -186,6 +186,8 @@ impl FederationRuntimeConfig {
         operation: FederationOperation,
     ) -> FederationOperationEnvelope {
         FederationOperationEnvelope::new(self.federation_id(), operation)
+            .authorize(&self.private_config)
+            .expect("validated federation identity key signs operation envelopes")
     }
 
     /// Build the consensus operation for creating a mint quote.

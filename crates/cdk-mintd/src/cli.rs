@@ -684,6 +684,9 @@ pub struct FederationSmokeOperationsArgs {
     /// Private member config JSON path for scenarios that submit private federation operations.
     #[arg(long)]
     pub private_config: Option<PathBuf>,
+    /// Second member config used to author independent conflicting payment evidence.
+    #[arg(long)]
+    pub conflicting_private_config: Option<PathBuf>,
     /// Currency unit to use for the operation smoke.
     #[arg(long, default_value = "sat")]
     pub unit: String,
@@ -1333,6 +1336,8 @@ mod tests {
             "federation-public.json",
             "--private-config",
             "member-1/federation-private.json",
+            "--conflicting-private-config",
+            "member-2/federation-private.json",
             "--scenario",
             "quarantine-mint-conflict",
         ])
@@ -1348,6 +1353,10 @@ mod tests {
         assert_eq!(
             smoke.private_config,
             Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(
+            smoke.conflicting_private_config,
+            Some(PathBuf::from("member-2/federation-private.json"))
         );
         assert_eq!(
             smoke.scenario,

@@ -192,11 +192,23 @@ pub(crate) async fn run_smoke_operations_command(
                         private_config_path,
                         "private federation config",
                     )?;
+                    let conflicting_private_config_path = args
+                        .conflicting_private_config
+                        .as_deref()
+                        .context(
+                            "--conflicting-private-config is required for quarantine-mint-conflict",
+                        )?;
+                    let conflicting_private_config: MemberConfigPrivate =
+                        crate::read_federation_json(
+                            conflicting_private_config_path,
+                            "conflicting private federation config",
+                        )?;
                     run_quarantine_mint_conflict(
                         args,
                         &public_config,
                         unit.clone(),
                         &private_config,
+                        &conflicting_private_config,
                     )
                     .await
                 }
@@ -302,6 +314,14 @@ fn validate_smoke_operation_args(args: &FederationSmokeOperationsArgs) -> Result
     if scenario_requires_private_config(args.scenario) && args.private_config.is_none() {
         bail!(
             "--private-config is required for federation smoke scenario {}",
+            smoke_scenario_name(args.scenario)
+        );
+    }
+    if args.scenario == FederationSmokeScenario::QuarantineMintConflict
+        && args.conflicting_private_config.is_none()
+    {
+        bail!(
+            "--conflicting-private-config is required for federation smoke scenario {}",
             smoke_scenario_name(args.scenario)
         );
     }
@@ -1172,6 +1192,7 @@ async fn run_quarantine_mint_conflict(
     public_config: &FederationConfig,
     unit: CurrencyUnit,
     private_config: &MemberConfigPrivate,
+    conflicting_private_config: &MemberConfigPrivate,
 ) -> Result<()> {
     let runtime_config =
         FederationRuntimeConfig::new(public_config.clone(), private_config.clone())
@@ -1179,12 +1200,13 @@ async fn run_quarantine_mint_conflict(
     let target_member = public_config
         .member(private_config.member_id)
         .context("private federation member is missing from the public federation config")?;
-    let conflicting_observer = public_config
-        .members
-        .keys()
-        .copied()
-        .find(|member_id| *member_id != private_config.member_id)
-        .context("quarantine mint conflict smoke needs at least two federation members")?;
+    let conflicting_runtime_config =
+        FederationRuntimeConfig::new(public_config.clone(), conflicting_private_config.clone())
+            .context("conflicting private config does not match public federation config")?;
+    let conflicting_observer = conflicting_runtime_config.member_id();
+    if conflicting_observer == private_config.member_id {
+        bail!("quarantine mint conflict smoke requires two distinct member private configs");
+    }
     let quote = QuoteId::new();
     let amount = Amount::from(args.mint_amount);
     let conflicting_amount = Amount::from(args.mint_amount.saturating_add(1));
@@ -1218,8 +1240,7 @@ async fn run_quarantine_mint_conflict(
         Amount::ZERO,
         Some(format!("settled-{quote}")),
     );
-    let conflicting_observation = FederationOperationEnvelope::new(
-        public_config.federation_id,
+    let conflicting_observation = conflicting_runtime_config.operation_envelope(
         FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
             quote: quote.to_string(),
             observer: conflicting_observer,

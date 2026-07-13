@@ -2403,13 +2403,10 @@ async fn create_federation_runtime_state(
         .unwrap_or(0);
     let recovered_session =
         latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
-    let member_ids = config.public_config().members.keys().copied();
-    let mut consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
-        config.federation_id(),
+    let mut consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+        config.public_config(),
         config.member_id(),
         recovered_session,
-        member_ids,
-        config.public_config().threshold_params.consensus_threshold,
         finalized_items,
     )?;
     ensure_persisted_journal_matches_aleph_bft_recovery(

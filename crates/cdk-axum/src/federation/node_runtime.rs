@@ -15,11 +15,12 @@ use crate::{
     FederationSyncState, FederationSyncStatus,
 };
 use cdk::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationApplicationState, FederationCatchUpCertificate,
-    FederationCatchUpOperation, FederationConfig, FederationConsensusItemAdmission,
-    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationApplicationState, FederationCatchUpCertificate, FederationCatchUpOperation,
+    FederationConfig, FederationConsensusItemAdmission, FederationConsensusRuntime,
+    FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
@@ -151,6 +152,7 @@ impl FederationNodeRuntime {
         let Some(config) = mint.effective_federation_config().await? else {
             return Ok(());
         };
+        envelope.verify_authorization(config.public_config())?;
         config.validate_federated_operation_submission(&envelope.operation)
     }
 
@@ -381,6 +383,12 @@ impl FederationNodeRuntime {
                     payload,
                     "replay changed operation ID",
                 ));
+            }
+
+            if finalized_item.status
+                == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+            {
+                continue;
             }
 
             if let Some(operation_id) = finalized_item.operation_id {
@@ -989,15 +997,13 @@ impl FederationNodeRuntime {
         retained_items.extend(new_finalized_items.iter().cloned());
         let target_session =
             crate::latest_aleph_bft_finalized_session(&retained_items).max(status.session);
-        let member_ids = public_config.members.keys().copied();
-        let mut next_consensus = FederationConsensusRuntime::aleph_bft_from_finalized_items(
-            public_config.federation_id,
-            runtime_config.member_id(),
-            target_session,
-            member_ids,
-            public_config.threshold_params.consensus_threshold,
-            retained_items,
-        )?;
+        let mut next_consensus =
+            FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+                &public_config,
+                runtime_config.member_id(),
+                target_session,
+                retained_items,
+            )?;
         let recovered_entries_before_status_overlay = next_consensus.journal().entries().to_vec();
         let entries_to_retry_from_local_overlap = crate::stale_local_aleph_bft_entries_to_retry(
             &local_entries,

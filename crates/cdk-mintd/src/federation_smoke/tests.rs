@@ -10,6 +10,7 @@ fn smoke_args() -> FederationSmokeOperationsArgs {
     FederationSmokeOperationsArgs {
         public_config: PathBuf::from("public.json"),
         private_config: None,
+        conflicting_private_config: None,
         unit: "sat".to_string(),
         mint_amount: 4,
         scenario: FederationSmokeScenario::Standard,
@@ -190,9 +191,25 @@ fn smoke_operation_args_require_private_config_for_signed_operation_scenarios() 
         assert!(err.to_string().contains(smoke_scenario_name(scenario)));
 
         args.private_config = Some(PathBuf::from("member-1/federation-private.json"));
+        if scenario == FederationSmokeScenario::QuarantineMintConflict {
+            args.conflicting_private_config =
+                Some(PathBuf::from("member-2/federation-private.json"));
+        }
         validate_smoke_operation_args(&args)
             .expect("signed-operation smoke scenario validates with private config");
     }
+}
+
+#[test]
+fn quarantine_smoke_requires_a_second_member_private_config() {
+    let mut args = smoke_args();
+    args.scenario = FederationSmokeScenario::QuarantineMintConflict;
+    args.private_config = Some(PathBuf::from("member-1/federation-private.json"));
+
+    let err = validate_smoke_operation_args(&args)
+        .expect_err("quarantine conflict needs an independent observer signature");
+
+    assert!(err.to_string().contains("--conflicting-private-config"));
 }
 
 #[test]
