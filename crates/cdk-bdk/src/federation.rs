@@ -18,6 +18,24 @@ const FEDERATED_WALLET_NAMESPACE_DOMAIN: &[u8] = b"cdk/bdk/federated-wallet-name
 const FEDERATED_WALLET_DIRECTORY: &str = "federation-bdk-v1";
 const MAX_SYNC_FAILURES: u32 = 1_000_000;
 
+/// Public descriptor branch used after a consensus allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederatedWalletKeychain {
+    /// Incoming/deposit branch.
+    External,
+    /// Change/internal branch.
+    Internal,
+}
+
+impl From<FederatedWalletKeychain> for KeychainKind {
+    fn from(keychain: FederatedWalletKeychain) -> Self {
+        match keychain {
+            FederatedWalletKeychain::External => Self::External,
+            FederatedWalletKeychain::Internal => Self::Internal,
+        }
+    }
+}
+
 /// Member-local storage and chain-source configuration.
 #[derive(Clone)]
 pub struct FederatedBdkLocalConfig {
@@ -103,6 +121,18 @@ impl FederatedWalletScope {
             .expect("namespace always has a digest segment")
             .to_string()
     }
+
+    /// Registered application identifier used to select consensus state.
+    #[must_use]
+    pub fn application_id(self) -> [u8; 32] {
+        self.application_id
+    }
+
+    /// Descriptor application epoch used to select consensus state.
+    #[must_use]
+    pub fn application_key_epoch(self) -> u64 {
+        self.application_key_epoch
+    }
 }
 
 /// Accepted public descriptors and network for one federated BDK instance.
@@ -141,6 +171,12 @@ impl FederatedWalletConfig {
     #[must_use]
     pub fn network(&self) -> Network {
         self.descriptors.network()
+    }
+
+    /// Immutable consensus scope for this public descriptor pair.
+    #[must_use]
+    pub fn scope(&self) -> FederatedWalletScope {
+        self.scope
     }
 }
 
@@ -192,6 +228,7 @@ pub struct FederatedWalletSyncStatus {
 #[derive(Clone)]
 pub struct FederatedBdkWallet {
     engine: BdkWalletEngine,
+    scope: FederatedWalletScope,
     status: Arc<RwLock<FederatedWalletSyncStatus>>,
     #[allow(dead_code)]
     database_dir: Arc<PathBuf>,
@@ -214,7 +251,8 @@ impl FederatedBdkWallet {
         chain_source: ChainSource,
         storage_root: impl AsRef<Path>,
     ) -> Result<Self, Error> {
-        let namespace = config.scope.namespace();
+        let scope = config.scope;
+        let namespace = scope.namespace();
         let database_dir = storage_root
             .as_ref()
             .join(FEDERATED_WALLET_DIRECTORY)
@@ -228,6 +266,7 @@ impl FederatedBdkWallet {
         )?;
         Ok(Self {
             engine,
+            scope,
             status: Arc::new(RwLock::new(FederatedWalletSyncStatus {
                 source,
                 health: FederatedWalletSyncHealth::NeverSynced,
@@ -244,6 +283,53 @@ impl FederatedBdkWallet {
     #[must_use]
     pub fn engine(&self) -> &BdkWalletEngine {
         &self.engine
+    }
+
+    /// Immutable consensus scope selecting this wallet.
+    #[must_use]
+    pub fn scope(&self) -> FederatedWalletScope {
+        self.scope
+    }
+
+    /// Persist every accepted external and internal script through the supplied
+    /// max-plus-one counters. Repeating the same counters is idempotent.
+    pub async fn reconcile_revealed_counters(
+        &self,
+        external_next_index: u64,
+        internal_next_index: u64,
+    ) -> Result<(), Error> {
+        for (keychain, next_index) in [
+            (KeychainKind::External, external_next_index),
+            (KeychainKind::Internal, internal_next_index),
+        ] {
+            if next_index == 0 {
+                continue;
+            }
+            let target_index = u32::try_from(next_index - 1).map_err(|_| {
+                Error::InvalidConfig("federated reveal counter exceeds u32".to_string())
+            })?;
+            self.engine
+                .reveal_addresses_to(keychain, target_index)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Reveal and return one accepted address. Consensus must assign the index
+    /// before this method is called.
+    pub async fn reveal_address(
+        &self,
+        keychain: FederatedWalletKeychain,
+        index: u32,
+    ) -> Result<String, Error> {
+        let keychain = KeychainKind::from(keychain);
+        self.engine.reveal_addresses_to(keychain, index).await?;
+        let wallet = self.engine.wallet_with_db.lock().await;
+        Ok(wallet
+            .wallet
+            .peek_address(keychain, index)
+            .address
+            .to_string())
     }
 
     /// Synchronize once. Failure leaves the last persisted chain graph intact.
@@ -479,6 +565,59 @@ mod tests {
             restored.peek_script(KeychainKind::External, 42).await,
             expected
         );
+    }
+
+    #[tokio::test]
+    async fn consensus_counters_reveal_gaps_idempotently_across_restart() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let wallet = FederatedBdkWallet::open(config(25), esplora_source(), root.path())
+            .expect("initial wallet");
+        let expected_external = wallet.peek_script(KeychainKind::External, 6).await;
+        let expected_internal = wallet.peek_script(KeychainKind::Internal, 3).await;
+        wallet
+            .reconcile_revealed_counters(7, 4)
+            .await
+            .expect("reconcile accepted counters");
+        assert_eq!(
+            wallet
+                .reveal_address(FederatedWalletKeychain::External, 6)
+                .await
+                .expect("accepted external address"),
+            bdk_wallet::bitcoin::Address::from_script(
+                expected_external.as_script(),
+                Network::Regtest,
+            )
+            .expect("external address")
+            .to_string()
+        );
+        drop(wallet);
+
+        let restarted = FederatedBdkWallet::open(config(25), bitcoin_rpc_source(), root.path())
+            .expect("restarted wallet");
+        restarted
+            .reconcile_revealed_counters(7, 4)
+            .await
+            .expect("idempotent restart reconciliation");
+        assert_eq!(
+            restarted.peek_script(KeychainKind::External, 6).await,
+            expected_external
+        );
+        assert_eq!(
+            restarted.peek_script(KeychainKind::Internal, 3).await,
+            expected_internal
+        );
+        assert!(restarted
+            .engine()
+            .reveal_addresses_to(KeychainKind::External, 6)
+            .await
+            .expect("already revealed external range")
+            .is_empty());
+        assert!(restarted
+            .engine()
+            .reveal_addresses_to(KeychainKind::Internal, 3)
+            .await
+            .expect("already revealed internal range")
+            .is_empty());
     }
 
     #[tokio::test]

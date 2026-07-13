@@ -73,6 +73,13 @@ impl Mint {
                 .with_field("payload_json", serde_json::to_string(&active_epochs)?),
             );
         }
+        for row in self
+            .federation_address_allocation_state()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut payment_observation_quotes = BTreeSet::new();
@@ -99,6 +106,7 @@ impl Mint {
             }
 
             match &entry.envelope.operation {
+                FederationOperation::AddressAllocation(_) => {}
                 FederationOperation::MintQuote(operation) => {
                     mint_quotes.insert(operation.quote.clone());
                 }

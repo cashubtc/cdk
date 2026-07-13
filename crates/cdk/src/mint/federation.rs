@@ -4,6 +4,7 @@
 //! validates aggregate BLS keysets, and produces member signature shares while
 //! preserving standalone mint behavior outside federation mode.
 
+mod address_allocation;
 mod projection;
 
 use std::collections::{HashMap, HashSet};
@@ -14,8 +15,9 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationApplicationState, FederationBlindSignatureShareSet, FederationConfig,
-    FederationConfigDigest, FederationError, FederationId, FederationJournalEntry,
+    FederationAddressAllocationOperation, FederationAddressKeychain, FederationApplicationState,
+    FederationBlindSignatureShareSet, FederationConfig, FederationConfigDigest, FederationError,
+    FederationFrostApplicationId, FederationId, FederationJournalEntry,
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
@@ -114,6 +116,63 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn config_digest(&self) -> FederationConfigDigest {
         self.config_digest
+    }
+
+    /// Build and authorize one consensus-controlled descriptor allocation.
+    pub fn address_allocation_operation(
+        &self,
+        quote: impl Into<String>,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        let operation = FederationAddressAllocationOperation::new(
+            quote,
+            application_id,
+            application_key_epoch,
+            keychain,
+        )?;
+        self.validate_federated_address_allocation_submission(&operation)?;
+        Ok(FederationOperationEnvelope::new(
+            self.public_config.federation_id,
+            FederationOperation::AddressAllocation(operation),
+        )
+        .authorize(&self.private_config)?)
+    }
+
+    fn validate_federated_address_allocation_submission(
+        &self,
+        operation: &FederationAddressAllocationOperation,
+    ) -> Result<(), Error> {
+        operation.validate()?;
+        let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+            FederationError::AddressAllocationInvalid {
+                reason: "federation has no accepted FROST wallet configuration".to_string(),
+            }
+        })?;
+        let application = wallet
+            .cdk_onchain_applications
+            .iter()
+            .find(|application| {
+                application.application_id == operation.application_id
+                    && application.application_key_epoch == operation.application_key_epoch
+            })
+            .ok_or_else(|| FederationError::AddressAllocationInvalid {
+                reason: "allocation references an unknown CDK application epoch".to_string(),
+            })?;
+        if application.state != cdk_common::federation::FederationFrostEpochState::Active
+            || wallet
+                .active_epochs
+                .application_key_epochs
+                .get(&operation.application_id)
+                != Some(&operation.application_key_epoch)
+        {
+            return Err(FederationError::AddressAllocationInvalid {
+                reason: "allocation requires the active CDK application epoch".to_string(),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     fn validate_federation_observer(&self, observer: MemberId) -> Result<(), Error> {
@@ -507,6 +566,9 @@ impl FederationRuntimeConfig {
         operation: &FederationOperation,
     ) -> Result<(), Error> {
         match operation {
+            FederationOperation::AddressAllocation(operation) => {
+                self.validate_federated_address_allocation_submission(operation)
+            }
             FederationOperation::MintQuote(operation) => {
                 self.validate_federated_mint_quote_submission(operation)
             }
@@ -1429,6 +1491,11 @@ impl Mint {
         }
 
         match &entry.envelope.operation {
+            FederationOperation::AddressAllocation(operation) => {
+                self.apply_federation_address_allocation(entry, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::MintQuote(operation) => {
                 self.apply_federation_mint_quote(entry, operation).await?;
                 Ok(true)

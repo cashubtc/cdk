@@ -49,6 +49,7 @@ use cdk_common::{
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
 use tokio::sync::{Mutex, Semaphore};
 
+mod address_allocation;
 mod admission;
 mod keyset;
 mod melt;

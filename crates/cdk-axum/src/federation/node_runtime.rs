@@ -1705,6 +1705,15 @@ impl FederationNodeRuntime {
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
+        let mint = self.active_mint()?;
+        crate::reconcile_federation_onchain_wallets(mint, &self.onchain_wallets)
+            .await
+            .map_err(|_| {
+                cdk::Error::Custom(
+                    "accepted federation address allocation could not be reconciled locally"
+                        .to_string(),
+                )
+            })?;
         Ok(applied)
     }
 

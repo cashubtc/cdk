@@ -19,12 +19,13 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    redact_federation_operator_message, FederationAlephBftFinalizedItem,
-    FederationAlephBftUnitPayload, FederationCatchUpCertificate, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
+    redact_federation_operator_message, FederationAddressAllocationScope,
+    FederationAddressKeychain, FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload,
+    FederationCatchUpCertificate, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationFrostApplicationId,
     FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
@@ -1514,6 +1515,107 @@ pub struct MintState {
 
 #[cfg(feature = "federation")]
 impl MintState {
+    /// Allocate or recover one consensus-controlled address. No BDK reveal is
+    /// attempted until the operation has a terminal consensus result and the
+    /// accepted mapping is readable from materialized state.
+    pub async fn allocate_federation_onchain_address(
+        &self,
+        quote: &str,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+    ) -> Result<String, cdk::Error> {
+        if let Some(address) = self
+            .reveal_accepted_federation_onchain_address(
+                quote,
+                application_id,
+                application_key_epoch,
+                keychain,
+            )
+            .await?
+        {
+            return Ok(address);
+        }
+        let envelope = self
+            .mint
+            .federation_config()
+            .ok_or(cdk::Error::Internal)?
+            .address_allocation_operation(quote, application_id, application_key_epoch, keychain)?;
+        let response = self.submit_federation_envelope(envelope).await?;
+        if let Some(address) = self
+            .reveal_accepted_federation_onchain_address(
+                quote,
+                application_id,
+                application_key_epoch,
+                keychain,
+            )
+            .await?
+        {
+            return Ok(address);
+        }
+        response.ensure_accepted()?;
+        Err(cdk::Error::Custom(
+            "accepted federation address allocation is not materialized".to_string(),
+        ))
+    }
+
+    async fn reveal_accepted_federation_onchain_address(
+        &self,
+        quote: &str,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+    ) -> Result<Option<String>, cdk::Error> {
+        let scope = FederationAddressAllocationScope {
+            application_id,
+            application_key_epoch,
+        };
+        let allocation = match self
+            .mint
+            .federation_address_allocation(scope, quote)
+            .await?
+        {
+            Some(allocation) if allocation.keychain == keychain => allocation,
+            Some(_) => {
+                return Err(cdk::Error::Federation(
+                    FederationError::AddressAllocationConflict {
+                        quote: quote.to_string(),
+                    },
+                ));
+            }
+            None => return Ok(None),
+        };
+        let wallet = self
+            .federation
+            .onchain_wallets
+            .iter()
+            .find(|wallet| {
+                let wallet_scope = wallet.scope();
+                wallet_scope.application_id() == application_id.to_bytes()
+                    && wallet_scope.application_key_epoch() == application_key_epoch
+            })
+            .ok_or_else(|| {
+                cdk::Error::Custom(
+                    "accepted federation address allocation has no local watch-only wallet"
+                        .to_string(),
+                )
+            })?;
+        let bdk_keychain = match keychain {
+            FederationAddressKeychain::External => cdk_bdk::FederatedWalletKeychain::External,
+            FederationAddressKeychain::Internal => cdk_bdk::FederatedWalletKeychain::Internal,
+        };
+        let address = wallet
+            .reveal_address(bdk_keychain, allocation.derivation_index)
+            .await
+            .map_err(|_| {
+                cdk::Error::Custom(
+                    "accepted federation address allocation could not be revealed locally"
+                        .to_string(),
+                )
+            })?;
+        Ok(Some(address))
+    }
+
     pub(crate) async fn federation_onchain_wallet_statuses(
         &self,
     ) -> Vec<FederationOnchainWalletStatus> {
@@ -2606,6 +2708,7 @@ async fn create_federation_runtime_state_with_wallet(
     for operation_id in applied {
         consensus.update_status(operation_id, FederationOperationStatus::Applied)?;
     }
+    reconcile_federation_onchain_wallets(mint, &onchain_wallets).await?;
     let sequences = FederationRestSequenceTracker::from_dkg_sequences(dkg_sequences);
 
     Ok((
@@ -2613,6 +2716,39 @@ async fn create_federation_runtime_state_with_wallet(
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
         onchain_wallets,
     ))
+}
+
+#[cfg(feature = "federation")]
+async fn reconcile_federation_onchain_wallets(
+    mint: &Mint,
+    wallets: &[FederatedBdkWallet],
+) -> Result<()> {
+    let state = mint.federation_address_allocation_state().await?;
+    for wallet in wallets {
+        let wallet_scope = wallet.scope();
+        let application_id = cdk::federation::FederationFrostApplicationId::from_bytes(
+            wallet_scope.application_id(),
+        )?;
+        let scope = cdk::federation::FederationAddressAllocationScope {
+            application_id,
+            application_key_epoch: wallet_scope.application_key_epoch(),
+        };
+        let Some(materialized) = state.wallet(scope) else {
+            continue;
+        };
+        wallet
+            .reconcile_revealed_counters(
+                materialized.external_next_index,
+                materialized.internal_next_index,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "failed to reconcile accepted federated address allocation into local BDK state"
+                )
+            })?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "federation"))]

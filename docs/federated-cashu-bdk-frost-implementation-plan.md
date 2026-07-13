@@ -101,6 +101,11 @@ federation partially ready.
   mint business logic or either DKG state machine. The same build exposed
   federation-only test doubles that had drifted from current HTTP transport and
   wallet-saga fields; the compatibility repair is confined to test code.
+- Milestone 7 adds a new canonical consensus operation, so the experimental
+  operation envelope is now version 2 and its golden vectors are pinned. No
+  missing mint business flow was found: allocation state stays in an isolated
+  module and existing mint integration is limited to admission, apply dispatch,
+  and deterministic projection.
 
 ## 1. Problem and setting
 
@@ -900,35 +905,52 @@ idempotently through the federation journal.
 
 **Work:**
 
-- [ ] Add a canonical address-allocation operation keyed by quote ID and CDK
+- [x] Add a canonical address-allocation operation keyed by quote ID and CDK
   application key epoch.
-- [ ] Store separate monotonic external and internal next-index counters in
+- [x] Store separate monotonic external and internal next-index counters in
   materialized consensus state.
-- [ ] Atomically map each on-chain mint quote to one external derivation index.
-- [ ] Return the existing mapping for duplicate/replayed quote requests.
-- [ ] Reject attempts to remap one quote or reuse one index for another quote.
-- [ ] Apply accepted indexes to BDK with `reveal_addresses_to` semantics.
-- [ ] Include allocation counters and mappings in state digest and catch-up.
-- [ ] Define exhaustion and maximum-index behavior.
-- [ ] Ensure public handlers never advance a local index before consensus.
+- [x] Atomically map each on-chain mint quote to one external derivation index.
+- [x] Return the existing mapping for duplicate/replayed quote requests.
+- [x] Reject attempts to remap one quote or reuse one index for another quote.
+- [x] Apply accepted indexes to BDK with `reveal_addresses_to` semantics.
+- [x] Include allocation counters and mappings in state digest and catch-up.
+- [x] Define exhaustion and maximum-index behavior.
+- [x] Ensure public handlers never advance a local index before consensus.
 
 **Success criteria:**
 
-- [ ] Concurrent requests at different members receive distinct addresses.
-- [ ] The same quote request at every member returns one identical address.
-- [ ] A member catching up across an index gap reveals every required script and
+- [x] Concurrent requests at different members receive distinct addresses.
+- [x] The same quote request at every member returns one identical address.
+- [x] A member catching up across an index gap reveals every required script and
   reconstructs the same quote mapping.
-- [ ] Restart cannot reuse or skip an accepted index incorrectly.
+- [x] Restart cannot reuse or skip an accepted index incorrectly.
 
 **Required tests:**
 
-- [ ] Sequential, concurrent, duplicate, replayed, and conflicting allocation.
-- [ ] Allocation with one member offline and later catch-up.
-- [ ] Crash before consensus, after acceptance, before BDK persistence, and after
+- [x] Sequential, concurrent, duplicate, replayed, and conflicting allocation.
+- [x] Allocation with one member offline and later catch-up.
+- [x] Crash before consensus, after acceptance, before BDK persistence, and after
   BDK persistence.
-- [ ] External/internal keychain separation.
-- [ ] Index-boundary and exhaustion tests.
-- [ ] Materialized-state digest mismatch on altered mapping or counter.
+- [x] External/internal keychain separation.
+- [x] Index-boundary and exhaustion tests.
+- [x] Materialized-state digest mismatch on altered mapping or counter.
+
+**Milestone record:** completed on 2026-07-13. A versioned canonical
+address-allocation operation now lets accepted journal order assign indexes;
+proposers never carry or mutate a local cursor. One atomically persisted,
+strictly validated federation projection owns independent external/internal
+counters and immutable quote mappings per CDK application epoch, rejects gaps,
+reuse, remapping, inactive epochs, and indexes beyond `2^31 - 1`, and contributes
+stable counter/mapping rows to catch-up state digests. The isolated BDK adapter
+reconciles accepted max-plus-one counters with `reveal_addresses_to` semantics
+at startup, live apply, and catch-up. The public allocation boundary first
+recovers an existing accepted mapping or reaches consensus, then and only then
+reveals and returns the address. Five members, alternating authenticated
+proposers, offline catch-up, every crash boundary, external/internal separation,
+restart gaps, corruption, exhaustion, and changed-state digests are covered;
+all 347 `cdk-common` federation tests, 110 `cdk-bdk` tests, and focused CDK
+allocation tests pass. Existing mint quote, saga, payment, and issuance business
+logic was not changed.
 
 ### Milestone 8: chain observations and consensus UTXO materialization
 

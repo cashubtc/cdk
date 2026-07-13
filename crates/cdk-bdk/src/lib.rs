@@ -38,8 +38,9 @@ use tokio_util::sync::CancellationToken;
 pub use crate::chain::{BitcoinRpcConfig, ChainSource, ChainSourceKind, ElectrumConfig, EsploraConfig};
 pub use crate::error::Error;
 pub use crate::federation::{
-    FederatedBdkLocalConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletReadiness,
-    FederatedWalletScope, FederatedWalletSyncHealth, FederatedWalletSyncStatus,
+    FederatedBdkLocalConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletKeychain,
+    FederatedWalletReadiness, FederatedWalletScope, FederatedWalletSyncHealth,
+    FederatedWalletSyncStatus,
 };
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{

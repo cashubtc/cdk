@@ -6,6 +6,7 @@
 
 use thiserror::Error;
 
+mod address_allocation;
 mod config;
 mod consensus;
 mod dkg;
@@ -36,6 +37,12 @@ pub const FEDERATION_MAX_DKG_KEYSET_AMOUNTS: usize = 64;
 /// Maximum JSON body accepted by one private DKG REST route.
 pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
+pub use self::address_allocation::{
+    FederationAddressAllocation, FederationAddressAllocationOperation,
+    FederationAddressAllocationOutcome, FederationAddressAllocationScope,
+    FederationAddressAllocationState, FederationAddressKeychain, FederationAddressWalletState,
+    FEDERATION_MAX_DERIVATION_INDEX,
+};
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
     FederationId, FederationInvite, FederationPaymentObservationContext,
@@ -323,6 +330,24 @@ fn federation_operator_token_suffix(ch: char) -> bool {
 /// Errors returned by federation configuration helpers.
 #[derive(Debug, Error)]
 pub enum FederationError {
+    /// Canonical address allocation state or operation is malformed.
+    #[error("Federation address allocation is invalid: {reason}")]
+    AddressAllocationInvalid {
+        /// Stable validation reason without local data.
+        reason: String,
+    },
+    /// One quote was already bound to a different descriptor branch.
+    #[error("Federation address allocation conflicts with the existing mapping for quote {quote}")]
+    AddressAllocationConflict {
+        /// Conflicting quote/allocation key.
+        quote: String,
+    },
+    /// A descriptor branch exhausted its non-hardened BIP32 range.
+    #[error("Federation {keychain} address derivation index is exhausted")]
+    AddressDerivationExhausted {
+        /// Exhausted external or internal branch.
+        keychain: FederationAddressKeychain,
+    },
     /// A public or private FROST wallet configuration failed validation.
     #[error("Invalid federation FROST wallet configuration: {reason}")]
     FrostConfigurationInvalid {

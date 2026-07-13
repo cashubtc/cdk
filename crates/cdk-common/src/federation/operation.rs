@@ -17,8 +17,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
 use super::{
-    FederatedKeyset, FederationConfig, FederationError, FederationId,
-    FederationPaymentObservationContext, MemberConfigPrivate, MemberId, Result,
+    FederatedKeyset, FederationAddressAllocationOperation, FederationConfig, FederationError,
+    FederationId, FederationPaymentObservationContext, MemberConfigPrivate, MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -33,7 +33,7 @@ const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
     b"cdk-federation-operation-authorization-v1";
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 1;
+pub const FEDERATION_OPERATION_VERSION: u16 = 2;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -124,6 +124,8 @@ impl<'de> Deserialize<'de> for FederationOperationId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationOperationKind {
+    /// Allocate one descriptor address in accepted consensus order.
+    AddressAllocation,
     /// Create and persist a mint quote.
     MintQuote,
     /// Observe a mint quote payment state.
@@ -147,6 +149,7 @@ pub enum FederationOperationKind {
 impl fmt::Display for FederationOperationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AddressAllocation => f.write_str("address_allocation"),
             Self::MintQuote => f.write_str("mint_quote"),
             Self::MintQuotePayment => f.write_str("mint_quote_payment"),
             Self::Mint => f.write_str("mint"),
@@ -164,6 +167,15 @@ impl fmt::Display for FederationOperationKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum FederationOperationConflictKey {
+    /// One application-epoch quote key may only map to one address.
+    AddressAllocation {
+        /// Registered CDK on-chain application.
+        application_id: super::FederationFrostApplicationId,
+        /// Exact descriptor application epoch.
+        application_key_epoch: u64,
+        /// Quote/allocation key.
+        quote: String,
+    },
     /// One mint quote ID may only map to one quote request.
     MintQuote {
         /// Quote ID assigned by the federation.
@@ -683,7 +695,8 @@ impl FederationPaymentObservation {
             FederationOperation::MeltQuotePayment(observation) => {
                 Some(Self::MeltQuote(observation.clone()))
             }
-            FederationOperation::MintQuote(_)
+            FederationOperation::AddressAllocation(_)
+            | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
             | FederationOperation::PaymentObservationQuarantine(_)
@@ -837,7 +850,8 @@ impl FederationPaymentObservationQuarantineRecord {
                 operation_index: entry.index,
                 quarantine: quarantine.clone(),
             }),
-            FederationOperation::MintQuote(_)
+            FederationOperation::AddressAllocation(_)
+            | FederationOperation::MintQuote(_)
             | FederationOperation::MintQuotePayment(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
@@ -1387,6 +1401,8 @@ impl FederationOperationBalanceAudit {
     deny_unknown_fields
 )]
 pub enum FederationOperation {
+    /// Allocate one deterministic descriptor address after consensus.
+    AddressAllocation(FederationAddressAllocationOperation),
     /// Create and persist a mint quote.
     MintQuote(FederationMintQuoteOperation),
     /// Observe a mint quote payment state.
@@ -1412,6 +1428,7 @@ impl FederationOperation {
     #[must_use]
     pub fn kind(&self) -> FederationOperationKind {
         match self {
+            Self::AddressAllocation(_) => FederationOperationKind::AddressAllocation,
             Self::MintQuote(_) => FederationOperationKind::MintQuote,
             Self::MintQuotePayment(_) => FederationOperationKind::MintQuotePayment,
             Self::Mint(_) => FederationOperationKind::Mint,
@@ -1430,6 +1447,13 @@ impl FederationOperation {
     #[must_use]
     pub fn conflict_keys(&self) -> Vec<FederationOperationConflictKey> {
         match self {
+            Self::AddressAllocation(operation) => {
+                vec![FederationOperationConflictKey::AddressAllocation {
+                    application_id: operation.application_id,
+                    application_key_epoch: operation.application_key_epoch,
+                    quote: operation.quote.clone(),
+                }]
+            }
             Self::MintQuote(operation) => vec![FederationOperationConflictKey::MintQuote {
                 quote: operation.quote.clone(),
             }],
@@ -1482,6 +1506,7 @@ impl FederationOperation {
     #[must_use]
     pub fn quote(&self) -> Option<&str> {
         match self {
+            Self::AddressAllocation(operation) => Some(operation.quote.as_str()),
             Self::MintQuote(operation) => Some(operation.quote.as_str()),
             Self::MintQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Mint(operation) => operation.request.quote_ids().into_iter().next(),
@@ -1502,7 +1527,8 @@ impl FederationOperation {
     pub fn balance_audit(&self) -> Result<FederationOperationBalanceAudit> {
         let operation_kind = self.kind();
         match self {
-            Self::MintQuote(_)
+            Self::AddressAllocation(_)
+            | Self::MintQuote(_)
             | Self::PaymentObservationQuarantine(_)
             | Self::KeysetRotation(_) => {
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
@@ -1749,7 +1775,8 @@ impl FederationOperationEnvelope {
         let claimed_observer = match &self.operation {
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
             FederationOperation::MeltQuotePayment(observation) => Some(observation.observer),
-            FederationOperation::MintQuote(_)
+            FederationOperation::AddressAllocation(_)
+            | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
             | FederationOperation::PaymentObservationQuarantine(_)
@@ -2241,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v1_golden_vector() {
+    fn canonical_operation_encoding_matches_v2_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2257,12 +2284,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":1}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":2}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd"
+            "2f0d74699a5cbee498039b24cfca89358190465e326483ac693b3b7dff058fc9"
         );
     }
 
@@ -2322,7 +2349,7 @@ mod tests {
             )],
         ));
 
-        for found in [0, 2, u16::MAX] {
+        for found in [0, 1, u16::MAX] {
             let mut unsupported = envelope.clone();
             unsupported.version = found;
             let err = unsupported
@@ -2361,7 +2388,7 @@ mod tests {
         let encoded = serde_json::to_vec(&envelope).expect("operation json");
         FederationOperationEnvelope::from_json_slice(&encoded).expect("valid operation envelope");
 
-        for found in [0, 2, u16::MAX] {
+        for found in [0, 1, u16::MAX] {
             let mut unsupported = envelope.clone();
             unsupported.version = found;
             let unsupported = serde_json::to_vec(&unsupported).expect("unsupported operation json");
