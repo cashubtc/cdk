@@ -1,0 +1,657 @@
+use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Context, Result};
+use bip39::Mnemonic;
+use cdk::amount::SplitTarget;
+use cdk::cdk_database::{self, WalletDatabase};
+use cdk::mint_url::MintUrl;
+use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::{CurrencyUnit, MintInfo, PaymentMethod};
+use cdk::wallet::types::SendKind;
+use cdk::wallet::{
+    FederatedMintConnector, FederatedMintConnectorConfig, ReceiveOptions, SendOptions, Wallet,
+    WalletBuilder,
+};
+use cdk::{Amount, StreamExt};
+use cdk_common::federation::{FederationConfig, FederationInvite};
+use cdk_sqlite::WalletSqliteDatabase;
+use reqwest::redirect::Policy;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use crate::app::AppEvent;
+
+const CONFIG_VERSION: u16 = 1;
+const CONFIG_FILE: &str = "federation.json";
+const SEED_FILE: &str = "seed";
+const DATABASE_FILE: &str = "wallet.sqlite";
+
+#[derive(Debug, Clone)]
+pub enum JoinSource {
+    ConfigPath(PathBuf),
+    Invite(String),
+    MintUrl(MintUrl),
+}
+
+impl JoinSource {
+    pub fn parse(value: String) -> Self {
+        let value = value.trim();
+        if value.starts_with("cashufed") {
+            return Self::Invite(value.to_string());
+        }
+        match MintUrl::from_str(value) {
+            Ok(mint_url) => Self::MintUrl(mint_url),
+            Err(_) => Self::ConfigPath(PathBuf::from(value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredFederation {
+    version: u16,
+    local_mint_url: MintUrl,
+    public_config: FederationConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRuntime {
+    wallet: Wallet,
+    stored: StoredFederation,
+}
+
+impl WalletRuntime {
+    pub async fn load(data_dir: &Path) -> Result<Option<Self>> {
+        let config_path = data_dir.join(CONFIG_FILE);
+        if !config_path.exists() {
+            return Ok(None);
+        }
+
+        let encoded = fs::read_to_string(&config_path)
+            .with_context(|| format!("could not read {}", config_path.display()))?;
+        let stored: StoredFederation = serde_json::from_str(&encoded)
+            .with_context(|| format!("could not parse {}", config_path.display()))?;
+        stored.validate()?;
+        Self::build(data_dir, stored).await.map(Some)
+    }
+
+    pub async fn join(data_dir: &Path, source: JoinSource) -> Result<Self> {
+        fs::create_dir_all(data_dir)?;
+        secure_directory(data_dir)?;
+
+        let (public_config, discovery_mint_url) = match source {
+            JoinSource::ConfigPath(path) => {
+                let encoded = fs::read_to_string(&path)
+                    .with_context(|| format!("could not read {}", path.display()))?;
+                let public_config = serde_json::from_str::<FederationConfig>(&encoded)
+                    .with_context(|| format!("could not parse {}", path.display()))?;
+                (public_config, None)
+            }
+            JoinSource::Invite(invite) => (FederationInvite::from_str(&invite)?.config, None),
+            JoinSource::MintUrl(mint_url) => {
+                let public_config = discover_public_config(&mint_url).await?;
+                (public_config, Some(mint_url))
+            }
+        };
+
+        public_config.validate()?;
+        public_config.validate_wallet_runtime_metadata()?;
+        let local_mint_url = match discovery_mint_url {
+            Some(mint_url) => mint_url,
+            None => public_config
+                .members
+                .values()
+                .next()
+                .map(|member| member.public_mint_url.clone())
+                .ok_or_else(|| anyhow!("federation roster is empty"))?,
+        };
+        let stored = StoredFederation {
+            version: CONFIG_VERSION,
+            local_mint_url,
+            public_config,
+        };
+        stored.validate()?;
+
+        let runtime = Self::build(data_dir, stored.clone()).await?;
+        persist_config(data_dir, &stored)?;
+        Ok(runtime)
+    }
+
+    async fn build(data_dir: &Path, stored: StoredFederation) -> Result<Self> {
+        let seed = load_or_create_seed(data_dir)?;
+        let database = WalletSqliteDatabase::new(data_dir.join(DATABASE_FILE)).await?;
+        let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
+            Arc::new(database);
+
+        let quote_coordinator_member_id = stored
+            .public_config
+            .members
+            .iter()
+            .find(|(_, member)| member.public_mint_url == stored.local_mint_url)
+            .map(|(member_id, _)| *member_id);
+        let connector_config = FederatedMintConnectorConfig {
+            quote_coordinator_member_id,
+            member_fallback_timeout: Duration::from_secs(90),
+            member_request_timeout: Duration::from_secs(90),
+            quote_status_member_timeout: Duration::from_secs(90),
+            fanout_concurrency: stored.public_config.members.len(),
+            mint_quote_visibility_attempts: 120,
+            mint_quote_visibility_retry_delay: Duration::from_millis(100),
+            ..FederatedMintConnectorConfig::default()
+        };
+        let connector = FederatedMintConnector::from_validated_public_config_urls_with_config(
+            stored.public_config.clone(),
+            connector_config,
+        )?;
+        let wallet = WalletBuilder::new()
+            .mint_url(stored.local_mint_url.clone())
+            .unit(CurrencyUnit::Sat)
+            .localstore(localstore)
+            .seed(seed)
+            .shared_client(Arc::new(connector))
+            .build()?;
+
+        wallet.recover_incomplete_sagas().await?;
+        Ok(Self { wallet, stored })
+    }
+
+    pub fn public_config(&self) -> FederationConfig {
+        self.stored.public_config.clone()
+    }
+
+    pub fn federation_id(&self) -> String {
+        self.stored.public_config.federation_id.to_string()
+    }
+
+    pub fn local_mint_url(&self) -> &MintUrl {
+        &self.stored.local_mint_url
+    }
+
+    pub fn wallet(&self) -> Wallet {
+        self.wallet.clone()
+    }
+}
+
+async fn discover_public_config(mint_url: &MintUrl) -> Result<FederationConfig> {
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let config_url = mint_url.join_paths(&["federation", "v1", "config"])?;
+    let public_config: FederationConfig = fetch_json(&client, &config_url).await?;
+    let info_url = mint_url.join_paths(&["v1", "info"])?;
+    let mint_info: MintInfo = fetch_json(&client, &info_url).await?;
+    validate_discovered_public_config(mint_url, public_config, &mint_info)
+}
+
+async fn fetch_json<T>(client: &reqwest::Client, url: &reqwest::Url) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let response = client
+        .get(url.as_str())
+        .send()
+        .await
+        .with_context(|| format!("could not fetch {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("GET {url} returned HTTP {status}");
+    }
+    response
+        .json()
+        .await
+        .with_context(|| format!("could not decode JSON from {url}"))
+}
+
+fn validate_discovered_public_config(
+    mint_url: &MintUrl,
+    public_config: FederationConfig,
+    mint_info: &MintInfo,
+) -> Result<FederationConfig> {
+    public_config.validate()?;
+    if !public_config.keysets.iter().any(|keyset| keyset.active) {
+        bail!("federation public config does not contain an active keyset");
+    }
+
+    let mut matching_members = public_config
+        .members
+        .iter()
+        .filter(|(_, member)| &member.public_mint_url == mint_url);
+    let Some((member_id, _)) = matching_members.next() else {
+        bail!("federation public config does not contain discovery mint URL {mint_url}");
+    };
+    if matching_members.next().is_some() {
+        bail!("federation public config contains discovery mint URL {mint_url} more than once");
+    }
+
+    let federation_info = mint_info.federation.as_ref().ok_or_else(|| {
+        anyhow!("discovery member mint info does not advertise federation metadata")
+    })?;
+    let config_digest = public_config.config_digest_for_validated_config()?;
+    public_config.validate_member_mint_info_with_config_digest(
+        *member_id,
+        federation_info,
+        config_digest,
+    )?;
+    Ok(public_config)
+}
+
+impl StoredFederation {
+    fn validate(&self) -> Result<()> {
+        if self.version != CONFIG_VERSION {
+            bail!(
+                "unsupported federation wallet config version {}",
+                self.version
+            );
+        }
+        self.public_config.validate()?;
+        self.public_config.validate_wallet_runtime_metadata()?;
+        if !self
+            .public_config
+            .members
+            .values()
+            .any(|member| member.public_mint_url == self.local_mint_url)
+        {
+            bail!("local mint URL is not in the federation roster");
+        }
+        Ok(())
+    }
+}
+
+fn persist_config(data_dir: &Path, stored: &StoredFederation) -> Result<()> {
+    let path = data_dir.join(CONFIG_FILE);
+    let temporary = data_dir.join(format!("{CONFIG_FILE}.tmp"));
+    let encoded = serde_json::to_vec_pretty(stored)?;
+    write_private_file(&temporary, &encoded)?;
+    fs::rename(&temporary, &path)?;
+    Ok(())
+}
+
+fn load_or_create_seed(data_dir: &Path) -> Result<[u8; 64]> {
+    let path = data_dir.join(SEED_FILE);
+    let mnemonic = if path.exists() {
+        let encoded = fs::read_to_string(&path)?;
+        Mnemonic::from_str(encoded.trim())?
+    } else {
+        let entropy: [u8; 32] = rand::random();
+        let mnemonic = Mnemonic::from_entropy(&entropy)?;
+        write_private_file(&path, mnemonic.to_string().as_bytes())?;
+        mnemonic
+    };
+    Ok(mnemonic.to_seed_normalized(""))
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn secure_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+pub fn spawn_balance_refresh(runtime: Arc<WalletRuntime>, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(4));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let wallet = runtime.wallet();
+            match tokio::try_join!(
+                wallet.total_balance(),
+                wallet.total_pending_balance(),
+                wallet.total_reserved_balance()
+            ) {
+                Ok((available, pending, reserved)) => {
+                    if tx
+                        .send(AppEvent::Balance {
+                            available: u64::from(available),
+                            pending: u64::from(pending),
+                            reserved: u64::from(reserved),
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    if tx
+                        .send(AppEvent::BackgroundError(format!(
+                            "balance refresh failed: {err}"
+                        )))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+}
+
+pub fn spawn_mint(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let result = async {
+            let wallet = runtime.wallet();
+            let quote = wallet
+                .mint_quote(
+                    PaymentMethod::BOLT11,
+                    Some(Amount::from(amount)),
+                    None,
+                    None,
+                )
+                .await?;
+            tx.send(AppEvent::OperationPayload {
+                operation: "mint",
+                title: "Pay mint invoice".to_string(),
+                content: quote.request.clone(),
+                message: format!("Quote {} is waiting for payment", short_id(&quote.id)),
+            })
+            .ok();
+
+            let quote_id = quote.id.clone();
+            let mut stream = wallet.proof_stream(quote, SplitTarget::default(), None);
+            let mut minted = Amount::ZERO;
+            loop {
+                match tokio::time::timeout(Duration::from_secs(180), stream.next()).await {
+                    Ok(Some(Ok(proofs))) => {
+                        let batch = proofs.total_amount()?;
+                        minted += batch;
+                        tx.send(AppEvent::OperationProgress {
+                            operation: "mint",
+                            message: format!(
+                                "Aggregated {batch} sat from quote {}",
+                                short_id(&quote_id)
+                            ),
+                        })
+                        .ok();
+                    }
+                    Ok(Some(Err(err))) => return Err(anyhow!(err)),
+                    Ok(None) => break,
+                    Err(_) => bail!("timed out waiting for mint quote payment"),
+                }
+            }
+            if minted == Amount::ZERO {
+                bail!("mint completed without issuing proofs");
+            }
+            Ok(format!("Minted {minted} sat"))
+        }
+        .await;
+        finish_operation("mint", result, runtime, tx).await;
+    });
+}
+
+pub fn spawn_send(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let result = async {
+            let wallet = runtime.wallet();
+            let options = SendOptions {
+                send_kind: SendKind::OnlineExact,
+                ..SendOptions::default()
+            };
+            let prepared = wallet.prepare_send(Amount::from(amount), options).await?;
+            let token = prepared.confirm(None).await?.to_string();
+            tx.send(AppEvent::OperationPayload {
+                operation: "send",
+                title: format!("{amount} sat Cashu token"),
+                content: token,
+                message: "Federated swap complete; copy the token for the receiver".to_string(),
+            })
+            .ok();
+            Ok(format!("Prepared {amount} sat token"))
+        }
+        .await;
+        finish_operation("send", result, runtime, tx).await;
+    });
+}
+
+pub fn spawn_receive(
+    runtime: Arc<WalletRuntime>,
+    token: String,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let result = runtime
+            .wallet()
+            .receive(&token, ReceiveOptions::default())
+            .await
+            .map(|amount| format!("Received {amount} sat"))
+            .map_err(anyhow::Error::from);
+        finish_operation("receive", result, runtime, tx).await;
+    });
+}
+
+pub fn spawn_melt(
+    runtime: Arc<WalletRuntime>,
+    invoice: String,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let result = async {
+            cdk::Bolt11Invoice::from_str(&invoice)
+                .map_err(|err| anyhow!("invalid BOLT11 invoice: {err}"))?;
+            let wallet = runtime.wallet();
+            let quote = wallet
+                .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
+                .await?;
+            tx.send(AppEvent::OperationProgress {
+                operation: "melt",
+                message: format!(
+                    "Quote {}: {} sat + {} sat reserve",
+                    short_id(&quote.id),
+                    quote.amount,
+                    quote.fee_reserve
+                ),
+            })
+            .ok();
+            let outcome = wallet
+                .prepare_melt(&quote.id, HashMap::new())
+                .await?
+                .confirm()
+                .await?;
+            Ok(format!(
+                "Paid {} sat with {} sat fee ({})",
+                outcome.amount(),
+                outcome.fee_paid(),
+                outcome.state()
+            ))
+        }
+        .await;
+        finish_operation("melt", result, runtime, tx).await;
+    });
+}
+
+async fn finish_operation(
+    operation: &'static str,
+    result: Result<String>,
+    runtime: Arc<WalletRuntime>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    match result {
+        Ok(message) => {
+            tx.send(AppEvent::OperationFinished { operation, message })
+                .ok();
+        }
+        Err(err) => {
+            tx.send(AppEvent::OperationFailed {
+                operation,
+                error: err.to_string(),
+            })
+            .ok();
+        }
+    }
+
+    let wallet = runtime.wallet();
+    if let Ok((available, pending, reserved)) = tokio::try_join!(
+        wallet.total_balance(),
+        wallet.total_pending_balance(),
+        wallet.total_reserved_balance()
+    ) {
+        tx.send(AppEvent::Balance {
+            available: u64::from(available),
+            pending: u64::from(pending),
+            reserved: u64::from(reserved),
+        })
+        .ok();
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use cdk::nuts::nut01::BlsSecretKey;
+    use cdk::Amount;
+    use cdk_common::federation::{
+        generate_trusted_dealer_configs, FederationConfigDigest, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
+    };
+    use cdk_common::SecretKey;
+
+    use super::*;
+
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("valid member id")
+    }
+
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    fn member(member_id: MemberId) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    }
+
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn valid_public_config() -> FederationConfig {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("threshold params");
+        generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (Amount::from(1), vec![bls_key(1), bls_key(2)]),
+                    (Amount::from(2), vec![bls_key(3), bls_key(4)]),
+                ]),
+            )],
+        )
+        .expect("trusted dealer config")
+        .public_config
+    }
+
+    #[test]
+    fn join_source_detects_invites_and_paths() {
+        assert!(matches!(
+            JoinSource::parse(" cashufed1example ".to_string()),
+            JoinSource::Invite(value) if value == "cashufed1example"
+        ));
+        assert!(matches!(
+            JoinSource::parse(" federation-public.json ".to_string()),
+            JoinSource::ConfigPath(path) if path.as_path() == Path::new("federation-public.json")
+        ));
+        assert!(matches!(
+            JoinSource::parse(" https://mint.example.com ".to_string()),
+            JoinSource::MintUrl(url) if url.to_string() == "https://mint.example.com"
+        ));
+    }
+
+    #[test]
+    fn discovered_public_config_accepts_matching_source_member() {
+        let public_config = valid_public_config();
+        let source_url = public_config
+            .member(member_id(2))
+            .expect("source member")
+            .public_mint_url
+            .clone();
+        let mint_info = MintInfo::new().federation(
+            public_config
+                .mint_info_for_member(member_id(2))
+                .expect("member federation info"),
+        );
+
+        let validated =
+            validate_discovered_public_config(&source_url, public_config.clone(), &mint_info)
+                .expect("matching discovery metadata");
+
+        assert_eq!(validated, public_config);
+    }
+
+    #[test]
+    fn discovered_public_config_rejects_unlisted_source_url() {
+        let public_config = valid_public_config();
+        let source_url = MintUrl::from_str("https://unknown.example.com").expect("source URL");
+        let mint_info = MintInfo::new().federation(
+            public_config
+                .mint_info_for_member(member_id(1))
+                .expect("member federation info"),
+        );
+
+        let err = validate_discovered_public_config(&source_url, public_config, &mint_info)
+            .expect_err("unlisted source rejected");
+
+        assert!(err
+            .to_string()
+            .contains("does not contain discovery mint URL"));
+    }
+
+    #[test]
+    fn discovered_public_config_rejects_mismatched_mint_info_digest() {
+        let public_config = valid_public_config();
+        let source_url = public_config
+            .member(member_id(1))
+            .expect("source member")
+            .public_mint_url
+            .clone();
+        let mut federation_info = public_config
+            .mint_info_for_member(member_id(1))
+            .expect("member federation info");
+        federation_info.config_digest = FederationConfigDigest::from_bytes([42; 32]).to_string();
+        let mint_info = MintInfo::new().federation(federation_info);
+
+        let err = validate_discovered_public_config(&source_url, public_config, &mint_info)
+            .expect_err("mismatched digest rejected");
+
+        assert!(err.to_string().contains("config digest"));
+    }
+}

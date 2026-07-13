@@ -1,0 +1,44 @@
+[package]
+name = "fed-cdk-tui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+license = "MIT"
+publish = false
+description = "Federated CDK Cashu wallet and member activity dashboard"
+
+[dependencies]
+anyhow = "1"
+arboard = { version = "3.6.1", default-features = false }
+bip39 = { version = "2.0", features = ["rand"] }
+cdk = { path = "../../crates/cdk", default-features = false, features = ["wallet", "federation"] }
+cdk-common = { path = "../../crates/cdk-common", default-features = false, features = ["wallet", "federation"] }
+cdk-sqlite = { path = "../../crates/cdk-sqlite", default-features = false, features = ["wallet", "federation"] }
+clap = { version = "4.5.31", features = ["derive"] }
+crossterm = { version = "0.28.1", features = ["bracketed-paste"] }
+home = "0.5.5"
+rand = "0.9.1"
+ratatui = { version = "0.29.0", default-features = false, features = ["crossterm"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["fs", "rt-multi-thread", "macros", "sync", "time"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+use_debug = "warn"
+large_enum_variant = "warn"
+
+[lints.rustdoc]
+bare_urls = "warn"
+
+[workspace]
+resolver = "2"
