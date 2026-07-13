@@ -1629,7 +1629,10 @@ mod tests {
                     .amount
                     .clone()
                     .unwrap_or_else(|| Amount::new(0, CurrencyUnit::Sat)),
-                IncomingPaymentOptions::Custom(options) => options.amount.clone(),
+                IncomingPaymentOptions::Custom(options) => options
+                    .amount
+                    .clone()
+                    .unwrap_or_else(|| Amount::new(0, CurrencyUnit::Sat)),
                 IncomingPaymentOptions::Onchain(_) => Amount::new(1, CurrencyUnit::Sat),
             }
         }
@@ -3291,6 +3294,7 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Bolt11),
+            created_time,
             created_time,
             Vec::new(),
             Vec::new(),
@@ -5751,6 +5755,10 @@ mod tests {
             request: format!("invoice-{quote_id}"),
             amount: Some(Amount::from(2)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -6151,13 +6159,10 @@ mod tests {
             outputs_for_amount_with_label(&state, 2, "catch-up-swap-output"),
         );
 
-        let response = crate::router_handlers::post_swap(
-            AuthHeader::None,
-            State(state),
-            Json(request),
-        )
-        .await
-        .expect_err("catching-up member must fail closed with a retryable Cashu error");
+        let response =
+            crate::router_handlers::post_swap(AuthHeader::None, State(state), Json(request))
+                .await
+                .expect_err("catching-up member must fail closed with a retryable Cashu error");
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -6165,10 +6170,7 @@ mod tests {
             .expect("catch-up error body");
         let error: cdk_common::error::ErrorResponse =
             serde_json::from_slice(&bytes).expect("Cashu error response");
-        assert_eq!(
-            error.code,
-            cdk_common::error::ErrorCode::FederationCatchUp
-        );
+        assert_eq!(error.code, cdk_common::error::ErrorCode::FederationCatchUp);
         assert!(error.detail.contains("catching up"));
     }
 

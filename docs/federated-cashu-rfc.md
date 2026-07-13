@@ -41,7 +41,7 @@ Test-only deterministic helpers must never be presented or admitted as productio
 ## Core invariants
 
 - Consensus acceptance precedes signature-share creation and externally visible safety-critical state changes. No member may independently authorize issuance, swaps, or melts.
-- Every operation has a versioned canonical envelope containing the federation ID and complete typed payload. Its domain-separated `FederationOperationId` commits to that entire envelope.
+- Every operation has a versioned canonical envelope containing the federation ID and complete typed payload. Its domain-separated `FederationOperationId` commits to the version, federation ID, and complete typed payload; separate member authorization binds the author to those same unsigned envelope bytes.
 - Accepted operations apply in the same order, deterministically and idempotently. Journal replay must reproduce the same materialized state.
 - A quote can issue only its consensus-authorized mintable amount. Proofs transition to spent at most once, and blinded outputs are signed only for their accepted operation, amount, and keyset.
 - Signature shares are bound to member, operation ID, output index, blinded secret, amount, and keyset, and are durably recorded before being served.
@@ -87,18 +87,33 @@ Members exchange readiness, commitment, reveal, private secret-share contributio
 
 ## Consensus operations and application
 
-The canonical operation set includes:
+The complete canonical Cashu operation set is:
 
-- mint quote creation and mint payment observation;
-- mint issuance;
-- melt quote creation and melt payment observation;
-- melt execution and optional change signing;
-- swap execution; and
-- federated keyset rotation.
+- `MintQuote` synchronizes the quote ID, stable backend lookup ID, wallet quote request, and canonical quote response or payment request. It creates the shared incoming-payment quote and begins the `MintQuote -> MintQuotePayment -> Mint` workflow.
+- `MintQuotePayment` synchronizes the quote ID, observing member, payment method, observed state, paid and issued amounts, and available payment identity or proof. Matching accepted observations provide the payment evidence that authorizes mint issuance. Honest production probes submit a `Paid` observation only; they do not submit the preceding `Unpaid` state.
+- `Mint` synchronizes the complete single-quote or batch wallet mint request, including every quote ID and blinded output. It consumes the consensus-authorized mintable amount and binds each signature share to the exact accepted outputs.
+- `MeltQuote` synchronizes the quote ID, wallet quote request, canonical quote response, fee information, stable backend lookup metadata, and method-specific metadata. It creates the shared outgoing-payment quote and begins the `MeltQuote -> Melt -> MeltQuotePayment` workflow.
+- `Melt` synchronizes the complete wallet melt request, including the quote ID, input proofs, and optional blinded change outputs. It spends or locks the inputs, starts the durable payment saga, and deterministically elects the member allowed to attempt the external payment.
+- `MeltQuotePayment` synchronizes the quote ID, observing member, payment method, final observed state, amount, fee reserve, payment identity, and available payment proof or preimage. Policy-satisfying accepted observations finalize the quote, proof, change, and saga state. Honest production probes do not submit `Pending`; they submit `Paid`, or the elected member submits `Failed` or `Unpaid` when final.
+- `Swap` synchronizes the complete swap request, including input proofs and replacement blinded outputs. It atomically spends the accepted inputs and authorizes signature shares for the exact replacement outputs.
+- `KeysetRotation` synchronizes a complete active aggregate BLS keyset and every member's public shares. It changes the signing keyset consistently while retaining old keysets for proof verification.
+
+Every Cashu operation is carried in a versioned `FederationOperationEnvelope` containing the federation ID, complete typed payload, authoring member ID, and the author's identity signature. The domain-separated operation ID commits to the unsigned envelope: its version, federation ID, and complete typed payload. Changing any quote, request, proof, output, or observation therefore produces a different operation ID. Authorization separately signs the author together with those unsigned envelope bytes; changing the author requires a new valid authorization but deliberately does not change the operation ID. Payment-observation envelopes additionally require the signed author to equal the claimed observer.
+
+AlephBFT orders versioned unit payloads containing the federation ID, submitting member, consensus session, member-local unit index, ordered consensus items and operation IDs, and a hash of the ordered item body. Finalization assigns deterministic order metadata, after which every member records and applies the same accepted operation sequence.
+
+The generic consensus-item encoding supports four classes:
+
+- `Operation` carries the eight production Cashu operations above.
+- `ModuleFact` reserves an ordered namespace, kind, and canonical JSON payload for module-defined facts. It currently has no non-test Cashu producer.
+- `CatchUpCertificate` can represent a member-signed catch-up certificate. The live catch-up flow currently exchanges, verifies, and persists these through authenticated peer synchronization rather than submitting them as ordinary Cashu operations.
+- `Default` is a generic forward-compatibility and test item and is not part of a production Cashu workflow.
 
 Public request handling prepares and validates an operation without performing irreversible state changes, submits its canonical envelope, and waits for finality or a recoverable pending result. AlephBFT orders admitted operations. A single deterministic apply path durably records the accepted order, applies domain state, records shares or deterministic rejection metadata, and notifies waiting requests. Exact duplicate operation IDs join or return the existing result; conflicting operation reuse is rejected.
 
 Raw standalone signing and state-transition paths reject use by a configured federation member. Wallet-facing shares are reconstructed from persisted operation-bound share records, not generated from an unaccepted request.
+
+Backend calls, non-final payment states, local saga locks and execution details, private BLS shares, per-member generated signature shares, DKG traffic, health telemetry, and ordinary reads are not Cashu consensus operations. Some resulting state is authenticated, compared, or recovered through other federation protocols, but it does not extend the canonical `FederationOperation` set.
 
 ## Payment handling
 

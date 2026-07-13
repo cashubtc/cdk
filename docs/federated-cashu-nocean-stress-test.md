@@ -525,6 +525,45 @@ that state at concurrency 5-10 and how long the recovery pressure persists.
 This is a mint-side performance/liveness issue even if wallet spare-member
 fallback removes the immediate client failures.
 
+**Verified cause and fix (2026-07-14):** the original process-level regression
+did not actually run the background peer-sync loop, so its passing result could
+not validate this issue. After the harness was corrected to run the same phased
+peer-sync rounds as production, the pre-fix test reproduced the problem. During
+one run, member 1 recorded 27 lagging transitions, 15 catch-up transitions, and
+3 catch-up-certificate-verification transitions under otherwise convergent
+swap load.
+
+Temporary trigger classification showed that every captured transition began
+with a real but transient operation-count difference, such as local height 5
+versus peer height 6. The finalized-item cursor was also behind because it
+tracked the same operation; no cursor-only trigger was observed. The immediate
+cause was therefore the peer-sync loop treating normal in-flight AlephBFT
+propagation as recovery-worthy lag. It changed readiness to fail-closed and
+started REST journal catch-up while the healthy live consensus session was
+already delivering the operation.
+
+The minimal fix keeps the ownership boundary explicit: while federation
+readiness is `Healthy` and both the live AlephBFT session and its network input
+are installed, AlephBFT owns operation delivery and peer status polling does
+not start REST journal catch-up. Startup, already-lagging, catching-up,
+certificate-verification, materialized-state-mismatch, and halted states retain
+the existing fail-closed catch-up behavior. This avoids adding a timeout, retry
+counter, alternate queue, or cursor exception.
+
+The corrected regression now runs five sequential valid swaps through five real
+in-process AlephBFT members, restores startup readiness as the production router
+does, and runs phased peer-sync polling every 10 ms. Post-fix it requires and
+observes identical journal order, identical materialized-state digest, zero
+height skew, and zero lag/catch-up transitions. The separate five-member
+one-offline value-window test also passes: the intentionally non-healthy member
+still catches up and replay does not duplicate the outgoing payment.
+
+The network-pump retry ordering and moving-head catch-up-certificate range
+mismatch remain worthwhile diagnostics, but this reproduction did not establish
+either as the initiating cause. They were not changed. Likewise, ignoring
+finalized-cursor-only differences would have been hypothetical and could weaken
+exact recovery, so that proposed change was rejected.
+
 ### Relationship and priority
 
 The three errors interact but must not be collapsed into one fix:
@@ -565,14 +604,14 @@ The three errors now have separate regression coverage:
 3. `equal_height_peer_sync_does_not_enter_catch_up` verifies that a normal
    equal-height sync poll makes no catch-up request or sync-state transition.
    The ignored process-level test
-   `aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up` runs 10 swaps at
-   parallelism 5 followed by 20 swaps at parallelism 10 against five real
-   in-process AlephBFT members backed by SQLite. It requires every operation to
-   apply exactly once, identical order and materialized digest on every member,
-   zero final height skew, healthy final status, and zero lag/catch-up
-   transitions. The existing one-member-offline value-window control now also
-   asserts that only the intentionally offline member records lagging and
-   catch-up transitions.
+   `aleph_bft_live_healthy_swaps_do_not_trigger_catch_up` runs five sequential
+   swaps against five real in-process AlephBFT members backed by SQLite while
+   production-equivalent peer-sync loops poll at an accelerated 10 ms interval.
+   It requires every operation to apply exactly once, identical order and
+   materialized digest on every member, zero final height skew, and zero
+   lag/catch-up transitions. The existing one-member-offline value-window
+   control asserts that only the intentionally offline member records lagging
+   and catch-up transitions.
 
 The process-level stress regression is intentionally ignored in the default
 unit-test run and can be selected explicitly with `--ignored --exact` when the

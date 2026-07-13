@@ -686,6 +686,15 @@ where
         let mut latest_catch_up_materialized_state_digest = None;
 
         if peer_requires_catch_up(&local_status, &peer_status)? {
+            if should_defer_catch_up_to_live_aleph_bft(state).await {
+                tracing::debug!(
+                    member_id = %member.member_id,
+                    local_operation_count = local_status.operation_count,
+                    peer_operation_count = peer_status.operation_count,
+                    "Deferring peer catch-up to the healthy live AlephBFT session"
+                );
+                return Ok(peer_status);
+            }
             state
                 .mark_federation_lagging(
                     member.member_id,
@@ -793,6 +802,17 @@ fn peer_requires_catch_up(
 ) -> anyhow::Result<bool> {
     Ok(peer_status.operation_count > local_status.operation_count
         || peer_finalized_cursor_ahead(local_status, peer_status)?)
+}
+
+async fn should_defer_catch_up_to_live_aleph_bft(state: &MintState) -> bool {
+    if !matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    ) {
+        return false;
+    }
+
+    state.federation.live_session_active().await && state.federation.network_inbound_active().await
 }
 
 fn status_made_catch_up_progress(

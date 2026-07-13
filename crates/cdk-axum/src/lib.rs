@@ -1169,8 +1169,7 @@ impl FederationSyncState {
     fn mark_catching_up(&mut self, peer: MemberId) {
         #[cfg(test)]
         {
-            self.transition_stats.catching_up =
-                self.transition_stats.catching_up.saturating_add(1);
+            self.transition_stats.catching_up = self.transition_stats.catching_up.saturating_add(1);
         }
         self.status = FederationSyncStatus::CatchingUp { peer };
     }
@@ -1334,6 +1333,12 @@ mod tests {
                             request: "invoice-quote-1".to_string(),
                             amount: Some(cdk::Amount::from(1)),
                             unit: Some(cdk::nuts::CurrencyUnit::Sat),
+                            method: cdk::nuts::PaymentMethod::Known(
+                                cdk::nuts::nut00::KnownMethod::Bolt11,
+                            ),
+                            amount_paid: cdk::Amount::ZERO,
+                            amount_issued: cdk::Amount::ZERO,
+                            updated_at: 0,
                             state: cdk::nuts::MintQuoteState::Unpaid,
                             expiry: None,
                             pubkey: None,

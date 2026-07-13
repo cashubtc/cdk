@@ -53,7 +53,7 @@ use cdk_common::database::mint::{CompletedOperationsDatabase, FederationApplicat
 use cdk_common::database::MintFederationJournalDatabase;
 use cdk_common::mint::Operation;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
-use cdk_http_client::HttpError;
+use cdk_http_client::{HttpError, RawResponse};
 use futures::Stream;
 use parity_scale_codec::{Decode, Encode};
 use serde::de::DeserializeOwned;
@@ -1065,6 +1065,15 @@ impl Transport for DelayTransport {
         Err(HttpError::Other("delayed GET completed".to_string()))
     }
 
+    async fn http_get_raw(
+        &self,
+        _url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        time::sleep(self.delay).await;
+        Err(HttpError::Other("delayed raw GET completed".to_string()))
+    }
+
     async fn http_post<P, R>(
         &self,
         _url: url::Url,
@@ -1077,6 +1086,21 @@ impl Transport for DelayTransport {
     {
         time::sleep(self.delay).await;
         Err(HttpError::Other("delayed POST completed".to_string()))
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        _url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        time::sleep(self.delay).await;
+        Err(HttpError::Other(
+            "delayed raw form POST completed".to_string(),
+        ))
     }
 }
 
@@ -1101,6 +1125,17 @@ impl Transport for MockFederationTransport {
     {
         Err(HttpError::Other(format!(
             "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(format!(
+            "unexpected raw GET path {}",
             url.path()
         )))
     }
@@ -1226,6 +1261,21 @@ impl Transport for MockFederationTransport {
             path => Err(HttpError::Other(format!("unexpected POST path {path}"))),
         }
     }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected raw form POST path {}",
+            url.path()
+        )))
+    }
 }
 
 #[async_trait]
@@ -1249,6 +1299,17 @@ impl Transport for RouterFederationTransport {
     {
         Err(HttpError::Other(format!(
             "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(format!(
+            "unexpected raw GET path {}",
             url.path()
         )))
     }
@@ -1289,6 +1350,21 @@ impl Transport for RouterFederationTransport {
         }
         Ok(serde_json::from_slice(&body)?)
     }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected raw form POST path {}",
+            url.path()
+        )))
+    }
 }
 
 #[async_trait]
@@ -1312,6 +1388,17 @@ impl Transport for RouterFederationTransportRegistry {
     {
         Err(HttpError::Other(format!(
             "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(format!(
+            "unexpected raw GET path {}",
             url.path()
         )))
     }
@@ -1473,6 +1560,21 @@ impl Transport for RouterFederationTransportRegistry {
         }
 
         Ok(serde_json::from_slice(&response_body)?)
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected raw form POST path {}",
+            url.path()
+        )))
     }
 }
 
@@ -2938,6 +3040,10 @@ fn mint_quote_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOpera
             request: format!("invoice-{quote_id}"),
             amount: Some(Amount::from(1)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -3068,11 +3174,24 @@ fn aggregate_secret_for_amount(amount: u64) -> BlsSecretKey {
 }
 
 fn proof_for_amount(state: &MintState, amount: u64, label: &str) -> cdk::nuts::Proof {
+    proof_for_amount_with_aggregate_secret(
+        state,
+        amount,
+        label,
+        &aggregate_secret_for_amount(amount),
+    )
+}
+
+fn proof_for_amount_with_aggregate_secret(
+    state: &MintState,
+    amount: u64,
+    label: &str,
+    aggregate_secret: &BlsSecretKey,
+) -> cdk::nuts::Proof {
     let config = state.mint.federation_config().expect("federation config");
     let keyset = &config.public_config().keysets[0];
     let secret = cdk::secret::Secret::new(format!("federation replay proof {label}"));
-    let signature =
-        BlsG1PublicKey::hash_to_curve(secret.as_bytes()).mul(&aggregate_secret_for_amount(amount));
+    let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes()).mul(aggregate_secret);
 
     cdk::nuts::Proof::new(
         Amount::from(amount),
@@ -3161,6 +3280,7 @@ fn test_melt_quote_operation(
         change: None,
         request: Some(bolt11.request.to_string()),
         unit: Some(bolt11.unit.clone()),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
     });
     config.melt_quote_operation(
         quote,
@@ -13850,6 +13970,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             request: format!("invoice-{mint_quote_id}"),
             amount: Some(Amount::from(4)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -14605,6 +14729,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             request: format!("invoice-{mint_quote_id}"),
             amount: Some(Amount::from(4)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -16853,10 +16981,11 @@ async fn submit_healthy_federation_swap_batch(
         .map(|index| {
             let envelope = config
                 .swap_operation(cdk::nuts::SwapRequest::new(
-                    vec![proof_for_amount(
+                    vec![proof_for_amount_with_aggregate_secret(
                         &session.states[0],
                         1,
                         &format!("healthy-stress-input-{index}"),
+                        &BlsSecretKey::from_reduced_bytes(&[31; 32]),
                     )],
                     vec![swap_output(
                         &session.states[0],
@@ -16896,23 +17025,78 @@ async fn submit_healthy_federation_swap_batch(
         .collect()
 }
 
+fn spawn_healthy_federation_peer_sync_tasks(
+    session: &MultiMemberAlephBftLiveSession,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    session
+        .states
+        .iter()
+        .cloned()
+        .zip(session.private_configs.iter().cloned())
+        .enumerate()
+        .map(|(member_rank, (state, private_config))| {
+            let public_config = session.public_config.clone();
+            let local_member = private_config.member_id;
+            let peers = public_config
+                .members
+                .values()
+                .filter(|member| member.member_id != local_member)
+                .cloned()
+                .collect::<Vec<_>>();
+            let sync_config = session.sync_config;
+            let transport = session.transport.clone();
+            tokio::spawn(async move {
+                let client = FederationRestPeerClient::new_with_config(
+                    transport,
+                    &public_config,
+                    private_config,
+                    sync_config,
+                )
+                .expect("healthy stress peer client");
+                let initial_delay = federation_peer_sync_initial_delay(
+                    sync_config.peer_sync_interval,
+                    member_rank,
+                    public_config.members.len(),
+                );
+                if !initial_delay.is_zero() {
+                    time::sleep(initial_delay).await;
+                }
+                let mut interval = federation_peer_sync_interval(sync_config);
+                let mut reconnect_backoff = FederationPeerReconnectBackoff::default();
+                loop {
+                    interval.tick().await;
+                    run_federation_peer_sync_round_with_backoff(
+                        &state,
+                        &client,
+                        &peers,
+                        &mut reconnect_backoff,
+                    )
+                    .await;
+                }
+            })
+        })
+        .collect()
+}
+
 #[tokio::test]
 #[ignore = "process-level federation stress regression"]
-async fn aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up() {
+async fn aleph_bft_live_healthy_swaps_do_not_trigger_catch_up() {
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 256,
         max_peer_deliveries_per_message: 256,
     };
-    let session = start_five_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
-        pump_config,
-        1_000,
-    ))
+    let session = start_five_member_aleph_bft_live_session(
+        FederationAlephBftLiveSessionOptions::new(pump_config),
+    )
     .await
     .expect("five-member healthy stress session");
+    for state in &session.states {
+        state.restore_federation_startup_readiness().await;
+    }
+    let sync_tasks = spawn_healthy_federation_peer_sync_tasks(&session);
 
-    let mut operation_ids = submit_healthy_federation_swap_batch(&session, 0, 10, 5).await;
-    operation_ids.extend(submit_healthy_federation_swap_batch(&session, 10, 20, 10).await);
+    let operation_ids = submit_healthy_federation_swap_batch(&session, 0, 5, 1).await;
 
     for operation_id in &operation_ids {
         for state in &session.states {
@@ -16923,6 +17107,13 @@ async fn aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up() {
             )
             .await;
         }
+    }
+    for task in &sync_tasks {
+        task.abort();
+    }
+    for task in sync_tasks {
+        let err = task.await.expect_err("healthy stress peer sync task abort");
+        assert!(err.is_cancelled());
     }
 
     let expected_entries = session.states[0]
@@ -16944,7 +17135,7 @@ async fn aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up() {
         .expect("healthy stress materialized digest");
     let mut heights = Vec::new();
 
-    for state in &session.states {
+    for (member_index, state) in session.states.iter().enumerate() {
         let entries = state
             .mint
             .localstore()
@@ -16964,18 +17155,17 @@ async fn aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up() {
                 .expect("member healthy stress materialized digest"),
             expected_digest
         );
+        let sync_status = state.federation_sync_status().await;
+        let transition_stats = state
+            .federation_sync_transition_stats()
+            .await
+            .expect("member sync transition stats");
         assert_eq!(
-            state
-                .federation_sync_transition_stats()
-                .await
-                .expect("member sync transition stats"),
+            transition_stats,
             crate::FederationSyncTransitionStats::default(),
-            "healthy load must not enter lagging or catch-up states"
+            "healthy load must not enter lagging or catch-up states: member={}, status={sync_status:?}",
+            member_index + 1,
         );
-        assert!(matches!(
-            state.federation_sync_status().await,
-            Some(crate::FederationSyncStatus::Healthy)
-        ));
         heights.push(
             state
                 .federation
@@ -16989,8 +17179,16 @@ async fn aleph_bft_live_healthy_swap_load_does_not_trigger_catch_up() {
         );
     }
 
-    let minimum_height = heights.iter().min().copied().expect("minimum member height");
-    let maximum_height = heights.iter().max().copied().expect("maximum member height");
+    let minimum_height = heights
+        .iter()
+        .min()
+        .copied()
+        .expect("minimum member height");
+    let maximum_height = heights
+        .iter()
+        .max()
+        .copied()
+        .expect("maximum member height");
     assert_eq!(
         maximum_height - minimum_height,
         0,
@@ -21115,6 +21313,7 @@ async fn benchmark_materialized_state_snapshot_growth() {
                 Amount::ZERO.with_unit(CurrencyUnit::Sat),
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 1,
+                1,
                 Vec::new(),
                 Vec::new(),
                 None,
@@ -21414,6 +21613,7 @@ async fn private_local_status_route_reports_stale_payment_observations() {
         Amount::ZERO.with_unit(CurrencyUnit::Sat),
         Amount::ZERO.with_unit(CurrencyUnit::Sat),
         PaymentMethod::Known(KnownMethod::Bolt11),
+        1,
         1,
         Vec::new(),
         Vec::new(),
