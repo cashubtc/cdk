@@ -11,9 +11,10 @@ use axum::response::{IntoResponse, Response};
 use cdk::federation::{
     FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
     FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
-    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
-    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
+    FederationFrostCommitmentResponse, FederationFrostInputSignatureAudit,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationRestMessageKind,
+    FederationSignedRequest, FederationSignedTransaction, FederationTransactionProposalId,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
@@ -34,6 +35,12 @@ use super::{
 const RESULT_CACHE_LIMIT: usize = 1_024;
 
 type AggregateResultCache = BTreeMap<[u8; 32], ([u8; 32], [u8; 64])>;
+
+#[allow(dead_code)]
+struct CoordinatedFrostSignature {
+    signature: cdk_frost::AggregateSignature,
+    package_hash: [u8; 32],
+}
 
 /// Application-neutral coordinator for one exact selected signer set.
 #[derive(Debug)]
@@ -64,6 +71,19 @@ where
         derivation: &SigningDerivation,
         authorization: &AuthorizationRequest,
     ) -> anyhow::Result<cdk_frost::AggregateSignature> {
+        Ok(self
+            .sign_with_audit(public_config, context, derivation, authorization)
+            .await?
+            .signature)
+    }
+
+    async fn sign_with_audit(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+    ) -> anyhow::Result<CoordinatedFrostSignature> {
         if context.signer_set().len() < usize::from(self.public.threshold()) {
             anyhow::bail!("FROST signer set is below threshold");
         }
@@ -156,7 +176,144 @@ where
                 .notify_frost_aggregate_result(member, &notification)
                 .await?;
         }
-        Ok(signature)
+        Ok(CoordinatedFrostSignature {
+            signature,
+            package_hash,
+        })
+    }
+
+    /// Sign every input, finalize through BDK, then order the signed record in consensus.
+    #[allow(dead_code)]
+    pub(crate) async fn sign_accepted_transaction(
+        &self,
+        state: &MintState,
+        wallet: &cdk_bdk::FederatedBdkWallet,
+        proposal_id: FederationTransactionProposalId,
+        attempt: u32,
+        signer_set: Vec<cdk_frost::MemberId>,
+    ) -> anyhow::Result<FederationSignedTransaction> {
+        let transaction_state = state.mint.federation_transaction_state().await?;
+        let existing = transaction_state
+            .accepted_transaction(proposal_id)
+            .ok_or_else(|| anyhow::anyhow!("accepted transaction is missing"))?;
+        if let Some(signed) = &existing.signed {
+            state
+                .mint
+                .validate_federation_signed_transaction_submission(signed)
+                .await?;
+            wallet
+                .engine()
+                .apply_accepted_transaction(
+                    signed.transaction()?,
+                    existing.accepted_operation_index,
+                )
+                .await?;
+            return Ok(signed.clone());
+        }
+        let accepted = state
+            .mint
+            .federation_transaction_signing_authorization(proposal_id)
+            .await?;
+        let runtime = state
+            .mint
+            .federation_config()
+            .ok_or_else(|| anyhow::anyhow!("federation configuration is unavailable"))?;
+        let scope = wallet.scope();
+        if scope.root_key_epoch() != accepted.proposal.scope.root_key_epoch
+            || scope.application_id() != accepted.proposal.scope.application_id.to_bytes()
+            || scope.application_key_epoch() != accepted.proposal.scope.application_key_epoch
+        {
+            anyhow::bail!("accepted transaction uses a different local BDK wallet scope");
+        }
+        let adapter = FrostBip32::new(self.public.clone(), accepted.proposal.scope.network)?;
+        let mut signatures = Vec::with_capacity(accepted.proposal.selected_inputs.len());
+        let mut audits = Vec::with_capacity(accepted.proposal.selected_inputs.len());
+        for (input_index, selected) in accepted.proposal.selected_inputs.iter().enumerate() {
+            let branch = match selected.allocation.keychain {
+                cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
+                cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,
+            };
+            let index = WalletIndex::new(selected.allocation.derivation_index)?;
+            let derived = adapter.derive(branch, index)?;
+            let typed = FederationCdkOnchainFrostAuthorization::new(
+                &accepted,
+                input_index,
+                derived.signing_derivation(),
+            )?;
+            let authorization_scope = cdk_frost::SigningAuthorizationScope::new(
+                runtime.federation_id().to_bytes(),
+                cdk_frost::RootKeyEpoch::new(accepted.proposal.scope.root_key_epoch)?,
+                self.public.registration(),
+                derived.signing_derivation().binding(),
+                typed.authorization_reference,
+                typed.message,
+            )?;
+            let context = SigningSessionContext::new(
+                authorization_scope,
+                attempt,
+                signer_set.iter().copied(),
+            )?;
+            let authorization = AuthorizationRequest::new(
+                self.public.registration().id(),
+                self.public.registration().key_epoch(),
+                self.public.registration().derivation_version(),
+                context.session_id(),
+                typed.to_bytes()?,
+            )?;
+            let result = self
+                .sign_with_audit(
+                    runtime.public_config(),
+                    &context,
+                    derived.signing_derivation(),
+                    &authorization,
+                )
+                .await?;
+            signatures.push(result.signature.to_bytes());
+            audits.push(FederationFrostInputSignatureAudit {
+                input_index: u32::try_from(input_index)?,
+                session_id: context.session_id().to_bytes(),
+                attempt,
+                signer_set: context
+                    .signer_set()
+                    .iter()
+                    .map(|member| member.get())
+                    .collect(),
+                package_hash: result.package_hash,
+                signature: result.signature.to_bytes().to_vec(),
+            });
+        }
+        let transaction = wallet
+            .engine()
+            .finalize_federated_transaction(
+                &accepted.proposal.unsigned_transaction,
+                &accepted
+                    .proposal
+                    .selected_inputs
+                    .iter()
+                    .map(|input| (input.outpoint, input.previous_output.clone()))
+                    .collect::<Vec<_>>(),
+                &signatures,
+            )
+            .await?;
+        let signed = FederationSignedTransaction::new(&accepted, &transaction, audits)?;
+        signed.verify_signatures(&accepted.proposal)?;
+        let envelope = runtime.transaction_signed_operation(signed.clone());
+        state
+            .submit_federation_envelope(envelope)
+            .await?
+            .ensure_accepted()?;
+        let durable = state
+            .mint
+            .federation_transaction_state()
+            .await?
+            .accepted_transaction(proposal_id)
+            .and_then(|accepted| accepted.signed.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("accepted signed transaction is not materialized"))?
+            .clone();
+        if durable != signed {
+            anyhow::bail!("materialized signed transaction differs from the submitted record");
+        }
+        Ok(durable)
     }
 
     async fn abort_selected(

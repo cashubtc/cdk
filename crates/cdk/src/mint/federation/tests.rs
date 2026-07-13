@@ -60,6 +60,7 @@ mod quote;
 mod runtime;
 mod swap;
 mod transaction_policy;
+mod transaction_signing;
 
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 

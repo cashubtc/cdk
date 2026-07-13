@@ -1,0 +1,251 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use bitcoin::absolute::LockTime;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
+use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+use bitcoin::transaction::Version;
+use bitcoin::{
+    Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+};
+use cdk_common::federation::{
+    FederationAcceptedTransactionState, FederationAddressKeychain, FederationAllocatedAddressRef,
+    FederationFrostApplicationId, FederationFrostInputSignatureAudit,
+    FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
+    FederationOnchainPaymentIntentRecord, FederationOperationId, FederationSignedTransaction,
+    FederationTransactionChangeOutput, FederationTransactionInput,
+    FederationTransactionPolicyAudit, FederationTransactionProposal,
+    FederationTransactionRecipientOutput, FederationTransactionScope, FederationTransactionState,
+};
+
+use super::super::transaction_state::{
+    TRANSACTION_STATE_KEY, TRANSACTION_STATE_PRIMARY_NAMESPACE,
+    TRANSACTION_STATE_SECONDARY_NAMESPACE,
+};
+use super::address_allocation::runtime_with_address_application;
+use super::*;
+
+fn signed_fixture() -> (FederationTransactionState, FederationSignedTransaction) {
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(&[3; 32]).expect("secret key");
+    let keypair = Keypair::from_secret_key(&secp, &secret);
+    let (output_key, _) = XOnlyPublicKey::from_keypair(&keypair);
+    let mut input_script = vec![0x51, 0x20];
+    input_script.extend_from_slice(&output_key.serialize());
+    let input_script = ScriptBuf::from_bytes(input_script);
+    let scope = FederationTransactionScope {
+        root_key_epoch: 1,
+        application_id: FederationFrostApplicationId::from_bytes([7; 32]).expect("application id"),
+        application_key_epoch: 3,
+        network: Network::Regtest,
+        policy_version: 1,
+    };
+    let intent = FederationOnchainPaymentIntent::new(
+        "signed-quote".to_string(),
+        ScriptBuf::from_bytes(vec![0x51]),
+        10_000,
+        1_000,
+        0,
+        1,
+        scope,
+    )
+    .expect("intent");
+    let batch = FederationOnchainPaymentBatch::new(vec![intent.clone()], 1).expect("batch");
+    let outpoint = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
+    let previous_output = TxOut {
+        value: Amount::from_sat(20_000),
+        script_pubkey: input_script.clone(),
+    };
+    let selected_input = FederationTransactionInput {
+        outpoint,
+        previous_output: previous_output.clone(),
+        allocation: FederationAllocatedAddressRef {
+            application_id: scope.application_id,
+            application_key_epoch: scope.application_key_epoch,
+            quote: "signed-deposit".to_string(),
+            keychain: FederationAddressKeychain::External,
+            derivation_index: 0,
+        },
+    };
+    let recipient = TxOut {
+        value: Amount::from_sat(10_000),
+        script_pubkey: intent.destination_script.clone(),
+    };
+    let change = TxOut {
+        value: Amount::from_sat(9_500),
+        script_pubkey: input_script,
+    };
+    let unsigned_transaction = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: outpoint,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        }],
+        output: vec![recipient.clone(), change.clone()],
+    };
+    let proposal = FederationTransactionProposal::new(
+        &batch,
+        MemberId::new(1).expect("member"),
+        unsigned_transaction,
+        vec![selected_input],
+        vec![FederationTransactionRecipientOutput {
+            intent_id: intent.intent_id().expect("intent id"),
+            output_index: 0,
+            output: recipient,
+            fee_contribution_sat: 500,
+        }],
+        Some(FederationTransactionChangeOutput {
+            derivation_index: 0,
+            output_index: 1,
+            output: change,
+        }),
+        500,
+        None,
+    )
+    .expect("proposal");
+    let sighash = SighashCache::new(&proposal.unsigned_transaction)
+        .taproot_key_spend_signature_hash(
+            0,
+            &Prevouts::All(std::slice::from_ref(&previous_output)),
+            TapSighashType::Default,
+        )
+        .expect("Taproot sighash")
+        .to_byte_array();
+    let policy_audit = FederationTransactionPolicyAudit {
+        proposal_id: proposal.proposal_id().expect("proposal id"),
+        txid: proposal.unsigned_transaction.compute_txid(),
+        fee_sat: proposal.fee_sat,
+        fee_rate_sat_per_kwu: proposal.fee_rate_sat_per_kwu,
+        weight: proposal.unsigned_transaction.weight().to_wu(),
+        fee_contributions: BTreeMap::from([(intent.intent_id().expect("intent id"), 500)]),
+        taproot_sighashes: vec![sighash],
+    };
+    let mut state = FederationTransactionState::new();
+    state
+        .add_pending_intent(
+            FederationOnchainPaymentIntentRecord::pending(intent).expect("intent record"),
+        )
+        .expect("pending intent");
+    state
+        .accept_transaction(
+            proposal.clone(),
+            policy_audit,
+            FederationOperationId::from_bytes([10; 32]),
+            10,
+        )
+        .expect("accepted proposal");
+    let accepted = state
+        .accepted_transaction(proposal.proposal_id().expect("proposal id"))
+        .expect("accepted transaction")
+        .clone();
+    let signature = secp
+        .sign_schnorr_no_aux_rand(&Message::from_digest(sighash), &keypair)
+        .serialize()
+        .to_vec();
+    let mut transaction = proposal.unsigned_transaction.clone();
+    transaction.input[0].witness.push(&signature);
+    let signed = FederationSignedTransaction::new(
+        &accepted,
+        &transaction,
+        vec![FederationFrostInputSignatureAudit {
+            input_index: 0,
+            session_id: [11; 32],
+            attempt: 1,
+            signer_set: vec![1, 2],
+            package_hash: [12; 32],
+            signature,
+        }],
+    )
+    .expect("signed transaction");
+    signed
+        .verify_signatures(&proposal)
+        .expect("signed transaction verifies");
+    (state, signed)
+}
+
+async fn persist_transaction_state(
+    store: &Arc<MintSqliteDatabase>,
+    state: &FederationTransactionState,
+) {
+    let mut transaction = store.begin_transaction().await.expect("begin state write");
+    transaction
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &state.to_bytes().expect("transaction state bytes"),
+        )
+        .await
+        .expect("write transaction state");
+    transaction
+        .commit()
+        .await
+        .expect("commit transaction state");
+}
+
+#[tokio::test]
+async fn signed_operation_converges_exact_bytes_and_rejects_conflicting_replay() {
+    let (runtime, _) = runtime_with_address_application();
+    let (initial_state, signed) = signed_fixture();
+    let envelope = runtime.transaction_signed_operation(signed.clone());
+    let entry = accepted_entry_without_journal(20, envelope);
+    let (first, first_store) = federated_test_mint(runtime.clone()).await;
+    let (second, second_store) = federated_test_mint(runtime.clone()).await;
+    persist_transaction_state(&first_store, &initial_state).await;
+    persist_transaction_state(&second_store, &initial_state).await;
+    let mut unregistered_audit = signed.clone();
+    unregistered_audit.input_signatures[0].signer_set = vec![99];
+    assert!(first
+        .validate_federation_signed_transaction_submission(&unregistered_audit)
+        .await
+        .is_err());
+    persist_journal_entry(&first_store, &entry).await;
+    persist_journal_entry(&second_store, &entry).await;
+
+    assert!(first
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("first member apply"));
+    assert!(second
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("second member catch-up apply"));
+    let first_state = first
+        .federation_transaction_state()
+        .await
+        .expect("first state");
+    let second_state = second
+        .federation_transaction_state()
+        .await
+        .expect("second state");
+    assert_eq!(first_state, second_state);
+    let durable = first_state
+        .accepted_transaction(signed.proposal_id)
+        .expect("accepted transaction");
+    assert_eq!(durable.state, FederationAcceptedTransactionState::Signed);
+    assert_eq!(durable.signed.as_ref(), Some(&signed));
+    assert!(!first
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("exact replay"));
+
+    let restarted = restart_federated_test_mint(runtime, Arc::clone(&first_store)).await;
+    assert_eq!(
+        restarted
+            .federation_transaction_state()
+            .await
+            .expect("restarted signed state"),
+        first_state
+    );
+
+    let mut conflicting = signed;
+    conflicting.input_signatures[0].package_hash[0] ^= 1;
+    assert!(first
+        .validate_federation_signed_transaction_submission(&conflicting)
+        .await
+        .is_err());
+}

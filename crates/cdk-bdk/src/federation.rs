@@ -174,6 +174,12 @@ impl FederatedWalletScope {
         self.application_id
     }
 
+    /// FROST root epoch used by this wallet namespace.
+    #[must_use]
+    pub fn root_key_epoch(self) -> u64 {
+        self.root_key_epoch
+    }
+
     /// Descriptor application epoch used to select consensus state.
     #[must_use]
     pub fn application_key_epoch(self) -> u64 {

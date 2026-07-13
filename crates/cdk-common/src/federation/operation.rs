@@ -19,7 +19,8 @@ use super::journal::FederationJournalEntry;
 use super::{
     FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
     FederationConfig, FederationError, FederationId, FederationPaymentObservationContext,
-    FederationTransactionProposal, MemberConfigPrivate, MemberId, Result,
+    FederationSignedTransaction, FederationTransactionProposal, MemberConfigPrivate, MemberId,
+    Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -149,6 +150,8 @@ pub enum FederationOperationKind {
     KeysetRotation,
     /// Propose and reserve one independently validated on-chain transaction.
     TransactionProposal,
+    /// Persist one exact threshold-signed on-chain transaction.
+    TransactionSigned,
 }
 
 impl fmt::Display for FederationOperationKind {
@@ -166,6 +169,7 @@ impl fmt::Display for FederationOperationKind {
             Self::Swap => f.write_str("swap"),
             Self::KeysetRotation => f.write_str("keyset_rotation"),
             Self::TransactionProposal => f.write_str("transaction_proposal"),
+            Self::TransactionSigned => f.write_str("transaction_signed"),
         }
     }
 }
@@ -761,7 +765,8 @@ impl FederationPaymentObservation {
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
-            | FederationOperation::TransactionProposal(_) => None,
+            | FederationOperation::TransactionProposal(_)
+            | FederationOperation::TransactionSigned(_) => None,
         }
     }
 
@@ -919,7 +924,8 @@ impl FederationPaymentObservationQuarantineRecord {
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
-            | FederationOperation::TransactionProposal(_) => None,
+            | FederationOperation::TransactionProposal(_)
+            | FederationOperation::TransactionSigned(_) => None,
         }
     }
 }
@@ -1486,6 +1492,8 @@ pub enum FederationOperation {
     KeysetRotation(FederationKeysetRotationOperation),
     /// Accept an exact unsigned on-chain transaction after consensus.
     TransactionProposal(FederationTransactionProposal),
+    /// Accept the exact threshold-signed transaction after consensus.
+    TransactionSigned(FederationSignedTransaction),
 }
 
 impl FederationOperation {
@@ -1507,6 +1515,7 @@ impl FederationOperation {
             Self::Swap(_) => FederationOperationKind::Swap,
             Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
             Self::TransactionProposal(_) => FederationOperationKind::TransactionProposal,
+            Self::TransactionSigned(_) => FederationOperationKind::TransactionSigned,
         }
     }
 
@@ -1611,7 +1620,7 @@ impl FederationOperation {
                 }));
                 keys
             }
-            Self::Swap(_) => Vec::new(),
+            Self::Swap(_) | Self::TransactionSigned(_) => Vec::new(),
         }
     }
 
@@ -1631,7 +1640,10 @@ impl FederationOperation {
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::PaymentObservationQuarantine(operation) => Some(operation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
-            Self::Swap(_) | Self::KeysetRotation(_) | Self::TransactionProposal(_) => None,
+            Self::Swap(_)
+            | Self::KeysetRotation(_)
+            | Self::TransactionProposal(_)
+            | Self::TransactionSigned(_) => None,
         }
     }
 
@@ -1649,7 +1661,8 @@ impl FederationOperation {
             | Self::MintQuote(_)
             | Self::PaymentObservationQuarantine(_)
             | Self::KeysetRotation(_)
-            | Self::TransactionProposal(_) => {
+            | Self::TransactionProposal(_)
+            | Self::TransactionSigned(_) => {
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
             Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
@@ -1903,7 +1916,8 @@ impl FederationOperationEnvelope {
             | FederationOperation::PaymentObservationQuarantine(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::KeysetRotation(_) => None,
+            | FederationOperation::KeysetRotation(_)
+            | FederationOperation::TransactionSigned(_) => None,
         };
         if let Some(claimed_observer) = claimed_observer {
             if claimed_observer != authorization.author {
@@ -2198,6 +2212,27 @@ mod tests {
 
     fn keyset_rotation_operation(seed: u8) -> FederationOperation {
         FederationOperation::KeysetRotation(keyset_rotation(seed))
+    }
+
+    fn signed_transaction_operation(seed: u8) -> FederationOperation {
+        let proposal_id = super::super::FederationTransactionProposalId::from_bytes([11; 32]);
+        let txid = bitcoin::Txid::from_str(&"22".repeat(32)).expect("txid");
+        FederationOperation::TransactionSigned(FederationSignedTransaction {
+            version: 1,
+            proposal_id,
+            txid,
+            transaction_bytes: vec![seed],
+            policy_audit: super::super::FederationTransactionPolicyAudit {
+                proposal_id,
+                txid,
+                fee_sat: 1,
+                fee_rate_sat_per_kwu: 1,
+                weight: 1,
+                fee_contributions: BTreeMap::new(),
+                taproot_sighashes: Vec::new(),
+            },
+            input_signatures: Vec::new(),
+        })
     }
 
     fn output(amount: u64, hex: &str) -> BlindedMessage {
@@ -2724,6 +2759,21 @@ mod tests {
         );
         assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
         assert!(first.conflicts_with(&changed).expect("conflict check"));
+    }
+
+    #[test]
+    fn signed_transactions_defer_conflicts_until_signature_validation() {
+        let first = envelope(signed_transaction_operation(1));
+        let duplicate = envelope(signed_transaction_operation(1));
+        let different = envelope(signed_transaction_operation(2));
+
+        assert!(first.operation.conflict_keys().is_empty());
+        assert_eq!(
+            first.operation.kind(),
+            FederationOperationKind::TransactionSigned
+        );
+        assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
+        assert!(!first.conflicts_with(&different).expect("conflict check"));
     }
 
     #[test]

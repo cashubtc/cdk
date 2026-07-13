@@ -124,10 +124,11 @@ pub use self::signing::{
 };
 pub use self::transaction_proposal::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
-    FederationCdkOnchainFrostAuthorization, FederationFrostSigningAuthorizationReference,
-    FederationOnchainBatchId, FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
+    FederationCdkOnchainFrostAuthorization, FederationFrostInputSignatureAudit,
+    FederationFrostSigningAuthorizationReference, FederationOnchainBatchId,
+    FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
     FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
-    FederationOnchainPaymentIntentState, FederationTaprootSighashType,
+    FederationOnchainPaymentIntentState, FederationSignedTransaction, FederationTaprootSighashType,
     FederationTransactionChangeOutput, FederationTransactionInput,
     FederationTransactionPolicyAudit, FederationTransactionProposal,
     FederationTransactionProposalId, FederationTransactionRecipientOutput,

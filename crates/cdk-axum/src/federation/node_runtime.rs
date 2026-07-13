@@ -160,7 +160,13 @@ impl FederationNodeRuntime {
             return Ok(());
         };
         envelope.verify_authorization(config.public_config())?;
-        config.validate_federated_operation_submission(&envelope.operation)
+        config.validate_federated_operation_submission(&envelope.operation)?;
+        if let cdk::federation::FederationOperation::TransactionSigned(signed) = &envelope.operation
+        {
+            mint.validate_federation_signed_transaction_submission(signed)
+                .await?;
+        }
+        Ok(())
     }
 
     fn active_mint(&self) -> Result<&Arc<Mint>, cdk::Error> {
@@ -1712,7 +1718,7 @@ impl FederationNodeRuntime {
             .await
             .map_err(|_| {
                 cdk::Error::Custom(
-                    "accepted federation address allocation could not be reconciled locally"
+                    "accepted federation on-chain state could not be reconciled locally"
                         .to_string(),
                 )
             })?;

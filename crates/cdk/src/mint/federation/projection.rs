@@ -204,7 +204,8 @@ impl Mint {
                         operation.keyset.clone(),
                     ));
                 }
-                FederationOperation::TransactionProposal(_) => {}
+                FederationOperation::TransactionProposal(_)
+                | FederationOperation::TransactionSigned(_) => {}
             }
         }
 

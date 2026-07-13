@@ -11,8 +11,9 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
-use bitcoin::consensus::serialize;
+use bitcoin::consensus::{deserialize, serialize};
 use bitcoin::hashes::{sha256, Hash, HashEngine};
+use bitcoin::secp256k1::{schnorr, Message, Secp256k1, XOnlyPublicKey};
 use bitcoin::{Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -26,6 +27,7 @@ const PAYMENT_INTENT_VERSION: u16 = 1;
 const PAYMENT_BATCH_VERSION: u16 = 1;
 const TRANSACTION_PROPOSAL_VERSION: u16 = 1;
 const TRANSACTION_STATE_VERSION: u16 = 1;
+const SIGNED_TRANSACTION_VERSION: u16 = 1;
 const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v1";
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
 const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v1";
@@ -924,6 +926,8 @@ impl FederationTransactionProposal {
 pub enum FederationAcceptedTransactionState {
     /// Accepted by federation consensus and eligible for threshold signing.
     Accepted,
+    /// Fully signed and durably recorded before broadcast.
+    Signed,
     /// No longer preferred, while every input remains reserved.
     Abandoned,
     /// Superseded by a consensus-designated replacement proposal.
@@ -947,6 +951,142 @@ pub struct FederationAcceptedTransaction {
     pub accepted_operation_index: u64,
     /// Sticky transaction lifecycle.
     pub state: FederationAcceptedTransactionState,
+    /// Exact finalized transaction and public signing audit, when signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<FederationSignedTransaction>,
+}
+
+/// Public audit for one input's completed threshold signing attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostInputSignatureAudit {
+    /// Transaction input position.
+    pub input_index: u32,
+    /// Canonical FROST session identifier.
+    pub session_id: [u8; 32],
+    /// Monotonic signing attempt.
+    pub attempt: u32,
+    /// Exact selected signer identifiers.
+    pub signer_set: Vec<u16>,
+    /// Canonical signing-package commitment.
+    pub package_hash: [u8; 32],
+    /// Aggregate BIP340 signature inserted into the PSBT.
+    pub signature: Vec<u8>,
+}
+
+/// Exact finalized transaction persisted before broadcast.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationSignedTransaction {
+    /// Record schema version.
+    pub version: u16,
+    /// Accepted proposal identity.
+    pub proposal_id: FederationTransactionProposalId,
+    /// Final transaction identity.
+    pub txid: Txid,
+    /// Consensus-serialized final transaction including witnesses.
+    pub transaction_bytes: Vec<u8>,
+    /// Independently recomputed policy and fee audit retained at signing.
+    pub policy_audit: FederationTransactionPolicyAudit,
+    /// One public signing audit per input, in input order.
+    pub input_signatures: Vec<FederationFrostInputSignatureAudit>,
+}
+
+impl FederationSignedTransaction {
+    /// Construct and validate a durable signed record.
+    pub fn new(
+        accepted: &FederationAcceptedTransaction,
+        transaction: &Transaction,
+        input_signatures: Vec<FederationFrostInputSignatureAudit>,
+    ) -> Result<Self> {
+        let value = Self {
+            version: SIGNED_TRANSACTION_VERSION,
+            proposal_id: accepted.proposal.proposal_id()?,
+            txid: transaction.compute_txid(),
+            transaction_bytes: serialize(transaction),
+            policy_audit: accepted.policy_audit.clone(),
+            input_signatures,
+        };
+        value.validate(&accepted.proposal)?;
+        Ok(value)
+    }
+
+    /// Decode the exact final transaction.
+    pub fn transaction(&self) -> Result<Transaction> {
+        deserialize(&self.transaction_bytes)
+            .map_err(|_| invalid("signed transaction bytes are invalid"))
+    }
+
+    /// Verify every aggregate signature against its accepted prevout and sighash.
+    pub fn verify_signatures(&self, proposal: &FederationTransactionProposal) -> Result<()> {
+        self.validate(proposal)?;
+        let secp = Secp256k1::verification_only();
+        for (index, audit) in self.input_signatures.iter().enumerate() {
+            let script = proposal.selected_inputs[index]
+                .previous_output
+                .script_pubkey
+                .as_bytes();
+            if script.len() != 34 || script[0] != 0x51 || script[1] != 0x20 {
+                return Err(invalid(
+                    "signed input prevout is not Taproot key-path output",
+                ));
+            }
+            let output_key = XOnlyPublicKey::from_slice(&script[2..])
+                .map_err(|_| invalid("signed input Taproot output key is invalid"))?;
+            let signature = schnorr::Signature::from_slice(&audit.signature)
+                .map_err(|_| invalid("aggregate input signature is malformed"))?;
+            let message = Message::from_digest(self.policy_audit.taproot_sighashes[index]);
+            secp.verify_schnorr(&signature, &message, &output_key)
+                .map_err(|_| invalid("aggregate input signature verification failed"))?;
+        }
+        Ok(())
+    }
+
+    fn validate(&self, proposal: &FederationTransactionProposal) -> Result<()> {
+        if self.version != SIGNED_TRANSACTION_VERSION
+            || self.proposal_id != proposal.proposal_id()?
+            || self.policy_audit.proposal_id != self.proposal_id
+            || self.input_signatures.len() != proposal.selected_inputs.len()
+            || self.transaction_bytes.len() > FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES
+        {
+            return Err(invalid("signed transaction audit shape is invalid"));
+        }
+        validate_policy_audit(proposal, &self.policy_audit)?;
+        let transaction = self.transaction()?;
+        if transaction.compute_txid() != self.txid {
+            return Err(invalid("signed transaction txid mismatch"));
+        }
+        let mut unsigned = transaction.clone();
+        for input in &mut unsigned.input {
+            input.script_sig = ScriptBuf::new();
+            input.witness.clear();
+        }
+        if unsigned != proposal.unsigned_transaction {
+            return Err(invalid(
+                "signed transaction differs from accepted non-witness data",
+            ));
+        }
+        for (index, audit) in self.input_signatures.iter().enumerate() {
+            if audit.input_index != u32::try_from(index).map_err(|_| invalid("input overflow"))?
+                || audit.session_id == [0; 32]
+                || audit.attempt == 0
+                || audit.signer_set.is_empty()
+                || audit.signer_set.contains(&0)
+                || audit
+                    .signer_set
+                    .windows(2)
+                    .any(|members| members[0] >= members[1])
+                || audit.package_hash == [0; 32]
+                || audit.signature.len() != 64
+                || transaction.input[index].witness.len() != 1
+                || transaction.input[index].witness.iter().next()
+                    != Some(audit.signature.as_slice())
+            {
+                return Err(invalid("signed transaction input audit mismatch"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// CDK-specific authoritative reference committed into one FROST input slot.
@@ -1191,6 +1331,14 @@ impl FederationTransactionState {
         self.accepted_transactions.get(&proposal_id)
     }
 
+    /// Return all accepted transactions keyed by canonical proposal identity.
+    #[must_use]
+    pub fn accepted_transactions(
+        &self,
+    ) -> &BTreeMap<FederationTransactionProposalId, FederationAcceptedTransaction> {
+        &self.accepted_transactions
+    }
+
     /// Return the proposal that owns one wallet reservation.
     #[must_use]
     pub fn reservation(&self, outpoint: OutPoint) -> Option<FederationTransactionProposalId> {
@@ -1304,8 +1452,44 @@ impl FederationTransactionState {
                 accepted_operation_id,
                 accepted_operation_index,
                 state: FederationAcceptedTransactionState::Accepted,
+                signed: None,
             },
         );
+        self.validate()?;
+        Ok(FederationTransactionStateOutcome::Updated)
+    }
+
+    /// Persist a finalized transaction idempotently before broadcast.
+    pub fn mark_transaction_signed(
+        &mut self,
+        proposal_id: FederationTransactionProposalId,
+        signed: FederationSignedTransaction,
+    ) -> Result<FederationTransactionStateOutcome> {
+        let accepted = self
+            .accepted_transactions
+            .get_mut(&proposal_id)
+            .ok_or_else(|| invalid("cannot sign an unknown accepted transaction"))?;
+        if let Some(existing) = &accepted.signed {
+            if existing == &signed {
+                return Ok(FederationTransactionStateOutcome::Existing);
+            }
+            return Err(invalid(
+                "signed transaction replay conflicts with durable bytes",
+            ));
+        }
+        if accepted.state != FederationAcceptedTransactionState::Accepted {
+            return Err(invalid(
+                "transaction is not eligible for signed persistence",
+            ));
+        }
+        if signed.policy_audit != accepted.policy_audit {
+            return Err(invalid(
+                "signed transaction policy audit differs from accepted state",
+            ));
+        }
+        signed.validate(&accepted.proposal)?;
+        accepted.signed = Some(signed);
+        accepted.state = FederationAcceptedTransactionState::Signed;
         self.validate()?;
         Ok(FederationTransactionStateOutcome::Updated)
     }
@@ -1415,6 +1599,21 @@ impl FederationTransactionState {
                 return Err(invalid("accepted transaction durable identity mismatch"));
             }
             validate_policy_audit(&accepted.proposal, &accepted.policy_audit)?;
+            match (&accepted.state, &accepted.signed) {
+                (FederationAcceptedTransactionState::Accepted, Some(_))
+                | (FederationAcceptedTransactionState::Signed, None) => {
+                    return Err(invalid("accepted transaction signed-state mismatch"));
+                }
+                (_, Some(signed)) => {
+                    if signed.policy_audit != accepted.policy_audit {
+                        return Err(invalid(
+                            "signed transaction policy audit differs from accepted state",
+                        ));
+                    }
+                    signed.validate(&accepted.proposal)?;
+                }
+                (_, None) => {}
+            }
             for intent_id in &accepted.proposal.intent_ids {
                 let record = self
                     .intents
@@ -1945,6 +2144,7 @@ mod tests {
             accepted_operation_id: FederationOperationId::from_bytes([3; 32]),
             accepted_operation_index: 42,
             state: FederationAcceptedTransactionState::Accepted,
+            signed: None,
         };
         let reference = FederationFrostSigningAuthorizationReference::new(&accepted, 0)
             .expect("signing authorization reference");
@@ -2132,5 +2332,159 @@ mod tests {
             &serde_json::to_vec(&value).expect("tampered state")
         )
         .is_err());
+    }
+
+    #[test]
+    fn signed_transaction_persistence_is_exact_idempotent_and_digest_visible() {
+        let proposal = proposal();
+        let proposal_id = proposal.proposal_id().expect("proposal id");
+        let mut state = FederationTransactionState::new();
+        for intent in [intent("quote-a", 0, 30, 1), intent("quote-b", 1, 20, 2)] {
+            state
+                .add_pending_intent(
+                    FederationOnchainPaymentIntentRecord::pending(intent).expect("record"),
+                )
+                .expect("add intent");
+        }
+        state
+            .accept_transaction(
+                proposal.clone(),
+                policy_audit(&proposal),
+                FederationOperationId::from_bytes([5; 32]),
+                50,
+            )
+            .expect("accept");
+        let accepted = state
+            .accepted_transaction(proposal_id)
+            .expect("accepted transaction")
+            .clone();
+        let mut transaction = proposal.unsigned_transaction.clone();
+        let input_signatures = transaction
+            .input
+            .iter_mut()
+            .enumerate()
+            .map(|(input_index, input)| {
+                let signature = vec![u8::try_from(input_index + 7).expect("signature byte"); 64];
+                input.witness.push(&signature);
+                FederationFrostInputSignatureAudit {
+                    input_index: u32::try_from(input_index).expect("input index"),
+                    session_id: [u8::try_from(input_index + 8).expect("session byte"); 32],
+                    attempt: 1,
+                    signer_set: vec![1, 2],
+                    package_hash: [u8::try_from(input_index + 9).expect("package byte"); 32],
+                    signature,
+                }
+            })
+            .collect();
+        let signed = FederationSignedTransaction::new(&accepted, &transaction, input_signatures)
+            .expect("signed record");
+        assert_eq!(
+            state
+                .mark_transaction_signed(proposal_id, signed.clone())
+                .expect("persist signed transaction"),
+            FederationTransactionStateOutcome::Updated
+        );
+        assert_eq!(
+            state
+                .mark_transaction_signed(proposal_id, signed.clone())
+                .expect("exact signed retry"),
+            FederationTransactionStateOutcome::Existing
+        );
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("signed transaction")
+                .state,
+            FederationAcceptedTransactionState::Signed
+        );
+        let mut conflicting = signed;
+        conflicting.input_signatures[0].package_hash[0] ^= 1;
+        assert!(state
+            .mark_transaction_signed(proposal_id, conflicting)
+            .is_err());
+        assert_eq!(
+            FederationTransactionState::from_bytes(&state.to_bytes().expect("state bytes"))
+                .expect("state round trip"),
+            state
+        );
+    }
+
+    #[test]
+    fn signed_transaction_verifies_every_exact_taproot_key_path_signature() {
+        use bitcoin::secp256k1::{Keypair, SecretKey};
+
+        let secp = Secp256k1::new();
+        let mut proposal = proposal();
+        let keypairs = proposal
+            .selected_inputs
+            .iter_mut()
+            .enumerate()
+            .map(|(index, selected)| {
+                let mut secret = [0u8; 32];
+                secret[31] = u8::try_from(index + 1).expect("secret marker");
+                let secret = SecretKey::from_slice(&secret).expect("secret key");
+                let keypair = Keypair::from_secret_key(&secp, &secret);
+                let (output_key, _) = XOnlyPublicKey::from_keypair(&keypair);
+                let mut script = vec![0x51, 0x20];
+                script.extend_from_slice(&output_key.serialize());
+                selected.previous_output.script_pubkey = ScriptBuf::from_bytes(script);
+                keypair
+            })
+            .collect::<Vec<_>>();
+        proposal.psbt_commitment = proposal
+            .expected_psbt_commitment()
+            .expect("PSBT commitment");
+        let mut audit = policy_audit(&proposal);
+        audit.taproot_sighashes = keypairs
+            .iter()
+            .enumerate()
+            .map(|(index, _)| [u8::try_from(index + 17).expect("sighash marker"); 32])
+            .collect();
+        let accepted = FederationAcceptedTransaction {
+            proposal: proposal.clone(),
+            policy_audit: audit.clone(),
+            accepted_operation_id: FederationOperationId::from_bytes([5; 32]),
+            accepted_operation_index: 50,
+            state: FederationAcceptedTransactionState::Accepted,
+            signed: None,
+        };
+        let mut transaction = proposal.unsigned_transaction.clone();
+        let input_signatures = keypairs
+            .iter()
+            .enumerate()
+            .map(|(index, keypair)| {
+                let signature = secp
+                    .sign_schnorr_no_aux_rand(
+                        &Message::from_digest(audit.taproot_sighashes[index]),
+                        keypair,
+                    )
+                    .serialize()
+                    .to_vec();
+                transaction.input[index].witness.push(&signature);
+                FederationFrostInputSignatureAudit {
+                    input_index: u32::try_from(index).expect("input index"),
+                    session_id: [u8::try_from(index + 31).expect("session marker"); 32],
+                    attempt: 1,
+                    signer_set: vec![1, 2],
+                    package_hash: [u8::try_from(index + 41).expect("package marker"); 32],
+                    signature,
+                }
+            })
+            .collect();
+        let signed = FederationSignedTransaction::new(&accepted, &transaction, input_signatures)
+            .expect("signed record");
+        signed
+            .verify_signatures(&proposal)
+            .expect("every exact signature verifies");
+
+        let mut invalid = signed;
+        invalid.input_signatures[1].signature[0] ^= 1;
+        let mut invalid_transaction = invalid.transaction().expect("signed transaction");
+        invalid_transaction.input[1].witness.clear();
+        invalid_transaction.input[1]
+            .witness
+            .push(&invalid.input_signatures[1].signature);
+        invalid.transaction_bytes = serialize(&invalid_transaction);
+        assert!(invalid.verify_signatures(&proposal).is_err());
     }
 }

@@ -87,6 +87,10 @@ federation partially ready.
   authorization, nonce IDs, wire transcripts, chain codes, descriptors, and
   signing targets now bind the application key epoch. Preserve the wrong-epoch
   rejection and epoch-separated descriptor vectors.
+- Milestone 15 found that a pre-validation signed-transaction conflict key let
+  an invalid ordered record block a later valid signature. Reserve no such key;
+  accepted-state verification makes the first valid record durable and rejects
+  later differing replays.
 
 ## 1. Problem and setting
 
@@ -1456,39 +1460,75 @@ before broadcast.
 
 **Work:**
 
-- [ ] Aggregate and verify threshold shares independently for every Taproot
+- [x] Aggregate and verify threshold shares independently for every Taproot
   input.
-- [ ] Insert aggregate key-path signatures and sighash types into the accepted
+- [x] Insert aggregate key-path signatures and sighash types into the accepted
   PSBT.
-- [ ] Finalize the PSBT through BDK/rust-bitcoin and extract the transaction.
-- [ ] Verify extracted non-witness transaction data exactly matches consensus.
-- [ ] Verify every final signature against the accepted output key and sighash.
-- [ ] Persist signed transaction bytes, txid, signer-attempt metadata, fee audit,
+- [x] Finalize the PSBT through BDK/rust-bitcoin and extract the transaction.
+- [x] Verify extracted non-witness transaction data exactly matches consensus.
+- [x] Verify every final signature against the accepted output key and sighash.
+- [x] Persist signed transaction bytes, txid, signer-attempt metadata, fee audit,
   and input/output assignments before broadcast.
-- [ ] Apply the signed transaction to every member's local BDK transaction graph
+- [x] Apply the signed transaction to every member's local BDK transaction graph
   idempotently.
-- [ ] Include signed transaction identity and state in catch-up/digest without
+- [x] Include signed transaction identity and state in catch-up/digest without
   including private shares or nonces.
-- [ ] Define behavior when different valid signer subsets produce the same
+- [x] Define behavior when different valid signer subsets produce the same
   deterministic BIP340 signature expectation or differing valid signatures.
 
 **Success criteria:**
 
-- [ ] The extracted transaction is accepted by Bitcoin Core script verification.
-- [ ] Every member agrees on txid and non-witness transaction bytes.
-- [ ] Invalid or insufficient shares cannot advance signed state.
-- [ ] A crash after signing but before broadcast recovers the exact same signed
+- [x] The extracted transaction satisfies the supported Bitcoin Core P2TR
+  key-path script rules through the permitted equivalent verifier; Core
+  binaries were unavailable for a direct invocation.
+- [x] Every member agrees on txid and non-witness transaction bytes.
+- [x] Invalid or insufficient shares cannot advance signed state.
+- [x] A crash after signing but before broadcast recovers the exact same signed
   transaction and never rebuilds with different inputs.
 
 **Required tests:**
 
-- [ ] Single-input and multi-input signing with different threshold subsets.
-- [ ] Invalid share among valid shares and threshold recovery without it.
-- [ ] Missing input signature and wrong sighash.
-- [ ] PSBT mutation before and after aggregation.
-- [ ] Crash/restart after each input signature and after signed persistence.
-- [ ] Catch-up of a member that did not participate in signing.
-- [ ] Bitcoin Core regtest `testmempoolaccept` or equivalent script validation.
+- [x] Single-input and multi-input signing with different threshold subsets.
+- [x] Invalid share among valid shares and threshold recovery without it.
+- [x] Missing input signature and wrong sighash.
+- [x] PSBT mutation before and after aggregation.
+- [x] Crash/restart after each input signature and after signed persistence.
+- [x] Catch-up of a member that did not participate in signing.
+- [x] Bitcoin Core regtest `testmempoolaccept` or equivalent script validation.
+
+**Milestone record:** completed on 2026-07-14. The coordinator now aggregates
+each accepted input independently, reconstructs the exact watch-only PSBT from
+the consensus transaction and local BDK prevouts, inserts only
+`SIGHASH_DEFAULT` Taproot key-path signatures, and uses the existing BDK engine
+to verify and finalize the transaction. Finalization exact-compares all
+non-witness bytes. The durable record includes the txid, witness-bearing bytes,
+the accepted fee/sighash audit, and public session, attempt, signer-set, package,
+and aggregate-signature metadata; it contains no nonce or private share.
+
+Signed state is an authenticated `TransactionSigned` operation in the existing
+AlephBFT journal. Stateful admission and atomic apply reload the accepted
+proposal, require a registered threshold signer set, verify every BIP340
+signature against the exact P2TR prevout and accepted sighash, and persist the
+signed state with its journal application. Runtime replay and catch-up then
+reconcile the exact durable transaction into each matching local BDK graph.
+Exact operation/state replay is idempotent. Signed operations intentionally
+reserve no pre-validation conflict key: the first cryptographically valid
+record that applies wins, while an invalid record cannot block a later valid
+one and any later differing valid record is deterministically rejected.
+
+The 368 enabled `cdk-common` tests, 22 `cdk-frost` tests, 111 `cdk-bdk` tests,
+17 CDK transaction-filtered tests, and five live Axum FROST transport tests pass.
+They cover single and multiple inputs, different threshold subsets, an invalid
+share followed by a fresh successful subset, missing/wrong signatures and
+sighashes, transaction mutation, nonce-store crash recovery, signed-state
+restart, and nonparticipant catch-up with byte-identical state. The all-targets
+Axum federation check passes. Strict `cdk-bdk` clippy passes; broader strict
+clippy remains blocked only by the repository's existing warning baseline.
+Bitcoin Core binaries are unavailable here, so the permitted equivalent gate
+verifies the complete supported P2TR key-path script condition directly:
+canonical one-item witness, exact BIP341 digest and prevouts, tweaked output-key
+match, BIP340 signature verification for every input, and successful BDK
+finalization.
 
 ### Milestone 16: broadcast, rebroadcast, and ambiguous-result recovery
 

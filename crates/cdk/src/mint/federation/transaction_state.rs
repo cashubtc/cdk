@@ -10,8 +10,9 @@ use cdk_common::federation::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
     FederationChainObservationState, FederationError, FederationJournalEntry,
     FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord, FederationOperation,
-    FederationOperationStatus, FederationTransactionProposal, FederationTransactionProposalId,
-    FederationTransactionScope, FederationTransactionState, FederationTransactionStateOutcome,
+    FederationOperationStatus, FederationSignedTransaction, FederationTransactionProposal,
+    FederationTransactionProposalId, FederationTransactionScope, FederationTransactionState,
+    FederationTransactionStateOutcome, MemberId,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 
@@ -171,6 +172,96 @@ impl Mint {
             ));
         }
         Ok(accepted.clone())
+    }
+
+    /// Validate a signed transaction against the exact local accepted proposal.
+    pub async fn validate_federation_signed_transaction_submission(
+        &self,
+        signed: &FederationSignedTransaction,
+    ) -> Result<(), Error> {
+        let state = self.federation_transaction_state().await?;
+        let accepted = state
+            .accepted_transaction(signed.proposal_id)
+            .ok_or_else(|| invalid("signed transaction has no accepted proposal"))?;
+        if signed.policy_audit != accepted.policy_audit {
+            return Err(invalid(
+                "signed transaction policy audit differs from accepted state",
+            ));
+        }
+        signed.verify_signatures(&accepted.proposal)?;
+        let runtime = self
+            .effective_federation_config()
+            .await?
+            .ok_or_else(|| invalid("signed transaction has no active federation config"))?;
+        let wallet = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or_else(|| invalid("signed transaction has no FROST wallet config"))?;
+        let application = wallet
+            .cdk_onchain_applications
+            .iter()
+            .find(|application| {
+                application.root_key_epoch == accepted.proposal.scope.root_key_epoch
+                    && application.application_id == accepted.proposal.scope.application_id
+                    && application.application_key_epoch
+                        == accepted.proposal.scope.application_key_epoch
+            })
+            .ok_or_else(|| invalid("signed transaction application epoch is unknown"))?;
+        for audit in &signed.input_signatures {
+            if audit.signer_set.len() < usize::from(application.threshold)
+                || audit.signer_set.iter().any(|member| {
+                    MemberId::new(*member).map_or(true, |member| {
+                        runtime.public_config().member(member).is_none()
+                            || !application.verification_shares.contains_key(&member)
+                    })
+                })
+            {
+                return Err(invalid(
+                    "signed transaction signer audit is below threshold or unregistered",
+                ));
+            }
+        }
+        if let Some(existing) = &accepted.signed {
+            if existing != signed {
+                return Err(invalid(
+                    "signed transaction differs from the durable accepted record",
+                ));
+            }
+        } else if accepted.state != FederationAcceptedTransactionState::Accepted {
+            return Err(invalid("transaction is not eligible for signed submission"));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn apply_federation_signed_transaction(
+        &self,
+        entry: &FederationJournalEntry,
+        signed: &FederationSignedTransaction,
+    ) -> Result<FederationTransactionStateOutcome, Error> {
+        self.validate_federation_signed_transaction_submission(signed)
+            .await?;
+        let mut transaction = self.localstore().begin_transaction().await?;
+        let outcome = async {
+            let mut state = load_transaction_state(&mut transaction).await?;
+            let accepted = state
+                .accepted_transaction(signed.proposal_id)
+                .ok_or_else(|| invalid("cannot apply signing for an unknown transaction"))?
+                .clone();
+            signed.verify_signatures(&accepted.proposal)?;
+            let outcome = state.mark_transaction_signed(signed.proposal_id, signed.clone())?;
+            transaction
+                .kv_write(
+                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
+                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
+                    TRANSACTION_STATE_KEY,
+                    &state.to_bytes()?,
+                )
+                .await?;
+            Ok(outcome)
+        }
+        .await;
+        finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 }
 

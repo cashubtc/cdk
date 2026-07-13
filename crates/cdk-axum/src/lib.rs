@@ -2819,7 +2819,8 @@ async fn reconcile_federation_onchain_wallets(
     mint: &Mint,
     wallets: &[FederatedBdkWallet],
 ) -> Result<()> {
-    let state = mint.federation_address_allocation_state().await?;
+    let address_state = mint.federation_address_allocation_state().await?;
+    let transaction_state = mint.federation_transaction_state().await?;
     for wallet in wallets {
         let wallet_scope = wallet.scope();
         let application_id = cdk::federation::FederationFrostApplicationId::from_bytes(
@@ -2829,20 +2830,47 @@ async fn reconcile_federation_onchain_wallets(
             application_id,
             application_key_epoch: wallet_scope.application_key_epoch(),
         };
-        let Some(materialized) = state.wallet(scope) else {
-            continue;
-        };
-        wallet
-            .reconcile_revealed_counters(
-                materialized.external_next_index,
-                materialized.internal_next_index,
-            )
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "failed to reconcile accepted federated address allocation into local BDK state"
+        if let Some(materialized) = address_state.wallet(scope) {
+            wallet
+                .reconcile_revealed_counters(
+                    materialized.external_next_index,
+                    materialized.internal_next_index,
                 )
-            })?;
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "failed to reconcile accepted federated address allocation into local BDK state"
+                    )
+                })?;
+        }
+        for accepted in transaction_state
+            .accepted_transactions()
+            .values()
+            .filter(|accepted| {
+                accepted.proposal.scope.root_key_epoch == wallet_scope.root_key_epoch()
+                    && accepted.proposal.scope.application_id.to_bytes()
+                        == wallet_scope.application_id()
+                    && accepted.proposal.scope.application_key_epoch
+                        == wallet_scope.application_key_epoch()
+            })
+        {
+            let Some(signed) = &accepted.signed else {
+                continue;
+            };
+            signed.verify_signatures(&accepted.proposal)?;
+            wallet
+                .engine()
+                .apply_accepted_transaction(
+                    signed.transaction()?,
+                    accepted.accepted_operation_index,
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "failed to reconcile an accepted federated transaction into local BDK state"
+                    )
+                })?;
+        }
     }
     Ok(())
 }

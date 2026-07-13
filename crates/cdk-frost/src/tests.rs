@@ -826,6 +826,16 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
         invalid_share,
     )
     .is_err());
+    let (recovered_public, _, _, recovered_signature) = sign_with_subset(
+        &mut primary_managers,
+        &[1, 2, 3],
+        wallet_registration(),
+        session(16),
+        message,
+        b"wallet-test-policy/v1",
+        61,
+    );
+    verify_with_rust_bitcoin(&recovered_public, message, recovered_signature);
 
     let mut other_managers = managers(5, 3, 15);
     let other_public = other_managers[0]

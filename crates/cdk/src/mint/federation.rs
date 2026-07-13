@@ -29,8 +29,8 @@ use cdk_common::federation::{
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationSignatureShareRecord, FederationSwapOperation, FederationTransactionProposal,
-    MemberConfigPrivate, MemberId,
+    FederationSignatureShareRecord, FederationSignedTransaction, FederationSwapOperation,
+    FederationTransactionProposal, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -693,6 +693,7 @@ impl FederationRuntimeConfig {
                 proposal.validate()?;
                 self.validate_federation_observer(proposal.proposer)
             }
+            FederationOperation::TransactionSigned(_) => Ok(()),
         }
     }
 
@@ -914,6 +915,14 @@ impl FederationRuntimeConfig {
             .into());
         }
         Ok(self.operation_envelope(FederationOperation::TransactionProposal(proposal)))
+    }
+
+    /// Build an authorized consensus operation for one exact signed transaction.
+    pub fn transaction_signed_operation(
+        &self,
+        signed: FederationSignedTransaction,
+    ) -> FederationOperationEnvelope {
+        self.operation_envelope(FederationOperation::TransactionSigned(signed))
     }
 
     /// Validate a federated melt submission before consensus admission.
@@ -1682,6 +1691,11 @@ impl Mint {
             }
             FederationOperation::TransactionProposal(proposal) => {
                 self.apply_federation_transaction_proposal(entry, proposal)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionSigned(signed) => {
+                self.apply_federation_signed_transaction(entry, signed)
                     .await?;
                 Ok(true)
             }

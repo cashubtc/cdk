@@ -10,10 +10,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bdk_wallet::bitcoin::key::TapTweak;
-use bdk_wallet::bitcoin::psbt::Psbt;
-use bdk_wallet::bitcoin::secp256k1::{Message, Secp256k1};
+use bdk_wallet::bitcoin::psbt::{Psbt, PsbtSighashType};
+use bdk_wallet::bitcoin::secp256k1::{schnorr, Message, Secp256k1};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk_wallet::bitcoin::{Amount, FeeRate, Network, ScriptBuf, TapSighashType, Transaction};
+use bdk_wallet::bitcoin::{
+    Amount, FeeRate, Network, OutPoint, ScriptBuf, TapSighashType, Transaction, TxOut,
+};
 use bdk_wallet::descriptor::{ExtendedDescriptor, IntoWalletDescriptor};
 use bdk_wallet::rusqlite::{params, Connection, OptionalExtension};
 use bdk_wallet::{KeychainKind, PersistedWallet, SignOptions, Utxo, Wallet, WeightedUtxo};
@@ -460,6 +462,78 @@ impl BdkWalletEngine {
             .map_err(|err| Error::ExternalSignature(err.to_string()))
     }
 
+    /// Reconstruct the exact accepted watch-only PSBT and finalize FROST signatures.
+    pub async fn finalize_federated_transaction(
+        &self,
+        unsigned_transaction: &Transaction,
+        selected_inputs: &[(OutPoint, TxOut)],
+        signatures: &[[u8; 64]],
+    ) -> Result<Transaction, Error> {
+        if selected_inputs.is_empty()
+            || selected_inputs.len() != unsigned_transaction.input.len()
+            || signatures.len() != selected_inputs.len()
+        {
+            return Err(Error::ExternalSignature(
+                "accepted federation transaction is not eligible for finalization".to_string(),
+            ));
+        }
+        let mut psbt = Psbt::from_unsigned_tx(unsigned_transaction.clone())
+            .map_err(|error| Error::ExternalSignature(error.to_string()))?;
+        {
+            let wallet_with_db = self.wallet_with_db.lock().await;
+            for (index, (outpoint, previous_output)) in selected_inputs.iter().enumerate() {
+                if unsigned_transaction.input[index].previous_output != *outpoint {
+                    return Err(Error::ExternalSignature(format!(
+                        "accepted input {index} is out of transaction order"
+                    )));
+                }
+                let local = wallet_with_db
+                    .wallet
+                    .list_unspent()
+                    .find(|output| output.outpoint == *outpoint)
+                    .ok_or_else(|| {
+                        Error::ExternalSignature(format!(
+                            "accepted input {index} is absent from the local BDK wallet"
+                        ))
+                    })?;
+                let input = wallet_with_db
+                    .wallet
+                    .get_psbt_input(
+                        local,
+                        Some(PsbtSighashType::from(TapSighashType::Default)),
+                        true,
+                    )
+                    .map_err(|error| Error::ExternalSignature(error.to_string()))?;
+                if input.witness_utxo.as_ref() != Some(previous_output) {
+                    return Err(Error::ExternalSignature(format!(
+                        "accepted input {index} differs from the local BDK prevout"
+                    )));
+                }
+                psbt.inputs[index] = input;
+            }
+        }
+        for (index, signature) in signatures.iter().enumerate() {
+            let signature = schnorr::Signature::from_slice(signature)
+                .map_err(|error| Error::ExternalSignature(error.to_string()))?;
+            psbt.inputs[index].tap_key_sig = Some(bdk_wallet::bitcoin::taproot::Signature {
+                signature,
+                sighash_type: TapSighashType::Default,
+            });
+        }
+        let transaction = self.finalize_external_psbt(&mut psbt).await?;
+        let mut unsigned = transaction.clone();
+        for input in &mut unsigned.input {
+            input.script_sig = ScriptBuf::new();
+            input.witness.clear();
+        }
+        if unsigned != *unsigned_transaction {
+            return Err(Error::ExternalSignature(
+                "final transaction differs from accepted non-witness bytes".to_string(),
+            ));
+        }
+        Ok(transaction)
+    }
+
     /// Apply an accepted signed transaction to the local BDK graph.
     pub async fn apply_accepted_transaction(
         &self,
@@ -614,7 +688,13 @@ mod tests {
         (psbt, funding_tx)
     }
 
-    fn sign_first_input(psbt: &mut Psbt, xpriv: &Xpriv, path: &str, sighash_type: TapSighashType) {
+    fn sign_input(
+        psbt: &mut Psbt,
+        input_index: usize,
+        xpriv: &Xpriv,
+        path: &str,
+        sighash_type: TapSighashType,
+    ) {
         let secp = Secp256k1::new();
         let path = DerivationPath::from_str(path).expect("derivation path");
         let child = xpriv.derive_priv(&secp, &path).expect("derive signing key");
@@ -627,11 +707,11 @@ mod tests {
             .map(|(index, _)| psbt.spend_utxo(index).expect("spend UTXO").clone())
             .collect::<Vec<_>>();
         let sighash = SighashCache::new(&psbt.unsigned_tx)
-            .taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), sighash_type)
+            .taproot_key_spend_signature_hash(input_index, &Prevouts::All(&prevouts), sighash_type)
             .expect("Taproot sighash");
         let signature =
             secp.sign_schnorr_no_aux_rand(&Message::from(sighash), &tweaked_keypair.to_keypair());
-        psbt.inputs[0].tap_key_sig = Some(taproot::Signature {
+        psbt.inputs[input_index].tap_key_sig = Some(taproot::Signature {
             signature,
             sighash_type,
         });
@@ -756,8 +836,9 @@ mod tests {
 
         let (_, wrong_xpriv) = descriptor_config(5, Network::Regtest);
         let mut wrong_key = unsigned.clone();
-        sign_first_input(
+        sign_input(
             &mut wrong_key,
+            0,
             &wrong_xpriv,
             "m/0/0",
             TapSighashType::Default,
@@ -768,8 +849,9 @@ mod tests {
         ));
 
         let mut invalid_signature = unsigned.clone();
-        sign_first_input(
+        sign_input(
             &mut invalid_signature,
+            0,
             &xpriv,
             "m/0/0",
             TapSighashType::Default,
@@ -794,14 +876,57 @@ mod tests {
         ));
 
         let mut wrong_sighash = unsigned.clone();
-        sign_first_input(&mut wrong_sighash, &xpriv, "m/0/0", TapSighashType::All);
+        sign_input(&mut wrong_sighash, 0, &xpriv, "m/0/0", TapSighashType::All);
         assert!(matches!(
             engine.finalize_external_psbt(&mut wrong_sighash).await,
             Err(Error::ExternalSignature(_))
         ));
 
+        let selected_inputs = vec![(
+            unsigned.unsigned_tx.input[0].previous_output,
+            unsigned.spend_utxo(0).expect("accepted prevout").clone(),
+        )];
+        let mut threshold_signed = unsigned.clone();
+        sign_input(
+            &mut threshold_signed,
+            0,
+            &xpriv,
+            "m/0/0",
+            TapSighashType::Default,
+        );
+        let threshold_signature = threshold_signed.inputs[0]
+            .tap_key_sig
+            .as_ref()
+            .expect("threshold signature")
+            .signature
+            .serialize();
+        let threshold_transaction = engine
+            .finalize_federated_transaction(
+                &unsigned.unsigned_tx,
+                &selected_inputs,
+                &[threshold_signature],
+            )
+            .await
+            .expect("reconstruct and finalize accepted transaction");
+        assert_eq!(
+            threshold_transaction.compute_txid(),
+            unsigned.unsigned_tx.compute_txid()
+        );
+        let mut mutated_unsigned = unsigned.unsigned_tx.clone();
+        mutated_unsigned.output[0].value = Amount::from_sat(9_999);
+        assert!(matches!(
+            engine
+                .finalize_federated_transaction(
+                    &mutated_unsigned,
+                    &selected_inputs,
+                    &[threshold_signature],
+                )
+                .await,
+            Err(Error::ExternalSignature(_))
+        ));
+
         let mut valid = unsigned;
-        sign_first_input(&mut valid, &xpriv, "m/0/0", TapSighashType::Default);
+        sign_input(&mut valid, 0, &xpriv, "m/0/0", TapSighashType::Default);
         let transaction = engine
             .finalize_external_psbt(&mut valid)
             .await
@@ -815,5 +940,107 @@ mod tests {
             .expect("apply accepted transaction");
         let wallet_with_db = engine.wallet_with_db.lock().await;
         assert!(wallet_with_db.wallet.get_tx(txid).is_some());
+    }
+
+    #[tokio::test]
+    async fn federated_finalization_verifies_every_input_and_rejects_one_bad_signature() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let (config, xpriv) = descriptor_config(9, Network::Regtest);
+        let engine = BdkWalletEngine::open_watch_only(config, chain_source(), tempdir.path())
+            .expect("watch-only wallet");
+        let addresses = engine
+            .reveal_addresses_to(KeychainKind::External, 1)
+            .await
+            .expect("reveal funding addresses");
+        let funding = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: addresses
+                .iter()
+                .map(|address| TxOut {
+                    value: Amount::from_sat(30_000),
+                    script_pubkey: address.address.script_pubkey(),
+                })
+                .collect(),
+        };
+        engine
+            .apply_accepted_transaction(funding, 1)
+            .await
+            .expect("apply funding");
+        let recipient = engine
+            .reveal_addresses_to(KeychainKind::Internal, 0)
+            .await
+            .expect("reveal recipient")
+            .pop()
+            .expect("recipient");
+        let psbt = engine
+            .build_psbt(
+                &[(recipient.address.script_pubkey(), 50_000)],
+                FeeRate::from_sat_per_vb(1).expect("fee rate"),
+            )
+            .await
+            .expect("two-input PSBT");
+        assert_eq!(psbt.inputs.len(), 2);
+        let selected_inputs = psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                (
+                    input.previous_output,
+                    psbt.spend_utxo(index).expect("accepted prevout").clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut signed = psbt.clone();
+        for (index, input) in signed.unsigned_tx.input.clone().iter().enumerate() {
+            sign_input(
+                &mut signed,
+                index,
+                &xpriv,
+                &format!("m/0/{}", input.previous_output.vout),
+                TapSighashType::Default,
+            );
+        }
+        let signatures = signed
+            .inputs
+            .iter()
+            .map(|input| {
+                input
+                    .tap_key_sig
+                    .as_ref()
+                    .expect("input signature")
+                    .signature
+                    .serialize()
+            })
+            .collect::<Vec<_>>();
+        let transaction = engine
+            .finalize_federated_transaction(&psbt.unsigned_tx, &selected_inputs, &signatures)
+            .await
+            .expect("finalize every input");
+        assert!(transaction
+            .input
+            .iter()
+            .all(|input| input.witness.len() == 1));
+
+        let mut bad_signatures = signatures;
+        bad_signatures[1][0] ^= 1;
+        assert!(matches!(
+            engine
+                .finalize_federated_transaction(
+                    &psbt.unsigned_tx,
+                    &selected_inputs,
+                    &bad_signatures,
+                )
+                .await,
+            Err(Error::ExternalSignature(_))
+        ));
     }
 }
