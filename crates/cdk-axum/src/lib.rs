@@ -2302,7 +2302,7 @@ async fn create_mint_router_with_custom_cache_inner(
         federation::spawn_federation_dkg_driver(state.clone(), federation_peer_sync_config, config);
     }
 
-    let mut v1_router = Router::new()
+    let v1_router = Router::new()
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
         .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
@@ -2311,11 +2311,6 @@ async fn create_mint_router_with_custom_cache_inner(
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
-
-    #[cfg(feature = "federation")]
-    if state.federation.consensus.is_some() {
-        v1_router = v1_router.route("/config", get(federation::get_public_config));
-    }
 
     let mut mint_router = Router::new().nest("/v1", v1_router);
 

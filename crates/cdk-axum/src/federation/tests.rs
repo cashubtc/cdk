@@ -3765,30 +3765,27 @@ async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
 async fn public_federation_config_route_returns_finalized_config_without_authentication() {
     let (state, public_config, _, _) = federation_route_state_with_local_private().await;
     let router = Router::new()
-        .route("/v1/config", axum::routing::get(get_public_config))
+        .nest("/federation/v1", create_federation_router())
         .with_state(state);
 
-    let obsolete_response = router
+    let old_response = router
         .clone()
         .oneshot(
             axum::http::Request::builder()
                 .method(axum::http::Method::GET)
-                .uri("/federation/v1/public")
+                .uri("/v1/config")
                 .body(axum::body::Body::empty())
-                .expect("obsolete public config request"),
+                .expect("old public config request"),
         )
         .await
-        .expect("obsolete public config response");
-    assert_eq!(
-        obsolete_response.status(),
-        axum::http::StatusCode::NOT_FOUND
-    );
+        .expect("old public config response");
+    assert_eq!(old_response.status(), axum::http::StatusCode::NOT_FOUND);
 
     let response = router
         .oneshot(
             axum::http::Request::builder()
                 .method(axum::http::Method::GET)
-                .uri("/v1/config")
+                .uri("/federation/v1/config")
                 .body(axum::body::Body::empty())
                 .expect("public config request"),
         )

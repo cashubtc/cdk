@@ -467,7 +467,7 @@ async fn load_imported_public_config(args: &FederationAddSubCommand) -> Result<F
 
 async fn discover_public_config(mint_url: &MintUrl) -> Result<FederationConfig> {
     let client = HttpClient::builder().no_redirects().build()?;
-    let config_url = mint_url.join_paths(&["v1", "config"])?;
+    let config_url = mint_url.join_paths(&["federation", "v1", "config"])?;
     let public_config: FederationConfig = client.fetch(config_url.as_str()).await?;
     let info_url = mint_url.join_paths(&["v1", "info"])?;
     let mint_info: MintInfo = client.fetch(info_url.as_str()).await?;

@@ -114,7 +114,7 @@ cdk-cli federation add --mint-url https://mint2.example.com
 cdk-cli mint-info https://mint2.example.com
 ```
 
-The CLI fetches `GET /v1/config`, validates the complete v3/BLS public
+The CLI fetches `GET /federation/v1/config`, validates the complete v3/BLS public
 federation config, and verifies the contacted member's federation identity and
 config digest against `GET /v1/info` before storing the public wallet metadata.
 Config-file and invite-code imports remain available for offline workflows:

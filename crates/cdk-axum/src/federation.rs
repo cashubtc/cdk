@@ -1,12 +1,14 @@
-//! Private federation member REST routes.
+//! Federation REST routes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
+#[cfg(test)]
+use cdk::federation::FederationLocalStatusResponse;
 use cdk::federation::{
     redact_federation_operator_message, FederationCatchUpCertificate,
     FederationCatchUpCertificateQuorum, FederationCatchUpOperation, FederationError,
@@ -18,8 +20,6 @@ use cdk::federation::{
     FederationVerifiedOperationAdmission, InMemoryFederationJournal,
     FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
-#[cfg(test)]
-use cdk::federation::FederationLocalStatusResponse;
 use cdk::mint::Mint;
 use serde::Serialize;
 use tracing::instrument;
@@ -127,6 +127,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
 
     Router::new()
         .merge(dkg_router)
+        .route("/config", get(get_public_config))
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))
         .route("/operations", post(post_operation))
