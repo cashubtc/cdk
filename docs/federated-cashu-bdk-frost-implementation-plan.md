@@ -19,6 +19,28 @@ contracts. No member, transaction proposer, signing coordinator, chain-data
 provider, application adapter, or public API server is individually trusted
 with custody authority.
 
+## Integration constraints
+
+Existing federation mint business logic, consensus ordering, payment
+observations, quote handling, sagas, recovery, and catch-up are expected to be
+complete and must be changed as little as possible. Integrate the federated BDK
+wallet through the existing payment and federation interfaces instead of
+reimplementing or broadly refactoring mint behavior. If implementation reveals
+a genuine missing piece outside the FROST BDK wallet, record the gap in this
+document and attempt the smallest focused fix in the owning shared domain,
+covered by standalone and federation regression tests.
+
+Keep the secp256k1 FROST DKG and reusable key manager isolated in dedicated,
+neatly organized modules with narrow typed interfaces. Reuse only the existing
+ceremony transport, authentication, persistence, roster, and activation
+infrastructure; do not mix FROST cryptographic state with Cashu BLS shares or
+scatter FROST conditionals through existing mint code. Federation setup is
+successful only when its independent Cashu BLS DKG and FROST root DKG both
+complete, verify, persist, and activate successfully. Failure or mismatch in
+either result, including a FROST signing threshold different from the
+federation BLS `signature_threshold`, must fail closed and must not leave the
+federation partially ready.
+
 ## Encountered bugs and things to remember
 
 > Keep this section below 500 words. Record only concise, actionable facts for
@@ -27,7 +49,7 @@ with custody authority.
 > lesson. Move long investigations to a dedicated issue, benchmark document, or
 > commit description instead of growing this section indefinitely.
 
-- No implementation bugs have been recorded yet.
+- Record implementation bugs here as they are encountered and verified.
 - The existing Cashu DKG creates BLS12-381 shares. Those shares cannot be
   reinterpreted, hashed, or truncated into Bitcoin secp256k1 FROST shares. Reuse
   the ceremony infrastructure, not the cryptographic shares.
@@ -48,6 +70,10 @@ with custody authority.
   exposing commitments, and never reuse a nonce after uncertainty or restart.
 - A transaction proposer is untrusted. Consensus must accept the exact unsigned
   transaction before any member releases a signature share.
+- Milestone 0 regtest setup timed out while mining 200 blocks in one Bitcoin
+  Core RPC call. The integration-only client now mines in bounded 100-block
+  calls; preserve this with the batch-splitting unit test and the on-chain
+  regtest baseline.
 
 ## 1. Problem and setting
 
@@ -374,49 +400,56 @@ changing production behavior.
 
 **Work:**
 
-- [ ] Write an architecture decision record defining BDK as watch-only engine,
+- [x] Write an architecture decision record defining BDK as watch-only engine,
   AlephBFT as authorization, and external asynchronous FROST as signing.
-- [ ] Decide and document the reusable-root boundary: the DKG produces an
+- [x] Decide and document the reusable-root boundary: the DKG produces an
   untweaked secp256k1 FROST root epoch, while CDK on-chain and future consumers
   use registered, domain-separated application packages.
-- [ ] Document the compatibility boundary: reuse requires compatible
+- [x] Document the compatibility boundary: reuse requires compatible
   secp256k1 Schnorr/FROST algebra and a reviewed adapter; incompatible curves,
   schemes, private-key export requirements, or lifecycle policies require a
   separate DKG.
-- [ ] Document the threat model, tolerated faulty-member counts, consensus
+- [x] Document the threat model, tolerated faulty-member counts, consensus
   threshold, Bitcoin signing threshold, and whether the two thresholds must be
   equal.
-- [ ] Decide the first-release Bitcoin networks and confirmation policies.
-- [ ] Inventory every `CdkBdk` responsibility and map it to reusable,
+- [x] Decide the first-release Bitcoin networks and confirmation policies.
+- [x] Inventory every `CdkBdk` responsibility and map it to reusable,
   standalone-only, or federated-only ownership.
-- [ ] Record baseline standalone BDK mint and melt behavior, database rows,
+- [x] Record baseline standalone BDK mint and melt behavior, database rows,
   transaction bytes, recovery behavior, and timing on regtest.
-- [ ] Record baseline federation on-chain behavior or explicit unsupported
+- [x] Record baseline federation on-chain behavior or explicit unsupported
   errors before adding the new backend.
-- [ ] Define feature flags and configuration names without enabling incomplete
+- [x] Define feature flags and configuration names without enabling incomplete
   behavior.
-- [ ] Review the local Fedimint wallet implementation for transaction proposal,
+- [x] Review the local Fedimint wallet implementation for transaction proposal,
   signature collection, UTXO state, fee consensus, and recovery lessons while
   preferring simpler CDK-native boundaries.
 
 **Success criteria:**
 
-- [ ] Reviewers can identify one owner for every address, UTXO, proposal,
+- [x] Reviewers can identify one owner for every address, UTXO, proposal,
   signature, broadcast, and confirmation transition.
-- [ ] The signing threshold and consensus threshold relationship is explicit
+- [x] The signing threshold and consensus threshold relationship is explicit
   and cannot silently drift through configuration.
-- [ ] Reviewers can identify which state belongs to the reusable root key
+- [x] Reviewers can identify which state belongs to the reusable root key
   manager and which belongs only to the CDK on-chain application.
-- [ ] Baseline commands and results are captured in a dedicated benchmark or
+- [x] Baseline commands and results are captured in a dedicated benchmark or
   test note.
-- [ ] No production behavior has changed.
+- [x] No production behavior has changed.
 
 **Required tests:**
 
-- [ ] Run focused `cdk-bdk` unit tests.
-- [ ] Run existing standalone on-chain integration tests.
-- [ ] Run relevant federation mint/melt and payment-observation tests.
-- [ ] Verify formatting and checks for all crates expected to be touched.
+- [x] Run focused `cdk-bdk` unit tests.
+- [x] Run existing standalone on-chain integration tests.
+- [x] Run relevant federation mint/melt and payment-observation tests.
+- [x] Verify formatting and checks for all crates expected to be touched.
+
+**Milestone record:** completed on 2026-07-13. See
+`docs/federated-cashu-bdk-frost-architecture-decision.md` for the frozen
+ownership, threshold, root/application, feature, and configuration boundaries,
+and `docs/federated-cashu-bdk-frost-baseline.md` for commands, results, timings,
+database shapes, transaction-byte measurements, recovery coverage, and current
+unsupported federation-on-chain semantics.
 
 ### Milestone 1: extract a reusable BDK watch-only engine
 

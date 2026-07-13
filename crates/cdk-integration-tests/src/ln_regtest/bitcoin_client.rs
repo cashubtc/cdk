@@ -8,6 +8,21 @@ use anyhow::Result;
 use bitcoincore_rpc::bitcoin::{Address, Amount};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 
+const MAX_BLOCKS_PER_GENERATE_CALL: u64 = 100;
+
+fn block_generation_batches(block_count: u64) -> impl Iterator<Item = u64> {
+    let mut remaining = block_count;
+    std::iter::from_fn(move || {
+        if remaining == 0 {
+            return None;
+        }
+
+        let batch = remaining.min(MAX_BLOCKS_PER_GENERATE_CALL);
+        remaining -= batch;
+        Some(batch)
+    })
+}
+
 /// Bitcoin client
 #[derive(Clone)]
 pub struct BitcoinClient {
@@ -75,11 +90,11 @@ impl BitcoinClient {
     /// Generate blocks
     pub fn generate_blocks(&self, address: &str, block_count: u64) -> Result<()> {
         let client = &self.client;
+        let address = Address::from_str(address)?.assume_checked();
 
-        client.generate_to_address(
-            block_count,
-            Address::from_str(address)?.assume_checked_ref(),
-        )?;
+        for batch in block_generation_batches(block_count) {
+            client.generate_to_address(batch, &address)?;
+        }
 
         Ok(())
     }
@@ -114,5 +129,25 @@ impl BitcoinClient {
 
         println!("{:#?}", balance);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_generation_is_split_into_bounded_rpc_calls() {
+        assert!(block_generation_batches(0).collect::<Vec<_>>().is_empty());
+        assert_eq!(block_generation_batches(1).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(block_generation_batches(100).collect::<Vec<_>>(), vec![100]);
+        assert_eq!(
+            block_generation_batches(101).collect::<Vec<_>>(),
+            vec![100, 1]
+        );
+        assert_eq!(
+            block_generation_batches(250).collect::<Vec<_>>(),
+            vec![100, 100, 50]
+        );
     }
 }
