@@ -3,47 +3,33 @@ plugins {
     `maven-publish`
 }
 
-/**
- * Maps JNA platform identifiers to Rust target triples.
- * Only JVM-relevant desktop targets — Android/iOS are distributed separately.
- */
-val jvmTargets = mapOf(
-    "linux-x86-64" to "x86_64-unknown-linux-gnu",
-    "linux-aarch64" to "aarch64-unknown-linux-gnu",
-    "darwin-aarch64" to "aarch64-apple-darwin",
-)
+// Keep all desktop native libraries in one JAR. JNA selects the matching
+// platform directory at runtime, so separate Maven coordinates are unnecessary.
+val nativesJar = tasks.register<Jar>("nativesJar") {
+    archiveBaseName.set("cdk-jvm-natives")
+    from("src/main/resources")
+}
 
-// Register a Jar task per platform that bundles only that platform's native lib,
-// plus empty sources/javadoc jars required by Maven Central.
-jvmTargets.forEach { (jnaPlatform, _) ->
-    tasks.register<Jar>("${jnaPlatform}Jar") {
-        archiveBaseName.set("cdk-jvm-$jnaPlatform")
-        from("src/main/resources") {
-            include("$jnaPlatform/**")
-        }
-    }
-    tasks.register<Jar>("${jnaPlatform}SourcesJar") {
-        archiveBaseName.set("cdk-jvm-$jnaPlatform")
-        archiveClassifier.set("sources")
-        from(rootProject.projectDir.resolve("../../crates/cdk-ffi/src"))
-    }
-    tasks.register<Jar>("${jnaPlatform}JavadocJar") {
-        archiveBaseName.set("cdk-jvm-$jnaPlatform")
-        archiveClassifier.set("javadoc")
-    }
+val nativesSourcesJar = tasks.register<Jar>("nativesSourcesJar") {
+    archiveBaseName.set("cdk-jvm-natives")
+    archiveClassifier.set("sources")
+    from(rootProject.projectDir.resolve("rust/src"))
+}
+
+val nativesJavadocJar = tasks.register<Jar>("nativesJavadocJar") {
+    archiveBaseName.set("cdk-jvm-natives")
+    archiveClassifier.set("javadoc")
 }
 
 publishing {
     publications {
-        jvmTargets.forEach { (jnaPlatform, _) ->
-            create<MavenPublication>(jnaPlatform) {
-                groupId = project.property("GROUP") as String
-                artifactId = "cdk-jvm-$jnaPlatform"
-                version = project.property("VERSION_NAME") as String
-                artifact(tasks.named("${jnaPlatform}Jar"))
-                artifact(tasks.named("${jnaPlatform}SourcesJar"))
-                artifact(tasks.named("${jnaPlatform}JavadocJar"))
-            }
+        create<MavenPublication>("natives") {
+            groupId = project.property("GROUP") as String
+            artifactId = "cdk-jvm-natives"
+            version = project.property("VERSION_NAME") as String
+            artifact(nativesJar)
+            artifact(nativesSourcesJar)
+            artifact(nativesJavadocJar)
         }
     }
 }

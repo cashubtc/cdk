@@ -211,20 +211,9 @@ jobs:
           - target: aarch64-linux-android
             runner: ubuntu-22.04
             artifact: libcdk_ffi.so
-          - target: armv7-linux-androideabi
-            runner: ubuntu-22.04
-            artifact: libcdk_ffi.so
-          - target: i686-linux-android
-            runner: ubuntu-22.04
-            artifact: libcdk_ffi.so
           - target: x86_64-linux-android
             runner: ubuntu-22.04
             artifact: libcdk_ffi.so
-
-          # iOS
-          - target: aarch64-apple-ios
-            runner: macos-14
-            artifact: libcdk_ffi.a
 
     steps:
       - name: Clone cdk-kotlin
@@ -263,22 +252,8 @@ jobs:
       - name: Build (Nix)
         working-directory: cdk-kotlin/rust
         run: |
-          if [[ "${{ matrix.target }}" == *apple-ios* ]]; then
-            # iOS builds need system clang and real Xcode SDK paths.
-            # The Nix shell injects macOS SDKROOT which breaks xcrun iOS SDK lookup.
-            # Same fix as bindings/swift/generate-bindings.sh:57-83.
-            XCODE_DEV_DIR=$(/usr/bin/xcrun xcode-select -p 2>/dev/null \
-              || echo "/Applications/Xcode.app/Contents/Developer")
-            nix develop -L ../../cdk#kotlin-build --command \
-              env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
-                DEVELOPER_DIR="$XCODE_DEV_DIR" \
-                CC_aarch64_apple_ios=/usr/bin/clang \
-                CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=/usr/bin/clang \
-                cargo build --release --target ${{ matrix.target }}
-          else
-            nix develop -L ../../cdk#kotlin-build --command \
-              cargo build --release --target ${{ matrix.target }}
-          fi
+          nix develop -L ../../cdk#kotlin-build --command \
+            cargo build --release --target ${{ matrix.target }}
 
       - name: Strip debug symbols
         working-directory: cdk-kotlin/rust
@@ -337,6 +312,11 @@ jobs:
     name: "kotlin: Publish to cdk-kotlin"
     runs-on: ubuntu-latest
     needs: [kotlin-build-native]
+    concurrency:
+      # Prevent duplicate publishes of the same immutable version without
+      # cancelling or queueing releases for different stable/RC versions.
+      group: ffi-kotlin-maven-publish-${{ inputs.release_tag }}
+      cancel-in-progress: false
     steps:
       - name: Clone cdk-kotlin
         env:
@@ -367,6 +347,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
 
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+
       - name: Download all native artifacts
         uses: actions/download-artifact@v8
         with:
@@ -386,20 +369,13 @@ jobs:
           # Map Rust targets to Android ABIs (cdk-android)
           declare -A ANDROID_ABI=(
             ["aarch64-linux-android"]="arm64-v8a"
-            ["armv7-linux-androideabi"]="armeabi-v7a"
-            ["i686-linux-android"]="x86"
             ["x86_64-linux-android"]="x86_64"
-          )
-
-          # Map Rust targets to iOS platforms (cdk-ios)
-          declare -A IOS_MAP=(
-            ["aarch64-apple-ios"]="ios-arm64"
           )
 
           for f in artifacts/*; do
             filename=$(basename "$f")
             # Extract rust target from artifact filename (e.g. "aarch64-apple-darwin-libcdk_ffi.dylib")
-            for suffix in libcdk_ffi.so libcdk_ffi.dylib libcdk_ffi.a; do
+            for suffix in libcdk_ffi.so libcdk_ffi.dylib; do
               if [[ "$filename" == *"-${suffix}" ]]; then
                 rust_target="${filename%-${suffix}}"
 
@@ -419,15 +395,6 @@ jobs:
                   mkdir -p "$dst"
                   cp "$f" "$dst/${suffix}"
                   echo "android: ${rust_target} → ${abi}"
-                fi
-
-                # iOS
-                if [[ -n "${IOS_MAP[$rust_target]+x}" ]]; then
-                  platform="${IOS_MAP[$rust_target]}"
-                  dst="cdk-kotlin/cdk-ios/src/main/resources/${platform}"
-                  mkdir -p "$dst"
-                  cp "$f" "$dst/${suffix}"
-                  echo "ios: ${rust_target} → ${platform}"
                 fi
 
                 break
@@ -462,22 +429,17 @@ jobs:
 
           git -c "http.extraheader=$(auth_header)" push origin "${RELEASE_BRANCH}"
 
-      - name: Publish to Maven Central
+      - name: Publish one deployment to Maven Central
         working-directory: cdk-kotlin
         env:
-          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
-          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
         run: |
           nix develop -L ../cdk#kotlin-publish --command \
             env -u ANDROID_SDK_ROOT \
-            ./gradlew \
-              :cdk-jvm:publishMavenPublicationToSonatypeRepository \
-              :cdk-jvm-natives:publishAllPublicationsToSonatypeRepository \
-              :cdk-android:publishReleasePublicationToSonatypeRepository \
-              :cdk-ios:publishAllPublicationsToSonatypeRepository \
-              closeAndReleaseSonatypeStagingRepository
+            ./gradlew --no-parallel publishAndReleaseToMavenCentral
 
       - name: Create release on cdk-kotlin
         working-directory: cdk-kotlin

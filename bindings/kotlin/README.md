@@ -6,9 +6,8 @@ Kotlin/JVM and Android bindings for the [Cashu Development Kit](https://github.c
 
 ```
 cdk-jvm              Core Kotlin bindings + JNA native loading
-cdk-jvm-natives      Per-platform native library JARs (published separately)
-cdk-android          Android wrapper with bundled jniLibs
-cdk-ios              iOS static library JAR (for Kotlin Multiplatform)
+cdk-jvm-natives      Combined desktop native library JAR
+cdk-android          Android wrapper with 64-bit jniLibs
 ```
 
 **Dependency graph:**
@@ -16,10 +15,9 @@ cdk-ios              iOS static library JAR (for Kotlin Multiplatform)
 ```
 cdk-android ──api──> cdk-jvm
 cdk-jvm-natives      (standalone — native binaries only)
-cdk-ios              (standalone — static library only)
 ```
 
-`cdk-jvm` contains the generated Kotlin sources and uses [JNA](https://github.com/java-native-access/jna) to load the native Rust library at runtime. `cdk-jvm-natives` provides the native library as a separate JAR per platform so consumers can pick only the targets they need. `cdk-android` depends on `cdk-jvm` and bundles pre-built `.so` files for Android ABIs. `cdk-ios` packages the iOS static library for use in Kotlin Multiplatform projects.
+`cdk-jvm` contains the generated Kotlin sources and uses [JNA](https://github.com/java-native-access/jna) to load the native Rust library at runtime. `cdk-jvm-natives` provides Linux x86-64, Linux ARM64, and macOS Apple Silicon libraries in one JAR; JNA selects the matching directory at runtime. `cdk-android` depends on `cdk-jvm` and bundles pre-built `.so` files for the `arm64-v8a` and `x86_64` Android ABIs.
 
 ## Maven Artifacts
 
@@ -28,11 +26,12 @@ All artifacts are published under `org.cashudevkit`:
 | Artifact | Description |
 |---|---|
 | `cdk-jvm` | Kotlin bindings (required) |
-| `cdk-jvm-linux-x86-64` | Native lib for Linux x86-64 |
-| `cdk-jvm-linux-aarch64` | Native lib for Linux ARM64 |
-| `cdk-jvm-darwin-aarch64` | Native lib for macOS Apple Silicon |
-| `cdk-android` | Android library (includes all ABIs) |
-| `cdk-ios-ios-arm64` | iOS static library (arm64) |
+| `cdk-jvm-natives` | Desktop native libs for Linux x86-64/ARM64 and macOS Apple Silicon |
+| `cdk-android` | Android library (includes 64-bit device and emulator ABIs) |
+
+Older releases used one `cdk-jvm-<platform>` coordinate per desktop target.
+Starting with the first release containing this change, use `cdk-jvm-natives`
+instead. The historical coordinates remain available for their existing versions.
 
 ## Installation
 
@@ -41,11 +40,7 @@ All artifacts are published under `org.cashudevkit`:
 ```kotlin
 dependencies {
     implementation("org.cashudevkit:cdk-jvm:VERSION")
-
-    // Add native libraries for your target platform(s)
-    runtimeOnly("org.cashudevkit:cdk-jvm-linux-x86-64:VERSION")
-    runtimeOnly("org.cashudevkit:cdk-jvm-darwin-aarch64:VERSION")
-    // ... add more as needed
+    runtimeOnly("org.cashudevkit:cdk-jvm-natives:VERSION")
 }
 ```
 
@@ -55,14 +50,6 @@ dependencies {
 dependencies {
     implementation("org.cashudevkit:cdk-android:VERSION")
     // cdk-jvm is included transitively
-}
-```
-
-### Kotlin Multiplatform (iOS)
-
-```kotlin
-dependencies {
-    implementation("org.cashudevkit:cdk-ios-ios-arm64:VERSION")
 }
 ```
 
@@ -122,18 +109,20 @@ just test-kotlin
 ## CI/CD — Publishing Workflow
 
 The `kotlin-publish.yml` workflow (in the CDK monorepo) builds native binaries
-for all platforms, syncs sources to `cdk-kotlin`, publishes to Maven Central,
-and creates a tagged GitHub release. The following secrets and variables must be
-configured in the **CDK monorepo** repository settings
-(Settings → Secrets and variables → Actions).
+for the supported JVM and Android platforms, syncs sources to `cdk-kotlin`,
+publishes to Maven Central, and creates a tagged GitHub release. The three Maven
+artifacts are uploaded in one direct Central Portal deployment with redundant
+checksum files removed. The following secrets and variables must be configured
+in the **CDK monorepo** repository settings (Settings → Secrets and variables →
+Actions).
 
 ### Secrets
 
 | Name | Purpose |
 |---|---|
 | `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos (`cdk-dart`, `cdk-kotlin`, `cdk-swift`). Used to clone, push, and create releases. Shared across all FFI publish workflows. |
-| `SONATYPE_USERNAME` | Maven Central (Sonatype OSSRH) username for publishing. |
-| `SONATYPE_PASSWORD` | Maven Central (Sonatype OSSRH) password or token. |
+| `SONATYPE_USERNAME` | Maven Central Portal user-token username for publishing. |
+| `SONATYPE_PASSWORD` | Maven Central Portal user-token password. |
 | `SIGNING_KEY` | ASCII-armored GPG private key for signing Maven artifacts. |
 | `SIGNING_PASSWORD` | Passphrase for the GPG signing key. |
 
