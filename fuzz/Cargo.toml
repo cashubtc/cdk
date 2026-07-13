@@ -292,6 +292,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_federation_transaction_proposal"
+path = "fuzz_targets/fuzz_federation_transaction_proposal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_federation_request_conversion"
 path = "fuzz_targets/fuzz_federation_request_conversion.rs"
 test = false

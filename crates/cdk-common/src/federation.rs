@@ -17,6 +17,7 @@ mod frost_dkg;
 mod journal;
 mod operation;
 mod signing;
+mod transaction_proposal;
 mod transport;
 mod trusted_dealer;
 
@@ -117,6 +118,15 @@ pub use self::operation::{
 };
 pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
+};
+pub use self::transaction_proposal::{
+    FederationOnchainBatchId, FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
+    FederationOnchainPaymentIntentId, FederationTransactionChangeOutput,
+    FederationTransactionInput, FederationTransactionProposal, FederationTransactionProposalId,
+    FederationTransactionRecipientOutput, FederationTransactionScope,
+    FEDERATION_MAX_ONCHAIN_BATCH_INTENTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS,
+    FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES, FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
 };
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
@@ -366,6 +376,12 @@ pub enum FederationError {
     #[error("Federation chain observation state is invalid: {reason}")]
     ChainObservationStateInvalid {
         /// Stable validation reason without member-local source details.
+        reason: String,
+    },
+    /// Canonical on-chain intent, batch, or transaction proposal is malformed.
+    #[error("Federation on-chain transaction proposal is invalid: {reason}")]
+    TransactionProposalInvalid {
+        /// Stable validation reason without proposer-local details.
         reason: String,
     },
     /// A public or private FROST wallet configuration failed validation.

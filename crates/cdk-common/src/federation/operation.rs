@@ -255,6 +255,31 @@ pub enum FederationOperationConflictKey {
         /// Proposed aggregate keyset ID.
         keyset_id: Id,
     },
+    /// One accepted on-chain payment intent may be assigned only once.
+    OnchainPaymentIntent {
+        /// Melt quote authorizing the intent.
+        quote: String,
+    },
+    /// One canonical intent may be assigned to only one accepted transaction.
+    OnchainPaymentIntentAssignment {
+        /// Canonical intent identifier.
+        intent_id: super::FederationOnchainPaymentIntentId,
+    },
+    /// One deterministic payment batch may accept only one transaction lineage.
+    OnchainBatch {
+        /// Canonical batch identifier.
+        batch_id: super::FederationOnchainBatchId,
+    },
+    /// One wallet UTXO may be reserved by only one accepted transaction.
+    OnchainUtxo {
+        /// Exact wallet outpoint.
+        outpoint: bitcoin::OutPoint,
+    },
+    /// Original and replacement proposals share one serialized lineage.
+    OnchainReplacementLineage {
+        /// Batch-bound replacement lineage.
+        lineage: super::FederationOnchainBatchId,
+    },
 }
 
 /// Proposed mint quote creation.

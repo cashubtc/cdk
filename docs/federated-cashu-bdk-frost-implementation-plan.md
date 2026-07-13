@@ -1098,38 +1098,63 @@ canonical, consensus-validatable data.
 
 **Work:**
 
-- [ ] Define canonical on-chain payment intent with quote ID, destination script,
+- [x] Define canonical on-chain payment intent with quote ID, destination script,
   amount, maximum fee, fee tier, creation time, and policy version.
-- [ ] Define deterministic batch eligibility and intent ordering independent of
+- [x] Define deterministic batch eligibility and intent ordering independent of
   proposer-local hash-map or database iteration order.
-- [ ] Define a proposal operation containing batch ID, ordered intent IDs,
+- [x] Define a proposal operation containing batch ID, ordered intent IDs,
   selected inputs with trusted previous outputs, recipient outputs, change
   index, unsigned transaction, fee data, and PSBT commitment.
-- [ ] Set strict limits for intents, inputs, outputs, transaction weight, PSBT
+- [x] Set strict limits for intents, inputs, outputs, transaction weight, PSBT
   bytes, and operation bytes.
-- [ ] Canonicalize or exclude non-consensus PSBT metadata.
-- [ ] Add conflict keys for payment intents, batches, UTXOs, and replacement
+- [x] Canonicalize or exclude non-consensus PSBT metadata.
+- [x] Add conflict keys for payment intents, batches, UTXOs, and replacement
   lineage.
-- [ ] Bind every proposal to root epoch, CDK application key epoch, and
+- [x] Bind every proposal to root epoch, CDK application key epoch, and
   transaction policy version.
-- [ ] Keep proposer identity for diagnostics without granting it authority.
+- [x] Keep proposer identity for diagnostics without granting it authority.
 
 **Success criteria:**
 
-- [ ] Equivalent proposals encode identically and hash identically.
-- [ ] Oversized or ambiguous proposals fail before consensus admission.
-- [ ] Two proposals spending the same UTXO or intent cannot both be accepted.
-- [ ] Proposal types contain enough information for every member to recompute
+- [x] Equivalent proposals encode identically and hash identically.
+- [x] Oversized or ambiguous proposals fail before consensus admission.
+- [x] Two proposals spending the same UTXO or intent cannot both be accepted.
+- [x] Proposal types contain enough information for every member to recompute
   all Taproot sighashes without trusting proposer-supplied digests.
 
 **Required tests:**
 
-- [ ] Canonical encoding and stable hash vectors.
-- [ ] Reordered intents, inputs, outputs, and PSBT maps.
-- [ ] Duplicate intent/input/output and conflicting batch tests.
-- [ ] Size, count, weight, and amount bounds.
-- [ ] Wrong epoch, policy version, network, and malformed transaction.
-- [ ] Property and fuzz tests for proposal decoding and conflict keys.
+- [x] Canonical encoding and stable hash vectors.
+- [x] Reordered intents, inputs, outputs, and PSBT maps.
+- [x] Duplicate intent/input/output and conflicting batch tests.
+- [x] Size, count, weight, and amount bounds.
+- [x] Wrong epoch, policy version, network, and malformed transaction.
+- [x] Property and fuzz tests for proposal decoding and conflict keys.
+
+**Milestone record:** completed on 2026-07-13. A new isolated
+`cdk-common::federation` transaction-proposal module defines versioned payment
+intents, deterministic eligible batches, and bounded unsigned transaction
+proposals without touching mint business logic or standalone BDK. Intent IDs
+commit to the quote, exact destination script and amount, maximum fee, selected
+fee tier, creation time, Bitcoin network, root/application epochs, and policy
+version. Batches retain the complete intents, reject mixed scopes, late or
+duplicate quotes, and sort by fee tier, creation time, and quote before deriving
+a stable batch ID. Proposals normalize input and recipient metadata to the exact
+transaction positions; carry every previous `TxOut`, recipient assignment,
+internal change index, checked fee/feerate, proposer, replacement lineage, and
+exact unsigned transaction; and pin a stable hash vector. The PSBT commitment
+is derived only from the unsigned transaction and ordered witness UTXOs, which
+is sufficient to recompute every Taproot key-spend sighash. Unknown,
+proprietary, signer-controlled, or proposer-local PSBT maps are excluded and
+rejected instead of becoming consensus data. Explicit limits cover intents,
+inputs, outputs, transaction weight, PSBT consensus bytes, and canonical
+proposal bytes. Quote, intent-assignment, batch, UTXO, and replacement-lineage
+conflict keys are ready for the Milestone 12 operation admission/apply step; no
+partially handled operation variant or envelope-version bump was introduced in
+this type-definition milestone. Randomized canonicalization properties and a
+raw JSON libFuzzer target cover decoding, hashing, and conflict-key generation.
+All 361 `cdk-common` federation tests pass, the fuzz target compiles, and the
+workspace compiles across all targets.
 
 ### Milestone 11: implement independent transaction-policy validation
 
