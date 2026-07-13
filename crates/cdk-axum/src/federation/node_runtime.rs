@@ -46,6 +46,8 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) payment_observer: super::FederationPaymentObserver,
     #[cfg(test)]
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
+    #[cfg(test)]
+    pub(crate) suppress_next_terminal_response_publication: Arc<AtomicBool>,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
     pub(crate) aleph_bft_halt_epoch: Arc<AtomicU64>,
@@ -128,6 +130,7 @@ impl FederationNodeRuntime {
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
+            suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(AtomicU64::new(0)),
@@ -283,6 +286,39 @@ impl FederationNodeRuntime {
                 crate::federation_submit_response_with_entry(response, entry)
             })
             .collect()
+    }
+
+    async fn publish_terminal_operation_responses(
+        &self,
+        responses: &[FederationSubmitOperationResponse],
+    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        let responses = self.responses_with_current_status(responses).await;
+        if let Some(response) = responses.iter().find(|response| {
+            !matches!(
+                response.outcome.entry().status(),
+                FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+            )
+        }) {
+            return Err(cdk::Error::Custom(format!(
+                "federation operation {} was not terminal after finalized application",
+                response.operation_id
+            )));
+        }
+        super::aleph_bft_latency::record(
+            super::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
+            responses.iter().map(|response| response.operation_id),
+        );
+        #[cfg(test)]
+        if self
+            .suppress_next_terminal_response_publication
+            .swap(false, Ordering::SeqCst)
+        {
+            return Ok(responses);
+        }
+        for response in &responses {
+            self.notify_operation(response.clone());
+        }
+        Ok(responses)
     }
 
     pub(crate) fn duplicate_finalized_unit_responses(
@@ -1505,7 +1541,7 @@ impl FederationNodeRuntime {
                 .collect::<Vec<_>>();
             let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
             self.apply_journal_entries(&entries_to_apply).await?;
-            return Ok(self.responses_with_current_status(&responses).await);
+            return self.publish_terminal_operation_responses(&responses).await;
         }
 
         let mut next_consensus = consensus.clone();
@@ -1526,29 +1562,56 @@ impl FederationNodeRuntime {
         drop(consensus);
 
         self.apply_journal_entries(&entries_to_apply).await?;
-        let responses = self.responses_with_current_status(&responses).await;
-        super::aleph_bft_latency::record(
-            super::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyCompleted,
-            responses.iter().map(|response| response.operation_id),
-        );
-        for response in &responses {
-            self.notify_operation(response.clone());
-        }
-
-        Ok(responses)
+        self.publish_terminal_operation_responses(&responses).await
     }
 
     pub(crate) async fn apply_journal_entries(
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
+        let db = self.active_mint()?.localstore();
         let mut applied = Vec::new();
+        let mut terminal_applications = Vec::with_capacity(entries.len());
         for entry in entries {
-            if let Some(operation_id) = self.apply_journal_entry_for_replay(entry).await? {
-                applied.push(operation_id);
+            let persisted_before_apply = db
+                .get_federation_journal_entry_by_operation_id(entry.operation_id)
+                .await?;
+            let persisted = match persisted_before_apply {
+                Some(persisted)
+                    if matches!(
+                        persisted.status(),
+                        FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+                    ) => persisted,
+                _ => {
+                    if self
+                        .apply_journal_entry_for_replay(entry)
+                        .await?
+                        .is_some()
+                    {
+                        applied.push(entry.operation_id);
+                    }
+                    db.get_federation_journal_entry_by_operation_id(entry.operation_id)
+                        .await?
+                        .ok_or_else(|| {
+                            cdk::Error::Federation(FederationError::UnknownOperation {
+                                operation_id: entry.operation_id.to_string(),
+                            })
+                        })?
+                }
+            };
+            if !matches!(
+                persisted.status(),
+                FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+            ) {
+                return Err(cdk::Error::Custom(format!(
+                    "federation operation {} remained non-terminal after journal application",
+                    entry.operation_id
+                )));
             }
+            terminal_applications.push((entry.operation_id, persisted.application));
         }
-        self.mark_operations_applied(&applied).await?;
+        self.mark_operation_applications(&terminal_applications)
+            .await?;
         Ok(applied)
     }
 
@@ -1637,16 +1700,16 @@ impl FederationNodeRuntime {
         }
     }
 
-    async fn mark_operations_applied(
+    async fn mark_operation_applications(
         &self,
-        operation_ids: &[FederationOperationId],
+        operations: &[(FederationOperationId, FederationApplicationState)],
     ) -> Result<(), cdk::Error> {
         let Some(consensus) = &self.consensus else {
             return Ok(());
         };
         let mut consensus = consensus.lock().await;
-        for operation_id in operation_ids {
-            consensus.update_status(*operation_id, FederationOperationStatus::Applied)?;
+        for (operation_id, application) in operations {
+            consensus.update_application_state(*operation_id, application.clone())?;
         }
         Ok(())
     }

@@ -99,7 +99,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P5 | Main explicit-rollback claim is resolved; staged melt lifecycle remains | Low residual | 90% | Close or narrow to replay/idempotence of the intentional multi-transaction melt saga. |
 | P6 | Waiter reservation now precedes durable and runtime admission | Resolved (was High) | 99% | Complete: waiter, pending row, and runtime queue are published in one failure-safe order. |
 | P7 | Active-session advance now validates and atomically rebinds pending rows | Resolved (was High) | 99% | Complete: startup and rotation cannot advance past discoverable durable pending work. |
-| P8 | Confirmed duplicate recovery omits waiter/cache notification | Medium | 97% | Route normal and duplicate terminal outcomes through one publication helper. |
+| P8 | Duplicate recovery now republishes durable terminal outcomes idempotently | Resolved (was Medium) | 97% | Complete: normal finalization and replay share one bounded publication path. |
 | P9 | Non-retryable apply and essential-task failures now halt the exact generation | Resolved (was High) | 99% | Complete: finalized payloads cannot be skipped while the member remains ready. |
 | P10 | Every production Halted transition now uses generation-safe teardown | Resolved (was Medium) | 97% | Complete: Halted cannot retain a live supervisor or inbound queue. |
 | P11 | Confirmed latent soft-skip of local certificate production | Medium | 88% | Fix with P12 so local digest/status failure cannot look like an empty successful round. |
@@ -557,7 +557,7 @@ Acceptance criteria:
 
 ### P8: Duplicate Finalized-Unit Recovery Does Not Notify Waiters
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
 The duplicate-finalized-unit path can retry journal application successfully
 and return current responses, but unlike normal finalization it does not call
@@ -565,26 +565,44 @@ and return current responses, but unlike normal finalization it does not call
 but before application or notification, an active request waiter can time out
 even after duplicate recovery makes the operation terminal.
 
+**Resolution:** Normal and duplicate finalized-unit handling now converge on a
+single terminal-response publication helper. Before that helper runs, journal
+application reloads each operation's committed application state and overlays
+the exact `Applied` or `Rejected` state into the in-memory consensus journal.
+This closes both recovery gaps: an operation already applied durably but still
+shown as accepted in memory is repaired, and a durable business rejection
+retains its persisted Cashu `ErrorResponse`.
+
+Publication rejects any non-terminal response, records apply completion, then
+notifies active waiters and inserts the response into the existing bounded
+cache. Notification remains idempotent: an existing operation ID is replaced
+in place without another order entry, and the normal cache limit is enforced
+after every publication. No waiter or cache mutation occurs before durable
+application succeeds.
+
 Relevant code:
 
-- `crates/cdk-axum/src/federation/node_runtime.rs:1470`
-- `crates/cdk-axum/src/federation/node_runtime.rs:1481`
-- `crates/cdk-axum/src/federation/node_runtime.rs:1515`
-- `crates/cdk-axum/src/federation/node_runtime.rs:1524`
+- `crates/cdk-axum/src/federation/node_runtime.rs:255`
+- `crates/cdk-axum/src/federation/node_runtime.rs:291`
+- `crates/cdk-axum/src/federation/node_runtime.rs:1527`
+- `crates/cdk-axum/src/federation/node_runtime.rs:1568`
+- `crates/cdk-axum/src/federation/node_runtime.rs:1703`
 
-TODO:
+Verification:
 
-- [ ] Route duplicate recovery through the same terminal response-publication
-  helper used by normal finalization.
-- [ ] Notify only after journal application and durable application-state update
-  complete successfully.
-- [ ] Preserve idempotency when the response is already cached.
-- [ ] Add an interruption test after durable finalization and before
-  notification, then replay the unit and prove the original waiter completes.
-- [ ] Cover both Applied and Rejected operations, including persisted Cashu
-  `ErrorResponse` recovery.
-- [ ] Prove repeated duplicate units do not grow waiter or response-cache state
-  without bound.
+- `duplicate_finalized_unit_recovers_lost_applied_response_publication`
+  suppresses the first post-commit publication, proves the original waiter and
+  cache remain untouched while materialized state is durable, resets the
+  in-memory marker to model an interrupted overlay, replays the finalized unit,
+  and proves the waiter receives `Applied`.
+- `duplicate_finalized_unit_recovers_lost_rejected_response_publication` repeats
+  the same interruption for a deterministic conflicting swap, verifies the
+  exact persisted Cashu rejection survives an interrupted in-memory overlay and
+  reaches the waiter, and replays the duplicate repeatedly.
+- Both tests prove waiter count returns to zero and repeated duplicate units
+  leave the response cache at one entry per operation. Existing normal
+  finalization, unmaterialized duplicate recovery, cache-bound, and all 108
+  mint federation regressions pass.
 
 Acceptance criteria:
 
@@ -1632,8 +1650,8 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P1/P2/P3/P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or
-High findings, six Medium findings (P4, P8, P11, P13, P14, P18), and two
+P1/P2/P3/P6/P7/P8/P9/P10/P16 are resolved. The reassessment retains no Critical
+or High findings, five Medium findings (P4, P11, P13, P14, P18), and two
 Low findings (P5, P19). P15 is complete under the accepted fresh-database
 policy; P17 is closed as superseded by P14's cut-through registry reset.
 

@@ -2131,6 +2131,9 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            suppress_next_terminal_response_publication: Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -8964,6 +8967,235 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].operation_id, operation_id);
     assert_eq!(entries[0].status(), FederationOperationStatus::Applied);
+}
+
+#[tokio::test]
+async fn duplicate_finalized_unit_recovers_lost_applied_response_publication() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = {
+        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let mut consensus = consensus.lock().await;
+        consensus
+            .submit_aleph_bft_envelope(envelope)
+            .expect("queue AlephBFT envelope");
+        consensus
+            .next_aleph_bft_unit_payload()
+            .expect("next AlephBFT unit")
+            .expect("queued unit")
+    };
+    let wait_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        wait_state
+            .wait_for_federation_operation_acceptance(operation_id)
+            .await
+            .expect("notified applied operation")
+    });
+    state
+        .wait_for_federation_pending_response_waiter_count(1)
+        .await;
+    state
+        .federation
+        .suppress_next_terminal_response_publication
+        .store(true, Ordering::SeqCst);
+
+    let first_responses = state
+        .apply_federation_aleph_bft_finalized_unit(unit.clone())
+        .await
+        .expect("durably apply finalized unit before publication interruption");
+    assert_eq!(first_responses.len(), 1);
+    assert_eq!(
+        first_responses[0].outcome.entry().status(),
+        FederationOperationStatus::Applied
+    );
+    assert!(!waiter.is_finished());
+    assert_eq!(state.federation_pending_response_waiter_count(), 1);
+    assert_eq!(state.federation_response_cache_entry_count(), 0);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after interrupted publication")
+        .is_some());
+    state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .update_application_state(operation_id, FederationApplicationState::Accepted {})
+        .expect("simulate interruption before in-memory terminal overlay");
+
+    let duplicate_responses = state
+        .apply_federation_aleph_bft_finalized_unit(unit.clone())
+        .await
+        .expect("duplicate finalized unit republishes terminal response");
+    assert_eq!(duplicate_responses.len(), 1);
+    assert!(matches!(
+        &duplicate_responses[0].outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(
+        duplicate_responses[0].outcome.entry().status(),
+        FederationOperationStatus::Applied
+    );
+    let notified = time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("applied waiter notification timeout")
+        .expect("applied waiter task");
+    assert_eq!(notified.operation_id, operation_id);
+    assert_eq!(
+        notified.outcome.entry().status(),
+        FederationOperationStatus::Applied
+    );
+
+    for _ in 0..4 {
+        state
+            .apply_federation_aleph_bft_finalized_unit(unit.clone())
+            .await
+            .expect("idempotent duplicate terminal publication");
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(state.federation_response_cache_entry_count(), 1);
+}
+
+#[tokio::test]
+async fn duplicate_finalized_unit_recovers_lost_rejected_response_publication() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let input = proof_for_amount(&state, 1, "lost-rejected-publication");
+    let accepted_envelope = config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![input.clone()],
+            vec![swap_output(&state, "lost-rejected-winner")],
+        ))
+        .expect("accepted swap envelope");
+    let rejected_envelope = config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![input],
+            vec![swap_output(&state, "lost-rejected-loser")],
+        ))
+        .expect("rejected swap envelope");
+    let rejected_operation_id = rejected_envelope
+        .operation_id()
+        .expect("rejected operation id");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(accepted_envelope),
+            FederationConsensusItem::operation(rejected_envelope),
+        ],
+    )
+    .expect("conflicting finalized unit");
+    let wait_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        wait_state
+            .wait_for_federation_operation_acceptance(rejected_operation_id)
+            .await
+            .expect("notified rejected operation")
+    });
+    state
+        .wait_for_federation_pending_response_waiter_count(1)
+        .await;
+    state
+        .federation
+        .suppress_next_terminal_response_publication
+        .store(true, Ordering::SeqCst);
+
+    let first_responses = state
+        .apply_federation_aleph_bft_finalized_unit(unit.clone())
+        .await
+        .expect("durably reject finalized operation before publication interruption");
+    let rejected_response = first_responses
+        .iter()
+        .find(|response| response.operation_id == rejected_operation_id)
+        .expect("rejected terminal response");
+    assert_eq!(
+        rejected_response.outcome.entry().status(),
+        FederationOperationStatus::Rejected
+    );
+    let rejection = rejected_response
+        .outcome
+        .entry()
+        .rejection()
+        .cloned()
+        .expect("persisted Cashu error response");
+    assert!(!waiter.is_finished());
+    assert_eq!(state.federation_pending_response_waiter_count(), 1);
+    assert_eq!(state.federation_response_cache_entry_count(), 0);
+    let persisted = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(rejected_operation_id)
+        .await
+        .expect("rejected journal lookup")
+        .expect("persisted rejected journal entry");
+    assert_eq!(persisted.rejection(), Some(&rejection));
+    state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .update_application_state(
+            rejected_operation_id,
+            FederationApplicationState::Accepted {},
+        )
+        .expect("simulate interruption before rejected in-memory overlay");
+
+    state
+        .apply_federation_aleph_bft_finalized_unit(unit.clone())
+        .await
+        .expect("duplicate finalized unit republishes rejection");
+    let notified = time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("rejected waiter notification timeout")
+        .expect("rejected waiter task");
+    assert_eq!(notified.operation_id, rejected_operation_id);
+    assert_eq!(
+        notified.outcome.entry().status(),
+        FederationOperationStatus::Rejected
+    );
+    assert_eq!(notified.outcome.entry().rejection(), Some(&rejection));
+
+    for _ in 0..4 {
+        state
+            .apply_federation_aleph_bft_finalized_unit(unit.clone())
+            .await
+            .expect("idempotent duplicate rejection publication");
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(state.federation_response_cache_entry_count(), 2);
 }
 
 #[tokio::test]
