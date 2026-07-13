@@ -608,62 +608,74 @@ reconstructing either the root or a derived aggregate private key.
 
 **Work:**
 
-- [ ] Assign the CDK on-chain backend a stable application ID and write the exact
+- [x] Assign the CDK on-chain backend a stable application ID and write the exact
   root-to-application derivation, application public key, public chain-code,
   non-hardened child derivation, x-only normalization, and Taproot tweak
   specification.
-- [ ] Define the complete derivation order: untweaked root group key,
+- [x] Define the complete derivation order: untweaked root group key,
   application-domain derivation, account/application group key, non-hardened
   BIP32 child, even-Y normalization at specified boundaries, then BIP341
   output-key tweak.
-- [ ] Define external branch `0`, internal branch `1`, allowed index range, and
+- [x] Define external branch `0`, internal branch `1`, allowed index range, and
   invalid-child handling.
-- [ ] Prove or source the rule for applying child derivation tweaks to FROST
+- [x] Prove or source the rule for applying child derivation tweaks to FROST
   signing and verification shares.
-- [ ] Determine how `frost-secp256k1-tr` post-DKG processing interacts with
+- [x] Determine how `frost-secp256k1-tr` post-DKG processing interacts with
   root-to-application derivation, child derivation, and Taproot tweaking; do not
   proceed on an assumption or apply its post-DKG output as the root package.
-- [ ] Construct a canonical public extended key representation accepted by BDK
+- [x] Construct a canonical public extended key representation accepted by BDK
   watch-only wildcard descriptors.
-- [ ] Implement derivation through a narrow typed API rather than scattered
+- [x] Implement derivation through a narrow typed API rather than scattered
   scalar arithmetic.
-- [ ] Produce stable test vectors containing public config, branch/index,
+- [x] Produce stable test vectors containing public config, branch/index,
   application ID/version, application public key, address, child verification
   shares, sighash, aggregate signature, and final verification result.
-- [ ] Document that public additive application/child derivation does not isolate
+- [x] Document that public additive application/child derivation does not isolate
   compromise: exposure of a complete derived private key can compromise the
   root and every application that uses it.
-- [ ] Obtain focused cryptographic review before connecting derived keys to
+- [x] Obtain focused cryptographic review before connecting derived keys to
   wallet value.
 
 **Success criteria:**
 
-- [ ] Every member derives identical public addresses from public config alone.
-- [ ] Every member derives an identical CDK application public package from the
+- [x] Every member derives identical public addresses from public config alone.
+- [x] Every member derives an identical CDK application public package from the
   canonical root public package and CDK application metadata.
-- [ ] Every member derives the same child verification package.
-- [ ] A threshold using derived child shares signs for the corresponding BDK
+- [x] Every member derives the same child verification package.
+- [x] A threshold using derived child shares signs for the corresponding BDK
   P2TR descriptor key.
-- [ ] Signatures fail for the adjacent branch, index, epoch, or Taproot tweak.
-- [ ] Signatures and derived keys fail across application IDs and application
+- [x] Signatures fail for the adjacent branch, index, epoch, or Taproot tweak.
+- [x] Signatures and derived keys fail across application IDs and application
   derivation versions.
-- [ ] No hardened child derivation is accepted.
+- [x] No hardened child derivation is accepted.
 
 **Required tests:**
 
-- [ ] External and internal derivation vectors at indexes 0, 1, boundary values,
+- [x] External and internal derivation vectors at indexes 0, 1, boundary values,
   and representative high indexes.
-- [ ] Independent BDK descriptor address equals CDK derivation result.
-- [ ] Child signature verifies against BDK's derived output key.
-- [ ] Wrong branch/index/chain code/network/root epoch/application key epoch
+- [x] Independent BDK descriptor address equals CDK derivation result.
+- [x] Child signature verifies against BDK's derived output key.
+- [x] Wrong branch/index/chain code/network/root epoch/application key epoch
   rejection.
-- [ ] Invalid-child retry behavior is deterministic across all members.
-- [ ] Property test that arbitrary valid indexes produce matching public and
+- [x] Invalid-child retry behavior is deterministic across all members.
+- [x] Property test that arbitrary valid indexes produce matching public and
   threshold-private derivation results.
-- [ ] Cross-version vector test preventing accidental derivation changes.
-- [ ] Cross-application vector test proving that a second test application can
+- [x] Cross-version vector test preventing accidental derivation changes.
+- [x] Cross-application vector test proving that a second test application can
   reuse the root package while producing a distinct key and rejecting CDK
   signing transcripts.
+
+**Milestone record:** completed on 2026-07-13. The application-neutral
+`cdk-frost` boundary now accepts a bounded additive signing plan and binds its
+hash into nonce commitments and signature shares. The isolated
+`cdk-frost-bip32` adapter defines the versioned CDK application, deterministic
+chain code, non-hardened `0/*` and `1/*` BIP32 derivation, BDK descriptors,
+BIP340/BIP341 order, and deterministic invalid-child retry. Ten generic FROST
+tests and four Bitcoin adapter tests pass, including BDK address equality,
+256 property indexes, stable vectors, threshold Taproot signing, and domain
+separation. Focused implementation review and residual risks are recorded in
+`docs/federated-cashu-frost-bip32-derivation.md`; it is explicitly not an
+independent external audit, and later security gates remain open.
 
 ### Milestone 4: run DKG for an application-neutral FROST root key epoch
 

@@ -6,11 +6,14 @@ use std::fmt;
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::rand_core::{CryptoRng, RngCore};
 
-use crate::canonical::{identifier, library_public_package, CanonicalRootKeyPackage};
+use crate::canonical::{
+    derive_signing_public, identifier, library_signing_public_package, CanonicalRootKeyPackage,
+};
 use crate::types::{
     derive_nonce_id, AggregateSignature, ApplicationId, ApplicationRegistration,
-    AuthorizationRequest, DerivedPublicPackage, NonceCommitment, NonceCommitmentSet, NonceId,
-    SignatureShare, SigningSessionId, MAX_COMMITMENT_BYTES,
+    AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
+    DerivedSigningPublicPackage, NonceCommitment, NonceCommitmentSet, NonceId, SignatureMode,
+    SignatureShare, SigningDerivation, SigningSessionId, MAX_COMMITMENT_BYTES,
 };
 use crate::Error;
 
@@ -26,8 +29,8 @@ pub trait ApplicationAuthorization: fmt::Debug + Send + Sync {
     fn registration(&self) -> ApplicationRegistration;
 
     /// Validate a typed application request and return its authorized BIP340
-    /// message digest.
-    fn authorize(&self, request: &AuthorizationRequest) -> Result<[u8; 32], Error>;
+    /// message digest and exact reviewed signing derivation.
+    fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizedSigningRequest, Error>;
 }
 
 struct RegisteredApplication {
@@ -38,6 +41,7 @@ struct RegisteredApplication {
 struct PendingNonce {
     registration: ApplicationRegistration,
     session_id: SigningSessionId,
+    derivation: SigningDerivation,
     nonces: frost::round1::SigningNonces,
     public: NonceCommitment,
 }
@@ -123,6 +127,26 @@ impl ParticipantKeyManager {
     where
         R: CryptoRng + RngCore,
     {
+        self.commit_nonce_for_derivation(
+            application_id,
+            session_id,
+            SigningDerivation::application_key(),
+            rng,
+        )
+    }
+
+    /// Generate a single-use nonce for one exact child derivation and final
+    /// signature mode.
+    pub fn commit_nonce_for_derivation<R>(
+        &mut self,
+        application_id: ApplicationId,
+        session_id: SigningSessionId,
+        derivation: SigningDerivation,
+        rng: &mut R,
+    ) -> Result<NonceCommitment, Error>
+    where
+        R: CryptoRng + RngCore,
+    {
         let application = self
             .applications
             .get(&application_id)
@@ -136,7 +160,7 @@ impl ParticipantKeyManager {
         }
         let derived = self
             .root
-            .derive_application(application.adapter.registration())?;
+            .derive_signing_target(application.adapter.registration(), &derivation)?;
         let (nonces, commitments) = frost::round1::commit(derived.key.signing_share(), rng);
         let encoded = commitments
             .serialize()
@@ -151,6 +175,7 @@ impl ParticipantKeyManager {
             self.root.public().epoch(),
             application.adapter.registration(),
             session_id,
+            derivation.binding(),
             self.root.participant(),
             &encoded,
         );
@@ -163,6 +188,7 @@ impl ParticipantKeyManager {
             root_epoch: self.root.public().epoch(),
             registration: application.adapter.registration(),
             session_id,
+            derivation_binding: derivation.binding(),
             nonce_id,
             participant: self.root.participant(),
             commitments: encoded,
@@ -172,6 +198,7 @@ impl ParticipantKeyManager {
             PendingNonce {
                 registration: application.adapter.registration(),
                 session_id,
+                derivation,
                 nonces,
                 public: public.clone(),
             },
@@ -204,11 +231,16 @@ impl ParticipantKeyManager {
         if pending.registration != registration || pending.session_id != request.session_id() {
             return Err(Error::WrongSession);
         }
+        let authorized = application.adapter.authorize(request)?;
+        if authorized.derivation() != &pending.derivation {
+            return Err(Error::WrongSession);
+        }
         validate_commitment_set(
             commitment_set,
             self.root.public().epoch(),
             registration,
             request.session_id(),
+            pending.derivation.binding(),
             self.root.public().threshold(),
         )?;
         let own_commitment = commitment_set
@@ -222,9 +254,10 @@ impl ParticipantKeyManager {
                 "coordinator supplied another local commitment".to_string(),
             ));
         }
-        let message = application.adapter.authorize(request)?;
-        let signing_package = signing_package(commitment_set, &message)?;
-        let derived = self.root.derive_application(registration)?;
+        let signing_package = signing_package(commitment_set, &authorized.message())?;
+        let derived = self
+            .root
+            .derive_signing_target(registration, &pending.derivation)?;
 
         // Removal happens before the secret nonce is used. Every subsequent
         // outcome consumes it and retry requires a fresh commitment.
@@ -232,8 +265,18 @@ impl ParticipantKeyManager {
             .pending_nonces
             .remove(&nonce_id)
             .ok_or_else(|| Error::InvalidCommitment("nonce was consumed".to_string()))?;
-        let share = frost::round2::sign(&signing_package, &pending.nonces, &derived.key)
-            .map_err(|err| Error::InvalidShare(err.to_string()))?;
+        let share = match pending.derivation.signature_mode() {
+            SignatureMode::Plain => {
+                frost::round2::sign(&signing_package, &pending.nonces, &derived.key)
+            }
+            SignatureMode::TaprootKeyPath { merkle_root } => frost::round2::sign_with_tweak(
+                &signing_package,
+                &pending.nonces,
+                &derived.key,
+                merkle_root.as_ref().map(|root| root.as_slice()),
+            ),
+        }
+        .map_err(|err| Error::InvalidShare(err.to_string()))?;
         let share = share
             .serialize()
             .try_into()
@@ -242,6 +285,7 @@ impl ParticipantKeyManager {
             root_epoch: self.root.public().epoch(),
             registration,
             session_id: request.session_id(),
+            derivation_binding: pending.derivation.binding(),
             participant: self.root.participant(),
             share,
         })
@@ -258,11 +302,32 @@ impl ParticipantKeyManager {
         commitment_set: &NonceCommitmentSet,
         shares: impl IntoIterator<Item = SignatureShare>,
     ) -> Result<AggregateSignature, Error> {
+        Self::aggregate_for_derivation(
+            public,
+            &SigningDerivation::application_key(),
+            session_id,
+            message,
+            commitment_set,
+            shares,
+        )
+    }
+
+    /// Verify and aggregate shares for one exact derived signing target.
+    pub fn aggregate_for_derivation(
+        public: &DerivedPublicPackage,
+        derivation: &SigningDerivation,
+        session_id: SigningSessionId,
+        message: &[u8; 32],
+        commitment_set: &NonceCommitmentSet,
+        shares: impl IntoIterator<Item = SignatureShare>,
+    ) -> Result<AggregateSignature, Error> {
+        let target = derive_signing_public(public, derivation)?;
         validate_commitment_set(
             commitment_set,
             public.root_epoch,
             public.registration,
             session_id,
+            derivation.binding(),
             public.threshold,
         )?;
         let signing_package = signing_package(commitment_set, message)?;
@@ -271,6 +336,7 @@ impl ParticipantKeyManager {
             if share.root_epoch != public.root_epoch
                 || share.registration != public.registration
                 || share.session_id != session_id
+                || share.derivation_binding != derivation.binding()
             {
                 return Err(Error::WrongSession);
             }
@@ -304,10 +370,27 @@ impl ParticipantKeyManager {
                 "signature-share set differs from commitment signer set".to_string(),
             ));
         }
-        let library_public = library_public_package(public)?;
-        let signature = frost::aggregate(&signing_package, &library_shares, &library_public)
-            .map_err(|err| Error::InvalidShare(err.to_string()))?;
-        library_public
+        let library_public = library_signing_public_package(&target)?;
+        let signature = match derivation.signature_mode() {
+            SignatureMode::Plain => {
+                frost::aggregate(&signing_package, &library_shares, &library_public)
+            }
+            SignatureMode::TaprootKeyPath { merkle_root } => frost::aggregate_with_tweak(
+                &signing_package,
+                &library_shares,
+                &library_public,
+                merkle_root.as_ref().map(|root| root.as_slice()),
+            ),
+        }
+        .map_err(|err| Error::InvalidShare(err.to_string()))?;
+        let output_public = match derivation.signature_mode() {
+            SignatureMode::Plain => library_public,
+            SignatureMode::TaprootKeyPath { merkle_root } => {
+                use frost_secp256k1_tr::keys::Tweak;
+                library_public.tweak(merkle_root.as_ref().map(|root| root.as_slice()))
+            }
+        };
+        output_public
             .verifying_key()
             .verify(message, &signature)
             .map_err(|_| Error::AggregateVerification)?;
@@ -318,6 +401,15 @@ impl ParticipantKeyManager {
             .map_err(|_| Error::Internal("FROST signature is not 64 bytes".to_string()))?;
         Ok(AggregateSignature::from_bytes_unchecked(encoded))
     }
+
+    /// Publicly derive one registered application's exact signing target.
+    pub fn signing_public_package(
+        &self,
+        application_id: ApplicationId,
+        derivation: &SigningDerivation,
+    ) -> Result<DerivedSigningPublicPackage, Error> {
+        derive_signing_public(self.public_package(application_id)?, derivation)
+    }
 }
 
 fn validate_commitment_set(
@@ -325,6 +417,7 @@ fn validate_commitment_set(
     root_epoch: crate::RootKeyEpoch,
     registration: ApplicationRegistration,
     session_id: SigningSessionId,
+    derivation_binding: [u8; 32],
     threshold: u16,
 ) -> Result<(), Error> {
     if set.commitments().len() < usize::from(threshold) {
@@ -337,6 +430,7 @@ fn validate_commitment_set(
         if commitment.root_epoch != root_epoch
             || commitment.registration != registration
             || commitment.session_id != session_id
+            || commitment.derivation_binding != derivation_binding
         {
             return Err(Error::WrongSession);
         }

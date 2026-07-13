@@ -9,8 +9,9 @@ use sha2::{Digest, Sha256};
 use crate::canonical::CanonicalRootKeyPackage;
 use crate::{
     ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationRegistration,
-    AuthorizationRequest, Error, MemberId, NonceCommitmentSet, ParticipantKeyManager, RootKeyEpoch,
-    RootPublicPackage, SignatureShare, SigningSessionId,
+    AuthorizationRequest, AuthorizedSigningRequest, Error, MemberId, NonceCommitmentSet,
+    ParticipantKeyManager, RootKeyEpoch, RootPublicPackage, SignatureMode, SignatureShare,
+    SigningDerivation, SigningSessionId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -23,8 +24,11 @@ impl ApplicationAuthorization for WalletTestAdapter {
         self.registration
     }
 
-    fn authorize(&self, request: &AuthorizationRequest) -> Result<[u8; 32], Error> {
-        authorize_payload(self.registration, request, b"wallet-test-policy/v1")
+    fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizedSigningRequest, Error> {
+        Ok(AuthorizedSigningRequest::new(
+            authorize_payload(self.registration, request, b"wallet-test-policy/v1")?,
+            SigningDerivation::application_key(),
+        ))
     }
 }
 
@@ -33,13 +37,35 @@ struct CompatibilityTestAdapter {
     registration: ApplicationRegistration,
 }
 
+#[derive(Debug, Clone)]
+struct DerivedTestAdapter {
+    registration: ApplicationRegistration,
+    derivation: SigningDerivation,
+}
+
+impl ApplicationAuthorization for DerivedTestAdapter {
+    fn registration(&self) -> ApplicationRegistration {
+        self.registration
+    }
+
+    fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizedSigningRequest, Error> {
+        Ok(AuthorizedSigningRequest::new(
+            authorize_payload(self.registration, request, b"derived-test-policy/v1")?,
+            self.derivation.clone(),
+        ))
+    }
+}
+
 impl ApplicationAuthorization for CompatibilityTestAdapter {
     fn registration(&self) -> ApplicationRegistration {
         self.registration
     }
 
-    fn authorize(&self, request: &AuthorizationRequest) -> Result<[u8; 32], Error> {
-        authorize_payload(self.registration, request, b"compatibility-policy/v1")
+    fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizedSigningRequest, Error> {
+        Ok(AuthorizedSigningRequest::new(
+            authorize_payload(self.registration, request, b"compatibility-policy/v1")?,
+            SigningDerivation::application_key(),
+        ))
     }
 }
 
@@ -96,6 +122,24 @@ fn wallet_registration() -> ApplicationRegistration {
         Sha256::digest(b"wallet-test-policy/v1").into(),
     )
     .expect("registration")
+}
+
+fn derived_registration() -> ApplicationRegistration {
+    ApplicationRegistration::new(
+        ApplicationId::from_label("org.cashubtc.cdk.test-derived-wallet").expect("application ID"),
+        ApplicationDerivationVersion::new(1).expect("version"),
+        Sha256::digest(b"derived-test-policy/v1").into(),
+    )
+    .expect("registration")
+}
+
+fn derived_signing_derivation() -> SigningDerivation {
+    SigningDerivation::new(
+        Sha256::digest(b"cdk/frost/test-bip32-target/v1").into(),
+        vec![[1; 32], [2; 32]],
+        SignatureMode::TaprootKeyPath { merkle_root: None },
+    )
+    .expect("derived signing target")
 }
 
 fn compatibility_registration() -> ApplicationRegistration {
@@ -189,6 +233,12 @@ fn managers(max_signers: u16, threshold: u16, seed: u8) -> Vec<ParticipantKeyMan
                 })
                 .expect("compatibility adapter");
             manager
+                .register_application(DerivedTestAdapter {
+                    registration: derived_registration(),
+                    derivation: derived_signing_derivation(),
+                })
+                .expect("derived adapter");
+            manager
         })
         .collect()
 }
@@ -271,6 +321,106 @@ fn threshold_matrix_and_bip340_interoperability() {
 }
 
 #[test]
+fn additively_derived_taproot_target_signs_and_rejects_target_swaps() {
+    let mut managers = managers(5, 3, 31);
+    let registration = derived_registration();
+    let derivation = derived_signing_derivation();
+    let session_id = session(31);
+    let message = [31; 32];
+    let mut rng = ChaCha20Rng::from_seed([31; 32]);
+    let commitments = managers[..3]
+        .iter_mut()
+        .map(|manager| {
+            manager
+                .commit_nonce_for_derivation(
+                    registration.id(),
+                    session_id,
+                    derivation.clone(),
+                    &mut rng,
+                )
+                .expect("derived nonce")
+        })
+        .collect::<Vec<_>>();
+    let set = NonceCommitmentSet::new(commitments.clone()).expect("commitment set");
+    let request = authorized_request(registration, session_id, message, b"derived-test-policy/v1");
+    let shares = managers[..3]
+        .iter_mut()
+        .zip(&commitments)
+        .map(|(manager, commitment)| {
+            manager
+                .sign_share(commitment.nonce_id(), &request, &set)
+                .expect("derived share")
+        })
+        .collect::<Vec<_>>();
+    let application = managers[0]
+        .public_package(registration.id())
+        .expect("application public")
+        .clone();
+    let target = managers[0]
+        .signing_public_package(registration.id(), &derivation)
+        .expect("target public");
+    let signature = ParticipantKeyManager::aggregate_for_derivation(
+        &application,
+        &derivation,
+        session_id,
+        &message,
+        &set,
+        shares.clone(),
+    )
+    .expect("derived aggregate");
+    assert_eq!(
+        signature.to_bytes(),
+        [
+            0xfd, 0x9d, 0x6f, 0x14, 0x0b, 0x13, 0x62, 0xc0, 0xd7, 0x16, 0xff, 0x5e, 0x7f, 0x07,
+            0x2c, 0xb4, 0x05, 0xda, 0xb9, 0x9f, 0x45, 0xd9, 0x71, 0x48, 0xaf, 0x22, 0x5a, 0x2f,
+            0x11, 0x24, 0xce, 0xbd, 0xda, 0xe2, 0x4f, 0x09, 0xf5, 0x94, 0x7b, 0xcf, 0xe3, 0xaf,
+            0xc8, 0xb2, 0x71, 0x59, 0xcd, 0x1d, 0xb5, 0x0a, 0x41, 0xe5, 0x21, 0x53, 0xae, 0x9a,
+            0xd5, 0xbe, 0x77, 0xc1, 0x9a, 0xaf, 0xb2, 0x7d,
+        ]
+    );
+    let secp = Secp256k1::verification_only();
+    let key = PublicKey::from_slice(&target.output_group_key()).expect("output key");
+    let (x_only, _) = key.x_only_public_key();
+    let signature = schnorr::Signature::from_slice(&signature.to_bytes()).expect("signature");
+    secp.verify_schnorr(&signature, &Message::from_digest(message), &x_only)
+        .expect("BIP341 output-key signature");
+
+    let wrong_targets = [
+        SigningDerivation::new(
+            derivation.context(),
+            vec![[1; 32], [3; 32]],
+            derivation.signature_mode(),
+        )
+        .expect("wrong child"),
+        SigningDerivation::new(
+            Sha256::digest(b"wrong-chain-code-or-network-context").into(),
+            derivation.tweaks().to_vec(),
+            derivation.signature_mode(),
+        )
+        .expect("wrong context"),
+        SigningDerivation::new(
+            derivation.context(),
+            derivation.tweaks().to_vec(),
+            SignatureMode::Plain,
+        )
+        .expect("wrong Taproot mode"),
+    ];
+    for wrong in wrong_targets {
+        assert!(matches!(
+            ParticipantKeyManager::aggregate_for_derivation(
+                &application,
+                &wrong,
+                session_id,
+                &message,
+                &set,
+                shares.clone(),
+            ),
+            Err(Error::WrongSession)
+        ));
+    }
+}
+
+#[test]
 fn different_threshold_subsets_sign_without_root_reconstruction() {
     let mut managers = managers(5, 3, 10);
     for (index, signers) in [[0, 1, 2], [0, 2, 4], [1, 3, 4]].into_iter().enumerate() {
@@ -345,6 +495,7 @@ fn threshold_minus_one_and_wrong_application_are_rejected() {
                 value.root_epoch,
                 value.registration,
                 value.session_id,
+                value.derivation_binding,
                 value.participant,
                 &value.commitments,
             );
@@ -616,7 +767,7 @@ fn canonical_wire_round_trips_and_rejects_mutations() {
         share
     );
 
-    let oversized = vec![0; crate::types::MAX_COMMITMENT_BYTES + 161];
+    let oversized = vec![0; crate::types::MAX_COMMITMENT_BYTES + 193];
     assert!(matches!(
         crate::NonceCommitment::decode(&oversized),
         Err(Error::OversizedInput { .. })

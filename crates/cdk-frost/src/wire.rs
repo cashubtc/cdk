@@ -13,11 +13,11 @@ use crate::types::{
 use crate::Error;
 
 const ROOT_MAGIC: &[u8; 8] = b"CDKFRT01";
-const COMMITMENT_MAGIC: &[u8; 8] = b"CDKFNC01";
-const SHARE_MAGIC: &[u8; 8] = b"CDKFSH01";
+const COMMITMENT_MAGIC: &[u8; 8] = b"CDKFNC02";
+const SHARE_MAGIC: &[u8; 8] = b"CDKFSH02";
 const ROOT_WIRE_MAX: usize = 128 + MAX_PARTICIPANTS * 35;
-const COMMITMENT_WIRE_MAX: usize = 160 + MAX_COMMITMENT_BYTES;
-const SHARE_WIRE_LEN: usize = 8 + 8 + 32 + 2 + 32 + 32 + 2 + 32;
+const COMMITMENT_WIRE_MAX: usize = 192 + MAX_COMMITMENT_BYTES;
+const SHARE_WIRE_LEN: usize = 8 + 8 + 32 + 2 + 32 + 32 + 32 + 2 + 32;
 
 impl RootPublicPackage {
     /// Encode the public root package canonically.
@@ -108,7 +108,7 @@ impl RootPublicPackage {
 impl NonceCommitment {
     /// Encode a public nonce commitment canonically.
     pub fn encode(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(160 + self.commitments.len());
+        let mut output = Vec::with_capacity(192 + self.commitments.len());
         output.extend_from_slice(COMMITMENT_MAGIC);
         encode_scope(
             &mut output,
@@ -116,6 +116,7 @@ impl NonceCommitment {
             self.registration,
             self.session_id,
         );
+        output.extend_from_slice(&self.derivation_binding);
         output.extend_from_slice(&self.nonce_id.to_bytes());
         output.extend_from_slice(&self.participant.get().to_be_bytes());
         output.extend_from_slice(&(self.commitments.len() as u16).to_be_bytes());
@@ -134,6 +135,13 @@ impl NonceCommitment {
         let mut reader = Reader::new(bytes, "nonce commitment");
         reader.expect_magic(COMMITMENT_MAGIC)?;
         let (root_epoch, registration, session_id) = decode_scope(&mut reader)?;
+        let derivation_binding = reader.array::<32>()?;
+        if derivation_binding == [0; 32] {
+            return Err(Error::malformed(
+                "nonce commitment",
+                "derivation binding cannot be all zeroes",
+            ));
+        }
         let nonce_bytes = reader.array::<32>()?;
         if nonce_bytes == [0; 32] {
             return Err(Error::malformed(
@@ -158,6 +166,7 @@ impl NonceCommitment {
             root_epoch,
             registration,
             session_id,
+            derivation_binding,
             nonce_id,
             participant,
             commitments,
@@ -188,6 +197,7 @@ impl SignatureShare {
             self.registration,
             self.session_id,
         );
+        output.extend_from_slice(&self.derivation_binding);
         output.extend_from_slice(&self.participant.get().to_be_bytes());
         output.extend_from_slice(&self.share);
         output
@@ -204,6 +214,13 @@ impl SignatureShare {
         let mut reader = Reader::new(bytes, "signature share");
         reader.expect_magic(SHARE_MAGIC)?;
         let (root_epoch, registration, session_id) = decode_scope(&mut reader)?;
+        let derivation_binding = reader.array::<32>()?;
+        if derivation_binding == [0; 32] {
+            return Err(Error::malformed(
+                "signature share",
+                "derivation binding cannot be all zeroes",
+            ));
+        }
         let participant = MemberId::new(reader.u16()?)?;
         let share = reader.array::<32>()?;
         reader.finish()?;
@@ -213,6 +230,7 @@ impl SignatureShare {
             root_epoch,
             registration,
             session_id,
+            derivation_binding,
             participant,
             share,
         };

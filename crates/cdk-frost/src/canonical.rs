@@ -4,17 +4,19 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use frost_secp256k1_tr as frost;
+use frost_secp256k1_tr::keys::Tweak;
 use k256::elliptic_curve::bigint::U256;
 use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use k256::elliptic_curve::Group;
 use k256::elliptic_curve::PrimeField;
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint, Scalar};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::types::{
-    ApplicationRegistration, DerivedPublicPackage, FrostCiphersuite, MemberId, RootPublicPackage,
-    MAX_PARTICIPANTS,
+    ApplicationRegistration, DerivedPublicPackage, DerivedSigningPublicPackage, FrostCiphersuite,
+    MemberId, RootPublicPackage, SignatureMode, SigningDerivation, MAX_PARTICIPANTS,
 };
 use crate::Error;
 
@@ -47,6 +49,10 @@ impl fmt::Debug for CanonicalRootKeyPackage {
 pub(crate) struct DerivedLibraryPackage {
     pub(crate) key: frost::keys::KeyPackage,
     pub(crate) public_boundary: DerivedPublicPackage,
+}
+
+pub(crate) struct DerivedSigningLibraryPackage {
+    pub(crate) key: frost::keys::KeyPackage,
 }
 
 impl CanonicalRootKeyPackage {
@@ -196,11 +202,128 @@ impl CanonicalRootKeyPackage {
             public_boundary,
         })
     }
+
+    pub(crate) fn derive_signing_target(
+        &self,
+        registration: ApplicationRegistration,
+        derivation: &SigningDerivation,
+    ) -> Result<DerivedSigningLibraryPackage, Error> {
+        let application = self.derive_application(registration)?;
+        let mut share = scalar_from_bytes(
+            &application
+                .key
+                .signing_share()
+                .serialize()
+                .try_into()
+                .map_err(|_| Error::Internal("FROST signing share is not 32 bytes".to_string()))?,
+            "application signing share",
+        )?;
+        for encoded in derivation.tweaks() {
+            share += scalar_from_bytes(encoded, "signing derivation tweak")?;
+        }
+        if bool::from(share.is_zero()) {
+            return Err(Error::Application(
+                "signing derivation produced a zero signing share".to_string(),
+            ));
+        }
+        let public_boundary = derive_signing_public(&application.public_boundary, derivation)?;
+        let public = library_signing_public_package(&public_boundary)?;
+        let signing_share = frost::keys::SigningShare::deserialize(share.to_bytes().as_ref())
+            .map_err(|err| Error::Frost(err.to_string()))?;
+        let own_verifying_share = public
+            .verifying_shares()
+            .get(&identifier(self.participant)?)
+            .copied()
+            .ok_or_else(|| Error::InvalidParticipant {
+                participant: self.participant.get(),
+                reason: "derived verification share missing".to_string(),
+            })?;
+        let key = frost::keys::KeyPackage::new(
+            identifier(self.participant)?,
+            signing_share,
+            own_verifying_share,
+            *public.verifying_key(),
+            self.public.threshold,
+        );
+        Ok(DerivedSigningLibraryPackage { key })
+    }
+}
+
+pub(crate) fn derive_signing_public(
+    application: &DerivedPublicPackage,
+    derivation: &SigningDerivation,
+) -> Result<DerivedSigningPublicPackage, Error> {
+    let total_tweak = derivation
+        .tweaks()
+        .iter()
+        .try_fold(Scalar::ZERO, |sum, encoded| {
+            Ok::<_, Error>(sum + scalar_from_bytes(encoded, "signing derivation tweak")?)
+        })?;
+    let tweak_point = ProjectivePoint::GENERATOR * total_tweak;
+    let mut shares = BTreeMap::new();
+    for (member, encoded) in &application.verifying_shares {
+        let point = point_from_bytes(encoded, "application verification share")? + tweak_point;
+        if bool::from(point.is_identity()) {
+            return Err(Error::Application(
+                "signing derivation produced an identity verification share".to_string(),
+            ));
+        }
+        shares.insert(*member, point_to_bytes(point));
+    }
+    let group = point_from_bytes(&application.group_key, "application group key")? + tweak_point;
+    if bool::from(group.is_identity()) {
+        return Err(Error::Application(
+            "signing derivation produced an identity group key".to_string(),
+        ));
+    }
+    let internal_group_key = point_to_bytes(group);
+    let internal = DerivedPublicPackage {
+        root_epoch: application.root_epoch,
+        registration: application.registration,
+        threshold: application.threshold,
+        verifying_shares: shares.clone(),
+        group_key: internal_group_key,
+    };
+    let library = library_public_package(&internal)?;
+    let output = match derivation.signature_mode() {
+        SignatureMode::Plain => library,
+        SignatureMode::TaprootKeyPath { merkle_root } => {
+            library.tweak(merkle_root.as_ref().map(|root| root.as_slice()))
+        }
+    };
+    let output_group_key = output
+        .verifying_key()
+        .serialize()
+        .map_err(|err| Error::Frost(err.to_string()))?
+        .try_into()
+        .map_err(|_| Error::Internal("FROST group key is not 33 bytes".to_string()))?;
+    Ok(DerivedSigningPublicPackage {
+        application: application.clone(),
+        derivation_binding: derivation.binding(),
+        internal_verifying_shares: shares,
+        internal_group_key,
+        output_group_key,
+        signature_mode: derivation.signature_mode(),
+    })
+}
+
+pub(crate) fn library_signing_public_package(
+    package: &DerivedSigningPublicPackage,
+) -> Result<frost::keys::PublicKeyPackage, Error> {
+    let internal = DerivedPublicPackage {
+        root_epoch: package.application.root_epoch,
+        registration: package.application.registration,
+        threshold: package.application.threshold,
+        verifying_shares: package.internal_verifying_shares.clone(),
+        group_key: package.internal_group_key,
+    };
+    library_public_package(&internal)
 }
 
 pub(crate) fn library_public_package(
     package: &DerivedPublicPackage,
 ) -> Result<frost::keys::PublicKeyPackage, Error> {
+    validate_derived_public(package)?;
     let mut shares = BTreeMap::new();
     for (member, encoded) in &package.verifying_shares {
         shares.insert(
@@ -216,6 +339,27 @@ pub(crate) fn library_public_package(
         group_key,
         Some(package.threshold),
     ))
+}
+
+pub(crate) fn validate_derived_public(package: &DerivedPublicPackage) -> Result<(), Error> {
+    let count = package.verifying_shares.len();
+    if !(2..=MAX_PARTICIPANTS).contains(&count) {
+        return Err(Error::malformed(
+            "derived public package",
+            "participant count is outside protocol bounds",
+        ));
+    }
+    if package.threshold < 2 || usize::from(package.threshold) > count {
+        return Err(Error::InsufficientThreshold {
+            required: package.threshold,
+            provided: count,
+        });
+    }
+    point_from_bytes(&package.group_key, "application group key")?;
+    for encoded in package.verifying_shares.values() {
+        point_from_bytes(encoded, "application verification share")?;
+    }
+    Ok(())
 }
 
 pub(crate) fn identifier(member: MemberId) -> Result<frost::Identifier, Error> {
