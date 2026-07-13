@@ -11,7 +11,7 @@ THRESHOLD="${THRESHOLD:-14}"
 PORT_START="${PORT_START:-58185}"
 STATUS_RETRIES="${STATUS_RETRIES:-1800}"
 STATUS_SLEEP_SECONDS="${STATUS_SLEEP_SECONDS:-1}"
-DKG_EXPORT_JOBS="${DKG_EXPORT_JOBS:-20}"
+DKG_EXPORT_JOBS="$MEMBERS"
 
 MINTD=target/release/cdk-mintd
 CLI=target/release/cdk-cli
@@ -49,6 +49,35 @@ fail_with_member_log() {
   printf '%s\n' "$message" >&2
   tail -n 120 "$FED_DIR/member-$member/work/mintd.log" >&2 || true
   return 1
+}
+
+run_parallel() {
+  local description="$1"
+  local worker="$2"
+  shift 2
+
+  local index item
+  local failed=0
+  local -a items=("$@")
+  local -a pids=()
+
+  for item in "${items[@]}"; do
+    "$worker" "$item" &
+    pids+=("$!")
+  done
+
+  for index in "${!pids[@]}"; do
+    if ! wait "${pids[$index]}"; then
+      echo "$description failed for ${items[$index]}" >&2
+      failed=1
+    fi
+  done
+
+  if (( failed != 0 )); then
+    return 1
+  fi
+
+  return 0
 }
 
 wait_for_process() {
@@ -120,86 +149,51 @@ export_final_config() {
     --force
 }
 
-export_final_configs() {
-  local member index
-  local -a export_members=()
-  local -a export_pids=()
+export_final_config_for_member() {
+  local member="$1"
+  local log="$FED_DIR/member-$member/dkg-final/export.log"
 
-  for member in $(seq 1 "$MEMBERS"); do
-    mkdir -p "$FED_DIR/member-$member/dkg-final"
-    export_final_config "$member" \
-      > "$FED_DIR/member-$member/dkg-final/export.log" 2>&1 &
-    export_members+=("$member")
-    export_pids+=("$!")
-
-    if (( ${#export_pids[@]} >= DKG_EXPORT_JOBS )); then
-      for index in "${!export_pids[@]}"; do
-        if ! wait "${export_pids[$index]}"; then
-          member="${export_members[$index]}"
-          echo "member $member failed to export its final DKG config" >&2
-          cat "$FED_DIR/member-$member/dkg-final/export.log" >&2
-          return 1
-        fi
-      done
-      export_members=()
-      export_pids=()
-    fi
-  done
-
-  for index in "${!export_pids[@]}"; do
-    if ! wait "${export_pids[$index]}"; then
-      member="${export_members[$index]}"
-      echo "member $member failed to export its final DKG config" >&2
-      cat "$FED_DIR/member-$member/dkg-final/export.log" >&2
-      return 1
-    fi
-  done
+  mkdir -p "$FED_DIR/member-$member/dkg-final"
+  if ! export_final_config "$member" > "$log" 2>&1; then
+    echo "member $member failed to export its final DKG config" >&2
+    cat "$log" >&2
+    return 1
+  fi
 }
 
-trap cleanup EXIT
-trap handle_signal INT TERM
+wait_for_dkg_member() {
+  local member="$1"
 
-if ! [[ "$MEMBERS" =~ ^[1-9][0-9]*$ && "$THRESHOLD" =~ ^[1-9][0-9]*$ ]]; then
-  echo "MEMBERS and THRESHOLD must be positive integers" >&2
-  exit 1
-fi
-if (( THRESHOLD > MEMBERS )); then
-  echo "THRESHOLD cannot exceed MEMBERS" >&2
-  exit 1
-fi
-if (( PORT_START + (2 * MEMBERS) - 2 > 65535 )); then
-  echo "member and Prometheus port range exceeds 65535" >&2
-  exit 1
-fi
-if ! [[ "$DKG_EXPORT_JOBS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "DKG_EXPORT_JOBS must be a positive integer" >&2
-  exit 1
-fi
-if ! command -v jq >/dev/null 2>&1; then
-  echo "jq is required to select the explicit local-development payment policy" >&2
-  exit 1
-fi
+  echo "[member-$member] waiting for DKG completion"
+  wait_for_process "$member" "${DKG_PIDS[$((member - 1))]}" "DKG completion"
+}
 
-cargo build --release \
-  -p cdk-mintd \
-  --features federation,fakewallet,sqlite,prometheus
+wait_for_runtime_member() {
+  local member="$1"
 
-cargo build --release \
-  -p cdk-cli \
-  --features federation
+  echo "[member-$member] waiting for runtime readiness"
+  wait_for_runtime "$member" "${RUNTIME_PIDS[$((member - 1))]}"
+}
 
-just fed-regtest-clean "$FED_DIR"
-rm -rf "$WALLET_DIR" "$RECEIVER_DIR"
-mkdir -p "$FED_DIR" "$WALLET_DIR" "$RECEIVER_DIR"
-printf '# Generated local federation material. Do not commit.\n*\n' > "$FED_DIR/.gitignore"
+compare_final_config_for_member() {
+  local member="$1"
 
-ROSTER_ARGS=()
-for member in $(seq 1 "$MEMBERS"); do
-  member_dir="$FED_DIR/member-$member"
-  member_port=$((PORT_START + member - 1))
-  member_url="http://127.0.0.1:${member_port}"
+  if ! cmp -s \
+    "$FINAL_PUBLIC_CONFIG" \
+    "$FED_DIR/member-$member/dkg-final/federation-public.json"
+  then
+    echo "member $member produced a different final public config" >&2
+    return 1
+  fi
+}
+
+generate_member_identity() {
+  local member="$1"
+  local member_dir="$FED_DIR/member-$member"
+  local member_port=$((PORT_START + member - 1))
+  local member_url="http://127.0.0.1:${member_port}"
+
   mkdir -p "$member_dir"
-
   "$MINTD" federation dkg-member \
     --member-id "$member" \
     --public-mint-url "$member_url" \
@@ -207,35 +201,14 @@ for member in $(seq 1 "$MEMBERS"); do
     --public-output "$member_dir/enrollment.json" \
     --private-output "$member_dir/identity-private.json" \
     --force
+}
 
-  ROSTER_ARGS+=(--member "$member_dir/enrollment.json")
-done
-
-"$MINTD" federation dkg-roster \
-  "${ROSTER_ARGS[@]}" \
-  --threshold "$THRESHOLD" \
-  --unit sat \
-  --amounts 1,2,4,8,16,32,64,128 \
-  --public-output "$SETUP_PUBLIC_CONFIG" \
-  --ceremony-config-output "$CEREMONY_CONFIG" \
-  --force
-
-# The production roster command intentionally emits member-quorum payment
-# verification. These local fakewallet processes have independent in-memory
-# payment state, so use the explicit development policy for this payment smoke.
-# This changes neither the member roster nor the dealer-free DKG ceremony.
-policy_config="$SETUP_PUBLIC_CONFIG.tmp"
-jq '
-  .payment_observation_policy.mint_quotes = {"type":"development_single_observation"}
-  | .payment_observation_policy.melt_quotes = {"type":"development_single_observation"}
-' "$SETUP_PUBLIC_CONFIG" > "$policy_config"
-mv "$policy_config" "$SETUP_PUBLIC_CONFIG"
-
-for member in $(seq 1 "$MEMBERS"); do
-  member_dir="$FED_DIR/member-$member"
-  member_port=$((PORT_START + member - 1))
-  prometheus_port=$((PORT_START + MEMBERS + member - 1))
-  member_url="http://127.0.0.1:${member_port}"
+configure_dkg_member() {
+  local member="$1"
+  local member_dir="$FED_DIR/member-$member"
+  local member_port=$((PORT_START + member - 1))
+  local prometheus_port=$((PORT_START + MEMBERS + member - 1))
+  local member_url="http://127.0.0.1:${member_port}"
 
   "$MINTD" federation dkg-bind \
     --public-config "$SETUP_PUBLIC_CONFIG" \
@@ -294,11 +267,121 @@ EOF
   cat "$CEREMONY_CONFIG" >> "$member_dir/config.toml"
   chmod 600 "$member_dir/config.toml" "$member_dir/identity-private.json" \
     "$member_dir/dkg-setup-private.json"
+}
+
+clean_test_state() {
+  local target="$1"
+
+  case "$target" in
+    federation) just fed-regtest-clean "$FED_DIR" ;;
+    wallets) rm -rf "$WALLET_DIR" "$RECEIVER_DIR" ;;
+    *)
+      echo "unknown cleanup target: $target" >&2
+      return 1
+      ;;
+  esac
+}
+
+prepare_smoke_environment() {
+  local task="$1"
+  local work_dir
+
+  case "$task" in
+    digests)
+      "$MINTD" federation compare-digests \
+        --public-config "$FINAL_PUBLIC_CONFIG" \
+        --private-config "$FED_DIR/member-1/dkg-final/federation-private.json"
+      return
+      ;;
+    sender) work_dir="$WALLET_DIR" ;;
+    receiver) work_dir="$RECEIVER_DIR" ;;
+    *)
+      echo "unknown smoke preparation task: $task" >&2
+      return 1
+      ;;
+  esac
+
+  "$CLI" --work-dir "$work_dir" --non-interactive \
+    federation add \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --local-mint-url "$MINT_URL" \
+    --quote-coordinator-member-id 1 \
+    --member-request-timeout-secs 180 \
+    --member-fallback-timeout-secs 180 \
+    --quote-status-member-timeout-secs 180 \
+    --fanout-concurrency "$MEMBERS"
+}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
+
+if ! [[ "$MEMBERS" =~ ^[1-9][0-9]*$ && "$THRESHOLD" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MEMBERS and THRESHOLD must be positive integers" >&2
+  exit 1
+fi
+if (( THRESHOLD > MEMBERS )); then
+  echo "THRESHOLD cannot exceed MEMBERS" >&2
+  exit 1
+fi
+if (( PORT_START + (2 * MEMBERS) - 2 > 65535 )); then
+  echo "member and Prometheus port range exceeds 65535" >&2
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required to select the explicit local-development payment policy" >&2
+  exit 1
+fi
+
+MEMBER_IDS=()
+for member in $(seq 1 "$MEMBERS"); do
+  MEMBER_IDS+=("$member")
 done
+
+cargo build --release \
+  -p cdk-mintd \
+  --features federation,fakewallet,sqlite,prometheus
+
+cargo build --release \
+  -p cdk-cli \
+  --features federation
+
+run_parallel "test state cleanup" clean_test_state federation wallets
+mkdir -p "$FED_DIR" "$WALLET_DIR" "$RECEIVER_DIR"
+printf '# Generated local federation material. Do not commit.\n*\n' > "$FED_DIR/.gitignore"
+
+run_parallel "member identity generation" generate_member_identity "${MEMBER_IDS[@]}"
+
+ROSTER_ARGS=()
+for member in "${MEMBER_IDS[@]}"; do
+  member_dir="$FED_DIR/member-$member"
+  ROSTER_ARGS+=(--member "$member_dir/enrollment.json")
+done
+
+"$MINTD" federation dkg-roster \
+  "${ROSTER_ARGS[@]}" \
+  --threshold "$THRESHOLD" \
+  --unit sat \
+  --amounts 1,2,4,8,16,32,64,128 \
+  --public-output "$SETUP_PUBLIC_CONFIG" \
+  --ceremony-config-output "$CEREMONY_CONFIG" \
+  --force
+
+# The production roster command intentionally emits member-quorum payment
+# verification. These local fakewallet processes have independent in-memory
+# payment state, so use the explicit development policy for this payment smoke.
+# This changes neither the member roster nor the dealer-free DKG ceremony.
+policy_config="$SETUP_PUBLIC_CONFIG.tmp"
+jq '
+  .payment_observation_policy.mint_quotes = {"type":"development_single_observation"}
+  | .payment_observation_policy.melt_quotes = {"type":"development_single_observation"}
+' "$SETUP_PUBLIC_CONFIG" > "$policy_config"
+mv "$policy_config" "$SETUP_PUBLIC_CONFIG"
+
+run_parallel "member DKG configuration" configure_dkg_member "${MEMBER_IDS[@]}"
 
 echo "Generated $MEMBERS independent member identities and the public DKG roster."
 
-for member in $(seq 1 "$MEMBERS"); do
+for member in "${MEMBER_IDS[@]}"; do
   member_dir="$FED_DIR/member-$member"
   mkdir -p "$member_dir/work"
 
@@ -314,23 +397,12 @@ for member in $(seq 1 "$MEMBERS"); do
   echo "[member-$member] DKG started"
 done
 
-for member in $(seq 1 "$MEMBERS"); do
-  echo "[member-$member] waiting for DKG completion"
-  wait_for_process "$member" "${DKG_PIDS[$((member - 1))]}" "DKG completion"
-done
+run_parallel "DKG completion wait" wait_for_dkg_member "${MEMBER_IDS[@]}"
 
-echo "Exporting final member configs with up to $DKG_EXPORT_JOBS parallel jobs."
-export_final_configs
+echo "Exporting final member configs with $DKG_EXPORT_JOBS parallel jobs."
+run_parallel "final config export" export_final_config_for_member "${MEMBER_IDS[@]}"
 
-for member in $(seq 1 "$MEMBERS"); do
-  cmp -s \
-    "$FINAL_PUBLIC_CONFIG" \
-    "$FED_DIR/member-$member/dkg-final/federation-public.json" \
-    || {
-      echo "member $member produced a different final public config" >&2
-      exit 1
-    }
-done
+run_parallel "final config comparison" compare_final_config_for_member "${MEMBER_IDS[@]}"
 
 echo "All members produced identical final DKG public configs."
 
@@ -342,7 +414,7 @@ for pid in "${DKG_PIDS[@]}"; do
 done
 DKG_PIDS=()
 
-for member in $(seq 1 "$MEMBERS"); do
+for member in "${MEMBER_IDS[@]}"; do
   member_dir="$FED_DIR/member-$member"
 
   env \
@@ -357,36 +429,14 @@ for member in $(seq 1 "$MEMBERS"); do
   echo "[member-$member] AlephBFT runtime started"
 done
 
-for member in $(seq 1 "$MEMBERS"); do
-  echo "[member-$member] waiting for runtime readiness"
-  wait_for_runtime "$member" "${RUNTIME_PIDS[$((member - 1))]}"
-done
+run_parallel "runtime readiness wait" wait_for_runtime_member "${MEMBER_IDS[@]}"
 
-"$MINTD" federation compare-digests \
-  --public-config "$FINAL_PUBLIC_CONFIG" \
-  --private-config "$FED_DIR/member-1/dkg-final/federation-private.json"
-
-"$CLI" --work-dir "$WALLET_DIR" --non-interactive \
-  federation add \
-  --public-config "$FINAL_PUBLIC_CONFIG" \
-  --local-mint-url "$MINT_URL" \
-  --quote-coordinator-member-id 1 \
-  --member-request-timeout-secs 180 \
-  --member-fallback-timeout-secs 180 \
-  --quote-status-member-timeout-secs 180 \
-  --fanout-concurrency "$MEMBERS"
+run_parallel \
+  "runtime smoke preparation" \
+  prepare_smoke_environment \
+  digests sender receiver
 
 "$CLI" --work-dir "$WALLET_DIR" --non-interactive mint-info "$MINT_URL"
-
-"$CLI" --work-dir "$RECEIVER_DIR" --non-interactive \
-  federation add \
-  --public-config "$FINAL_PUBLIC_CONFIG" \
-  --local-mint-url "$MINT_URL" \
-  --quote-coordinator-member-id 1 \
-  --member-request-timeout-secs 180 \
-  --member-fallback-timeout-secs 180 \
-  --quote-status-member-timeout-secs 180 \
-  --fanout-concurrency "$MEMBERS"
 
 "$CLI" --work-dir "$WALLET_DIR" --non-interactive \
   --unit sat mint "$MINT_URL" 50 --wait-duration 300
