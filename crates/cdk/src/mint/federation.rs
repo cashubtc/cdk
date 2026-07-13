@@ -7,6 +7,7 @@
 mod address_allocation;
 mod chain_observation;
 mod projection;
+mod transaction_policy;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -53,6 +54,10 @@ use crate::types::PaymentProcessorKey;
 use self::chain_observation::{
     CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
     CHAIN_OBSERVATION_STATE_KEY,
+};
+
+pub use self::transaction_policy::{
+    FederationOnchainTransactionPolicy, FederationTransactionPolicyAudit,
 };
 
 struct FederationActiveMeltPayment {

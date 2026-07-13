@@ -54,7 +54,10 @@ pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 #[cfg(feature = "federation")]
-pub use federation::{FederationMode, FederationRuntimeConfig};
+pub use federation::{
+    FederationMode, FederationOnchainTransactionPolicy, FederationRuntimeConfig,
+    FederationTransactionPolicyAudit,
+};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;

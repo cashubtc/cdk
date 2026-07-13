@@ -1163,41 +1163,72 @@ requiring deterministic coin selection.
 
 **Work:**
 
-- [ ] Verify every input is an accepted spendable UTXO for the selected epoch.
-- [ ] Verify inputs are not reserved, spent, reorged, quarantined, or assigned
+- [x] Verify every input is an accepted spendable UTXO for the selected epoch.
+- [x] Verify inputs are not reserved, spent, reorged, quarantined, or assigned
   to another accepted transaction.
-- [ ] Verify each payment intent is pending, included exactly once, and matches
+- [x] Verify each payment intent is pending, included exactly once, and matches
   one recipient output exactly.
-- [ ] Reject all unauthorized recipient and data-carrying outputs.
-- [ ] Derive and verify the change script from the proposed internal index.
-- [ ] Verify checked input/output sums, exact fee, feerate bounds, dust, weight,
+- [x] Reject all unauthorized recipient and data-carrying outputs.
+- [x] Derive and verify the change script from the proposed internal index.
+- [x] Verify checked input/output sums, exact fee, feerate bounds, dust, weight,
   maximum fee, and per-intent fee allocation.
-- [ ] Verify version, locktime, sequences, RBF policy, sighash type, and Taproot
+- [x] Verify version, locktime, sequences, RBF policy, sighash type, and Taproot
   key-path-only policy.
-- [ ] Verify PSBT previous-output data and strip/reject prohibited proprietary
+- [x] Verify PSBT previous-output data and strip/reject prohibited proprietary
   or signer-controlled fields.
-- [ ] Recompute transaction ID and each input sighash locally.
-- [ ] Return deterministic Cashu/federation errors for business-invalid
-  proposals and retryable errors for unavailable local verification data.
+- [x] Recompute transaction ID and each input sighash locally.
+- [x] Return deterministic Cashu/federation errors for business-invalid
+  proposals and retryable errors for unavailable local verification data
+  (v1 requires no member-local verification data after readiness gating).
 
 **Success criteria:**
 
-- [ ] A valid proposal built by any member passes every honest member.
-- [ ] Any change to destination, amount, fee, input, change, sighash, or policy
+- [x] A valid proposal built by any member passes every honest member.
+- [x] Any change to destination, amount, fee, input, change, sighash, or policy
   causes deterministic rejection before signing.
-- [ ] Validation does not depend on the proposer using the same BDK version or
+- [x] Validation does not depend on the proposer using the same BDK version or
   coin-selection algorithm.
 
 **Required tests:**
 
-- [ ] Valid single and batched payment proposals.
-- [ ] Unauthorized input/output and unknown PSBT field.
-- [ ] Missing, duplicate, spent, reserved, reorged, and wrong-epoch UTXO.
-- [ ] Wrong destination, amount, change index, fee, feerate, dust, locktime,
+- [x] Valid single and batched payment proposals.
+- [x] Unauthorized input/output and unknown PSBT field.
+- [x] Missing, duplicate, spent, reserved, reorged, and wrong-epoch UTXO.
+- [x] Wrong destination, amount, change index, fee, feerate, dust, locktime,
   sequence, RBF, and sighash.
-- [ ] Integer overflow/underflow and maximum-bound tests.
-- [ ] Locally stale BDK cache versus sufficient consensus UTXO data.
-- [ ] Differential tests where multiple BDK coin selections are all valid.
+- [x] Integer overflow/underflow and maximum-bound tests.
+- [x] Locally stale BDK cache versus sufficient consensus UTXO data.
+- [x] Differential tests where multiple BDK coin selections are all valid.
+
+**Milestone record:** completed on 2026-07-13. The isolated CDK transaction
+policy module now validates an untrusted proposal only against the active public
+FROST application, canonical chain state, and accepted intent records; no local
+BDK graph, proposer-supplied digest, or mint payment side effect is consulted.
+Policy version 1 fixes Bitcoin transaction version 2, zero locktime, opt-in RBF
+sequences, BIP341 default key-spend sighash, input/output/weight ceilings,
+250--100,000 sat/kwu feerate bounds, and a 1,000,000 sat absolute fee ceiling.
+Every selected input must exactly match a `spendable` canonical UTXO, its
+accepted allocation, amount, and independently derived P2TR script; observed,
+confirmed, reserved, spent, reorged, quarantined, alarmed, missing, or wrong
+epoch inputs fail closed. The validator reconstructs the deterministic batch
+from pending intent records and its eligibility cutoff, requires one exact
+non-data, non-dust recipient per intent, checks each fee contribution against
+that intent's maximum and the total fee, and independently derives the internal
+change script. The common proposal format now commits the eligibility cutoff,
+explicit per-intent fee allocation, durable intent lifecycle, and explicit
+Taproot sighash mode. After all structural and business checks, each member
+recomputes the txid and every BIP341 sighash from the exact unsigned transaction
+and complete ordered previous outputs, returning a deterministic policy audit
+for the later acceptance milestone. All required verification data is
+canonical, so this layer has no member-local unavailable-data dependency or
+retryable local-cache branch; runtime readiness remains the admission layer's
+responsibility. Valid single/batched transactions and two
+different coin selections pass without any BDK cache; destination, amount,
+change, fee, feerate, dust, version, locktime, sequence/RBF, sighash, scope,
+UTXO-state, and intent-state mutations reject. No existing quote, melt, saga,
+standalone BDK, or consensus apply behavior changed. All 361 `cdk-common`
+federation tests and 119 CDK federation mint tests pass, the proposal fuzz target
+compiles, and the full workspace compiles across all targets.
 
 ### Milestone 12: accept transactions and reserve UTXOs through AlephBFT
 

@@ -59,6 +59,7 @@ mod payment_observation;
 mod quote;
 mod runtime;
 mod swap;
+mod transaction_policy;
 
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 

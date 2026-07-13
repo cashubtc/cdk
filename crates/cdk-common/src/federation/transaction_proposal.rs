@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bitcoin::consensus::serialize;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
-use bitcoin::{Network, OutPoint, ScriptBuf, Transaction, TxOut};
+use bitcoin::{Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
@@ -259,6 +259,95 @@ impl FederationOnchainPaymentIntent {
     }
 }
 
+/// Durable lifecycle for one accepted on-chain payment intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "data", rename_all = "snake_case")]
+pub enum FederationOnchainPaymentIntentState {
+    /// Eligible for deterministic batching.
+    Pending,
+    /// Owned by one accepted transaction proposal.
+    Accepted {
+        /// Accepted proposal identity.
+        proposal_id: FederationTransactionProposalId,
+    },
+    /// Completed by a confirmed Bitcoin transaction.
+    Completed {
+        /// Confirmed transaction identifier.
+        txid: Txid,
+    },
+    /// Terminally failed under an accepted policy transition.
+    Failed,
+}
+
+/// Canonical payment intent together with its durable lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationOnchainPaymentIntentRecord {
+    /// Canonical intent identity.
+    pub intent_id: FederationOnchainPaymentIntentId,
+    /// Full authorized intent.
+    pub intent: FederationOnchainPaymentIntent,
+    /// Current consensus lifecycle.
+    pub state: FederationOnchainPaymentIntentState,
+}
+
+impl FederationOnchainPaymentIntentRecord {
+    /// Construct a validated pending intent record.
+    pub fn pending(intent: FederationOnchainPaymentIntent) -> Result<Self> {
+        let intent_id = intent.intent_id()?;
+        Ok(Self {
+            intent_id,
+            intent,
+            state: FederationOnchainPaymentIntentState::Pending,
+        })
+    }
+
+    /// Validate identity and lifecycle-independent intent invariants.
+    pub fn validate(&self) -> Result<()> {
+        self.intent.validate()?;
+        if self.intent.intent_id()? != self.intent_id {
+            return Err(invalid("on-chain intent record identity mismatch"));
+        }
+        Ok(())
+    }
+}
+
+/// Taproot key-spend sighash mode committed by a proposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationTaprootSighashType {
+    /// BIP341 default, equivalent to ALL without an appended sighash byte.
+    Default,
+    /// Sign all outputs.
+    All,
+    /// Sign no outputs.
+    None,
+    /// Sign only the corresponding output.
+    Single,
+    /// Sign all outputs while permitting additional inputs.
+    AllAnyoneCanPay,
+    /// Sign no outputs while permitting additional inputs.
+    NoneAnyoneCanPay,
+    /// Sign one output while permitting additional inputs.
+    SingleAnyoneCanPay,
+}
+
+impl FederationTaprootSighashType {
+    /// Convert to the rust-bitcoin Taproot sighash type.
+    #[must_use]
+    pub fn to_bitcoin(self) -> bitcoin::sighash::TapSighashType {
+        match self {
+            Self::Default => bitcoin::sighash::TapSighashType::Default,
+            Self::All => bitcoin::sighash::TapSighashType::All,
+            Self::None => bitcoin::sighash::TapSighashType::None,
+            Self::Single => bitcoin::sighash::TapSighashType::Single,
+            Self::AllAnyoneCanPay => bitcoin::sighash::TapSighashType::AllPlusAnyoneCanPay,
+            Self::NoneAnyoneCanPay => bitcoin::sighash::TapSighashType::NonePlusAnyoneCanPay,
+            Self::SingleAnyoneCanPay => bitcoin::sighash::TapSighashType::SinglePlusAnyoneCanPay,
+        }
+    }
+}
+
 /// Deterministic ordered set of eligible payment intents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -404,6 +493,8 @@ pub struct FederationTransactionRecipientOutput {
     pub output_index: u32,
     /// Exact output duplicated here to make assignments independently auditable.
     pub output: TxOut,
+    /// Deterministic share of the transaction fee charged to this intent.
+    pub fee_contribution_sat: u64,
 }
 
 /// Consensus-allocated internal change output.
@@ -428,6 +519,8 @@ pub struct FederationTransactionProposal {
     pub batch_id: FederationOnchainBatchId,
     /// Canonically ordered intent IDs.
     pub intent_ids: Vec<FederationOnchainPaymentIntentId>,
+    /// Inclusive intent-creation cutoff committed by the batch ID.
+    pub eligibility_cutoff: u64,
     /// FROST/application/network/policy binding.
     pub scope: FederationTransactionScope,
     /// Diagnostic proposer identity; this grants no authority.
@@ -444,6 +537,8 @@ pub struct FederationTransactionProposal {
     pub fee_sat: u64,
     /// Integer ceiling of satoshis per 1,000 weight units.
     pub fee_rate_sat_per_kwu: u64,
+    /// Taproot key-spend sighash mode required for every input.
+    pub sighash_type: FederationTaprootSighashType,
     /// Commitment to the transaction and ordered witness UTXOs only.
     pub psbt_commitment: [u8; 32],
     /// Optional proposal replaced by this candidate.
@@ -470,6 +565,7 @@ impl FederationTransactionProposal {
             version: TRANSACTION_PROPOSAL_VERSION,
             batch_id: batch.batch_id,
             intent_ids: batch.intent_ids.clone(),
+            eligibility_cutoff: batch.eligibility_cutoff,
             scope: batch.scope,
             proposer,
             selected_inputs,
@@ -478,6 +574,7 @@ impl FederationTransactionProposal {
             unsigned_transaction,
             fee_sat,
             fee_rate_sat_per_kwu: 0,
+            sighash_type: FederationTaprootSighashType::Default,
             psbt_commitment: [0; 32],
             replacement_of,
             replacement_lineage: batch.batch_id,
@@ -510,6 +607,7 @@ impl FederationTransactionProposal {
         }
         if self.intent_ids.is_empty()
             || self.intent_ids.len() > FEDERATION_MAX_ONCHAIN_BATCH_INTENTS
+            || self.eligibility_cutoff == 0
             || self.selected_inputs.is_empty()
             || self.selected_inputs.len() > FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS
             || self.unsigned_transaction.output.is_empty()
@@ -612,6 +710,18 @@ impl FederationTransactionProposal {
         if output_indexes.len() != self.unsigned_transaction.output.len() {
             return Err(invalid(
                 "transaction proposal contains an unassigned output",
+            ));
+        }
+        let assigned_fee = self
+            .recipient_outputs
+            .iter()
+            .try_fold(0_u64, |sum, recipient| {
+                sum.checked_add(recipient.fee_contribution_sat)
+                    .ok_or_else(|| invalid("transaction proposal fee allocation overflow"))
+            })?;
+        if assigned_fee != self.fee_sat {
+            return Err(invalid(
+                "transaction proposal fee allocations do not equal the transaction fee",
             ));
         }
 
@@ -960,6 +1070,7 @@ mod tests {
                     intent_id,
                     output_index: index as u32,
                     output,
+                    fee_contribution_sat: 250,
                 },
             )
             .collect();
@@ -1114,7 +1225,7 @@ mod tests {
         }
         assert_eq!(
             proposal.proposal_id().expect("proposal id").to_hex(),
-            "58ff298f86db58797441b2653b9a1daac2e7ca9332f5e8cb2367c141ef9fe754"
+            "e7dc8e8ef9abf0a8cb618398c38185bffff72ac94e69d943b2136c095ab0fbee"
         );
     }
 
