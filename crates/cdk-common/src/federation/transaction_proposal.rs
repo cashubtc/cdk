@@ -18,12 +18,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId,
-    FederationOperationConflictKey, MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationMaterializedStateRow, FederationOperationConflictKey, FederationOperationId,
+    MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
 };
 
 const PAYMENT_INTENT_VERSION: u16 = 1;
 const PAYMENT_BATCH_VERSION: u16 = 1;
 const TRANSACTION_PROPOSAL_VERSION: u16 = 1;
+const TRANSACTION_STATE_VERSION: u16 = 1;
 const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v1";
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
 const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v1";
@@ -289,6 +291,26 @@ pub struct FederationOnchainPaymentIntentRecord {
     pub intent: FederationOnchainPaymentIntent,
     /// Current consensus lifecycle.
     pub state: FederationOnchainPaymentIntentState,
+}
+
+/// Deterministic values independently recomputed before proposal acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionPolicyAudit {
+    /// Canonical proposal identity.
+    pub proposal_id: FederationTransactionProposalId,
+    /// Transaction ID recomputed from exact unsigned bytes.
+    pub txid: Txid,
+    /// Checked absolute fee.
+    pub fee_sat: u64,
+    /// Checked fee rate in satoshis per 1,000 weight units.
+    pub fee_rate_sat_per_kwu: u64,
+    /// Exact unsigned transaction weight.
+    pub weight: u64,
+    /// Per-intent fee allocation in canonical intent order.
+    pub fee_contributions: BTreeMap<FederationOnchainPaymentIntentId, u64>,
+    /// BIP341 key-spend sighashes recomputed in transaction-input order.
+    pub taproot_sighashes: Vec<[u8; 32]>,
 }
 
 impl FederationOnchainPaymentIntentRecord {
@@ -877,6 +899,422 @@ impl FederationTransactionProposal {
     }
 }
 
+/// Durable lifecycle of a policy-accepted transaction.
+///
+/// Abandonment and replacement are deliberately sticky: neither transition
+/// releases inputs, because an accepted transaction may still reach Bitcoin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "data", rename_all = "snake_case")]
+pub enum FederationAcceptedTransactionState {
+    /// Accepted by federation consensus and eligible for threshold signing.
+    Accepted,
+    /// No longer preferred, while every input remains reserved.
+    Abandoned,
+    /// Superseded by a consensus-designated replacement proposal.
+    Replaced {
+        /// Replacement proposal identity.
+        by: FederationTransactionProposalId,
+    },
+}
+
+/// Exact durable transaction and policy audit accepted at one journal entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAcceptedTransaction {
+    /// Complete unsigned transaction proposal.
+    pub proposal: FederationTransactionProposal,
+    /// Independently recomputed policy values and Taproot sighashes.
+    pub policy_audit: FederationTransactionPolicyAudit,
+    /// Consensus operation that first accepted this proposal.
+    pub accepted_operation_id: FederationOperationId,
+    /// Accepted journal position.
+    pub accepted_operation_index: u64,
+    /// Sticky transaction lifecycle.
+    pub state: FederationAcceptedTransactionState,
+}
+
+/// Result of adding an intent or accepting a transaction to durable state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationTransactionStateOutcome {
+    /// New state was materialized.
+    Updated,
+    /// An exact replay was already materialized.
+    Existing,
+}
+
+/// Versioned consensus projection for outgoing intents and wallet reservations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionState {
+    version: u16,
+    intents: BTreeMap<FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord>,
+    quote_intents: BTreeMap<String, FederationOnchainPaymentIntentId>,
+    accepted_transactions: BTreeMap<FederationTransactionProposalId, FederationAcceptedTransaction>,
+    batch_owners: BTreeMap<FederationOnchainBatchId, FederationTransactionProposalId>,
+    utxo_reservations: BTreeMap<String, FederationTransactionProposalId>,
+}
+
+impl Default for FederationTransactionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FederationTransactionState {
+    /// Construct an empty current-version transaction projection.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            version: TRANSACTION_STATE_VERSION,
+            intents: BTreeMap::new(),
+            quote_intents: BTreeMap::new(),
+            accepted_transactions: BTreeMap::new(),
+            batch_owners: BTreeMap::new(),
+            utxo_reservations: BTreeMap::new(),
+        }
+    }
+
+    /// Decode and fully validate durable transaction state.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let state: Self = serde_json::from_slice(bytes)?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    /// Encode fully validated durable transaction state.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    /// Return all payment intents keyed by canonical identity.
+    #[must_use]
+    pub fn intents(
+        &self,
+    ) -> &BTreeMap<FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord> {
+        &self.intents
+    }
+
+    /// Look up an intent by its authorizing quote.
+    #[must_use]
+    pub fn intent_for_quote(&self, quote: &str) -> Option<&FederationOnchainPaymentIntentRecord> {
+        self.quote_intents
+            .get(quote)
+            .and_then(|intent_id| self.intents.get(intent_id))
+    }
+
+    /// Look up an accepted transaction.
+    #[must_use]
+    pub fn accepted_transaction(
+        &self,
+        proposal_id: FederationTransactionProposalId,
+    ) -> Option<&FederationAcceptedTransaction> {
+        self.accepted_transactions.get(&proposal_id)
+    }
+
+    /// Return the proposal that owns one wallet reservation.
+    #[must_use]
+    pub fn reservation(&self, outpoint: OutPoint) -> Option<FederationTransactionProposalId> {
+        self.utxo_reservations.get(&outpoint.to_string()).copied()
+    }
+
+    /// Add one consensus-authorized pending melt intent idempotently.
+    pub fn add_pending_intent(
+        &mut self,
+        record: FederationOnchainPaymentIntentRecord,
+    ) -> Result<FederationTransactionStateOutcome> {
+        record.validate()?;
+        if record.state != FederationOnchainPaymentIntentState::Pending {
+            return Err(invalid("new on-chain payment intent is not pending"));
+        }
+        if let Some(existing_id) = self.quote_intents.get(&record.intent.quote) {
+            let existing = self
+                .intents
+                .get(existing_id)
+                .ok_or_else(|| invalid("on-chain quote index is corrupt"))?;
+            if existing == &record {
+                return Ok(FederationTransactionStateOutcome::Existing);
+            }
+            return Err(invalid(
+                "on-chain melt quote already authorizes a different payment intent",
+            ));
+        }
+        if self.intents.contains_key(&record.intent_id) {
+            return Err(invalid(
+                "on-chain payment intent identity is already assigned to another quote",
+            ));
+        }
+        self.quote_intents
+            .insert(record.intent.quote.clone(), record.intent_id);
+        self.intents.insert(record.intent_id, record);
+        self.validate()?;
+        Ok(FederationTransactionStateOutcome::Updated)
+    }
+
+    /// Accept an independently validated transaction and reserve all its scopes.
+    pub fn accept_transaction(
+        &mut self,
+        proposal: FederationTransactionProposal,
+        policy_audit: FederationTransactionPolicyAudit,
+        accepted_operation_id: FederationOperationId,
+        accepted_operation_index: u64,
+    ) -> Result<FederationTransactionStateOutcome> {
+        proposal.validate()?;
+        if accepted_operation_index == 0 {
+            return Err(invalid("accepted transaction operation index is zero"));
+        }
+        let proposal_id = proposal.proposal_id()?;
+        validate_policy_audit(&proposal, &policy_audit)?;
+        if let Some(existing) = self.accepted_transactions.get(&proposal_id) {
+            if existing.proposal == proposal && existing.policy_audit == policy_audit {
+                return Ok(FederationTransactionStateOutcome::Existing);
+            }
+            return Err(invalid(
+                "accepted proposal identity maps to different durable transaction data",
+            ));
+        }
+        if self
+            .batch_owners
+            .get(&proposal.batch_id)
+            .is_some_and(|owner| *owner != proposal_id)
+        {
+            return Err(invalid(
+                "on-chain batch is already owned by another accepted transaction",
+            ));
+        }
+        for intent_id in &proposal.intent_ids {
+            let record = self
+                .intents
+                .get(intent_id)
+                .ok_or_else(|| invalid("accepted transaction references an unknown intent"))?;
+            if record.state != FederationOnchainPaymentIntentState::Pending {
+                return Err(invalid(
+                    "accepted transaction references an intent that is not pending",
+                ));
+            }
+        }
+        for input in &proposal.selected_inputs {
+            if self
+                .utxo_reservations
+                .get(&input.outpoint.to_string())
+                .is_some_and(|owner| *owner != proposal_id)
+            {
+                return Err(invalid(
+                    "wallet UTXO is already reserved by another accepted transaction",
+                ));
+            }
+        }
+
+        for intent_id in &proposal.intent_ids {
+            let record = self
+                .intents
+                .get_mut(intent_id)
+                .ok_or_else(|| invalid("accepted transaction intent disappeared"))?;
+            record.state = FederationOnchainPaymentIntentState::Accepted { proposal_id };
+        }
+        for input in &proposal.selected_inputs {
+            self.utxo_reservations
+                .insert(input.outpoint.to_string(), proposal_id);
+        }
+        self.batch_owners.insert(proposal.batch_id, proposal_id);
+        self.accepted_transactions.insert(
+            proposal_id,
+            FederationAcceptedTransaction {
+                proposal,
+                policy_audit,
+                accepted_operation_id,
+                accepted_operation_index,
+                state: FederationAcceptedTransactionState::Accepted,
+            },
+        );
+        self.validate()?;
+        Ok(FederationTransactionStateOutcome::Updated)
+    }
+
+    /// Mark a transaction abandoned without releasing any input reservation.
+    pub fn abandon_transaction(
+        &mut self,
+        proposal_id: FederationTransactionProposalId,
+    ) -> Result<()> {
+        let accepted = self
+            .accepted_transactions
+            .get_mut(&proposal_id)
+            .ok_or_else(|| invalid("cannot abandon an unknown accepted transaction"))?;
+        accepted.state = FederationAcceptedTransactionState::Abandoned;
+        self.validate()
+    }
+
+    /// Record a replacement relationship without releasing original inputs.
+    pub fn mark_transaction_replaced(
+        &mut self,
+        proposal_id: FederationTransactionProposalId,
+        replacement_id: FederationTransactionProposalId,
+    ) -> Result<()> {
+        if proposal_id == replacement_id {
+            return Err(invalid("transaction replacement identity is invalid"));
+        }
+        let original = self
+            .accepted_transactions
+            .get_mut(&proposal_id)
+            .ok_or_else(|| invalid("cannot replace an unknown accepted transaction"))?;
+        original.state = FederationAcceptedTransactionState::Replaced { by: replacement_id };
+        self.validate()
+    }
+
+    /// Build stable state-digest rows for every intent, transaction, and reservation.
+    pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
+        self.validate()?;
+        let mut rows = Vec::new();
+        for (intent_id, record) in &self.intents {
+            rows.push(
+                FederationMaterializedStateRow::new(
+                    "federation_onchain_payment_intents",
+                    intent_id.to_string(),
+                )
+                .with_field("record", serde_json::to_string(record)?),
+            );
+        }
+        for (proposal_id, accepted) in &self.accepted_transactions {
+            rows.push(
+                FederationMaterializedStateRow::new(
+                    "federation_onchain_transactions",
+                    proposal_id.to_string(),
+                )
+                .with_field("accepted", serde_json::to_string(accepted)?),
+            );
+        }
+        for (outpoint, proposal_id) in &self.utxo_reservations {
+            rows.push(
+                FederationMaterializedStateRow::new(
+                    "federation_onchain_utxo_reservations",
+                    outpoint.clone(),
+                )
+                .with_field("proposal_id", proposal_id.to_string()),
+            );
+        }
+        Ok(rows)
+    }
+
+    /// Validate every identity, ownership index, and sticky reservation.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != TRANSACTION_STATE_VERSION {
+            return Err(invalid("unsupported transaction state version"));
+        }
+        if self.intents.len() != self.quote_intents.len() {
+            return Err(invalid("on-chain intent quote index has the wrong size"));
+        }
+        for (intent_id, record) in &self.intents {
+            record.validate()?;
+            if intent_id != &record.intent_id
+                || self.quote_intents.get(&record.intent.quote) != Some(intent_id)
+            {
+                return Err(invalid("on-chain intent durable identity mismatch"));
+            }
+            if let FederationOnchainPaymentIntentState::Accepted { proposal_id } = record.state {
+                let accepted = self
+                    .accepted_transactions
+                    .get(&proposal_id)
+                    .ok_or_else(|| invalid("accepted intent references an unknown transaction"))?;
+                if !accepted.proposal.intent_ids.contains(intent_id) {
+                    return Err(invalid(
+                        "accepted intent is absent from its owning transaction",
+                    ));
+                }
+            }
+        }
+        if self.accepted_transactions.len() != self.batch_owners.len() {
+            return Err(invalid(
+                "accepted transaction batch index has the wrong size",
+            ));
+        }
+        for (proposal_id, accepted) in &self.accepted_transactions {
+            accepted.proposal.validate()?;
+            if accepted.accepted_operation_index == 0
+                || accepted.proposal.proposal_id()? != *proposal_id
+                || self.batch_owners.get(&accepted.proposal.batch_id) != Some(proposal_id)
+            {
+                return Err(invalid("accepted transaction durable identity mismatch"));
+            }
+            validate_policy_audit(&accepted.proposal, &accepted.policy_audit)?;
+            for intent_id in &accepted.proposal.intent_ids {
+                let record = self
+                    .intents
+                    .get(intent_id)
+                    .ok_or_else(|| invalid("accepted transaction references a missing intent"))?;
+                if record.state
+                    != (FederationOnchainPaymentIntentState::Accepted {
+                        proposal_id: *proposal_id,
+                    })
+                {
+                    return Err(invalid("accepted transaction does not own its intent"));
+                }
+            }
+            for input in &accepted.proposal.selected_inputs {
+                if self.utxo_reservations.get(&input.outpoint.to_string()) != Some(proposal_id) {
+                    return Err(invalid(
+                        "accepted transaction does not own its wallet reservation",
+                    ));
+                }
+            }
+            if let FederationAcceptedTransactionState::Replaced { by } = accepted.state {
+                if by == *proposal_id {
+                    return Err(invalid("transaction cannot replace itself"));
+                }
+                if let Some(replacement) = self.accepted_transactions.get(&by) {
+                    if replacement.proposal.replacement_lineage
+                        != accepted.proposal.replacement_lineage
+                    {
+                        return Err(invalid("replacement lineage is inconsistent"));
+                    }
+                }
+            }
+        }
+        for (outpoint, proposal_id) in &self.utxo_reservations {
+            let parsed = OutPoint::from_str(outpoint)
+                .map_err(|_| invalid("wallet reservation outpoint is invalid"))?;
+            let accepted = self
+                .accepted_transactions
+                .get(proposal_id)
+                .ok_or_else(|| invalid("wallet reservation references an unknown transaction"))?;
+            if !accepted
+                .proposal
+                .selected_inputs
+                .iter()
+                .any(|input| input.outpoint == parsed)
+            {
+                return Err(invalid("wallet reservation is not a transaction input"));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_policy_audit(
+    proposal: &FederationTransactionProposal,
+    audit: &FederationTransactionPolicyAudit,
+) -> Result<()> {
+    if audit.proposal_id != proposal.proposal_id()?
+        || audit.txid != proposal.unsigned_transaction.compute_txid()
+        || audit.fee_sat != proposal.fee_sat
+        || audit.fee_rate_sat_per_kwu != proposal.fee_rate_sat_per_kwu
+        || audit.weight != proposal.unsigned_transaction.weight().to_wu()
+        || audit.taproot_sighashes.len() != proposal.selected_inputs.len()
+    {
+        return Err(invalid(
+            "transaction policy audit does not match its proposal",
+        ));
+    }
+    let expected_fees = proposal
+        .recipient_outputs
+        .iter()
+        .map(|recipient| (recipient.intent_id, recipient.fee_contribution_sat))
+        .collect::<BTreeMap<_, _>>();
+    if audit.fee_contributions != expected_fees {
+        return Err(invalid("transaction policy audit fee allocation mismatch"));
+    }
+    Ok(())
+}
+
 fn batch_id(
     intent_ids: &[FederationOnchainPaymentIntentId],
     eligibility_cutoff: u64,
@@ -1299,6 +1737,169 @@ mod tests {
         );
         assert!(FederationTransactionProposal::from_json_slice(
             &serde_json::to_vec(&value).expect("mutated json")
+        )
+        .is_err());
+    }
+
+    fn policy_audit(proposal: &FederationTransactionProposal) -> FederationTransactionPolicyAudit {
+        FederationTransactionPolicyAudit {
+            proposal_id: proposal.proposal_id().expect("proposal id"),
+            txid: proposal.unsigned_transaction.compute_txid(),
+            fee_sat: proposal.fee_sat,
+            fee_rate_sat_per_kwu: proposal.fee_rate_sat_per_kwu,
+            weight: proposal.unsigned_transaction.weight().to_wu(),
+            fee_contributions: proposal
+                .recipient_outputs
+                .iter()
+                .map(|recipient| (recipient.intent_id, recipient.fee_contribution_sat))
+                .collect(),
+            taproot_sighashes: vec![[9; 32]; proposal.selected_inputs.len()],
+        }
+    }
+
+    #[test]
+    fn transaction_state_accepts_exact_replay_and_keeps_reservations_sticky() {
+        let proposal = proposal();
+        let proposal_id = proposal.proposal_id().expect("proposal id");
+        let audit = policy_audit(&proposal);
+        let mut state = FederationTransactionState::new();
+        for intent_id in [&proposal.intent_ids[0], &proposal.intent_ids[1]] {
+            let authorized = proposal
+                .recipient_outputs
+                .iter()
+                .find(|recipient| &recipient.intent_id == intent_id)
+                .expect("recipient");
+            let original =
+                if authorized.output.script_pubkey == ScriptBuf::from_bytes(vec![0x51, 1]) {
+                    intent("quote-a", 0, 30, 1)
+                } else {
+                    intent("quote-b", 1, 20, 2)
+                };
+            state
+                .add_pending_intent(
+                    FederationOnchainPaymentIntentRecord::pending(original).expect("record"),
+                )
+                .expect("add intent");
+        }
+        assert_eq!(
+            state
+                .accept_transaction(
+                    proposal.clone(),
+                    audit.clone(),
+                    FederationOperationId::from_bytes([3; 32]),
+                    42,
+                )
+                .expect("accept"),
+            FederationTransactionStateOutcome::Updated
+        );
+        assert_eq!(
+            state
+                .accept_transaction(
+                    proposal.clone(),
+                    audit,
+                    FederationOperationId::from_bytes([4; 32]),
+                    43,
+                )
+                .expect("exact replay"),
+            FederationTransactionStateOutcome::Existing
+        );
+        for input in &proposal.selected_inputs {
+            assert_eq!(state.reservation(input.outpoint), Some(proposal_id));
+        }
+        state
+            .abandon_transaction(proposal_id)
+            .expect("abandon transaction");
+        for input in &proposal.selected_inputs {
+            assert_eq!(state.reservation(input.outpoint), Some(proposal_id));
+        }
+        state
+            .mark_transaction_replaced(
+                proposal_id,
+                FederationTransactionProposalId::from_bytes([7; 32]),
+            )
+            .expect("mark replacement");
+        for input in &proposal.selected_inputs {
+            assert_eq!(state.reservation(input.outpoint), Some(proposal_id));
+        }
+        let decoded = FederationTransactionState::from_bytes(
+            &state.to_bytes().expect("serialize transaction state"),
+        )
+        .expect("decode transaction state");
+        assert_eq!(decoded, state);
+        assert_eq!(state.materialized_rows().expect("digest rows").len(), 5);
+    }
+
+    #[test]
+    fn transaction_state_rejects_different_transaction_for_owned_batch_and_tampering() {
+        let proposal = proposal();
+        let mut state = FederationTransactionState::new();
+        for intent in [intent("quote-a", 0, 30, 1), intent("quote-b", 1, 20, 2)] {
+            state
+                .add_pending_intent(
+                    FederationOnchainPaymentIntentRecord::pending(intent).expect("record"),
+                )
+                .expect("add intent");
+        }
+        state
+            .accept_transaction(
+                proposal.clone(),
+                policy_audit(&proposal),
+                FederationOperationId::from_bytes([5; 32]),
+                50,
+            )
+            .expect("accept");
+
+        let mut competing = proposal.clone();
+        competing.proposer = member(2);
+        assert!(state
+            .accept_transaction(
+                competing.clone(),
+                policy_audit(&competing),
+                FederationOperationId::from_bytes([6; 32]),
+                51,
+            )
+            .is_err());
+
+        let original_digest = crate::federation::FederationMaterializedStateSnapshot::from_rows(
+            state.materialized_rows().expect("original digest rows"),
+        )
+        .digest()
+        .expect("original digest");
+        let mut sighash_tamper = serde_json::to_value(&state).expect("state json");
+        let accepted = sighash_tamper["accepted_transactions"]
+            .as_object_mut()
+            .and_then(|transactions| transactions.values_mut().next())
+            .expect("accepted transaction JSON");
+        accepted["policy_audit"]["taproot_sighashes"][0][0] = serde_json::json!(8);
+        let sighash_tamper = FederationTransactionState::from_bytes(
+            &serde_json::to_vec(&sighash_tamper).expect("sighash tamper bytes"),
+        )
+        .expect("structurally valid sighash tamper");
+        let tampered_digest = crate::federation::FederationMaterializedStateSnapshot::from_rows(
+            sighash_tamper
+                .materialized_rows()
+                .expect("tampered digest rows"),
+        )
+        .digest()
+        .expect("tampered digest");
+        assert_ne!(tampered_digest, original_digest);
+
+        let mut transaction_tamper = serde_json::to_value(&state).expect("state json");
+        let accepted = transaction_tamper["accepted_transactions"]
+            .as_object_mut()
+            .and_then(|transactions| transactions.values_mut().next())
+            .expect("accepted transaction JSON");
+        accepted["proposal"]["unsigned_transaction"]["output"][0]["value"] =
+            serde_json::json!(999_999);
+        assert!(FederationTransactionState::from_bytes(
+            &serde_json::to_vec(&transaction_tamper).expect("transaction tamper bytes")
+        )
+        .is_err());
+
+        let mut value = serde_json::to_value(&state).expect("state json");
+        value["utxo_reservations"] = serde_json::json!({});
+        assert!(FederationTransactionState::from_bytes(
+            &serde_json::to_vec(&value).expect("tampered state")
         )
         .is_err());
     }

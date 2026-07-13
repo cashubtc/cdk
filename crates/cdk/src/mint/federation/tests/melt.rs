@@ -1,6 +1,109 @@
 use super::*;
 
 #[tokio::test]
+async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
+    use cdk_common::bitcoin::{Address, Network};
+    use cdk_common::nuts::nut30::{
+        MeltQuoteOnchainFeeOption, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse,
+    };
+
+    let (runtime_config, _) = super::address_allocation::runtime_with_address_application();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let destination_script = runtime_config
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .expect("FROST wallet")
+        .derive_cdk_onchain_script(
+            runtime_config.public_config(),
+            runtime_config
+                .active_cdk_onchain_application()
+                .expect("application")
+                .application_id,
+            3,
+            cdk_common::federation::FederationAddressKeychain::External,
+            90,
+        )
+        .expect("destination script");
+    let destination = Address::from_script(&destination_script, Network::Regtest)
+        .expect("regtest destination")
+        .to_string();
+    let quote = QuoteId::new();
+    let request = MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+        request: destination.clone(),
+        unit: CurrencyUnit::Sat,
+        amount: Amount::from(1),
+    });
+    let fee_option = MeltQuoteOnchainFeeOption {
+        fee_index: 7,
+        fee_reserve: Amount::from(1),
+        estimated_blocks: 6,
+    };
+    let response = MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainResponse {
+        quote: quote.clone(),
+        amount: Amount::from(1),
+        unit: CurrencyUnit::Sat,
+        method: PaymentMethod::Known(KnownMethod::Onchain),
+        state: MeltQuoteState::Unpaid,
+        expiry: 4_000_000_000,
+        request: destination,
+        fee_options: vec![fee_option],
+        selected_fee_index: None,
+        outpoint: None,
+        change: None,
+    });
+    let metadata = FederationMeltQuoteMetadata {
+        request_lookup_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
+        extra_json: None,
+        estimated_blocks: Some(6),
+    };
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), request, response, metadata),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "frost-onchain-input-one"),
+        proof_for_runtime(&runtime_config, "frost-onchain-input-two"),
+    ];
+    let melt = MeltRequest::new(quote.clone(), proofs, None).fee_index(7);
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(melt)
+            .expect("on-chain melt operation"),
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("stored quote");
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    let state = mint
+        .federation_transaction_state()
+        .await
+        .expect("transaction state");
+    let intent = state
+        .intent_for_quote(&quote.to_string())
+        .expect("pending payment intent");
+    assert_eq!(intent.intent.amount_sat, 1);
+    assert_eq!(intent.intent.maximum_fee_sat, 1);
+    assert_eq!(intent.intent.fee_tier, 7);
+    assert_eq!(
+        intent.state,
+        cdk_common::federation::FederationOnchainPaymentIntentState::Pending
+    );
+    assert_eq!(
+        intent.intent.creation_time,
+        super::super::federation_accepted_logical_time(&melt_entry)
+    );
+}
+
+#[tokio::test]
 async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

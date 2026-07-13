@@ -87,6 +87,13 @@ impl Mint {
         {
             snapshot.push(row);
         }
+        for row in self
+            .federation_transaction_state()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut payment_observation_quotes = BTreeSet::new();
@@ -197,6 +204,7 @@ impl Mint {
                         operation.keyset.clone(),
                     ));
                 }
+                FederationOperation::TransactionProposal(_) => {}
             }
         }
 

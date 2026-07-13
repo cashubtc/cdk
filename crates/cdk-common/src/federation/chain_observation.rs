@@ -728,6 +728,39 @@ impl FederationChainObservationState {
         self.validate()
     }
 
+    /// Atomically move an exact set of spendable UTXOs into sticky reservation.
+    ///
+    /// Reservation ownership is tracked by the separate transaction projection.
+    /// This state only records that no later proposal may select the output.
+    pub fn reserve_utxos(&mut self, outpoints: &[OutPoint]) -> Result<()> {
+        if outpoints.is_empty() {
+            return Err(invalid_state("wallet reservation set is empty"));
+        }
+        let unique = outpoints.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != outpoints.len() {
+            return Err(invalid_state("wallet reservation set contains duplicates"));
+        }
+        for outpoint in outpoints {
+            let utxo = self
+                .utxos
+                .get(&outpoint.to_string())
+                .ok_or_else(|| invalid_state("reservation references an unknown wallet UTXO"))?;
+            if utxo.state != FederationWalletUtxoState::Spendable || utxo.liability_alarm {
+                return Err(invalid_state(
+                    "reservation references a non-spendable wallet UTXO",
+                ));
+            }
+        }
+        for outpoint in outpoints {
+            let utxo = self
+                .utxos
+                .get_mut(&outpoint.to_string())
+                .ok_or_else(|| invalid_state("reservation wallet UTXO disappeared"))?;
+            utxo.state = FederationWalletUtxoState::Reserved;
+        }
+        self.validate()
+    }
+
     /// Build stable state-digest rows for UTXOs and all accepted evidence.
     pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
         self.validate()?;

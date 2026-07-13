@@ -15,7 +15,8 @@ use cdk_common::federation::{
     FederationOnchainPaymentIntentRecord, FederationOnchainPaymentIntentState,
     FederationOperationId, FederationTaprootSighashType, FederationTransactionChangeOutput,
     FederationTransactionInput, FederationTransactionProposal,
-    FederationTransactionRecipientOutput, FederationTransactionScope, FederationWalletUtxoState,
+    FederationTransactionRecipientOutput, FederationTransactionScope, FederationTransactionState,
+    FederationWalletUtxoState,
 };
 
 use super::address_allocation::runtime_with_address_application;
@@ -603,4 +604,352 @@ fn destination_change_fee_and_transaction_policy_are_independently_enforced() {
     assert!(runtime
         .validate_onchain_transaction_proposal(&state, &dust_records, &dust)
         .is_err());
+}
+
+#[tokio::test]
+async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signing() {
+    use super::super::chain_observation::{
+        CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+        CHAIN_OBSERVATION_STATE_KEY,
+    };
+    use super::super::transaction_state::{
+        TRANSACTION_STATE_KEY, TRANSACTION_STATE_PRIMARY_NAMESPACE,
+        TRANSACTION_STATE_SECONDARY_NAMESPACE,
+    };
+
+    let (runtime, _) = runtime_with_address_application();
+    let (mint, localstore) = federated_test_mint(runtime.clone()).await;
+    let mut chain_state = FederationChainObservationState::new();
+    let input = spendable_input(&runtime, &mut chain_state, 21, 40_000);
+    let (batch, records) = intents(&runtime);
+    let proposal = build_proposal(
+        &runtime,
+        &batch,
+        vec![input.clone()],
+        ProposalOptions::default(),
+    );
+    let proposal_id = proposal.proposal_id().expect("proposal id");
+    let mut transaction_state = FederationTransactionState::new();
+    for record in records.values().cloned() {
+        transaction_state
+            .add_pending_intent(record)
+            .expect("persist pending intent");
+    }
+    let mut setup = localstore.begin_transaction().await.expect("begin setup");
+    setup
+        .kv_write(
+            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+            CHAIN_OBSERVATION_STATE_KEY,
+            &chain_state.to_bytes().expect("chain state bytes"),
+        )
+        .await
+        .expect("write chain state");
+    setup
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &transaction_state
+                .to_bytes()
+                .expect("transaction state bytes"),
+        )
+        .await
+        .expect("write transaction state");
+    setup.commit().await.expect("commit setup state");
+
+    let invalid = build_proposal(
+        &runtime,
+        &batch,
+        vec![input.clone()],
+        ProposalOptions {
+            declared_change_index: 9,
+            ..ProposalOptions::default()
+        },
+    );
+    let invalid_id = invalid.proposal_id().expect("invalid policy proposal id");
+    let invalid_entry = accepted_entry_without_journal(
+        200,
+        runtime
+            .transaction_proposal_operation(invalid)
+            .expect("invalid policy envelope"),
+    );
+    persist_journal_entry(&localstore, &invalid_entry).await;
+    assert!(mint
+        .apply_accepted_federation_operation(&invalid_entry)
+        .await
+        .is_err());
+    assert!(mint
+        .federation_transaction_signing_authorization(invalid_id)
+        .await
+        .is_err());
+    assert_eq!(
+        mint.federation_transaction_state().await.expect("state"),
+        transaction_state
+    );
+    assert_eq!(
+        mint.federation_chain_observation_state()
+            .await
+            .expect("chain state"),
+        chain_state
+    );
+
+    let entry = accepted_entry_without_journal(
+        201,
+        runtime
+            .transaction_proposal_operation(proposal.clone())
+            .expect("proposal envelope"),
+    );
+    persist_journal_entry(&localstore, &entry).await;
+    assert!(mint
+        .federation_transaction_signing_authorization(proposal_id)
+        .await
+        .is_err());
+    let (first_apply, second_apply) = tokio::join!(
+        mint.apply_accepted_federation_operation(&entry),
+        mint.apply_accepted_federation_operation(&entry),
+    );
+    let first_apply = first_apply.expect("first concurrent proposal apply");
+    let second_apply = second_apply.expect("second concurrent proposal apply");
+    assert!(first_apply || second_apply);
+    assert!(!mint
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("replay proposal"));
+
+    let accepted = mint
+        .federation_transaction_signing_authorization(proposal_id)
+        .await
+        .expect("signing authorization after apply");
+    assert_eq!(accepted.proposal, proposal);
+    let reserved_chain = mint
+        .federation_chain_observation_state()
+        .await
+        .expect("reserved chain state");
+    assert_eq!(
+        reserved_chain
+            .utxo(input.outpoint)
+            .expect("reserved UTXO")
+            .state,
+        FederationWalletUtxoState::Reserved
+    );
+
+    let (catch_up, catch_up_store) = federated_test_mint(runtime.clone()).await;
+    let mut catch_up_setup = catch_up_store
+        .begin_transaction()
+        .await
+        .expect("begin catch-up setup");
+    catch_up_setup
+        .kv_write(
+            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+            CHAIN_OBSERVATION_STATE_KEY,
+            &chain_state.to_bytes().expect("catch-up chain bytes"),
+        )
+        .await
+        .expect("write catch-up chain state");
+    catch_up_setup
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &transaction_state
+                .to_bytes()
+                .expect("catch-up transaction bytes"),
+        )
+        .await
+        .expect("write catch-up transaction state");
+    catch_up_setup
+        .commit()
+        .await
+        .expect("commit catch-up setup");
+    persist_journal_entry(&catch_up_store, &entry).await;
+    assert_eq!(
+        catch_up
+            .apply_federation_journal_entries(std::slice::from_ref(&entry))
+            .await
+            .expect("catch-up apply"),
+        vec![entry.operation_id]
+    );
+    assert_eq!(
+        catch_up
+            .federation_transaction_state()
+            .await
+            .expect("catch-up transaction state"),
+        mint.federation_transaction_state()
+            .await
+            .expect("source transaction state")
+    );
+    assert_eq!(
+        catch_up
+            .federation_chain_observation_state()
+            .await
+            .expect("catch-up chain state"),
+        reserved_chain
+    );
+
+    let readiness_gated =
+        restart_federated_test_mint(runtime_config(), Arc::clone(&localstore)).await;
+    assert!(readiness_gated
+        .federation_transaction_signing_authorization(proposal_id)
+        .await
+        .is_err());
+
+    let restarted = restart_federated_test_mint(runtime, Arc::clone(&localstore)).await;
+    assert_eq!(
+        restarted
+            .federation_transaction_signing_authorization(proposal_id)
+            .await
+            .expect("restart signing authorization"),
+        accepted
+    );
+
+    let durable = restarted
+        .federation_transaction_state()
+        .await
+        .expect("durable transaction state");
+    let mut tampered_audit =
+        serde_json::to_value(&durable).expect("transaction state audit JSON");
+    let accepted_transactions = tampered_audit["accepted_transactions"]
+        .as_object_mut()
+        .expect("accepted transaction object");
+    let accepted_value = accepted_transactions
+        .values_mut()
+        .next()
+        .expect("accepted transaction value");
+    let sighash_byte = accepted_value["policy_audit"]["taproot_sighashes"][0][0]
+        .as_u64()
+        .expect("sighash byte");
+    accepted_value["policy_audit"]["taproot_sighashes"][0][0] =
+        serde_json::json!(sighash_byte ^ 1);
+    let mut audit_tamper_transaction = localstore
+        .begin_transaction()
+        .await
+        .expect("begin audit tamper");
+    audit_tamper_transaction
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &serde_json::to_vec(&tampered_audit).expect("tampered audit bytes"),
+        )
+        .await
+        .expect("write tampered audit state");
+    audit_tamper_transaction
+        .commit()
+        .await
+        .expect("commit tampered audit state");
+    assert!(restarted.federation_transaction_state().await.is_ok());
+    assert!(restarted
+        .federation_transaction_signing_authorization(proposal_id)
+        .await
+        .is_err());
+
+    let mut restore_transaction = localstore.begin_transaction().await.expect("begin restore");
+    restore_transaction
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &durable.to_bytes().expect("durable transaction bytes"),
+        )
+        .await
+        .expect("restore transaction state");
+    restore_transaction
+        .commit()
+        .await
+        .expect("commit restored state");
+
+    let mut tampered = serde_json::to_value(durable).expect("transaction state JSON");
+    tampered["utxo_reservations"] = serde_json::json!({});
+    let mut tamper_transaction = localstore.begin_transaction().await.expect("begin tamper");
+    tamper_transaction
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &serde_json::to_vec(&tampered).expect("tampered bytes"),
+        )
+        .await
+        .expect("write tampered state");
+    tamper_transaction
+        .commit()
+        .await
+        .expect("commit tampered state");
+    assert!(restarted.federation_transaction_state().await.is_err());
+}
+
+#[test]
+fn aleph_bft_journal_rejects_same_batch_and_shared_utxo_competitors() {
+    let (runtime, _) = runtime_with_address_application();
+    let mut chain_state = FederationChainObservationState::new();
+    let input = spendable_input(&runtime, &mut chain_state, 22, 40_000);
+    let alternate_input = spendable_input(&runtime, &mut chain_state, 23, 40_000);
+    let (first_batch, _) = intents(&runtime);
+    let first = build_proposal(
+        &runtime,
+        &first_batch,
+        vec![input.clone()],
+        ProposalOptions::default(),
+    );
+    let second_intents = first_batch
+        .intents
+        .iter()
+        .enumerate()
+        .map(|(index, original)| {
+            FederationOnchainPaymentIntent::new(
+                format!("competing-{}", original.quote),
+                original.destination_script.clone(),
+                original.amount_sat,
+                original.maximum_fee_sat,
+                original.fee_tier,
+                original.creation_time + index as u64,
+                original.scope,
+            )
+            .expect("competing intent")
+        })
+        .collect::<Vec<_>>();
+    let second_batch =
+        FederationOnchainPaymentBatch::new(second_intents, 21).expect("competing payment batch");
+    let second = build_proposal(
+        &runtime,
+        &second_batch,
+        vec![input],
+        ProposalOptions::default(),
+    );
+    let mut journal = InMemoryFederationJournal::new();
+    let first_envelope = runtime
+        .transaction_proposal_operation(first)
+        .expect("first envelope");
+    runtime
+        .validate_federated_operation_submission(&first_envelope.operation)
+        .expect("proposal admission");
+    first_envelope
+        .verify_authorization(runtime.public_config())
+        .expect("proposal authorization");
+    journal
+        .append(first_envelope)
+        .expect("accept first proposal");
+    let same_batch = build_proposal(
+        &runtime,
+        &first_batch,
+        vec![alternate_input],
+        ProposalOptions::default(),
+    );
+    assert!(matches!(
+        journal.append(
+            runtime
+                .transaction_proposal_operation(same_batch)
+                .expect("same-batch envelope")
+        ),
+        Err(FederationError::ConflictingOperation { .. })
+    ));
+    assert!(matches!(
+        journal.append(
+            runtime
+                .transaction_proposal_operation(second)
+                .expect("second envelope")
+        ),
+        Err(FederationError::ConflictingOperation { .. })
+    ));
 }

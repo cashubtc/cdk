@@ -19,7 +19,7 @@ use super::journal::FederationJournalEntry;
 use super::{
     FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
     FederationConfig, FederationError, FederationId, FederationPaymentObservationContext,
-    MemberConfigPrivate, MemberId, Result,
+    FederationTransactionProposal, MemberConfigPrivate, MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -34,7 +34,7 @@ const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
     b"cdk-federation-operation-authorization-v1";
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 3;
+pub const FEDERATION_OPERATION_VERSION: u16 = 4;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -147,6 +147,8 @@ pub enum FederationOperationKind {
     Swap,
     /// Propose a new federated v3/BLS aggregate keyset.
     KeysetRotation,
+    /// Propose and reserve one independently validated on-chain transaction.
+    TransactionProposal,
 }
 
 impl fmt::Display for FederationOperationKind {
@@ -163,6 +165,7 @@ impl fmt::Display for FederationOperationKind {
             Self::Melt => f.write_str("melt"),
             Self::Swap => f.write_str("swap"),
             Self::KeysetRotation => f.write_str("keyset_rotation"),
+            Self::TransactionProposal => f.write_str("transaction_proposal"),
         }
     }
 }
@@ -757,7 +760,8 @@ impl FederationPaymentObservation {
             | FederationOperation::PaymentObservationQuarantine(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::KeysetRotation(_) => None,
+            | FederationOperation::KeysetRotation(_)
+            | FederationOperation::TransactionProposal(_) => None,
         }
     }
 
@@ -914,7 +918,8 @@ impl FederationPaymentObservationQuarantineRecord {
             | FederationOperation::MeltQuotePayment(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::KeysetRotation(_) => None,
+            | FederationOperation::KeysetRotation(_)
+            | FederationOperation::TransactionProposal(_) => None,
         }
     }
 }
@@ -1479,6 +1484,8 @@ pub enum FederationOperation {
     Swap(FederationSwapOperation),
     /// Add a new federated aggregate keyset after consensus.
     KeysetRotation(FederationKeysetRotationOperation),
+    /// Accept an exact unsigned on-chain transaction after consensus.
+    TransactionProposal(FederationTransactionProposal),
 }
 
 impl FederationOperation {
@@ -1499,6 +1506,7 @@ impl FederationOperation {
             Self::Melt(_) => FederationOperationKind::Melt,
             Self::Swap(_) => FederationOperationKind::Swap,
             Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
+            Self::TransactionProposal(_) => FederationOperationKind::TransactionProposal,
         }
     }
 
@@ -1583,6 +1591,26 @@ impl FederationOperation {
                     keyset_id: operation.keyset.id,
                 }]
             }
+            Self::TransactionProposal(proposal) => {
+                let mut keys = Vec::with_capacity(
+                    proposal.intent_ids.len() + proposal.selected_inputs.len() + 2,
+                );
+                keys.push(FederationOperationConflictKey::OnchainBatch {
+                    batch_id: proposal.batch_id,
+                });
+                keys.push(FederationOperationConflictKey::OnchainReplacementLineage {
+                    lineage: proposal.replacement_lineage,
+                });
+                keys.extend(proposal.intent_ids.iter().copied().map(|intent_id| {
+                    FederationOperationConflictKey::OnchainPaymentIntentAssignment { intent_id }
+                }));
+                keys.extend(proposal.selected_inputs.iter().map(|input| {
+                    FederationOperationConflictKey::OnchainUtxo {
+                        outpoint: input.outpoint,
+                    }
+                }));
+                keys
+            }
             Self::Swap(_) => Vec::new(),
         }
     }
@@ -1603,7 +1631,7 @@ impl FederationOperation {
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::PaymentObservationQuarantine(operation) => Some(operation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
-            Self::Swap(_) | Self::KeysetRotation(_) => None,
+            Self::Swap(_) | Self::KeysetRotation(_) | Self::TransactionProposal(_) => None,
         }
     }
 
@@ -1620,7 +1648,8 @@ impl FederationOperation {
             | Self::ChainObservation(_)
             | Self::MintQuote(_)
             | Self::PaymentObservationQuarantine(_)
-            | Self::KeysetRotation(_) => {
+            | Self::KeysetRotation(_)
+            | Self::TransactionProposal(_) => {
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
             Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
@@ -1866,6 +1895,7 @@ impl FederationOperationEnvelope {
             FederationOperation::ChainObservation(observation) => Some(observation.observer()),
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
             FederationOperation::MeltQuotePayment(observation) => Some(observation.observer),
+            FederationOperation::TransactionProposal(proposal) => Some(proposal.proposer),
             FederationOperation::AddressAllocation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
@@ -2359,7 +2389,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v3_golden_vector() {
+    fn canonical_operation_encoding_matches_v4_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2375,12 +2405,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":3}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":4}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "062d0cd079aa2680e7194ca73aeb92584301923939aef0cbe8c4eff23c5d732c"
+            "01d678fdcaea34b609ebd79940f71c02100e94f731b0ccb174f63e2e5abdc20c"
         );
     }
 

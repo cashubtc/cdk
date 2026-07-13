@@ -10,15 +10,16 @@ use cdk_common::bitcoin::absolute::LockTime;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::bitcoin::sighash::{Prevouts, SighashCache};
 use cdk_common::bitcoin::transaction::Version;
-use cdk_common::bitcoin::{Sequence, TxOut, Txid};
+use cdk_common::bitcoin::{Sequence, TxOut};
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationChainObservationState, FederationError, FederationOnchainPaymentBatch,
     FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
     FederationOnchainPaymentIntentState, FederationTaprootSighashType,
-    FederationTransactionProposal, FederationTransactionProposalId, FederationTransactionScope,
-    FederationWalletUtxoState, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
-    FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS, FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
+    FederationTransactionPolicyAudit, FederationTransactionProposal,
+    FederationTransactionProposalId, FederationTransactionScope, FederationWalletUtxoState,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS,
+    FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,26 +71,6 @@ impl FederationOnchainTransactionPolicy {
     }
 }
 
-/// Deterministic values every member recomputes after proposal validation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FederationTransactionPolicyAudit {
-    /// Canonical proposal identity.
-    pub proposal_id: FederationTransactionProposalId,
-    /// Transaction ID recomputed from exact unsigned bytes.
-    pub txid: Txid,
-    /// Checked absolute fee.
-    pub fee_sat: u64,
-    /// Checked fee rate in satoshis per 1,000 weight units.
-    pub fee_rate_sat_per_kwu: u64,
-    /// Exact unsigned transaction weight.
-    pub weight: u64,
-    /// Per-intent fee allocation in canonical intent order.
-    pub fee_contributions: BTreeMap<FederationOnchainPaymentIntentId, u64>,
-    /// BIP341 key-spend sighashes recomputed in transaction-input order.
-    pub taproot_sighashes: Vec<[u8; 32]>,
-}
-
 impl FederationRuntimeConfig {
     /// Independently validate an untrusted on-chain transaction proposal.
     ///
@@ -105,6 +86,42 @@ impl FederationRuntimeConfig {
             FederationOnchainPaymentIntentRecord,
         >,
         proposal: &FederationTransactionProposal,
+    ) -> Result<FederationTransactionPolicyAudit, Error> {
+        self.validate_onchain_transaction_proposal_lifecycle(
+            chain_state,
+            intent_records,
+            proposal,
+            None,
+        )
+    }
+
+    pub(crate) fn revalidate_accepted_onchain_transaction_proposal(
+        &self,
+        chain_state: &FederationChainObservationState,
+        intent_records: &BTreeMap<
+            FederationOnchainPaymentIntentId,
+            FederationOnchainPaymentIntentRecord,
+        >,
+        proposal: &FederationTransactionProposal,
+    ) -> Result<FederationTransactionPolicyAudit, Error> {
+        let proposal_id = proposal.proposal_id()?;
+        self.validate_onchain_transaction_proposal_lifecycle(
+            chain_state,
+            intent_records,
+            proposal,
+            Some(proposal_id),
+        )
+    }
+
+    fn validate_onchain_transaction_proposal_lifecycle(
+        &self,
+        chain_state: &FederationChainObservationState,
+        intent_records: &BTreeMap<
+            FederationOnchainPaymentIntentId,
+            FederationOnchainPaymentIntentRecord,
+        >,
+        proposal: &FederationTransactionProposal,
+        accepted_proposal_id: Option<FederationTransactionProposalId>,
     ) -> Result<FederationTransactionPolicyAudit, Error> {
         proposal.validate()?;
         chain_state.to_bytes()?;
@@ -125,18 +142,22 @@ impl FederationRuntimeConfig {
             self.public_config().frost_wallet.as_ref().ok_or_else(|| {
                 invalid("federated transaction policy has no FROST wallet config")
             })?;
+        let expected_utxo_state = match accepted_proposal_id {
+            Some(_) => FederationWalletUtxoState::Reserved,
+            None => FederationWalletUtxoState::Spendable,
+        };
         for selected in &proposal.selected_inputs {
             let accepted = chain_state
                 .utxo(selected.outpoint)
                 .ok_or_else(|| invalid("transaction proposal references an unknown UTXO"))?;
-            if accepted.state != FederationWalletUtxoState::Spendable
+            if accepted.state != expected_utxo_state
                 || accepted.liability_alarm
                 || accepted.outpoint != selected.outpoint
                 || accepted.txout != selected.previous_output
                 || accepted.allocation != selected.allocation
             {
                 return Err(invalid(
-                    "transaction input is not an exact accepted spendable UTXO",
+                    "transaction input is not an exact accepted UTXO in the required lifecycle state",
                 ));
             }
             let expected_script = wallet.derive_cdk_onchain_script(
@@ -155,7 +176,7 @@ impl FederationRuntimeConfig {
             }
         }
 
-        let batch = validate_pending_intents(intent_records, proposal)?;
+        let batch = validate_intents(intent_records, proposal, accepted_proposal_id)?;
         if batch.batch_id != proposal.batch_id || batch.intent_ids != proposal.intent_ids {
             return Err(invalid(
                 "transaction proposal batch does not match accepted pending intents",
@@ -196,25 +217,22 @@ impl FederationRuntimeConfig {
             ));
         }
 
-        match &proposal.change_output {
-            Some(change) => {
-                let expected_script = wallet.derive_cdk_onchain_script(
-                    self.public_config(),
-                    proposal.scope.application_id,
-                    proposal.scope.application_key_epoch,
-                    cdk_common::federation::FederationAddressKeychain::Internal,
-                    change.derivation_index,
-                )?;
-                if !expected_script.is_p2tr()
-                    || change.output.script_pubkey != expected_script
-                    || is_dust(&change.output)
-                {
-                    return Err(invalid(
-                        "transaction change does not match its internal Taproot derivation",
-                    ));
-                }
+        if let Some(change) = &proposal.change_output {
+            let expected_script = wallet.derive_cdk_onchain_script(
+                self.public_config(),
+                proposal.scope.application_id,
+                proposal.scope.application_key_epoch,
+                cdk_common::federation::FederationAddressKeychain::Internal,
+                change.derivation_index,
+            )?;
+            if !expected_script.is_p2tr()
+                || change.output.script_pubkey != expected_script
+                || is_dust(&change.output)
+            {
+                return Err(invalid(
+                    "transaction change does not match its internal Taproot derivation",
+                ));
             }
-            None => {}
         }
 
         let previous_outputs = proposal.previous_outputs();
@@ -277,9 +295,10 @@ fn validate_transaction_shape(
     Ok(())
 }
 
-fn validate_pending_intents(
+fn validate_intents(
     records: &BTreeMap<FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord>,
     proposal: &FederationTransactionProposal,
+    accepted_proposal_id: Option<FederationTransactionProposalId>,
 ) -> Result<FederationOnchainPaymentBatch, Error> {
     if records.len() < proposal.intent_ids.len() {
         return Err(invalid("transaction proposal is missing accepted intents"));
@@ -292,11 +311,17 @@ fn validate_pending_intents(
                 .get(intent_id)
                 .ok_or_else(|| invalid("transaction proposal references an unknown intent"))?;
             record.validate()?;
-            if record.state != FederationOnchainPaymentIntentState::Pending
+            let expected_state = match accepted_proposal_id {
+                Some(proposal_id) => {
+                    FederationOnchainPaymentIntentState::Accepted { proposal_id }
+                }
+                None => FederationOnchainPaymentIntentState::Pending,
+            };
+            if record.state != expected_state
                 || record.intent.scope != proposal.scope
             {
                 return Err(invalid(
-                    "transaction proposal intent is not pending in this scope",
+                    "transaction proposal intent is not in the required lifecycle state and scope",
                 ));
             }
             Ok(record.intent.clone())

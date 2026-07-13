@@ -8,6 +8,7 @@ mod address_allocation;
 mod chain_observation;
 mod projection;
 mod transaction_policy;
+mod transaction_state;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -28,7 +29,8 @@ use cdk_common::federation::{
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationSignatureShareRecord, FederationSwapOperation, FederationTransactionProposal,
+    MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -55,10 +57,10 @@ use self::chain_observation::{
     CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
     CHAIN_OBSERVATION_STATE_KEY,
 };
+use self::transaction_state::persist_pending_onchain_intent;
 
-pub use self::transaction_policy::{
-    FederationOnchainTransactionPolicy, FederationTransactionPolicyAudit,
-};
+pub use self::transaction_policy::FederationOnchainTransactionPolicy;
+pub use cdk_common::federation::FederationTransactionPolicyAudit;
 
 struct FederationActiveMeltPayment {
     active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
@@ -687,6 +689,10 @@ impl FederationRuntimeConfig {
             FederationOperation::KeysetRotation(operation) => {
                 self.validate_federated_keyset_rotation_submission(operation)
             }
+            FederationOperation::TransactionProposal(proposal) => {
+                proposal.validate()?;
+                self.validate_federation_observer(proposal.proposer)
+            }
         }
     }
 
@@ -891,6 +897,23 @@ impl FederationRuntimeConfig {
                 request: consensus_request,
             })),
         )
+    }
+
+    /// Build an authorized consensus operation for a validated on-chain proposal.
+    pub fn transaction_proposal_operation(
+        &self,
+        proposal: FederationTransactionProposal,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        proposal.validate()?;
+        self.validate_federation_observer(proposal.proposer)?;
+        if proposal.proposer != self.member_id() {
+            return Err(FederationError::OperationAuthorMismatch {
+                author: self.member_id(),
+                claimed_member: proposal.proposer,
+            }
+            .into());
+        }
+        Ok(self.operation_envelope(FederationOperation::TransactionProposal(proposal)))
     }
 
     /// Validate a federated melt submission before consensus admission.
@@ -1654,6 +1677,11 @@ impl Mint {
             }
             FederationOperation::KeysetRotation(operation) => {
                 self.apply_federation_keyset_rotation(entry, operation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionProposal(proposal) => {
+                self.apply_federation_transaction_proposal(entry, proposal)
                     .await?;
                 Ok(true)
             }
@@ -2725,8 +2753,23 @@ impl Mint {
             Err(err) => return Err(err),
         }
 
-        let transaction = self.localstore.begin_transaction().await?;
-        finish_federation_apply_transaction(transaction, entry, Ok(())).await
+        let mut transaction = self.localstore.begin_transaction().await?;
+        let outcome = async {
+            let quote = transaction
+                .get_melt_quote(request.quote())
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            let runtime = self.federation_config().ok_or(Error::Internal)?;
+            persist_pending_onchain_intent(
+                &mut transaction,
+                runtime,
+                &quote,
+                federation_accepted_logical_time(entry),
+            )
+            .await
+        }
+        .await;
+        finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 
     /// Verify federated melt or swap inputs against aggregate BLS keysets.

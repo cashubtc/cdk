@@ -120,15 +120,17 @@ pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
 pub use self::transaction_proposal::{
-    FederationOnchainBatchId, FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
+    FederationAcceptedTransaction, FederationAcceptedTransactionState, FederationOnchainBatchId,
+    FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
     FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
     FederationOnchainPaymentIntentState, FederationTaprootSighashType,
-    FederationTransactionChangeOutput, FederationTransactionInput, FederationTransactionProposal,
+    FederationTransactionChangeOutput, FederationTransactionInput,
+    FederationTransactionPolicyAudit, FederationTransactionProposal,
     FederationTransactionProposalId, FederationTransactionRecipientOutput,
-    FederationTransactionScope, FEDERATION_MAX_ONCHAIN_BATCH_INTENTS,
-    FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
-    FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS, FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES,
-    FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
+    FederationTransactionScope, FederationTransactionState, FederationTransactionStateOutcome,
+    FEDERATION_MAX_ONCHAIN_BATCH_INTENTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS,
+    FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES, FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
 };
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,

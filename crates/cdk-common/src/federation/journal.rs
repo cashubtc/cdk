@@ -1527,11 +1527,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "9bea305629b6d1cac75f06b20680b3c00179bda02ca7efe9ff99ecf721c0647c"
+            "a2b58bcf783e9936b317f1207a437795972134eb708499b2b3cf97d1b510b117"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "2ebfd7c42f12a6e3441e988052f8d15910085ba4d965a1074a529985ec0c679b"
+            "20222f79401c3e696d4d06fdbeb393e43c22c56a629f8878616e6afc7016a1fa"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

@@ -49,18 +49,10 @@ federation partially ready.
 > lesson. Move long investigations to a dedicated issue, benchmark document, or
 > commit description instead of growing this section indefinitely.
 
-- Record implementation bugs here as they are encountered and verified.
-- The existing Cashu DKG creates BLS12-381 shares. Those shares cannot be
-  reinterpreted, hashed, or truncated into Bitcoin secp256k1 FROST shares. Reuse
-  the ceremony infrastructure, not the cryptographic shares.
-- Existing member secp256k1 identity keys authenticate federation traffic; they
-  are independent keys and must not double as Bitcoin custody shares.
-- The canonical DKG result must be the untweaked FROST root share and public
-  package. Do not make a library-specific post-DKG Taproot package the only
-  persisted representation; BIP32, BIP341, and future application tweaks belong
-  to derived application packages.
-- Never reconstruct the FROST group secret during normal setup, signing,
-  recovery, testing, migration, or operator tooling.
+- Cashu BLS shares and member identity keys cannot become Bitcoin custody
+  shares. Reuse ceremony/authentication infrastructure only; persist the
+  untweaked FROST root package, apply BIP32/BIP341 at the application boundary,
+  and never reconstruct the group secret.
 - BDK's custom signer API is synchronous. Do not hide asynchronous FROST rounds
   or consensus waits inside `Wallet::sign()`.
 - Never call `reveal_next_address()` independently in a public request handler.
@@ -70,17 +62,10 @@ federation partially ready.
   exposing commitments, and never reuse a nonce after uncertainty or restart.
 - A transaction proposer is untrusted. Consensus must accept the exact unsigned
   transaction before any member releases a signature share.
-- Milestone 0 regtest setup timed out while mining 200 blocks in one Bitcoin
-  Core RPC call. The integration-only client now mines in bounded 100-block
-  calls; preserve this with the batch-splitting unit test and the on-chain
-  regtest baseline.
 - Milestone 1 external Taproot finalization must not treat BDK's finalizer as a
   signature verifier. The watch-only engine verifies the sighash, tweaked key,
   spent script, and Schnorr signature before finalization; preserve the missing,
   malformed, wrong-key, and wrong-sighash tests.
-- Milestone 4 found pre-existing test/API drift after payment quote fields and
-  HTTP transport methods changed. Fixtures, mock methods, and affected golden
-  hashes were updated mechanically; no mint business flow was redesigned.
 - Milestone 4 partition testing found that inbound completeness alone could let
   a FROST member advance while peers lacked its outbound package. Require a
   fully acknowledged outbound batch before each phase transition and preserve
@@ -89,32 +74,16 @@ federation partially ready.
   in plaintext persistence. Network requests remain transient, while durable
   sender and receiver records are now sealed and context-bound; preserve the
   ciphertext-envelope and idempotent-retry tests.
+- Milestone 12 found one narrow shared gap: accepted FROST on-chain melts
+  stopped safely at the existing external-settlement saga boundary but did not
+  materialize a canonical payment intent. Keep the focused, atomic intent write
+  in final melt apply; do not replace the existing quote, proof, or saga flow.
 - Milestone 5 found that the Milestone 3 application registration omitted its
   key epoch even though the plan required epoch-separated rotation. The small
   fix stays inside `cdk-frost`/`cdk-frost-bip32`: application derivation,
   authorization, nonce IDs, wire transcripts, chain codes, descriptors, and
   signing targets now bind the application key epoch. Preserve the wrong-epoch
   rejection and epoch-separated descriptor vectors.
-- Milestone 6's federation-enabled daemon build found that the existing DKG
-  operator-status label adapter had not been extended for the three isolated
-  FROST phases. The small status-only fix adds those labels; it does not alter
-  mint business logic or either DKG state machine. The same build exposed
-  federation-only test doubles that had drifted from current HTTP transport and
-  wallet-saga fields; the compatibility repair is confined to test code.
-- Milestone 7 adds a new canonical consensus operation, so the experimental
-  operation envelope is now version 2 and its golden vectors are pinned. No
-  missing mint business flow was found: allocation state stays in an isolated
-  module and existing mint integration is limited to admission, apply dispatch,
-  and deterministic projection.
-- Milestone 8 adds canonical Bitcoin chain evidence, so the experimental
-  operation envelope is now version 3 with updated golden vectors. The UTXO
-  projection, quorum/reorg rules, and persistence stay isolated; existing quote,
-  payment-observation, saga, issuance, and standalone BDK flows are unchanged.
-- Milestone 9 found that payment-observation conflict keys and their SQL unique
-  index assumed one terminal report per member. Cumulative on-chain deposits
-  need ordered revisions, so only `PaymentId`-backed on-chain observations now
-  use commitment-specific conflicts and latest-per-member quorum; existing
-  Bolt11 semantics remain unchanged. Preserve the migration and revision tests.
 
 ## 1. Problem and setting
 
@@ -1237,36 +1206,70 @@ released.
 
 **Work:**
 
-- [ ] Add transaction-proposal operation admission and deterministic apply.
-- [ ] Atomically transition intents to accepted batch and inputs to reserved.
-- [ ] Persist the exact unsigned transaction, previous outputs, PSBT commitment,
+- [x] Add transaction-proposal operation admission and deterministic apply.
+- [x] Atomically transition intents to accepted batch and inputs to reserved.
+- [x] Persist the exact unsigned transaction, previous outputs, PSBT commitment,
   change allocation, policy audit, and computed sighashes.
-- [ ] Make duplicate proposal replay return the accepted transaction.
-- [ ] Reject a different transaction under the same batch or intent scope.
-- [ ] Include accepted transactions and reservations in materialized-state
+- [x] Make duplicate proposal replay return the accepted transaction.
+- [x] Reject a different transaction under the same batch or intent scope.
+- [x] Include accepted transactions and reservations in materialized-state
   digest and catch-up.
-- [ ] Add explicit abandoned/replaced transitions that cannot free inputs while
+- [x] Add explicit abandoned/replaced transitions that cannot free inputs while
   a valid signed transaction may still exist.
-- [ ] Gate FROST session creation on accepted and locally applied operation
+- [x] Gate FROST session creation on accepted and locally applied operation
   status.
 
 **Success criteria:**
 
-- [ ] Exactly one transaction owns each reserved UTXO and payment intent.
-- [ ] Every honest member stores identical transaction bytes and sighashes.
-- [ ] No FROST round can begin for pending, rejected, failed, or catch-up-only
+- [x] Exactly one transaction owns each reserved UTXO and payment intent.
+- [x] Every honest member stores identical transaction bytes and sighashes.
+- [x] No FROST round can begin for pending, rejected, failed, or catch-up-only
   unverified state.
-- [ ] Restart preserves reservations and accepted transaction identity.
+- [x] Restart preserves reservations and accepted transaction identity.
 
 **Required tests:**
 
-- [ ] Concurrent valid proposals for the same batch.
-- [ ] Concurrent proposals sharing one UTXO but different intents.
-- [ ] Duplicate and conflicting operation replay.
-- [ ] Crash before and after atomic reservation.
-- [ ] Member catch-up after proposal acceptance.
-- [ ] Attempted signing before finalization or while readiness-gated.
-- [ ] State-digest tampering with transaction bytes, sighashes, or reservations.
+- [x] Concurrent valid proposals for the same batch.
+- [x] Concurrent proposals sharing one UTXO but different intents.
+- [x] Duplicate and conflicting operation replay.
+- [x] Crash before and after atomic reservation.
+- [x] Member catch-up after proposal acceptance.
+- [x] Attempted signing before finalization or while readiness-gated.
+- [x] State-digest tampering with transaction bytes, sighashes, or reservations.
+
+**Milestone record:** completed on 2026-07-13. Federation operation format v4
+adds a proposer-authenticated transaction proposal whose batch, replacement
+lineage, intent assignments, and wallet outpoints are AlephBFT conflict scopes.
+Pure admission checks proposal structure and member identity; deterministic
+apply repeats the full Milestone 11 policy validation against canonical pending
+intents and spendable UTXOs. An isolated, versioned transaction projection
+stores the exact proposal, ordered previous outputs, PSBT commitment, change
+allocation, recomputed policy audit, txid, and every Taproot sighash. One
+database transaction assigns the batch and intents, records unique input
+ownership, moves UTXOs from `spendable` to `reserved`, and marks the journal
+operation applied. Exact replay returns the existing accepted state, while a
+different transaction under the same batch, intent, lineage, or UTXO fails
+closed. Abandoned and replacement transitions keep every reservation sticky.
+
+The only existing-mint gap was the missing durable intent after an accepted
+FROST on-chain melt. Existing melt logic already reserves proofs and stops
+external settlement at `SetupComplete`/`Pending` without a backend payment. The
+small fix writes the canonical intent in final melt apply; non-FROST,
+non-on-chain, quote, proof, saga, and standalone paths are unchanged. This
+prerequisite is pulled forward from Milestone 17, which still owns signed
+settlement and quote completion. Transaction state participates in digest and
+catch-up. The signing authorization boundary requires an active matching FROST
+application, the exact locally `Applied` journal payload, accepted lifecycle,
+and intact reservations. Before releasing authorization it also recomputes the
+complete policy audit from the accepted transaction, intents, reserved UTXOs,
+and active application, so structurally valid local audit or sighash tampering
+fails closed. Concurrent same-entry apply, same-batch and shared-UTXO
+competitors, rollback, replay, restart, catch-up, pre-finality/failed signing,
+and transaction/sighash/reservation tampering are covered. All 368 enabled
+`cdk-common` tests and 122 CDK federation mint tests pass, and the workspace
+compiles across all targets. Strict clippy remains blocked by pre-existing
+workspace findings outside this milestone; changed-crate clippy passes when
+those existing categories are held at their baseline.
 
 ### Milestone 13: implement durable one-time FROST nonce management
 
