@@ -59,6 +59,10 @@ pub enum FederationRestMessageKind {
     /// Confirm that one member assembled the exact finalized DKG config.
     DkgActivation,
     /// Submit one operation envelope to a peer.
+    ///
+    /// The signed sequence is authenticated but does not provide replay
+    /// ordering for this kind. Canonical operation IDs and durable consensus
+    /// records own duplicate detection and retry safety.
     SubmitOperation,
     /// Wake a peer's idle AlephBFT creator for newly admitted consensus work.
     AlephBftActivity,
@@ -69,6 +73,10 @@ pub enum FederationRestMessageKind {
 }
 
 impl FederationRestMessageKind {
+    fn uses_sequence_replay_state(self) -> bool {
+        self != Self::SubmitOperation
+    }
+
     fn has_durable_replay_state(self) -> bool {
         matches!(
             self,
@@ -370,7 +378,14 @@ pub struct FederationSignedRequest<T> {
     pub sender: MemberId,
     /// Member expected to receive the request.
     pub receiver: MemberId,
-    /// Monotonic sender-local sequence used to reject simple replays.
+    /// Sender-local sequence covered by the request signature.
+    ///
+    /// Sequence replay policy is message-class specific. Effectful DKG messages
+    /// use durable replay state; status, catch-up, readiness, and Aleph traffic
+    /// use kind-isolated volatile windows. `SubmitOperation` authenticates this
+    /// value for transport provenance but deliberately uses the canonical
+    /// operation ID for restart-safe idempotency, so operation retries are not
+    /// rejected by a transport watermark.
     pub sequence: u64,
     /// Request payload kind.
     pub kind: FederationRestMessageKind,
@@ -525,7 +540,11 @@ where
 const FEDERATION_REST_SEQUENCE_REORDER_WINDOW_NANOS: u64 = 600_000_000_000;
 const FEDERATION_REST_SEQUENCE_REORDER_MAX_ENTRIES: usize = 4096;
 
-/// In-memory replay tracker for authenticated federation REST requests.
+/// Replay tracker for authenticated federation REST message classes that use
+/// sequence ordering.
+///
+/// Private operation submission deliberately bypasses this tracker because its
+/// canonical operation ID and durable consensus record own idempotency.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FederationRestSequenceTracker {
     durable_dkg: FederationRestSequenceWindow,
@@ -563,7 +582,7 @@ impl FederationRestSequenceTracker {
         &self.durable_dkg.highest_by_sender
     }
 
-    /// Verify a request and record its sequence if it advances the sender stream.
+    /// Verify a request and record its sequence when its kind uses replay state.
     pub fn verify_and_record<T>(
         &mut self,
         request: &FederationSignedRequest<T>,
@@ -594,14 +613,16 @@ impl FederationRestSequenceTracker {
         self.verify_next_sequence(request.kind, request.sender, request.sequence)
     }
 
-    /// Record an already-verified sender sequence.
+    /// Record an already-verified sender sequence when its kind uses replay state.
     pub fn record_sequence(
         &mut self,
         kind: FederationRestMessageKind,
         sender: MemberId,
         sequence: u64,
     ) {
-        self.window_mut(kind).record_sequence(sender, sequence);
+        if let Some(window) = self.window_mut(kind) {
+            window.record_sequence(sender, sequence);
+        }
     }
 
     /// Verify an already-authenticated sender sequence without rechecking the request signature.
@@ -611,11 +632,15 @@ impl FederationRestSequenceTracker {
         sender: MemberId,
         sequence: u64,
     ) -> Result<()> {
-        self.window(kind)
-            .map_or(Ok(()), |window| window.ensure_sequence_advances(sender, sequence))
+        self.window(kind).map_or(Ok(()), |window| {
+            window.ensure_sequence_advances(sender, sequence)
+        })
     }
 
     fn window(&self, kind: FederationRestMessageKind) -> Option<&FederationRestSequenceWindow> {
+        if !kind.uses_sequence_replay_state() {
+            return None;
+        }
         if kind.has_durable_replay_state() {
             return Some(&self.durable_dkg);
         }
@@ -625,11 +650,14 @@ impl FederationRestSequenceTracker {
     fn window_mut(
         &mut self,
         kind: FederationRestMessageKind,
-    ) -> &mut FederationRestSequenceWindow {
-        if kind.has_durable_replay_state() {
-            return &mut self.durable_dkg;
+    ) -> Option<&mut FederationRestSequenceWindow> {
+        if !kind.uses_sequence_replay_state() {
+            return None;
         }
-        self.volatile_by_kind.entry(kind).or_default()
+        if kind.has_durable_replay_state() {
+            return Some(&mut self.durable_dkg);
+        }
+        Some(self.volatile_by_kind.entry(kind).or_default())
     }
 }
 
@@ -4102,6 +4130,23 @@ mod tests {
     }
 
     #[test]
+    fn sequence_tracker_keeps_submit_operation_sequence_informational() {
+        let member = roster_member_id(1);
+        let mut tracker = FederationRestSequenceTracker::new();
+
+        tracker.record_sequence(FederationRestMessageKind::SubmitOperation, member, 5);
+        tracker
+            .verify_next_sequence(FederationRestMessageKind::SubmitOperation, member, 5)
+            .expect("operation replay is governed by its canonical operation ID");
+        assert!(
+            tracker
+                .window(FederationRestMessageKind::SubmitOperation)
+                .is_none(),
+            "operation submissions must never allocate transport replay state"
+        );
+    }
+
+    #[test]
     fn sequence_tracker_bounds_high_rate_volatile_history() {
         let member = roster_member_id(1);
         let first = 1_000_000_000_000;
@@ -4159,7 +4204,10 @@ mod tests {
             FederationRestMessageKind::DkgTranscriptSignature,
             FederationRestMessageKind::DkgActivation,
         ] {
-            assert!(kind.has_durable_replay_state(), "DKG mutation must be durable");
+            assert!(
+                kind.has_durable_replay_state(),
+                "DKG mutation must be durable"
+            );
         }
     }
 }

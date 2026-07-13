@@ -113,7 +113,7 @@ The implementation is not complete until these properties are true and tested:
 - Members handle fake-wallet mint and melt success, failure, pending, delay, duplicate observation, and retry paths.
 - Members can go offline, restart, catch up, converge to the same state digest, and only resume signing after catching up.
 - Private federation REST messages are accepted only from configured federation partner identity public keys.
-- Unknown members, wrong federation IDs, invalid signatures, stale sequence numbers, and body-hash mismatches are rejected before state mutation.
+- Unknown members, wrong federation IDs, invalid signatures, and body-hash mismatches are rejected before state mutation. Effectful DKG messages use durable sequence replay protection; other non-operation private messages use kind-isolated volatile windows. `SubmitOperation` uses its canonical operation ID and durable consensus record for restart-safe replay protection.
 - Standalone mint and wallet tests continue to pass when federation mode is disabled.
 
 ## Expected final result

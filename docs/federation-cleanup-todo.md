@@ -2190,7 +2190,11 @@ administrative requests.
   finalization, finalized-unit sequence plumbing, and the generic
   submit-with-sequence methods. Authenticated operation submissions use their
   canonical operation ID plus durable pending/finalized records for idempotency,
-  including after restart; REST sequence numbers are not consensus order.
+  including after restart; REST sequence numbers are not consensus order. The
+  signed `SubmitOperation.sequence` is therefore transport provenance rather
+  than a replay watermark, and distinct valid operation IDs may reuse it. The
+  shared sequence tracker encodes that exception and cannot allocate a
+  `SubmitOperation` replay window.
 - Kept signed sender, receiver, federation, kind, body-hash, request-size, and
   operation admission validation unchanged. Exact signed operation replays
   return the durable duplicate outcome, while two separately signed operations

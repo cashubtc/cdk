@@ -73,7 +73,7 @@ Federation member identity is separate from Cashu signing keys:
 - Member identity keys authenticate mint-to-mint messages.
 - Threshold BLS shares sign blinded Cashu messages.
 - Every member stores the complete federation roster of member IDs, identity public keys, endpoints, BLS public shares, and aggregate Cashu keysets.
-- Unknown member IDs, wrong federation IDs, mismatched public keys, invalid signatures, stale sequence numbers, and body-hash mismatches must be rejected before state mutation.
+- Unknown member IDs, wrong federation IDs, mismatched public keys, invalid signatures, and body-hash mismatches must be rejected before state mutation. Effectful DKG messages must enforce durable sequence state; status, catch-up, readiness, and Aleph traffic must use kind-isolated volatile windows. `SubmitOperation` authenticates its sender-local sequence but deliberately derives replay safety and idempotency from the canonical operation ID and durable consensus record.
 
 ## Public Federation Discovery
 

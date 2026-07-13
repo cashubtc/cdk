@@ -86,8 +86,11 @@ If any answer is yes, review the relevant sections below before approving.
 ## Networking And Member Authentication
 
 - Private REST messages must validate federation ID, sender, receiver, member
-  identity signature, body hash, message kind, and monotonically increasing
-  sequence before mutation.
+  identity signature, body hash, and message kind before mutation. Effectful
+  DKG messages must enforce durable sequence state; status, catch-up, readiness,
+  and Aleph traffic must enforce kind-isolated volatile windows.
+  `SubmitOperation` authenticates its sequence but uses the canonical operation
+  ID and durable consensus outcome for replay safety.
 - Unknown members and mismatched public keys must be rejected before processing
   payloads.
 - Peer sync and catch-up requests need explicit timeouts, retry/backoff, page

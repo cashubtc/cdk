@@ -110,7 +110,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P16 | Global lock removed; quote-scoped guard and durable saga claim added | Resolved (was High) | 99% | Complete: unrelated quotes proceed concurrently and only the durable transition winner may initiate payment. |
 | P17 | Legacy registry migration conflicts with the accepted cut-through policy | Complete | 99% | Superseded by P14: reset the current registry shape to initial v1 and do not add a legacy loader or CLI alias. |
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
-| P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
+| P19 | Operation-ID replay policy is explicit and encoded in the shared tracker | Resolved (was Low) | 99% | Complete: operation retries use durable IDs and cannot acquire a transport replay window. |
 
 There are no remaining Critical or High findings. P5 should not remain an open
 broad transaction-refactor request in its current wording.
@@ -1528,20 +1528,21 @@ Acceptance criteria:
 - Production federation feature builds exclude development-only payment and
   smoke-test surfaces.
 
-### P19: SubmitOperation Authenticates a Sequence but Does Not Enforce Its Replay Semantics
+### P19: SubmitOperation Uses Operation-ID Replay Semantics
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
-**Severity:** Low — exact operation replay remains idempotent by operation ID
-and does not duplicate consensus mutation. The regression is that the signed
-wire contract promises monotonic replay rejection while `SubmitOperation`
-silently accepts distinct request bodies carrying the same sender sequence.
+**Severity:** Resolved (was Low) — exact operation replay remains idempotent by
+operation ID and does not duplicate consensus mutation. The signed wire
+contract now explicitly gives `SubmitOperation` different replay semantics from
+message classes with sequence windows.
 
-`FederationSignedRequest` documents `sequence` as a monotonic sender-local value
-used to reject simple replays. The common sequence tracker also has a volatile
-per-kind window for `SubmitOperation`. The private operation route does not use
-that tracker: it verifies the signature and operation admission, discards the
-verified sender/sequence, and submits only the operation envelope.
+Before resolution, `FederationSignedRequest` documented every `sequence` as a
+monotonic sender-local replay watermark, and the common sequence tracker could
+allocate a volatile per-kind window for `SubmitOperation`. The private operation
+route did not use that tracker: it verified the signature and operation
+admission, then submitted only the operation envelope. The behavior was safe,
+but the shared abstraction and wire documentation contradicted it.
 
 The route tests deliberately establish the resulting behavior:
 
@@ -1552,43 +1553,45 @@ The route tests deliberately establish the resulting behavior:
 Operation-ID idempotency is the correct primary defense for an effectful
 operation because it survives restart and permits safe retry after a lost
 response. Enforcing a volatile sequence before checking the operation ID would
-be worse: it would reject a legitimate exact retry. Conversely, leaving the
-sequence entirely unenforced means it provides no same-process nonce-reuse or
-sender-equivocation signal, and its public documentation is false for this
-message kind. This is not strong Byzantine containment—a malicious member can
-always choose a fresh sequence—but the protocol should make the intended
-semantics explicit.
+reject a legitimate exact retry. Binding a sequence after duplicate resolution
+would add only same-process diagnostics: it disappears on restart, while a
+malicious member can always choose a fresh sequence. The selected policy makes
+the durable invariant explicit instead of adding a second, weaker identity.
 
-**Reassessment:** Prefer documenting `SubmitOperation` as operation-ID
-idempotent unless the project needs same-process equivocation diagnostics. If
-sequence reuse is enforced, first resolve an exact operation-ID duplicate to
-its durable outcome, then bind a genuinely new `(sender, sequence)` to one
-operation ID. A highest-sequence-only check is insufficient because it would
-break safe exact retry, and a volatile mapping is not a durable Byzantine
-containment mechanism.
+**Resolution:** `SubmitOperation.sequence` is authenticated transport provenance,
+not a replay watermark. Canonical operation IDs and durable pending/finalized
+records provide restart-safe idempotency. The route continues to bypass
+sequence ordering, and the shared sequence tracker now encodes the exception:
+recording a `SubmitOperation` sequence is a no-op and cannot allocate a replay
+window. This is preferable to a volatile `(sender, sequence)` binding, which
+would disappear on restart without providing Byzantine containment, or a
+highest-sequence check, which would break safe exact retry after response loss.
+Effectful DKG replay state remains durable; status, catch-up, readiness, and
+Aleph traffic retain isolated volatile windows.
 
 Relevant code:
 
-- `crates/cdk-common/src/federation/transport.rs:360`
-- `crates/cdk-common/src/federation/transport.rs:539`
-- `crates/cdk-axum/src/federation.rs:299`
-- `crates/cdk-axum/src/federation.rs:315`
+- `crates/cdk-common/src/federation/transport.rs:61`
+- `crates/cdk-common/src/federation/transport.rs:381`
+- `crates/cdk-common/src/federation/transport.rs:543`
+- `crates/cdk-common/src/federation/transport.rs:616`
+- `crates/cdk-axum/src/federation.rs:301`
+- `crates/cdk-axum/src/federation.rs:317`
 - `crates/cdk-axum/src/federation/tests/private_operation_route.rs:148`
 - `crates/cdk-axum/src/federation/tests/private_operation_route.rs:177`
 
 TODO:
 
-- [ ] Decide and document whether `SubmitOperation.sequence` is intentionally
+- [x] Decide and document whether `SubmitOperation.sequence` is intentionally
   informational because operation IDs own idempotency, or whether it must
   detect distinct operations reusing one sender sequence.
-- [ ] If enforcing it, resolve exact operation-ID duplicates first, then apply
-  and record the volatile `SubmitOperation` sequence only for genuinely new
-  operation IDs.
-- [ ] Keep effectful DKG sequences durable and keep status, catch-up, readiness,
+- [x] Do not add a volatile sequence-to-operation binding: it would not survive
+  restart, and operation-ID duplicates already resolve to durable outcomes.
+- [x] Keep effectful DKG sequences durable and keep status, catch-up, readiness,
   and Aleph transport windows isolated by message kind.
-- [ ] Add a focused test for the selected same-sequence/different-operation
+- [x] Add a focused test for the selected same-sequence/different-operation
   policy while retaining exact-retry behavior across response loss and restart.
-- [ ] Update the `FederationSignedRequest.sequence` documentation if replay
+- [x] Update the `FederationSignedRequest.sequence` documentation if replay
   semantics intentionally differ by message kind.
 
 Acceptance criteria:
@@ -1598,6 +1601,14 @@ Acceptance criteria:
   consistently or explicitly documented and tested as allowed.
 - Sequence handling cannot cause duplicate state mutation or block a valid
   exact retry after response loss.
+
+Verification:
+
+- `cargo test -p cdk-common --features federation sequence_tracker_` — 7 passed.
+- `cargo test -p cdk-axum --features federation private_operation_route_` — 7 passed.
+- The common regression proves `SubmitOperation` cannot allocate replay state;
+  the route regressions retain exact-operation retry and explicitly allow a
+  distinct canonical operation ID to reuse the signed sequence.
 
 ## Accepted / Not Tracked as Bugs
 
@@ -1672,11 +1683,10 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P1/P2/P3/P6/P7/P8/P9/P10/P14/P16 are resolved. The reassessment retains no
-Critical or High findings, four Medium findings (P4, P11, P13, P18), and two
-Low findings (P5, P19). P15 is complete under the accepted fresh-database
-policy; P17 is closed as superseded by P14's completed cut-through registry
-reset.
+P1/P2/P3/P6/P7/P8/P9/P10/P14/P16/P19 are resolved. The reassessment retains no
+Critical or High findings, four Medium findings (P4, P11, P13, P18), and one Low
+residual finding (P5). P15 is complete under the accepted fresh-database policy;
+P17 is closed as superseded by P14's completed cut-through registry reset.
 
 P14 completed the one-time reset of every federation-owned format to its clean
 initial v1, including the current CLI registry shape, removed legacy acceptance
@@ -1691,7 +1701,8 @@ to retry fairness/observability unless a restart convergence failure is
 reproduced. P5's broad explicit-rollback work is complete and should remain
 open only for focused staged-melt replay/idempotence verification. P10 is the
 general Halted teardown invariant rather than a proven stale-resource outcome
-of ordinary automatic rotation alone. P13 and P19 require explicit policy
-decisions. P17's former compatibility proposal is withdrawn and folded into
-P14; P18 remains an assurance boundary, not evidence of a current signing
-bypass.
+of ordinary automatic rotation alone. P13 still requires an explicit policy
+decision; P19 now codifies operation-ID replay semantics without adding
+restart-volatile sequence binding. P17's former compatibility proposal is
+withdrawn and folded into P14; P18 remains an assurance boundary, not evidence
+of a current signing bypass.

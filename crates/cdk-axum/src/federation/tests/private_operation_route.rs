@@ -174,7 +174,7 @@ async fn private_operation_route_replay_is_idempotent_by_operation_id() {
 }
 
 #[tokio::test]
-async fn private_operation_route_sequence_reuse_does_not_alias_operation_ids() {
+async fn private_operation_route_allows_sequence_reuse_by_operation_id_policy() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let first = test_operation_envelope_for_state(&state, "first sequenced operation");
     let second = test_operation_envelope_for_state(&state, "stale sequenced operation");
@@ -198,9 +198,12 @@ async fn private_operation_route_sequence_reuse_does_not_alias_operation_ids() {
         .expect("first operation accepted");
     let second_response = post_operation(State(state.clone()), Json(second_request))
         .await
-        .expect("distinct signed operation accepted despite reused transport sequence");
+        .expect("operation-ID policy accepts a distinct operation despite sequence reuse");
 
-    assert_ne!(second_response.0.operation_id, first_response.0.operation_id);
+    assert_ne!(
+        second_response.0.operation_id,
+        first_response.0.operation_id
+    );
     assert_eq!(consensus_operation_count(&state).await, 2);
     assert!(state
         .mint

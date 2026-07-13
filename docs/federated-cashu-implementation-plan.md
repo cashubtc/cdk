@@ -408,7 +408,7 @@ Request authentication:
 
 - Every private REST message is wrapped in a signed member envelope.
 - The receiver verifies federation ID, sender member ID, receiver member ID, body hash, sequence or nonce, and signature against the sender's configured identity public key.
-- Messages from unknown member IDs, unexpected public keys, wrong federation IDs, stale sequence numbers, or mismatched body hashes are rejected before they can enter consensus or mutate state.
+- Messages from unknown member IDs, unexpected public keys, wrong federation IDs, or mismatched body hashes are rejected before they can enter consensus or mutate state. Effectful DKG messages also reject stale sequences through durable replay state; status, catch-up, readiness, and Aleph traffic use kind-isolated volatile windows. `SubmitOperation` signs but does not order by its transport sequence: canonical operation IDs and durable consensus outcomes provide exact-retry idempotency across response loss and restart.
 - DKG and trusted-dealer setup output must bind member IDs to identity public keys and BLS public shares so a public share cannot be silently reassigned to another member.
 
 ## Core operation coverage matrix
