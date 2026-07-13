@@ -554,6 +554,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_materialized_projection_keyed_reads() {
+        cdk_common::database::mint::test::federation_materialized_projection_keyed_reads(
+            provide_mint_db(unique_federation_test_id(
+                "federation_materialized_projection_keyed_reads",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_mint_db(unique_federation_test_id(

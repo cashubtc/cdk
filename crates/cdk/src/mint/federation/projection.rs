@@ -140,14 +140,24 @@ impl Mint {
             }
         }
 
-        let mut completed_by_id = db
-            .get_completed_operations()
-            .await?
+        let completed_operation_ids = completed_operations
             .into_iter()
-            .map(|operation| (*operation.id(), operation))
-            .collect::<HashMap<_, _>>();
-        for operation_id in completed_operations {
-            let operation_uuid = federation_operation_uuid(operation_id);
+            .map(|operation_id| (operation_id, federation_operation_uuid(operation_id)))
+            .collect::<Vec<_>>();
+        let completed_operation_uuids = completed_operation_ids
+            .iter()
+            .map(|(_, operation_uuid)| *operation_uuid)
+            .collect::<Vec<_>>();
+        let mut completed_by_id = HashMap::new();
+        for operation_ids in completed_operation_uuids.chunks(MATERIALIZED_STATE_QUERY_BATCH_SIZE) {
+            completed_by_id.extend(
+                db.get_federation_completed_operations(operation_ids)
+                    .await?
+                    .into_iter()
+                    .map(|operation| (*operation.id(), operation)),
+            );
+        }
+        for (operation_id, operation_uuid) in completed_operation_ids {
             match completed_by_id.remove(&operation_uuid) {
                 Some(operation) => snapshot.push(completed_operation_materialized_row(
                     operation_id,
@@ -201,12 +211,19 @@ impl Mint {
             }
         }
 
-        let mut stored_melt_quotes = db
-            .get_melt_quotes()
-            .await?
-            .into_iter()
-            .map(|quote| (quote.id.to_string(), quote))
-            .collect::<HashMap<_, _>>();
+        let melt_quote_ids = melt_quotes
+            .iter()
+            .map(|quote| QuoteId::from_str(quote))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut stored_melt_quotes = HashMap::new();
+        for quote_ids in melt_quote_ids.chunks(MATERIALIZED_STATE_QUERY_BATCH_SIZE) {
+            stored_melt_quotes.extend(
+                db.get_federation_melt_quotes(quote_ids)
+                    .await?
+                    .into_iter()
+                    .map(|quote| (quote.id.to_string(), quote)),
+            );
+        }
         for quote in melt_quotes {
             match stored_melt_quotes.remove(&quote) {
                 Some(quote) => snapshot.push(

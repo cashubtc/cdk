@@ -179,6 +179,30 @@ where
         get_federation_mint_quote_states_inner(&*conn, quote_ids).await
     }
 
+    async fn get_federation_melt_quotes(
+        &self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<cdk_common::mint::MeltQuote>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        get_federation_melt_quotes_inner(&*conn, quote_ids).await
+    }
+
+    async fn get_federation_completed_operations(
+        &self,
+        operation_ids: &[uuid::Uuid],
+    ) -> Result<Vec<cdk_common::mint::Operation>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        get_completed_operations_by_ids_inner(&*conn, operation_ids).await
+    }
+
     async fn get_federation_signature_shares_for_output(
         &self,
         operation_id: FederationOperationId,

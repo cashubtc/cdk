@@ -94,7 +94,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | --- | --- | --- | ---: | --- |
 | P1 | One-member federation configs are rejected by the shared threshold invariant | Resolved (was Medium) | 98% | Complete: one-node deployments must use standalone mode. |
 | P2 | Session tasks now activate only after generation-scoped supervisor publication | Resolved (was Medium) | 95% | Complete: construction, publication, activation, and teardown are ordered. |
-| P3 | Confirmed unbounded projection work relative to total mint history | Medium | 99% | Add keyed/batched reads; defer only with explicit realistic history bounds and benchmarks. |
+| P3 | Projection reads are now keyed and batched by federation-tracked IDs | Resolved (was Medium) | 99% | Complete: query cost is independent of unrelated mint history. |
 | P4 | Retry starvation confirmed; restart-loss subclaim not proven | Medium | 82% | Add bounded retry fairness and observability; do not restore durable gossip rows without a failed convergence reproduction. |
 | P5 | Main explicit-rollback claim is resolved; staged melt lifecycle remains | Low residual | 90% | Close or narrow to replay/idempotence of the intentional multi-transaction melt saga. |
 | P6 | Waiter reservation now precedes durable and runtime admission | Resolved (was High) | 99% | Complete: waiter, pending row, and runtime queue are published in one failure-safe order. |
@@ -241,7 +241,7 @@ Acceptance criteria:
 
 ### P3: Materialized-State Projection Full-Table Scans Undo Scaling for Melt and Completed Ops
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
 The cleanup moved materialized-state projection into
 `crates/cdk/src/mint/federation/projection.rs` and batched mint-quote lookups
@@ -256,34 +256,41 @@ unbounded in time and memory even when the federation journal itself is small.
 That is a cleanup-introduced operational regression opposite the stated scaling
 goal for projection.
 
+**Resolution:** The federation database abstraction now exposes projection-only
+keyed reads for melt quotes and completed operations. Projection derives the
+exact quote IDs and deterministic completed-operation UUIDs from the accepted
+journal, queries both indexed primary keys in batches of 500, and rebuilds its
+maps and missing-row markers from that bounded result. Its output order and row
+contents are unchanged because the existing ordered federation key sets still
+drive row construction; database return order is deliberately irrelevant.
+
+The general quote and completed-operation database traits were not expanded,
+so this remains a federation-only API change. Payment observations continue to
+use the existing federation-only table query with its explicit consensus-order
+contract. Their cost is proportional to federation history, not unrelated mint
+history.
+
 Relevant code:
 
-- `crates/cdk/src/mint/federation/projection.rs:21`
-- `crates/cdk/src/mint/federation/projection.rs:144`
-- `crates/cdk/src/mint/federation/projection.rs:181`
-- `crates/cdk/src/mint/federation/projection.rs:205`
-- `crates/cdk-common/src/database/mint/mod.rs:429`
-- `crates/cdk-common/src/database/mint/mod.rs:664`
-- `crates/cdk-sql-common/src/mint/quotes.rs:372`
+- `crates/cdk/src/mint/federation/projection.rs:143`
+- `crates/cdk/src/mint/federation/projection.rs:186`
+- `crates/cdk/src/mint/federation/projection.rs:214`
+- `crates/cdk-common/src/database/mint/mod.rs:958`
+- `crates/cdk-sql-common/src/mint/completed_operations.rs:62`
+- `crates/cdk-sql-common/src/mint/quotes.rs:306`
 
-TODO:
+Verification:
 
-- [ ] Add batched federation melt-quote state lookup analogous to
-  `get_federation_mint_quote_states`, keyed by the melt quote IDs collected
-  from the journal projection set.
-- [ ] Replace `get_completed_operations()` full-table load with batched or
-  multi-get lookup by the completed federation operation UUIDs in the
-  projection set.
-- [ ] Keep payment-observation projection on an ordered, federation-scoped
-  query path; do not regress to unordered full-table scans without an
-  explicit ORDER BY contract used by digest construction.
-- [ ] Bound memory and query cost by the federation-relevant key set, not by
-  total mint history size.
-- [ ] Add a benchmark or focused regression that seeds many unrelated melt
-  quotes / completed operations and proves projection cost stays proportional
-  to federation keys.
-- [ ] Re-run digest compare, catch-up, restart, and status readiness tests
-  after the lookup change.
+- `federation_materialized_projection_keyed_reads` seeds 128 unrelated melt
+  quotes and 128 unrelated completed operations, requests one tracked key plus
+  one missing key from each collection, and proves only the tracked rows are
+  returned. The shared regression runs against SQLite and is also registered
+  for PostgreSQL.
+- All 108 mint federation tests pass, as do the melt-quote catch-up,
+  completed-operation catch-up, materialized status digest, and private
+  completed-operation fingerprint regressions.
+- Federation-enabled PostgreSQL and federation-disabled SQL compilation both
+  pass, preserving backend and standalone feature boundaries.
 
 Acceptance criteria:
 
@@ -1625,8 +1632,8 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P1/P2/P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or
-High findings, seven Medium findings (P3, P4, P8, P11, P13, P14, P18), and two
+P1/P2/P3/P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or
+High findings, six Medium findings (P4, P8, P11, P13, P14, P18), and two
 Low findings (P5, P19). P15 is complete under the accepted fresh-database
 policy; P17 is closed as superseded by P14's cut-through registry reset.
 

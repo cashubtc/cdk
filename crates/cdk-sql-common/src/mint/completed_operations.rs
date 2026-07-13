@@ -59,6 +59,43 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
     ))
 }
 
+#[cfg(feature = "federation")]
+pub(super) async fn get_completed_operations_by_ids_inner<T>(
+    executor: &T,
+    operation_ids: &[uuid::Uuid],
+) -> Result<Vec<mint::Operation>, Error>
+where
+    T: crate::database::DatabaseExecutor,
+{
+    if operation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    query(
+        r#"
+        SELECT
+            operation_id,
+            operation_kind,
+            completed_at,
+            total_issued,
+            total_redeemed,
+            fee_collected,
+            payment_method
+        FROM completed_operations
+        WHERE operation_id IN (:operation_ids)
+        "#,
+    )?
+    .bind_vec(
+        "operation_ids",
+        operation_ids.iter().map(ToString::to_string).collect(),
+    )?
+    .fetch_all(executor)
+    .await?
+    .into_iter()
+    .map(sql_row_to_completed_operation)
+    .collect()
+}
+
 #[async_trait]
 impl<RM> CompletedOperationsTransaction for SQLTransaction<RM>
 where

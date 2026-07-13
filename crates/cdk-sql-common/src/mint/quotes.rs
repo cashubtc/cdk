@@ -303,6 +303,54 @@ where
         .transpose()
 }
 
+#[cfg(feature = "federation")]
+pub(super) async fn get_federation_melt_quotes_inner<T>(
+    executor: &T,
+    quote_ids: &[QuoteId],
+) -> Result<Vec<mint::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    if quote_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    query(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_proof,
+            estimated_blocks,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind,
+            extra_json,
+            fee_options,
+            selected_fee_index
+        FROM melt_quote
+        WHERE id IN (:quote_ids)
+        "#,
+    )?
+    .bind_vec(
+        "quote_ids",
+        quote_ids.iter().map(ToString::to_string).collect(),
+    )?
+    .fetch_all(executor)
+    .await?
+    .into_iter()
+    .map(sql_row_to_melt_quote)
+    .collect()
+}
+
 pub(super) async fn get_mint_quotes_inner<T>(
     executor: &T,
     quote_ids: &[QuoteId],

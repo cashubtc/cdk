@@ -26,6 +26,7 @@ use crate::federation::{
     FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
     MemberConfigPublic, MemberId, ThresholdParams,
 };
+use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut01::{
@@ -1189,6 +1190,82 @@ where
     let first = states[2].as_ref().expect("first quote state");
     assert_eq!(first.id, first_id);
     assert_eq!(first.state, MintQuoteState::Unpaid);
+}
+
+/// Assert projection reads stay keyed when unrelated materialized history is large.
+pub async fn federation_materialized_projection_keyed_reads<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let melt_quote = |label: &str| {
+        MeltQuote::new(
+            None,
+            MeltPaymentRequest::Custom {
+                method: "projection-test".to_string(),
+                request: label.to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(10, CurrencyUnit::Sat),
+            Amount::new(1, CurrencyUnit::Sat),
+            10_000,
+            None,
+            None,
+            PaymentMethod::Custom("projection-test".to_string()),
+            None,
+            None,
+        )
+    };
+    let selected_quote = melt_quote("selected");
+    let selected_quote_id = selected_quote.id.clone();
+    let selected_operation_id = uuid::Uuid::now_v7();
+    let selected_operation = Operation::new(
+        selected_operation_id,
+        OperationKind::Melt,
+        Amount::ZERO,
+        Amount::from(10),
+        Amount::from(1),
+        Some(42),
+        Some(PaymentMethod::Custom("projection-test".to_string())),
+    );
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_melt_quote(selected_quote)
+        .await
+        .expect("add selected melt quote");
+    tx.add_completed_operation(&selected_operation, &std::collections::HashMap::new())
+        .await
+        .expect("add selected completed operation");
+    for index in 0..128 {
+        tx.add_melt_quote(melt_quote(&format!("unrelated-{index}")))
+            .await
+            .expect("add unrelated melt quote");
+        let operation = Operation::new(
+            uuid::Uuid::now_v7(),
+            OperationKind::Swap,
+            Amount::from(1),
+            Amount::from(1),
+            Amount::ZERO,
+            Some(index),
+            None,
+        );
+        tx.add_completed_operation(&operation, &std::collections::HashMap::new())
+            .await
+            .expect("add unrelated completed operation");
+    }
+    tx.commit().await.expect("commit projection history");
+
+    let melt_quotes = db
+        .get_federation_melt_quotes(&[selected_quote_id.clone(), crate::quote_id::QuoteId::new()])
+        .await
+        .expect("load keyed melt quotes");
+    assert_eq!(melt_quotes.len(), 1);
+    assert_eq!(melt_quotes[0].id, selected_quote_id);
+
+    let completed_operations = db
+        .get_federation_completed_operations(&[selected_operation_id, uuid::Uuid::now_v7()])
+        .await
+        .expect("load keyed completed operations");
+    assert_eq!(completed_operations.len(), 1);
+    assert_eq!(*completed_operations[0].id(), selected_operation_id);
 }
 
 /// Assert payment observations persist as durable per-member quorum evidence.

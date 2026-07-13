@@ -961,6 +961,24 @@ pub trait FederationApplicationDatabase {
         quote_ids: &[QuoteId],
     ) -> Result<Vec<Option<FederationMintQuoteState>>, Self::Err>;
 
+    /// Get melt quotes needed for convergence projection by quote ID.
+    ///
+    /// Only matching rows are returned; callers reconstruct deterministic
+    /// ordering and missing-row markers from their input key set.
+    async fn get_federation_melt_quotes(
+        &self,
+        quote_ids: &[QuoteId],
+    ) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+
+    /// Get completed operations needed for convergence projection by operation ID.
+    ///
+    /// Only matching rows are returned; callers reconstruct deterministic
+    /// ordering and missing-row markers from their input key set.
+    async fn get_federation_completed_operations(
+        &self,
+        operation_ids: &[uuid::Uuid],
+    ) -> Result<Vec<mint::Operation>, Self::Err>;
+
     /// Get signature shares for one accepted operation output.
     async fn get_federation_signature_shares_for_output(
         &self,

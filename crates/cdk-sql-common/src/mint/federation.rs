@@ -71,7 +71,8 @@ use cdk_common::federation::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
 
-use super::quotes::get_federation_mint_quote_states_inner;
+use super::completed_operations::get_completed_operations_by_ids_inner;
+use super::quotes::{get_federation_melt_quotes_inner, get_federation_mint_quote_states_inner};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
