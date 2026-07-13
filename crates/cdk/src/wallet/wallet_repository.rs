@@ -205,7 +205,9 @@ impl WalletRepositoryBuilder {
         self
     }
 
-    /// Build the WalletRepository and load existing wallets from database
+    /// Build the WalletRepository and load existing wallets from the database.
+    ///
+    /// This only uses persisted mint metadata and does not make network requests.
     pub async fn build(self) -> Result<WalletRepository, Error> {
         let localstore = self
             .localstore
@@ -622,30 +624,26 @@ impl WalletRepository {
 
     /// Load all wallets from database
     ///
-    /// This loads wallets for all mints stored in the database.
-    /// For each mint, it fetches the mint info to discover supported units
-    /// and creates a wallet for each supported unit.
+    /// This loads wallets for all mints stored in the database. For each mint,
+    /// it uses the persisted mint info to discover supported units and creates
+    /// a wallet for each supported unit. This does not make network requests.
     #[instrument(skip(self))]
     async fn load_wallets(&self) -> Result<(), Error> {
         let mints = self.localstore.get_mints().await.map_err(Error::Database)?;
 
-        for (mint_url, _mint_info) in mints {
-            // Try to fetch mint info and create wallets for all supported units
-            // If fetch fails, fall back to creating just a Sat wallet
-            let units = match self.fetch_mint_info(&mint_url).await {
-                Ok(info) => {
-                    let supported = info.supported_units();
-                    if supported.is_empty() {
+        for (mint_url, mint_info) in mints {
+            let units = mint_info
+                .map(|info| {
+                    let supported_units = info.supported_units();
+                    if supported_units.is_empty() {
                         vec![CurrencyUnit::Sat]
                     } else {
-                        supported.into_iter().cloned().collect()
+                        supported_units.into_iter().cloned().collect()
                     }
-                }
-                Err(_) => {
-                    // If we can't fetch mint info, use default Sat unit for backward compatibility
-                    vec![CurrencyUnit::Sat]
-                }
-            };
+                })
+                // Older databases may not have mint metadata. Keep the
+                // established single-sat wallet behavior for those records.
+                .unwrap_or_else(|| vec![CurrencyUnit::Sat]);
 
             for unit in units {
                 let key = WalletKey::new(mint_url.clone(), unit.clone());
@@ -865,11 +863,15 @@ impl Drop for WalletRepository {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     use cdk_common::database::WalletDatabase;
+    use cdk_common::nut00::KnownMethod;
+    use cdk_common::nuts::{MintInfo, MintMethodSettings};
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::nuts::{NUT04Settings, Nuts, PaymentMethod};
 
     async fn create_test_repository() -> WalletRepository {
         let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
@@ -933,6 +935,24 @@ mod tests {
             .expect("Failed to parse proxy URL")
     }
 
+    fn mint_info_with_units(units: Vec<CurrencyUnit>) -> MintInfo {
+        MintInfo::new().nuts(
+            Nuts::new().nut04(NUT04Settings::new(
+                units
+                    .into_iter()
+                    .map(|unit| MintMethodSettings {
+                        method: PaymentMethod::Known(KnownMethod::Bolt11),
+                        unit,
+                        min_amount: None,
+                        max_amount: None,
+                        options: None,
+                    })
+                    .collect(),
+                false,
+            )),
+        )
+    }
+
     #[test]
     fn builder_verifies_proxy_tls_certificates_by_default() {
         let builder = WalletRepositoryBuilder::new();
@@ -951,6 +971,77 @@ mod tests {
     async fn test_wallet_repository_creation() {
         let repo = create_test_repository().await;
         assert!(repo.wallets.try_read().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_load_wallets_uses_persisted_metadata_without_network() {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let (mint_url, direct_connections, listener_handle) =
+            local_mint_url_with_connection_counter().await;
+        localstore
+            .add_mint(
+                mint_url.clone(),
+                Some(mint_info_with_units(vec![
+                    CurrencyUnit::Sat,
+                    CurrencyUnit::Usd,
+                ])),
+            )
+            .await
+            .expect("Failed to add mint metadata");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed([0u8; 64])
+                .build(),
+        )
+        .await;
+        listener_handle.abort();
+
+        let repo = result
+            .expect("Repository startup should not wait for a mint request")
+            .expect("Repository startup should succeed");
+
+        assert_eq!(direct_connections.load(Ordering::SeqCst), 0);
+        assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
+        assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Usd).await);
+    }
+
+    #[tokio::test]
+    async fn test_load_wallets_falls_back_to_sat_without_persisted_metadata() {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let (mint_url, direct_connections, listener_handle) =
+            local_mint_url_with_connection_counter().await;
+        localstore
+            .add_mint(mint_url.clone(), None)
+            .await
+            .expect("Failed to add legacy mint");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed([0u8; 64])
+                .build(),
+        )
+        .await;
+        listener_handle.abort();
+
+        let repo = result
+            .expect("Repository startup should not wait for a mint request")
+            .expect("Repository startup should succeed");
+
+        assert_eq!(direct_connections.load(Ordering::SeqCst), 0);
+        assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
     }
 
     #[tokio::test]

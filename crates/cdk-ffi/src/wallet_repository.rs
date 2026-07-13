@@ -19,7 +19,9 @@ pub struct WalletRepository {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletRepository {
-    /// Create a new WalletRepository
+    /// Create a new WalletRepository from locally persisted wallet state.
+    ///
+    /// Construction does not make network requests to configured mints.
     ///
     /// Accepts a `WalletStore` which can be:
     /// - `Sqlite { path }` — built-in Rust SQLite backend
@@ -51,7 +53,11 @@ impl WalletRepository {
         })
     }
 
-    /// Create a new WalletRepository with proxy configuration
+    /// Create a new WalletRepository with proxy configuration.
+    ///
+    /// Construction restores locally persisted wallet state without making
+    /// network requests to configured mints. The proxy is used by subsequent
+    /// mint operations.
     #[uniffi::constructor]
     pub fn new_with_proxy(
         mnemonic: String,
