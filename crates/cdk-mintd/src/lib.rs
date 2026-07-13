@@ -1460,6 +1460,94 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
 }
 
 #[cfg(feature = "federation")]
+fn federation_bdk_local_config(
+    settings: &config::Settings,
+    work_dir: &Path,
+) -> Result<Option<cdk_bdk::FederatedBdkLocalConfig>> {
+    let Some(federation) = settings.federation.as_ref() else {
+        return Ok(None);
+    };
+    let wallet = &federation.onchain_wallet;
+    if !wallet.enabled {
+        return Ok(None);
+    }
+    if !federation.enabled {
+        bail!("federation.onchain_wallet.enabled requires federation.enabled=true");
+    }
+    if wallet.sync_interval_secs == 0 {
+        bail!("federation.onchain_wallet.sync_interval_secs must be greater than zero");
+    }
+    let chain_source = match wallet.chain_source_type.to_ascii_lowercase().as_str() {
+        "esplora" => {
+            let url = wallet
+                .esplora_url
+                .as_ref()
+                .filter(|url| !url.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.esplora_url is required for Esplora"
+                    )
+                })?;
+            if wallet.esplora_parallel_requests == 0 {
+                bail!(
+                    "federation.onchain_wallet.esplora_parallel_requests must be greater than zero"
+                );
+            }
+            cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
+                url: url.clone(),
+                parallel_requests: wallet.esplora_parallel_requests,
+            })
+        }
+        "bitcoinrpc" => {
+            let host = wallet
+                .bitcoind_rpc_host
+                .as_ref()
+                .filter(|host| !host.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.bitcoind_rpc_host is required for Bitcoin RPC"
+                    )
+                })?;
+            let port = wallet.bitcoind_rpc_port.ok_or_else(|| {
+                anyhow!("federation.onchain_wallet.bitcoind_rpc_port is required for Bitcoin RPC")
+            })?;
+            let user = wallet
+                .bitcoind_rpc_user
+                .as_ref()
+                .filter(|user| !user.is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.bitcoind_rpc_user is required for Bitcoin RPC"
+                    )
+                })?;
+            let password = wallet
+                .bitcoind_rpc_password
+                .as_ref()
+                .filter(|password| !password.is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.bitcoind_rpc_password is required for Bitcoin RPC"
+                    )
+                })?;
+            cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                host: host.clone(),
+                port,
+                user: user.clone(),
+                password: password.clone(),
+            })
+        }
+        source => bail!(
+            "unknown federation.onchain_wallet.chain_source_type {source}; expected bitcoinrpc or esplora"
+        ),
+    };
+    Ok(Some(cdk_bdk::FederatedBdkLocalConfig {
+        chain_source,
+        storage_root: work_dir.join("federation-wallet"),
+        sync_interval: std::time::Duration::from_secs(wallet.sync_interval_secs),
+    }))
+}
+
+#[cfg(feature = "federation")]
 fn federation_dkg_auto_start_config(
     settings: &config::Settings,
 ) -> Result<Option<cdk_axum::FederationDkgAutoStartConfig>> {
@@ -2900,6 +2988,18 @@ impl PreparedMintd {
             }
         }
 
+        #[cfg(feature = "federation")]
+        let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
+            Arc::clone(&mint),
+            cache,
+            custom_methods,
+            settings.info.enable_info_page.unwrap_or(true),
+            federation_peer_sync_config(settings),
+            federation_dkg_auto_start_config(settings)?,
+            federation_bdk_local_config(settings, work_dir)?,
+        )
+        .await?;
+        #[cfg(not(feature = "federation"))]
         let v1_service = cdk_axum::create_mint_router_with_custom_cache(
             Arc::clone(&mint),
             cache,
@@ -4261,6 +4361,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4311,6 +4412,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4357,6 +4459,7 @@ engine = "sqlite"
                     aleph_bft_live_session_rotation_limit: Some(71),
                 },
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4402,6 +4505,56 @@ engine = "sqlite"
 
     #[cfg(feature = "federation")]
     #[test]
+    fn federation_bdk_config_is_local_redacted_and_fail_closed() {
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let mut settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                onchain_wallet: config::FederationOnchainWallet {
+                    enabled: true,
+                    chain_source_type: "esplora".to_string(),
+                    esplora_url: Some(
+                        "https://wallet-source.example.invalid/private-token".to_string(),
+                    ),
+                    esplora_parallel_requests: 3,
+                    ..config::FederationOnchainWallet::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..config::Settings::default()
+        };
+        let local = federation_bdk_local_config(&settings, work_dir.path())
+            .expect("valid local config")
+            .expect("enabled local config");
+        assert_eq!(local.chain_source.kind(), cdk_bdk::ChainSourceKind::Esplora);
+        let debug = format!("{local:?}");
+        assert!(!debug.contains("private-token"));
+        assert!(!debug.contains(&work_dir.path().to_string_lossy().to_string()));
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .esplora_url = None;
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("missing endpoint must fail")
+            .to_string()
+            .contains("esplora_url"));
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .enabled = false;
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect("disabled config")
+            .is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn federation_peer_sync_config_rejects_invalid_mintd_settings() {
         let settings = config::Settings {
             federation: Some(config::Federation {
@@ -4415,6 +4568,7 @@ engine = "sqlite"
                     ..config::FederationPeerSync::default()
                 },
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4808,6 +4962,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4854,6 +5009,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4876,6 +5032,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4921,6 +5078,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4953,6 +5111,7 @@ engine = "sqlite"
                 private_config_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -5046,6 +5205,7 @@ engine = "sqlite"
                     private_config_path: Some(private_config_path.clone()),
                     peer_sync: config::FederationPeerSync::default(),
                     dkg: config::FederationDkg::default(),
+                    onchain_wallet: config::FederationOnchainWallet::default(),
                 }),
                 ..Default::default()
             };

@@ -12,6 +12,34 @@ use cdk_common::{Amount, CurrencyUnit, SecretKey};
 
 use super::*;
 
+#[test]
+fn dkg_driver_phase_labels_cover_bls_and_frost_ceremonies() {
+    let labels = [
+        (FederationDkgDriverPhase::Commitment, "commitment"),
+        (FederationDkgDriverPhase::Reveal, "reveal"),
+        (FederationDkgDriverPhase::SecretShares, "share_delivery"),
+        (
+            FederationDkgDriverPhase::LocalKeysetShare,
+            "local_keyset_share",
+        ),
+        (
+            FederationDkgDriverPhase::TranscriptSignature,
+            "transcript_signature",
+        ),
+        (FederationDkgDriverPhase::Activation, "activation"),
+        (FederationDkgDriverPhase::FrostRound1, "frost_round_1"),
+        (FederationDkgDriverPhase::FrostRound2, "frost_round_2"),
+        (
+            FederationDkgDriverPhase::FrostConfirmation,
+            "frost_confirmation",
+        ),
+        (FederationDkgDriverPhase::Complete, "complete"),
+    ];
+    for (phase, expected) in labels {
+        assert_eq!(dkg_driver_phase_label(phase), expected);
+    }
+}
+
 struct DkgCompletionFixture {
     setup_public_config: FederationConfig,
     setup_private_config: MemberConfigPrivate,

@@ -1374,6 +1374,25 @@ pub struct FederationInvalidOperationAlertSummary {
     pub window_secs: u64,
 }
 
+/// Redacted local status for one active federated on-chain wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationOnchainWalletStatus {
+    /// Non-sensitive source implementation name.
+    pub source: String,
+    /// Stable health name (`never_synced`, `healthy`, or `degraded`).
+    pub health: String,
+    /// Latest locally persisted BDK checkpoint height.
+    pub local_tip_height: u32,
+    /// Latest locally persisted BDK checkpoint hash.
+    pub local_tip_hash: String,
+    /// Unix time of the most recent successful synchronization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_unix: Option<u64>,
+    /// Saturating consecutive failure count.
+    pub consecutive_failures: u32,
+}
+
 /// Detailed private federation member status used by operator tooling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1440,6 +1459,9 @@ pub struct FederationLocalStatusResponse {
     pub materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     /// Aggregated invalid-operation alerts.
     pub invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
+    /// Active local federated on-chain wallet health records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub onchain_wallets: Vec<FederationOnchainWalletStatus>,
 }
 
 /// Peer status response for federation health and catch-up checks.
@@ -2692,6 +2714,14 @@ mod tests {
                 threshold: 20,
                 window_secs: 60,
             }],
+            onchain_wallets: vec![FederationOnchainWalletStatus {
+                source: "bitcoin_rpc".to_string(),
+                health: "healthy".to_string(),
+                local_tip_height: 101,
+                local_tip_hash: "00".repeat(32),
+                last_success_unix: Some(1_700_000_000),
+                consecutive_failures: 0,
+            }],
         };
 
         let value = serde_json::to_value(&status).expect("local status json");
@@ -2715,6 +2745,7 @@ mod tests {
                 "duplicate_submissions",
                 "invalid_operation_alerts",
                 "materialized_state_rows",
+                "onchain_wallets",
                 "payment_observation_reports",
                 "peer_status",
                 "pending_mempool_items",

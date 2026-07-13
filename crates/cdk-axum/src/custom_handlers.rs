@@ -1978,6 +1978,7 @@ mod tests {
                     crate::FederationInvalidOperationAlertTracker::default(),
                 ))),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
+                onchain_wallets: Vec::new(),
                 #[cfg(test)]
                 fail_next_pending_operation_persistence: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
@@ -2793,6 +2794,7 @@ mod tests {
                     ))
                 }),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
+                onchain_wallets: Vec::new(),
                 #[cfg(test)]
                 fail_next_pending_operation_persistence: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),

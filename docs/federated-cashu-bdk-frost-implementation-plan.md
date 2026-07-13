@@ -95,6 +95,12 @@ federation partially ready.
   authorization, nonce IDs, wire transcripts, chain codes, descriptors, and
   signing targets now bind the application key epoch. Preserve the wrong-epoch
   rejection and epoch-separated descriptor vectors.
+- Milestone 6's federation-enabled daemon build found that the existing DKG
+  operator-status label adapter had not been extended for the three isolated
+  FROST phases. The small status-only fix adds those labels; it does not alter
+  mint business logic or either DKG state machine. The same build exposed
+  federation-only test doubles that had drifted from current HTTP transport and
+  wallet-saga fields; the compatibility repair is confined to test code.
 
 ## 1. Problem and setting
 
@@ -844,35 +850,48 @@ verifiable local chain view without signing capability.
 
 **Work:**
 
-- [ ] Instantiate BDK external/internal Taproot descriptors from accepted public
+- [x] Instantiate BDK external/internal Taproot descriptors from accepted public
   wallet config.
-- [ ] Persist BDK wallet state in a federation-wallet-specific namespace.
-- [ ] Verify loaded descriptors against public config on every startup.
-- [ ] Add configurable Bitcoin Core RPC and Esplora chain sources per member.
-- [ ] Keep chain source configuration local and outside consensus while keeping
+- [x] Persist BDK wallet state in a federation-wallet-specific namespace.
+- [x] Verify loaded descriptors against public config on every startup.
+- [x] Add configurable Bitcoin Core RPC and Esplora chain sources per member.
+- [x] Keep chain source configuration local and outside consensus while keeping
   network and confirmation policy in consensus config.
-- [ ] Expose bounded sync health, tip, last-success time, and source type without
+- [x] Expose bounded sync health, tip, last-success time, and source type without
   exposing queried addresses or credentials.
-- [ ] Prevent the federated BDK instance from loading local mnemonic signers.
-- [ ] Define behavior while BDK is behind consensus or chain tip.
+- [x] Prevent the federated BDK instance from loading local mnemonic signers.
+- [x] Define behavior while BDK is behind consensus or chain tip.
 
 **Success criteria:**
 
-- [ ] All members derive the same script at every revealed index.
-- [ ] Members may use different chain-source implementations and still converge
+- [x] All members derive the same script at every revealed index.
+- [x] Members may use different chain-source implementations and still converge
   after seeing the same chain.
-- [ ] Federated startup fails if a descriptor or network differs.
-- [ ] Standalone and federated BDK databases cannot be accidentally opened as
+- [x] Federated startup fails if a descriptor or network differs.
+- [x] Standalone and federated BDK databases cannot be accidentally opened as
   each other.
 
 **Required tests:**
 
-- [ ] Five independent watch-only wallet instances derive identical scripts.
-- [ ] Restart, empty database restore, and descriptor mismatch.
-- [ ] Mixed Bitcoin Core RPC and Esplora regtest sync.
-- [ ] One unavailable chain source does not corrupt local or consensus state.
-- [ ] No-signing-key assertions on persisted BDK data.
-- [ ] Standalone BDK regression tests.
+- [x] Five independent watch-only wallet instances derive identical scripts.
+- [x] Restart, empty database restore, and descriptor mismatch.
+- [x] Mixed Bitcoin Core RPC and Esplora regtest sync.
+- [x] One unavailable chain source does not corrupt local or consensus state.
+- [x] No-signing-key assertions on persisted BDK data.
+- [x] Standalone BDK regression tests.
+
+**Milestone record:** completed on 2026-07-13. `cdk-bdk` now owns an
+isolated federated watch-only runtime with scope-bound database markers,
+descriptor/network verification on every open, no mnemonic path, continuous
+member-local Bitcoin Core or Esplora synchronization, fail-closed readiness,
+and bounded redacted health. Daemon wiring contributes only local source,
+credential, interval, and storage settings; consensus remains authoritative for
+the descriptors, network, confirmation policy, application epoch, and namespace
+commitment. Five independent Regtest-network wallets using mixed source types
+derive identical scripts and converge after the same chain transaction; both
+one-shot adapters are exercised under outage to prove failures preserve the
+wallet graph. All 109 `cdk-bdk` tests pass, including the unchanged standalone
+backend regression coverage.
 
 ### Milestone 7: consensus-controlled deposit address allocation
 

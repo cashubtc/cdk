@@ -2229,6 +2229,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
+            onchain_wallets: Vec::new(),
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),

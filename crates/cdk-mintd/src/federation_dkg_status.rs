@@ -831,6 +831,9 @@ fn dkg_driver_phase_label(phase: FederationDkgDriverPhase) -> &'static str {
         FederationDkgDriverPhase::LocalKeysetShare => "local_keyset_share",
         FederationDkgDriverPhase::TranscriptSignature => "transcript_signature",
         FederationDkgDriverPhase::Activation => "activation",
+        FederationDkgDriverPhase::FrostRound1 => "frost_round_1",
+        FederationDkgDriverPhase::FrostRound2 => "frost_round_2",
+        FederationDkgDriverPhase::FrostConfirmation => "frost_confirmation",
         FederationDkgDriverPhase::Complete => "complete",
     }
 }

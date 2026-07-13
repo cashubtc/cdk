@@ -80,6 +80,7 @@ pub(super) async fn post_local_status(
     let aleph_bft_network_inbound_active =
         state.federation_aleph_bft_network_inbound_active().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
+    let onchain_wallets = state.federation_onchain_wallet_statuses().await;
     let response = federation_local_status_response(
         peer_status,
         sync_status,
@@ -97,6 +98,7 @@ pub(super) async fn post_local_status(
         aleph_bft_live_session_active,
         aleph_bft_network_inbound_active,
         invalid_operation_alerts,
+        onchain_wallets,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -120,6 +122,7 @@ fn federation_local_status_response(
     aleph_bft_live_session_active: bool,
     aleph_bft_network_inbound_active: bool,
     invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
+    onchain_wallets: Vec<cdk::federation::FederationOnchainWalletStatus>,
 ) -> FederationLocalStatusResponse {
     let (
         catch_up_certificate_quorum_operation_count,
@@ -166,6 +169,7 @@ fn federation_local_status_response(
         aleph_bft_network_inbound_active,
         materialized_state_rows,
         invalid_operation_alerts,
+        onchain_wallets,
     }
 }
 

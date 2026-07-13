@@ -27,11 +27,15 @@ use cdk::federation::{
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
     FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, MemberId,
+    FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
+#[cfg(feature = "federation")]
+use cdk_bdk::{
+    FederatedBdkLocalConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletScope,
+};
 use router_handlers::*;
 #[cfg(feature = "federation")]
 use sha2::{Digest, Sha256};
@@ -1210,7 +1214,50 @@ impl FederationSyncState {
 
 #[cfg(all(test, feature = "federation"))]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    #[test]
+    fn active_onchain_application_requires_local_watch_only_config() {
+        let application_id = cdk::federation::FederationFrostApplicationId::from_bytes([7; 32])
+            .expect("application id");
+        let application = cdk::federation::FederationFrostApplicationConfig {
+            version: 1,
+            application_id,
+            application_key_epoch: 1,
+            root_key_epoch: 1,
+            state: cdk::federation::FederationFrostEpochState::Active,
+            derivation_version: 1,
+            authorization_policy: [8; 32],
+            threshold: 2,
+            verification_shares: BTreeMap::new(),
+            derived_group_key: [2; 33],
+            chain_code: [9; 32],
+            external_descriptor: "unused-invalid-external".to_string(),
+            internal_descriptor: "unused-invalid-internal".to_string(),
+            descriptor_commitment: [10; 32],
+            network: cdk_common::bitcoin::Network::Regtest,
+            confirmation_policy: cdk::federation::FederationOnchainConfirmationPolicy::new(1)
+                .expect("confirmation policy"),
+            fee_policy_version: 1,
+        };
+        let wallet = cdk::federation::FederationFrostWalletConfig {
+            version: 1,
+            roots: Vec::new(),
+            cdk_onchain_applications: vec![application],
+            registered_consumers: Vec::new(),
+            active_epochs: cdk::federation::FederationFrostActiveEpochs {
+                root_key_epoch: 1,
+                application_key_epochs: BTreeMap::from([(application_id, 1)]),
+            },
+        };
+        let federation_id = cdk::federation::FederationId::from_bytes([11; 32]);
+
+        let error = initialize_accepted_federation_onchain_wallets(federation_id, &wallet, None)
+            .expect_err("active application must require local BDK config");
+        assert!(error.to_string().contains("member-local BDK"));
+    }
 
     #[test]
     fn federation_halted_sync_status_redacts_operator_message() {
@@ -1467,6 +1514,33 @@ pub struct MintState {
 
 #[cfg(feature = "federation")]
 impl MintState {
+    pub(crate) async fn federation_onchain_wallet_statuses(
+        &self,
+    ) -> Vec<FederationOnchainWalletStatus> {
+        let mut statuses = Vec::with_capacity(self.federation.onchain_wallets.len());
+        for wallet in &self.federation.onchain_wallets {
+            let status = wallet.sync_status().await;
+            statuses.push(FederationOnchainWalletStatus {
+                source: match status.source {
+                    cdk_bdk::ChainSourceKind::Esplora => "esplora",
+                    cdk_bdk::ChainSourceKind::BitcoinRpc => "bitcoin_rpc",
+                }
+                .to_string(),
+                health: match status.health {
+                    cdk_bdk::FederatedWalletSyncHealth::NeverSynced => "never_synced",
+                    cdk_bdk::FederatedWalletSyncHealth::Healthy => "healthy",
+                    cdk_bdk::FederatedWalletSyncHealth::Degraded => "degraded",
+                }
+                .to_string(),
+                local_tip_height: status.local_tip_height,
+                local_tip_hash: status.local_tip_hash,
+                last_success_unix: status.last_success_unix,
+                consecutive_failures: status.consecutive_failures,
+            });
+        }
+        statuses
+    }
+
     pub(crate) async fn federation_pending_mempool_len(&self) -> usize {
         self.federation.pending_mempool_len().await
     }
@@ -2171,6 +2245,30 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg(
     federation_peer_sync_config: FederationPeerSyncConfig,
     federation_dkg_config: Option<FederationDkgAutoStartConfig>,
 ) -> Result<Router> {
+    create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        federation_peer_sync_config,
+        federation_dkg_config,
+        None,
+    )
+    .await
+}
+
+/// Create mint [`Router`] with federation DKG and member-local watch-only BDK policy.
+#[cfg(feature = "federation")]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+    federation_bdk_config: Option<FederatedBdkLocalConfig>,
+) -> Result<Router> {
     federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
@@ -2180,6 +2278,7 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg(
         true,
         federation_peer_sync_config,
         federation_dkg_config,
+        federation_bdk_config,
         #[cfg(test)]
         false,
     )
@@ -2203,6 +2302,7 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         false,
         FederationPeerSyncConfig::default(),
         None,
+        None,
         true,
     )
     .await
@@ -2217,11 +2317,12 @@ async fn create_mint_router_with_custom_cache_inner(
     spawn_federation_peer_sync: bool,
     #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
     #[cfg(feature = "federation")] federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+    #[cfg(feature = "federation")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
     #[cfg(feature = "federation")]
-    let (federation_consensus, federation_sequences) =
-        create_federation_runtime_state(&mint).await?;
+    let (federation_consensus, federation_sequences, federation_onchain_wallets) =
+        create_federation_runtime_state_with_wallet(&mint, federation_bdk_config).await?;
     #[cfg(feature = "federation")]
     let federation_sync = federation_consensus
         .as_ref()
@@ -2255,6 +2356,7 @@ async fn create_mint_router_with_custom_cache_inner(
                 ))
             }),
             payment_observer: federation::FederationPaymentObserver::default(),
+            onchain_wallets: federation_onchain_wallets,
             #[cfg(test)]
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
@@ -2421,18 +2523,26 @@ async fn create_mint_router_with_custom_cache_inner(
 }
 
 #[cfg(feature = "federation")]
-async fn create_federation_runtime_state(
+async fn create_federation_runtime_state_with_wallet(
     mint: &Arc<Mint>,
+    local_wallet_config: Option<FederatedBdkLocalConfig>,
 ) -> Result<(
     Option<FederationConsensusHandle>,
     Option<FederationSequenceHandle>,
+    Vec<FederatedBdkWallet>,
 )> {
     let Some(config) = mint.federation_config() else {
-        return Ok((None, None));
+        if local_wallet_config.is_some() {
+            return Err(anyhow::anyhow!(
+                "federated BDK configuration requires an active federation mint"
+            ));
+        }
+        return Ok((None, None, Vec::new()));
     };
 
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
+    let onchain_wallets = initialize_federation_onchain_wallets(config, local_wallet_config)?;
     let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_config(&snapshot).await?;
@@ -2501,7 +2611,113 @@ async fn create_federation_runtime_state(
     Ok((
         Some(Arc::new(tokio::sync::Mutex::new(consensus))),
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
+        onchain_wallets,
     ))
+}
+
+#[cfg(all(test, feature = "federation"))]
+async fn create_federation_runtime_state(
+    mint: &Arc<Mint>,
+) -> Result<(
+    Option<FederationConsensusHandle>,
+    Option<FederationSequenceHandle>,
+)> {
+    let (consensus, sequences, _) = create_federation_runtime_state_with_wallet(mint, None).await?;
+    Ok((consensus, sequences))
+}
+
+#[cfg(feature = "federation")]
+fn initialize_federation_onchain_wallets(
+    runtime: &cdk::mint::FederationRuntimeConfig,
+    local_config: Option<FederatedBdkLocalConfig>,
+) -> Result<Vec<FederatedBdkWallet>> {
+    let public = runtime.public_config();
+    let Some(wallet_config) = &public.frost_wallet else {
+        if local_config.is_some() {
+            return Err(anyhow::anyhow!(
+                "federated BDK configuration requires accepted FROST wallet config"
+            ));
+        }
+        return Ok(Vec::new());
+    };
+    initialize_accepted_federation_onchain_wallets(
+        public.federation_id,
+        wallet_config,
+        local_config,
+    )
+}
+
+#[cfg(feature = "federation")]
+fn initialize_accepted_federation_onchain_wallets(
+    federation_id: cdk::federation::FederationId,
+    wallet_config: &cdk::federation::FederationFrostWalletConfig,
+    local_config: Option<FederatedBdkLocalConfig>,
+) -> Result<Vec<FederatedBdkWallet>> {
+    let active_applications = wallet_config
+        .cdk_onchain_applications
+        .iter()
+        .filter(|application| {
+            wallet_config
+                .active_epochs
+                .application_key_epochs
+                .get(&application.application_id)
+                == Some(&application.application_key_epoch)
+        })
+        .collect::<Vec<_>>();
+    if active_applications.is_empty() {
+        return Ok(Vec::new());
+    }
+    let local_config = local_config.ok_or_else(|| {
+        anyhow::anyhow!(
+            "active federated on-chain application requires member-local BDK configuration"
+        )
+    })?;
+
+    active_applications
+        .into_iter()
+        .map(|application| {
+            let scope = FederatedWalletScope::new(
+                federation_id.to_bytes(),
+                application.application_id.to_bytes(),
+                application.root_key_epoch,
+                application.application_key_epoch,
+                application.descriptor_commitment,
+            )?;
+            let config = FederatedWalletConfig::new(
+                scope,
+                &application.external_descriptor,
+                &application.internal_descriptor,
+                application.network,
+            )?;
+            let wallet = FederatedBdkWallet::open(
+                config,
+                local_config.chain_source.clone(),
+                &local_config.storage_root,
+            )?;
+            let sync_wallet = wallet.clone();
+            let sync_interval = local_config.sync_interval;
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(sync_interval);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    if sync_wallet.sync_once().await.is_err() {
+                        let status = sync_wallet.sync_status().await;
+                        if status.consecutive_failures == 1
+                            || status.consecutive_failures.is_power_of_two()
+                        {
+                            tracing::warn!(
+                                source = ?status.source,
+                                consecutive_failures = status.consecutive_failures,
+                                "Federated BDK synchronization did not complete; wallet remains unavailable for consensus-dependent actions"
+                            );
+                        }
+                    }
+                }
+            });
+            Ok(wallet)
+        })
+        .collect()
 }
 
 #[cfg(feature = "federation")]

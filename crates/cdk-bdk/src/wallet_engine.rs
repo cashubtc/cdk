@@ -15,7 +15,7 @@ use bdk_wallet::bitcoin::secp256k1::{Message, Secp256k1};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{Amount, FeeRate, Network, ScriptBuf, TapSighashType, Transaction};
 use bdk_wallet::descriptor::{ExtendedDescriptor, IntoWalletDescriptor};
-use bdk_wallet::rusqlite::Connection;
+use bdk_wallet::rusqlite::{params, Connection, OptionalExtension};
 use bdk_wallet::{KeychainKind, PersistedWallet, SignOptions, Utxo, Wallet, WeightedUtxo};
 use tokio::sync::Mutex;
 
@@ -97,6 +97,10 @@ enum SigningMode {
     ExternalOnly,
 }
 
+const WALLET_NAMESPACE_TABLE: &str = "cdk_bdk_wallet_namespace";
+const LOCAL_SIGNING_NAMESPACE: &str = "cdk-bdk/local-signing/v1";
+const WATCH_ONLY_NAMESPACE: &str = "cdk-bdk/watch-only/v1";
+
 /// Reusable persisted BDK engine with an explicit signing boundary.
 #[derive(Clone)]
 pub struct BdkWalletEngine {
@@ -120,6 +124,7 @@ impl BdkWalletEngine {
         chain_source.validate()?;
         fs::create_dir_all(database_dir.as_ref())?;
         let mut db = Connection::open(database_dir.as_ref().join("bdk_wallet.sqlite"))?;
+        ensure_wallet_namespace(&mut db, LOCAL_SIGNING_NAMESPACE, false)?;
         let wallet = Wallet::load()
             .descriptor(KeychainKind::External, Some(external.clone()))
             .descriptor(KeychainKind::Internal, Some(internal.clone()))
@@ -164,6 +169,30 @@ impl BdkWalletEngine {
         chain_source.validate()?;
         fs::create_dir_all(database_dir.as_ref())?;
         let mut db = Connection::open(database_dir.as_ref().join("bdk_wallet.sqlite"))?;
+        ensure_wallet_namespace(&mut db, WATCH_ONLY_NAMESPACE, false)?;
+        let wallet = Self::load_or_create_watch_only(&config, &mut db)?;
+
+        Ok(Self {
+            wallet_with_db: Arc::new(Mutex::new(WalletWithDb::new(wallet, db))),
+            chain_source,
+            network: config.network,
+            signing_mode: SigningMode::ExternalOnly,
+        })
+    }
+
+    /// Create or load a watch-only wallet in a mandatory federation namespace.
+    ///
+    /// Existing unmarked databases are rejected so a standalone or generic BDK
+    /// database cannot be claimed by a federation process accidentally.
+    pub fn open_federated_watch_only(
+        config: DescriptorConfig,
+        chain_source: ChainSource,
+        database_dir: impl AsRef<Path>,
+        namespace: &str,
+    ) -> Result<Self, Error> {
+        fs::create_dir_all(database_dir.as_ref())?;
+        let mut db = Connection::open(database_dir.as_ref().join("bdk_wallet.sqlite"))?;
+        ensure_wallet_namespace(&mut db, namespace, true)?;
         let wallet = Self::load_or_create_watch_only(&config, &mut db)?;
 
         Ok(Self {
@@ -199,6 +228,16 @@ impl BdkWalletEngine {
     /// Network enforced by this wallet.
     pub fn network(&self) -> Network {
         self.network
+    }
+
+    /// Return the latest locally persisted BDK checkpoint.
+    pub async fn local_chain_tip(&self) -> bdk_wallet::chain::BlockId {
+        self.wallet_with_db
+            .lock()
+            .await
+            .wallet
+            .latest_checkpoint()
+            .block_id()
     }
 
     /// Perform one wallet synchronization pass using the configured local
@@ -449,6 +488,48 @@ impl BdkWalletEngine {
         transaction: Transaction,
     ) -> Result<BroadcastOutcome, BroadcastFailure> {
         self.chain_source.broadcast(transaction).await
+    }
+}
+
+fn ensure_wallet_namespace(
+    db: &mut Connection,
+    expected: &str,
+    reject_unmarked_existing_wallet: bool,
+) -> Result<(), Error> {
+    let wallet_exists = db
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bdk_wallet'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    db.execute(
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {WALLET_NAMESPACE_TABLE} (id INTEGER PRIMARY KEY CHECK (id = 0), namespace TEXT NOT NULL)"
+        ),
+        [],
+    )?;
+    let stored = db
+        .query_row(
+            &format!("SELECT namespace FROM {WALLET_NAMESPACE_TABLE} WHERE id = 0"),
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match stored {
+        Some(stored) if stored == expected => Ok(()),
+        Some(_) => Err(Error::WalletNamespaceMismatch),
+        None if wallet_exists && reject_unmarked_existing_wallet => {
+            Err(Error::WalletNamespaceMismatch)
+        }
+        None => {
+            db.execute(
+                &format!("INSERT INTO {WALLET_NAMESPACE_TABLE} (id, namespace) VALUES (0, ?1)"),
+                params![expected],
+            )?;
+            Ok(())
+        }
     }
 }
 

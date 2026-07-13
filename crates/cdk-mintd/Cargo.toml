@@ -27,7 +27,7 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
-federation = ["cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
+federation = ["bdk", "cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
 # Local/regtest-only trusted-dealer setup and runtime admission.
 federation-test-utils = ["federation", "fakewallet"]
 
@@ -76,3 +76,6 @@ home.workspace = true
 workspace = true
 
 [build-dependencies]
+
+[dev-dependencies]
+tempfile = "3"

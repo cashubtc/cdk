@@ -1400,6 +1400,7 @@ dependencies = [
  "axum",
  "bip39",
  "cdk",
+ "cdk-bdk",
  "cdk-common",
  "cdk-fake-wallet",
  "cdk-http-client",
@@ -1798,7 +1799,11 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
+<<<<<<< HEAD
  "thiserror 2.0.20",
+=======
+ "tempfile",
+>>>>>>> 801617fa8 (feat: initialize federated watch-only BDK wallets)
  "tokio",
  "toml 0.8.23",
  "tower",

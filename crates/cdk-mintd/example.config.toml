@@ -409,6 +409,20 @@ max_delay_time = 3
 # exercise automatic session rollover.
 # aleph_bft_live_session_max_round = 6
 
+# Member-local watch-only BDK chain access. This section is never included in
+# federation consensus config and intentionally has no mnemonic/private key.
+# Enable it once the shared public config activates a CDK on-chain application.
+# [federation.onchain_wallet]
+# enabled = false
+# chain_source_type = "bitcoinrpc" # or "esplora"
+# bitcoind_rpc_host = "127.0.0.1"
+# bitcoind_rpc_port = 18443
+# bitcoind_rpc_user = "rpc-user"
+# bitcoind_rpc_password = "rpc-password"
+# esplora_url = "http://127.0.0.1:3002"
+# esplora_parallel_requests = 1
+# sync_interval_secs = 30
+
 # Optional dealer-free DKG auto-start. Every member must use the same ceremony
 # ID and keyset policy. Production member federation URLs must use HTTPS.
 # [federation.dkg]

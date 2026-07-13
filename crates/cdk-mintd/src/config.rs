@@ -1188,6 +1188,60 @@ pub struct Federation {
     /// Optional dealer-free DKG ceremony to start or resume in setup mode.
     #[serde(default)]
     pub dkg: FederationDkg,
+    /// Member-local watch-only BDK storage and chain source.
+    #[serde(default)]
+    pub onchain_wallet: FederationOnchainWallet,
+}
+
+/// Local chain access for the federated watch-only BDK wallet.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "federation")]
+#[serde(deny_unknown_fields)]
+pub struct FederationOnchainWallet {
+    /// Enable the local watch-only wallet when public config activates it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// `bitcoinrpc` or `esplora`.
+    #[serde(default = "default_federation_onchain_source_type")]
+    pub chain_source_type: String,
+    /// Esplora endpoint, required for the Esplora source.
+    pub esplora_url: Option<String>,
+    /// Maximum parallel Esplora requests.
+    #[serde(default = "default_bdk_esplora_parallel_requests")]
+    pub esplora_parallel_requests: usize,
+    /// Bitcoin Core RPC host.
+    pub bitcoind_rpc_host: Option<String>,
+    /// Bitcoin Core RPC port.
+    pub bitcoind_rpc_port: Option<u16>,
+    /// Bitcoin Core RPC username.
+    pub bitcoind_rpc_user: Option<String>,
+    /// Bitcoin Core RPC password.
+    pub bitcoind_rpc_password: Option<String>,
+    /// Seconds between local watch-only synchronization attempts.
+    #[serde(default = "default_bdk_sync_interval_secs")]
+    pub sync_interval_secs: u64,
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationOnchainWallet {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chain_source_type: default_federation_onchain_source_type(),
+            esplora_url: None,
+            esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
+            bitcoind_rpc_host: None,
+            bitcoind_rpc_port: None,
+            bitcoind_rpc_user: None,
+            bitcoind_rpc_password: None,
+            sync_interval_secs: default_bdk_sync_interval_secs(),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_onchain_source_type() -> String {
+    "bitcoinrpc".to_string()
 }
 
 /// Dealer-free DKG auto-start settings for one federation member.

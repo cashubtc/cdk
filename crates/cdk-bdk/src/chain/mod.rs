@@ -3,6 +3,7 @@ use core::fmt;
 use bdk_wallet::bitcoin::Transaction;
 use bdk_wallet::chain::BlockId;
 use cdk_common::redact::url_for_logs;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -45,6 +46,16 @@ impl fmt::Debug for BitcoinRpcConfig {
     }
 }
 
+impl fmt::Debug for BitcoinRpcConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BitcoinRpcConfig")
+            .field("endpoint", &"<redacted>")
+            .field("credentials", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Configuration for connecting to Esplora
 #[derive(Clone)]
 pub struct EsploraConfig {
@@ -79,6 +90,16 @@ impl fmt::Debug for ElectrumConfig {
             .field("batch_size", &self.batch_size)
             .finish()
     }
+}
+
+/// Non-sensitive chain-source implementation identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChainSourceKind {
+    /// Esplora HTTP API.
+    Esplora,
+    /// Bitcoin Core JSON-RPC.
+    BitcoinRpc,
 }
 
 /// Source of blockchain data for the BDK wallet
@@ -167,6 +188,19 @@ impl ChainSource {
             Self::BitcoinRpc(config) => bitcoin_rpc::initial_checkpoint(config).map(Some),
             #[allow(unreachable_patterns)]
             _ => Ok(None),
+        }
+    }
+
+    /// Return the source implementation without its endpoint or credentials.
+    #[must_use]
+    pub fn kind(&self) -> ChainSourceKind {
+        match self {
+            #[cfg(feature = "esplora")]
+            Self::Esplora(_) => ChainSourceKind::Esplora,
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(_) => ChainSourceKind::BitcoinRpc,
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("ChainSource must have at least one feature enabled"),
         }
     }
 

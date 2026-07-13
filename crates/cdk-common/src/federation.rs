@@ -111,11 +111,11 @@ pub use self::transport::{
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationInvalidOperationAlertSummary,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationLocalStatusResponse, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationRestSignature, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
-    FEDERATION_REST_API_VERSION,
+    FederationLocalStatusResponse, FederationOnchainWalletStatus, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationRestSignature, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FEDERATION_CATCH_UP_CERTIFICATE_VERSION, FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
