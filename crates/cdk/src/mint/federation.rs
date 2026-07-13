@@ -5,6 +5,7 @@
 //! preserving standalone mint behavior outside federation mode.
 
 mod address_allocation;
+mod chain_observation;
 mod projection;
 
 use std::collections::{HashMap, HashSet};
@@ -16,13 +17,14 @@ use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationAddressAllocationOperation, FederationAddressKeychain, FederationApplicationState,
-    FederationBlindSignatureShareSet, FederationConfig, FederationConfigDigest, FederationError,
-    FederationFrostApplicationId, FederationId, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
-    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationBlindSignatureShareSet, FederationChainObservation, FederationConfig,
+    FederationConfigDigest, FederationError, FederationFrostApplicationId, FederationId,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltOperation,
+    FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
@@ -171,6 +173,40 @@ impl FederationRuntimeConfig {
                 reason: "allocation requires the active CDK application epoch".to_string(),
             }
             .into());
+        }
+        Ok(())
+    }
+
+    /// Build an authenticated operation from one bounded member-local chain observation.
+    pub fn chain_observation_operation(
+        &self,
+        observation: FederationChainObservation,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        self.validate_federated_chain_observation_submission(&observation)?;
+        Ok(self.operation_envelope(FederationOperation::ChainObservation(observation)))
+    }
+
+    fn validate_federated_chain_observation_submission(
+        &self,
+        observation: &FederationChainObservation,
+    ) -> Result<(), Error> {
+        observation.validate()?;
+        self.validate_federation_observer(observation.observer())?;
+        if observation.observer() != self.member_id() {
+            return Err(FederationError::OperationAuthorMismatch {
+                author: self.member_id(),
+                claimed_member: observation.observer(),
+            }
+            .into());
+        }
+        if let FederationChainObservation::Deposit(observation) = observation {
+            let allocation_operation = FederationAddressAllocationOperation::new(
+                observation.allocation.quote.clone(),
+                observation.allocation.application_id,
+                observation.allocation.application_key_epoch,
+                observation.allocation.keychain,
+            )?;
+            self.validate_federated_address_allocation_submission(&allocation_operation)?;
         }
         Ok(())
     }
@@ -568,6 +604,10 @@ impl FederationRuntimeConfig {
         match operation {
             FederationOperation::AddressAllocation(operation) => {
                 self.validate_federated_address_allocation_submission(operation)
+            }
+            FederationOperation::ChainObservation(observation) => {
+                observation.validate()?;
+                self.validate_federation_observer(observation.observer())
             }
             FederationOperation::MintQuote(operation) => {
                 self.validate_federated_mint_quote_submission(operation)
@@ -1493,6 +1533,11 @@ impl Mint {
         match &entry.envelope.operation {
             FederationOperation::AddressAllocation(operation) => {
                 self.apply_federation_address_allocation(entry, operation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::ChainObservation(observation) => {
+                self.apply_federation_chain_observation(entry, observation)
                     .await?;
                 Ok(true)
             }

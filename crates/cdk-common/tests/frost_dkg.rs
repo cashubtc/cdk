@@ -6,12 +6,13 @@ use std::str::FromStr;
 
 use cashu::MintUrl;
 use cdk_common::federation::{
-    FederationConfig, FederationDkgCeremonyId, FederationFrostActiveEpochs,
-    FederationFrostApplicationConfig, FederationFrostConsumerRegistration,
-    FederationFrostDkgContext, FederationFrostDkgRound1Request, FederationFrostDkgRound2Request,
-    FederationFrostEpochState, FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
-    FederationFrostRootRecord, FederationFrostWalletConfig, FederationOnchainConfirmationPolicy,
-    MemberConfigPublic, MemberId, ThresholdParams,
+    FederationAddressKeychain, FederationConfig, FederationDkgCeremonyId,
+    FederationFrostActiveEpochs, FederationFrostApplicationConfig,
+    FederationFrostConsumerRegistration, FederationFrostDkgContext,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Request, FederationFrostEpochState,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy, MemberConfigPublic, MemberId,
+    ThresholdParams,
 };
 use cdk_common::SecretKey;
 use cdk_frost::rand_core::{OsRng, SeedableRng};
@@ -296,6 +297,18 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
         .address(bitcoin::Network::Regtest)
         .expect("address");
     assert!(address.to_string().starts_with("bcrt1p"));
+    assert_eq!(
+        wallet
+            .derive_cdk_onchain_script(
+                &config,
+                application.application_id,
+                application.application_key_epoch,
+                FederationAddressKeychain::External,
+                0,
+            )
+            .expect("wallet script"),
+        address.script_pubkey(),
+    );
 
     let mut wrong_descriptor = application.clone();
     wrong_descriptor.external_descriptor.push('x');

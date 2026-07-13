@@ -7,7 +7,7 @@ use cdk_common::federation::{
 
 use super::*;
 
-fn attach_address_application(
+pub(super) fn attach_address_application(
     runtime: &mut FederationRuntimeConfig,
 ) -> FederationFrostApplicationId {
     let application_id = FederationFrostApplicationId::from_bytes([7; 32]).expect("application");
@@ -22,15 +22,33 @@ fn attach_address_application(
             state: FederationFrostEpochState::Active,
             derivation_version: 1,
             authorization_policy: [8; 32],
-            threshold: 2,
-            verification_shares: BTreeMap::new(),
-            derived_group_key: [2; 33],
+            threshold: 1,
+            verification_shares: BTreeMap::from([
+                (
+                    MemberId::new(1).expect("member"),
+                    [
+                        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11,
+                        7, 2, 155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+                    ],
+                ),
+                (
+                    MemberId::new(2).expect("member"),
+                    [
+                        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11,
+                        7, 2, 155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+                    ],
+                ),
+            ]),
+            derived_group_key: [
+                2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2,
+                155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+            ],
             chain_code: [9; 32],
             external_descriptor: "test-external".to_string(),
             internal_descriptor: "test-internal".to_string(),
             descriptor_commitment: [10; 32],
             network: cdk_common::bitcoin::Network::Regtest,
-            confirmation_policy: FederationOnchainConfirmationPolicy::new(1)
+            confirmation_policy: FederationOnchainConfirmationPolicy::new(2)
                 .expect("confirmation policy"),
             fee_policy_version: 1,
         }],
@@ -43,13 +61,14 @@ fn attach_address_application(
     application_id
 }
 
-fn runtime_with_address_application() -> (FederationRuntimeConfig, FederationFrostApplicationId) {
+pub(super) fn runtime_with_address_application(
+) -> (FederationRuntimeConfig, FederationFrostApplicationId) {
     let mut runtime = runtime_config();
     let application_id = attach_address_application(&mut runtime);
     (runtime, application_id)
 }
 
-fn second_member_runtime_with_address_application() -> FederationRuntimeConfig {
+pub(super) fn second_member_runtime_with_address_application() -> FederationRuntimeConfig {
     let members = (1..=2)
         .map(|id| {
             TrustedDealerMember::new(

@@ -9,9 +9,9 @@ use cdk_common::federation::{
 use super::super::Mint;
 use super::finish_federation_apply_transaction;
 
-const ADDRESS_ALLOCATION_PRIMARY_NAMESPACE: &str = "federation";
-const ADDRESS_ALLOCATION_SECONDARY_NAMESPACE: &str = "address_allocation";
-const ADDRESS_ALLOCATION_STATE_KEY: &str = "state_v1";
+pub(super) const ADDRESS_ALLOCATION_PRIMARY_NAMESPACE: &str = "federation";
+pub(super) const ADDRESS_ALLOCATION_SECONDARY_NAMESPACE: &str = "address_allocation";
+pub(super) const ADDRESS_ALLOCATION_STATE_KEY: &str = "state_v1";
 
 impl Mint {
     /// Load the complete validated address-allocation projection.

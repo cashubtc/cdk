@@ -17,8 +17,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
 use super::{
-    FederatedKeyset, FederationAddressAllocationOperation, FederationConfig, FederationError,
-    FederationId, FederationPaymentObservationContext, MemberConfigPrivate, MemberId, Result,
+    FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
+    FederationConfig, FederationError, FederationId, FederationPaymentObservationContext,
+    MemberConfigPrivate, MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -33,7 +34,7 @@ const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
     b"cdk-federation-operation-authorization-v1";
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 2;
+pub const FEDERATION_OPERATION_VERSION: u16 = 3;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -126,6 +127,8 @@ impl<'de> Deserialize<'de> for FederationOperationId {
 pub enum FederationOperationKind {
     /// Allocate one descriptor address in accepted consensus order.
     AddressAllocation,
+    /// Submit bounded member-local Bitcoin chain evidence.
+    ChainObservation,
     /// Create and persist a mint quote.
     MintQuote,
     /// Observe a mint quote payment state.
@@ -150,6 +153,7 @@ impl fmt::Display for FederationOperationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AddressAllocation => f.write_str("address_allocation"),
+            Self::ChainObservation => f.write_str("chain_observation"),
             Self::MintQuote => f.write_str("mint_quote"),
             Self::MintQuotePayment => f.write_str("mint_quote_payment"),
             Self::Mint => f.write_str("mint"),
@@ -175,6 +179,22 @@ pub enum FederationOperationConflictKey {
         application_key_epoch: u64,
         /// Quote/allocation key.
         quote: String,
+    },
+    /// One member may submit one canonical view per outpoint and observed depth.
+    DepositObservation {
+        /// Observed transaction output.
+        outpoint: bitcoin::OutPoint,
+        /// Zero before confirmation, otherwise the observer's claimed depth.
+        confirmation_depth: u32,
+        /// Reporting federation member.
+        observer: MemberId,
+    },
+    /// One member may report one conservative reorg event per outpoint.
+    DepositReorgObservation {
+        /// Disconnected transaction output.
+        outpoint: bitcoin::OutPoint,
+        /// Reporting federation member.
+        observer: MemberId,
     },
     /// One mint quote ID may only map to one quote request.
     MintQuote {
@@ -696,6 +716,7 @@ impl FederationPaymentObservation {
                 Some(Self::MeltQuote(observation.clone()))
             }
             FederationOperation::AddressAllocation(_)
+            | FederationOperation::ChainObservation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
@@ -851,6 +872,7 @@ impl FederationPaymentObservationQuarantineRecord {
                 quarantine: quarantine.clone(),
             }),
             FederationOperation::AddressAllocation(_)
+            | FederationOperation::ChainObservation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::MintQuotePayment(_)
             | FederationOperation::Mint(_)
@@ -1403,6 +1425,8 @@ impl FederationOperationBalanceAudit {
 pub enum FederationOperation {
     /// Allocate one deterministic descriptor address after consensus.
     AddressAllocation(FederationAddressAllocationOperation),
+    /// Submit one bounded local-chain observation for consensus materialization.
+    ChainObservation(FederationChainObservation),
     /// Create and persist a mint quote.
     MintQuote(FederationMintQuoteOperation),
     /// Observe a mint quote payment state.
@@ -1429,6 +1453,7 @@ impl FederationOperation {
     pub fn kind(&self) -> FederationOperationKind {
         match self {
             Self::AddressAllocation(_) => FederationOperationKind::AddressAllocation,
+            Self::ChainObservation(_) => FederationOperationKind::ChainObservation,
             Self::MintQuote(_) => FederationOperationKind::MintQuote,
             Self::MintQuotePayment(_) => FederationOperationKind::MintQuotePayment,
             Self::Mint(_) => FederationOperationKind::Mint,
@@ -1452,6 +1477,21 @@ impl FederationOperation {
                     application_id: operation.application_id,
                     application_key_epoch: operation.application_key_epoch,
                     quote: operation.quote.clone(),
+                }]
+            }
+            Self::ChainObservation(FederationChainObservation::Deposit(observation)) => {
+                vec![FederationOperationConflictKey::DepositObservation {
+                    outpoint: observation.outpoint,
+                    confirmation_depth: observation
+                        .confirmation
+                        .map_or(0, |confirmation| confirmation.confirmation_depth),
+                    observer: observation.observer,
+                }]
+            }
+            Self::ChainObservation(FederationChainObservation::Reorg(observation)) => {
+                vec![FederationOperationConflictKey::DepositReorgObservation {
+                    outpoint: observation.outpoint,
+                    observer: observation.observer,
                 }]
             }
             Self::MintQuote(operation) => vec![FederationOperationConflictKey::MintQuote {
@@ -1507,6 +1547,10 @@ impl FederationOperation {
     pub fn quote(&self) -> Option<&str> {
         match self {
             Self::AddressAllocation(operation) => Some(operation.quote.as_str()),
+            Self::ChainObservation(FederationChainObservation::Deposit(observation)) => {
+                Some(observation.allocation.quote.as_str())
+            }
+            Self::ChainObservation(FederationChainObservation::Reorg(_)) => None,
             Self::MintQuote(operation) => Some(operation.quote.as_str()),
             Self::MintQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Mint(operation) => operation.request.quote_ids().into_iter().next(),
@@ -1528,6 +1572,7 @@ impl FederationOperation {
         let operation_kind = self.kind();
         match self {
             Self::AddressAllocation(_)
+            | Self::ChainObservation(_)
             | Self::MintQuote(_)
             | Self::PaymentObservationQuarantine(_)
             | Self::KeysetRotation(_) => {
@@ -1773,6 +1818,7 @@ impl FederationOperationEnvelope {
             })?;
 
         let claimed_observer = match &self.operation {
+            FederationOperation::ChainObservation(observation) => Some(observation.observer()),
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
             FederationOperation::MeltQuotePayment(observation) => Some(observation.observer),
             FederationOperation::AddressAllocation(_)
@@ -2268,7 +2314,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v2_golden_vector() {
+    fn canonical_operation_encoding_matches_v3_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2284,12 +2330,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":2}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":3}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "2f0d74699a5cbee498039b24cfca89358190465e326483ac693b3b7dff058fc9"
+            "062d0cd079aa2680e7194ca73aeb92584301923939aef0cbe8c4eff23c5d732c"
         );
     }
 

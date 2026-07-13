@@ -21,16 +21,17 @@ use cache::HttpCache;
 use cdk::federation::{
     redact_federation_operator_message, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload,
-    FederationCatchUpCertificate, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
-    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationFrostApplicationId,
-    FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationKind, FederationOperationStatus, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSubmitOperationResponse, MemberId,
+    FederationCatchUpCertificate, FederationChainObservation, FederationConfig,
+    FederationConfigSnapshot, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
+    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationFrostApplicationId, FederationFrostDkgContext,
+    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOnchainWalletStatus,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
@@ -1515,6 +1516,84 @@ pub struct MintState {
 
 #[cfg(feature = "federation")]
 impl MintState {
+    /// Validate one bounded local BDK observation against accepted allocation
+    /// state, then submit it through normal federation consensus. Raw BDK scan
+    /// results never mutate the canonical UTXO projection directly.
+    pub async fn submit_federation_chain_observation(
+        &self,
+        observation: FederationChainObservation,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        if let FederationChainObservation::Deposit(deposit) = &observation {
+            let allocation = self
+                .mint
+                .federation_address_allocation(
+                    deposit.allocation.scope(),
+                    &deposit.allocation.quote,
+                )
+                .await?
+                .ok_or_else(|| {
+                    cdk::Error::Custom(
+                        "federation chain observation has no accepted address allocation"
+                            .to_string(),
+                    )
+                })?;
+            deposit.allocation.validate_allocation(&allocation)?;
+            let runtime = self.mint.federation_config().ok_or(cdk::Error::Internal)?;
+            let wallet_config = runtime
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .ok_or(cdk::Error::Internal)?;
+            let expected_script = wallet_config.derive_cdk_onchain_script(
+                runtime.public_config(),
+                deposit.allocation.application_id,
+                deposit.allocation.application_key_epoch,
+                deposit.allocation.keychain,
+                deposit.allocation.derivation_index,
+            )?;
+            if deposit.txout.script_pubkey != expected_script {
+                return Err(cdk::Error::Federation(
+                    FederationError::ChainObservationInvalid {
+                        reason: "deposit script does not match accepted allocation".to_string(),
+                    },
+                ));
+            }
+            let local_wallet = self
+                .federation
+                .onchain_wallets
+                .iter()
+                .find(|wallet| {
+                    let scope = wallet.scope();
+                    scope.application_id() == deposit.allocation.application_id.to_bytes()
+                        && scope.application_key_epoch() == deposit.allocation.application_key_epoch
+                })
+                .ok_or_else(|| {
+                    cdk::Error::Custom(
+                        "federation chain observation has no local watch-only wallet".to_string(),
+                    )
+                })?;
+            let required_height = deposit.confirmation.map_or(0, |confirmation| {
+                confirmation
+                    .block_height
+                    .saturating_add(confirmation.confirmation_depth.saturating_sub(1))
+            });
+            local_wallet
+                .ensure_ready(required_height)
+                .await
+                .map_err(|_| {
+                    cdk::Error::Custom(
+                        "local federation chain view is not ready for observation".to_string(),
+                    )
+                })?;
+        }
+        let envelope = self
+            .mint
+            .federation_config()
+            .ok_or(cdk::Error::Internal)?
+            .chain_observation_operation(observation)?;
+        self.submit_federation_envelope(envelope).await
+    }
+
     /// Allocate or recover one consensus-controlled address. No BDK reveal is
     /// attempted until the operation has a terminal consensus result and the
     /// accepted mapping is readable from materialized state.

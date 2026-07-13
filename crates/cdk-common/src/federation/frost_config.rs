@@ -4,9 +4,11 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
+use bitcoin::bip32::{ChainCode, ChildNumber, Fingerprint, Xpub};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use bitcoin::Network;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use bitcoin::{Address, Network};
 use cdk_frost::{
     derive_application_public, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
     CanonicalRootKeyPackage, DerivedPublicPackage, EncryptedSecret, FrostCiphersuite,
@@ -19,8 +21,8 @@ use cdk_frost_bip32::{
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    append_bytes, FederationConfig, FederationDkgCeremonyId, FederationError,
-    FederationFrostRootRecord, FederationId, MemberId, Result,
+    append_bytes, FederationAddressKeychain, FederationConfig, FederationDkgCeremonyId,
+    FederationError, FederationFrostRootRecord, FederationId, MemberId, Result,
 };
 
 const ROOT_CONFIG_VERSION: u16 = 1;
@@ -841,6 +843,66 @@ impl FederationFrostWalletConfig {
     #[must_use]
     pub fn root(&self, epoch: u64) -> Option<&FederationFrostRootPublicConfig> {
         self.roots.iter().find(|root| root.root_key_epoch == epoch)
+    }
+
+    /// Derive the exact accepted P2TR script for one CDK application address.
+    pub fn derive_cdk_onchain_script(
+        &self,
+        federation: &FederationConfig,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+        index: u32,
+    ) -> Result<bitcoin::ScriptBuf> {
+        let application = self
+            .cdk_onchain_applications
+            .iter()
+            .find(|application| {
+                application.application_id == application_id
+                    && application.application_key_epoch == application_key_epoch
+            })
+            .ok_or_else(|| invalid_config("CDK application epoch is missing"))?;
+        if self
+            .active_epochs
+            .application_key_epochs
+            .get(&application_id)
+            != Some(&application_key_epoch)
+            || application.state != FederationFrostEpochState::Active
+            || application.threshold != federation.threshold_params.signature_threshold
+            || application
+                .verification_shares
+                .keys()
+                .copied()
+                .ne(federation.members.keys().copied())
+        {
+            return Err(invalid_config("CDK application epoch is not active"));
+        }
+        let branch = match keychain {
+            FederationAddressKeychain::External => 0,
+            FederationAddressKeychain::Internal => 1,
+        };
+        let root_xpub = Xpub {
+            network: application.network.into(),
+            depth: 0,
+            parent_fingerprint: Fingerprint::default(),
+            child_number: ChildNumber::Normal { index: 0 },
+            public_key: PublicKey::from_slice(&application.derived_group_key)
+                .map_err(|error| invalid_config(error.to_string()))?,
+            chain_code: ChainCode::from(application.chain_code),
+        };
+        let secp = Secp256k1::verification_only();
+        let child = root_xpub
+            .derive_pub(
+                &secp,
+                &[
+                    ChildNumber::Normal { index: branch },
+                    ChildNumber::from_normal_idx(index)
+                        .map_err(|error| invalid_config(error.to_string()))?,
+                ],
+            )
+            .map_err(|error| invalid_config(error.to_string()))?;
+        let (internal_key, _) = child.public_key.x_only_public_key();
+        Ok(Address::p2tr(&secp, internal_key, None, application.network).script_pubkey())
     }
 }
 

@@ -7,6 +7,7 @@
 use thiserror::Error;
 
 mod address_allocation;
+mod chain_observation;
 mod config;
 mod consensus;
 mod dkg;
@@ -42,6 +43,13 @@ pub use self::address_allocation::{
     FederationAddressAllocationOutcome, FederationAddressAllocationScope,
     FederationAddressAllocationState, FederationAddressKeychain, FederationAddressWalletState,
     FEDERATION_MAX_DERIVATION_INDEX,
+};
+pub use self::chain_observation::{
+    FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,
+    FederationChainObservationOutcome, FederationChainObservationState,
+    FederationChainSourceDescriptor, FederationChainSourceScope, FederationChainSourceSummary,
+    FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
+    FederationWalletUtxo, FederationWalletUtxoState,
 };
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
@@ -347,6 +355,18 @@ pub enum FederationError {
     AddressDerivationExhausted {
         /// Exhausted external or internal branch.
         keychain: FederationAddressKeychain,
+    },
+    /// Canonical member chain evidence is malformed or unauthorized.
+    #[error("Federation chain observation is invalid: {reason}")]
+    ChainObservationInvalid {
+        /// Stable validation reason without member-local source details.
+        reason: String,
+    },
+    /// Durable federation wallet UTXO state violates a safety invariant.
+    #[error("Federation chain observation state is invalid: {reason}")]
+    ChainObservationStateInvalid {
+        /// Stable validation reason without member-local source details.
+        reason: String,
     },
     /// A public or private FROST wallet configuration failed validation.
     #[error("Invalid federation FROST wallet configuration: {reason}")]

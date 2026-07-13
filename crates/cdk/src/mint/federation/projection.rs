@@ -80,6 +80,13 @@ impl Mint {
         {
             snapshot.push(row);
         }
+        for row in self
+            .federation_chain_observation_state()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut payment_observation_quotes = BTreeSet::new();
@@ -107,6 +114,7 @@ impl Mint {
 
             match &entry.envelope.operation {
                 FederationOperation::AddressAllocation(_) => {}
+                FederationOperation::ChainObservation(_) => {}
                 FederationOperation::MintQuote(operation) => {
                     mint_quotes.insert(operation.quote.clone());
                 }

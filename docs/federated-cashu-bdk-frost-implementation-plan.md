@@ -106,6 +106,10 @@ federation partially ready.
   missing mint business flow was found: allocation state stays in an isolated
   module and existing mint integration is limited to admission, apply dispatch,
   and deterministic projection.
+- Milestone 8 adds canonical Bitcoin chain evidence, so the experimental
+  operation envelope is now version 3 with updated golden vectors. The UTXO
+  projection, quorum/reorg rules, and persistence stay isolated; existing quote,
+  payment-observation, saga, issuance, and standalone BDK flows are unchanged.
 
 ## 1. Problem and setting
 
@@ -959,42 +963,62 @@ UTXO state.
 
 **Work:**
 
-- [ ] Define canonical deposit observation records containing outpoint, txout,
+- [x] Define canonical deposit observation records containing outpoint, txout,
   allocated address reference, block hash/height, and observer member.
-- [ ] Validate observed scripts and amounts against accepted address allocation.
-- [ ] Reuse or extend federation payment-observation quorum rules for confirmed
+- [x] Validate observed scripts and amounts against accepted address allocation.
+- [x] Reuse or extend federation payment-observation quorum rules for confirmed
   on-chain deposits.
-- [ ] Define agreement requirements for block identity, height, transaction, and
+- [x] Define agreement requirements for block identity, height, transaction, and
   confirmation depth.
-- [ ] Materialize UTXO states such as observed, confirmed, spendable, reserved,
+- [x] Materialize UTXO states such as observed, confirmed, spendable, reserved,
   spent, reorged, and quarantined.
-- [ ] Make duplicate observations idempotent and conflicting evidence explicit.
-- [ ] Define conservative reorg handling and liability alarm behavior.
-- [ ] Include accepted UTXOs and observation evidence in state digest and
+- [x] Make duplicate observations idempotent and conflicting evidence explicit.
+- [x] Define conservative reorg handling and liability alarm behavior.
+- [x] Include accepted UTXOs and observation evidence in state digest and
   catch-up snapshots.
-- [ ] Keep raw local BDK observations outside consensus until submitted as
+- [x] Keep raw local BDK observations outside consensus until submitted as
   bounded canonical evidence.
 
 **Success criteria:**
 
-- [ ] One member or one chain source cannot make a deposit spendable alone when
+- [x] One member or one chain source cannot make a deposit spendable alone when
   policy requires a quorum.
-- [ ] Honest members converge on identical spendable UTXOs despite observation
+- [x] Honest members converge on identical spendable UTXOs despite observation
   timing differences.
-- [ ] Conflicting block/transaction evidence cannot silently mutate a UTXO.
-- [ ] Catch-up reconstructs the exact wallet UTXO set.
+- [x] Conflicting block/transaction evidence cannot silently mutate a UTXO.
+- [x] Catch-up reconstructs the exact wallet UTXO set.
 
 **Required tests:**
 
-- [ ] Confirmed deposit with threshold matching observations.
-- [ ] Unconfirmed, insufficient-confirmation, and threshold-minus-one evidence.
-- [ ] Duplicate and reordered observations.
-- [ ] Conflicting amount, script, outpoint, block hash, and height.
-- [ ] Reorg before minting and reorg after liability issuance.
-- [ ] One stale, lying, offline, or delayed observer.
-- [ ] Members using a shared source versus independent sources are reported
+- [x] Confirmed deposit with threshold matching observations.
+- [x] Unconfirmed, insufficient-confirmation, and threshold-minus-one evidence.
+- [x] Duplicate and reordered observations.
+- [x] Conflicting amount, script, outpoint, block hash, and height.
+- [x] Reorg before minting and reorg after liability issuance.
+- [x] One stale, lying, offline, or delayed observer.
+- [x] Members using a shared source versus independent sources are reported
   accurately in diagnostics.
-- [ ] Snapshot/catch-up and restart convergence.
+- [x] Snapshot/catch-up and restart convergence.
+
+**Milestone record:** completed on 2026-07-13. A bounded, author-bound chain
+observation operation carries an allocated address reference, exact outpoint and
+`TxOut`, optional block hash/height/depth evidence, observer, and opaque
+independent/shared source classification. The isolated versioned UTXO state
+validates the allocation and independently derived P2TR script, reuses the mint
+payment-observation member quorum, and requires both confirmation depth and
+matching observers before `spendable`; one member remains only `confirmed`.
+Immutable amount, script, allocation, block, and height conflicts quarantine,
+while one matching block-disconnect report immediately fails closed to
+`reorged`; a sticky alarm records reorg/quarantine after liability issuance.
+Observed, confirmed, spendable, reserved, spent, reorged, and quarantined states
+are defined, with reservation/spend transitions intentionally owned by the
+later accepted-transaction milestones. UTXOs and every evidence provenance row
+participate in state digests and generic catch-up. Five persisted mint members,
+one offline catch-up, restart, replay, timing/depth variation, shared/independent
+source diagnostics, conflicts, and pre/post-liability reorgs are covered. All
+352 `cdk-common` federation tests and focused CDK chain-observation tests pass;
+the federation-enabled Axum crate compiles. No existing mint business logic was
+changed beyond narrow admission, apply dispatch, and deterministic projection.
 
 ### Milestone 9: integrate incoming on-chain mint quotes
 
