@@ -287,6 +287,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_frost_wallet_config_persistence() {
+        cdk_common::database::mint::test::federation_frost_wallet_config_persistence(
+            provide_db("federation_frost_wallet_config_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_dkg_write_failure_rolls_back_and_recovers() {
         use cdk_common::database::mint::{
             Database, FederationDkgDatabase, FederationJournalDatabase,
@@ -500,6 +509,8 @@ mod test {
             "federation_dkg_transcript_signatures",
             "federation_dkg_activations",
             "federation_dkg_ceremonies",
+            "federation_frost_dkg_records",
+            "federation_frost_wallet_config",
         ] {
             assert!(
                 table_names.contains(table),

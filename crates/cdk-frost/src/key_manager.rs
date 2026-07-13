@@ -219,9 +219,11 @@ impl ParticipantKeyManager {
             .get(&request.application_id())
             .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
         let registration = application.adapter.registration();
-        if request.derivation_version() != registration.derivation_version() {
+        if request.application_key_epoch() != registration.key_epoch()
+            || request.derivation_version() != registration.derivation_version()
+        {
             return Err(Error::Application(
-                "request uses another derivation version".to_string(),
+                "request uses another application key epoch or derivation version".to_string(),
             ));
         }
         let pending = self

@@ -45,13 +45,14 @@ macro_rules! federation_aleph_bft_finalized_item_select {
 
 mod application;
 mod dkg;
+mod frost_wallet;
 mod journal;
 
 use async_trait::async_trait;
 use cdk_common::database::mint::{
     FederationApplicationDatabase, FederationApplicationTransaction, FederationDkgDatabase,
-    FederationDkgTransaction, FederationJournalDatabase, FederationJournalTransaction,
-    FederationMintQuoteState,
+    FederationDkgTransaction, FederationFrostWalletDatabase, FederationFrostWalletTransaction,
+    FederationJournalDatabase, FederationJournalTransaction, FederationMintQuoteState,
 };
 use cdk_common::database::Error;
 use cdk_common::federation::{
@@ -62,13 +63,16 @@ use cdk_common::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationFrostDkgConfirmationRequest,
-    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
-    FederationFrostRootRecord, FederationId, FederationJournalConsensusEvidence,
-    FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationFrostActiveEpochs,
+    FederationFrostApplicationConfig, FederationFrostConsumerRegistration,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
+    FederationJournalEntry, FederationJournalTip, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSignatureShareRecord, MemberId,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
@@ -686,6 +690,7 @@ fn is_dkg_finalization_config_update(
     let mut stripped_replacement = replacement.config.clone();
     stripped_replacement.keysets.clear();
     stripped_replacement.setup_transcript = None;
+    stripped_replacement.frost_wallet = None;
     stripped_replacement == existing.config
 }
 

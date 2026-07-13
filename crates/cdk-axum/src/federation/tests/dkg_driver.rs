@@ -5,7 +5,7 @@ use cdk::federation::{
     FederationDkgDriverPhase, FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
     ValidatedFederationDkgParticipantState,
 };
-use cdk_common::database::mint::FederationDkgDatabase;
+use cdk_common::database::mint::{FederationDkgDatabase, FederationFrostWalletDatabase};
 
 use super::*;
 
@@ -560,6 +560,7 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
     }
 
     let _ = federation.drive_until_complete(24).await;
+    let mut materialized_wallet_digest = None;
     for member in &federation.members {
         complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
             .await
@@ -574,6 +575,40 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
             .expect("ceremony lifecycle");
         assert_eq!(ceremonies.len(), 1);
         assert_eq!(ceremonies[0].state, FederationDkgCeremonyState::Complete);
+        let root_public_configs = member
+            .db
+            .get_federation_frost_root_public_configs()
+            .await
+            .expect("public FROST root configs");
+        assert_eq!(root_public_configs.len(), 1);
+        root_public_configs[0]
+            .validate(&federation.public_config)
+            .expect("valid public FROST root config");
+        let root_private_configs = member
+            .db
+            .get_federation_frost_root_private_configs()
+            .await
+            .expect("private FROST root configs");
+        assert_eq!(root_private_configs.len(), 1);
+        root_private_configs[0]
+            .validate_metadata(&root_public_configs[0], member.private_config.member_id)
+            .expect("member-bound private FROST root config");
+        let snapshot = member
+            .state
+            .mint
+            .federation_materialized_state_snapshot(&[])
+            .await
+            .expect("wallet materialized snapshot");
+        let fingerprints = snapshot.row_fingerprints().expect("wallet fingerprints");
+        assert!(fingerprints
+            .iter()
+            .any(|row| row.table == "federation_frost_root_public_config"));
+        assert!(!fingerprints.iter().any(|row| row.table.contains("private")));
+        let digest = snapshot.digest().expect("wallet materialized digest");
+        match materialized_wallet_digest {
+            Some(expected) => assert_eq!(expected, digest),
+            None => materialized_wallet_digest = Some(digest),
+        }
     }
 }
 

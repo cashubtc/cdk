@@ -8,10 +8,10 @@ use sha2::{Digest, Sha256};
 
 use crate::canonical::CanonicalRootKeyPackage;
 use crate::{
-    ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationRegistration,
-    AuthorizationRequest, AuthorizedSigningRequest, Error, MemberId, NonceCommitmentSet,
-    ParticipantKeyManager, RootKeyEpoch, RootPublicPackage, SignatureMode, SignatureShare,
-    SigningDerivation, SigningSessionId,
+    ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
+    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, Error, MemberId,
+    NonceCommitmentSet, ParticipantKeyManager, RootKeyEpoch, RootPublicPackage, SignatureMode,
+    SignatureShare, SigningDerivation, SigningSessionId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +75,7 @@ fn authorize_payload(
     domain: &[u8],
 ) -> Result<[u8; 32], Error> {
     if request.application_id() != registration.id()
+        || request.application_key_epoch() != registration.key_epoch()
         || request.derivation_version() != registration.derivation_version()
         || request.payload().len() != 64
     {
@@ -108,6 +109,7 @@ fn authorization_proof(
     hasher.update((domain.len() as u16).to_be_bytes());
     hasher.update(domain);
     hasher.update(registration.id().to_bytes());
+    hasher.update(registration.key_epoch().get().to_be_bytes());
     hasher.update(registration.derivation_version().get().to_be_bytes());
     hasher.update(registration.authorization_policy());
     hasher.update(session.to_bytes());
@@ -118,6 +120,7 @@ fn authorization_proof(
 fn wallet_registration() -> ApplicationRegistration {
     ApplicationRegistration::new(
         ApplicationId::from_label("org.cashubtc.cdk.test-wallet").expect("application ID"),
+        ApplicationKeyEpoch::new(1).expect("key epoch"),
         ApplicationDerivationVersion::new(1).expect("version"),
         Sha256::digest(b"wallet-test-policy/v1").into(),
     )
@@ -127,6 +130,7 @@ fn wallet_registration() -> ApplicationRegistration {
 fn derived_registration() -> ApplicationRegistration {
     ApplicationRegistration::new(
         ApplicationId::from_label("org.cashubtc.cdk.test-derived-wallet").expect("application ID"),
+        ApplicationKeyEpoch::new(1).expect("key epoch"),
         ApplicationDerivationVersion::new(1).expect("version"),
         Sha256::digest(b"derived-test-policy/v1").into(),
     )
@@ -145,6 +149,7 @@ fn derived_signing_derivation() -> SigningDerivation {
 fn compatibility_registration() -> ApplicationRegistration {
     ApplicationRegistration::new(
         ApplicationId::from_label("org.cashubtc.cdk.compatibility-test").expect("application ID"),
+        ApplicationKeyEpoch::new(1).expect("key epoch"),
         ApplicationDerivationVersion::new(7).expect("version"),
         Sha256::digest(b"compatibility-policy/v1").into(),
     )
@@ -170,6 +175,7 @@ fn authorized_request(
     ));
     AuthorizationRequest::new(
         registration.id(),
+        registration.key_epoch(),
         registration.derivation_version(),
         session,
         payload,
@@ -369,14 +375,8 @@ fn additively_derived_taproot_target_signs_and_rejects_target_swaps() {
     )
     .expect("derived aggregate");
     assert_eq!(
-        signature.to_bytes(),
-        [
-            0xfd, 0x9d, 0x6f, 0x14, 0x0b, 0x13, 0x62, 0xc0, 0xd7, 0x16, 0xff, 0x5e, 0x7f, 0x07,
-            0x2c, 0xb4, 0x05, 0xda, 0xb9, 0x9f, 0x45, 0xd9, 0x71, 0x48, 0xaf, 0x22, 0x5a, 0x2f,
-            0x11, 0x24, 0xce, 0xbd, 0xda, 0xe2, 0x4f, 0x09, 0xf5, 0x94, 0x7b, 0xcf, 0xe3, 0xaf,
-            0xc8, 0xb2, 0x71, 0x59, 0xcd, 0x1d, 0xb5, 0x0a, 0x41, 0xe5, 0x21, 0x53, 0xae, 0x9a,
-            0xd5, 0xbe, 0x77, 0xc1, 0x9a, 0xaf, 0xb2, 0x7d,
-        ]
+        hex_bytes(&signature.to_bytes()),
+        "accdf22f4b35d36f1c676f3724ae18990d36f0bc5d30b114da8c3cc805c9c20537d7230b3bd0ea932ba617b331caeec32b4f3a2b269b1356dfd2f66d9f385252"
     );
     let secp = Secp256k1::verification_only();
     let key = PublicKey::from_slice(&target.output_group_key()).expect("output key");
@@ -469,6 +469,7 @@ fn threshold_minus_one_and_wrong_application_are_rejected() {
     ));
     let wrong_version = AuthorizationRequest::new(
         registration.id(),
+        registration.key_epoch(),
         ApplicationDerivationVersion::new(2).expect("version"),
         session(12),
         vec![],
@@ -478,9 +479,22 @@ fn threshold_minus_one_and_wrong_application_are_rejected() {
         managers[0].sign_share(commitment.nonce_id(), &wrong_version, &full_set),
         Err(Error::Application(_))
     ));
+    let wrong_epoch = AuthorizationRequest::new(
+        registration.id(),
+        ApplicationKeyEpoch::new(2).expect("key epoch"),
+        registration.derivation_version(),
+        session(12),
+        vec![],
+    )
+    .expect("request");
+    assert!(matches!(
+        managers[0].sign_share(commitment.nonce_id(), &wrong_epoch, &full_set),
+        Err(Error::Application(_))
+    ));
 
     let wrong_policy = ApplicationRegistration::new(
         registration.id(),
+        registration.key_epoch(),
         registration.derivation_version(),
         [99; 32],
     )
@@ -528,11 +542,11 @@ fn applications_are_domain_separated_and_root_stays_stable() {
     );
     assert_eq!(
         hex_bytes(&wallet.group_key()),
-        "02763302cbe1af57737681b7a6a391a02631563929921a3a9170d4551f1d42e8eb"
+        "0318e749ec4732cc0758d6ef5c2998652c1d8e40d3cdbdbabaf8b09902e7640030"
     );
     assert_eq!(
         hex_bytes(&compatibility.group_key()),
-        "02df7685111dafe9828180f02dbf2591a4d554e251a8f6dc6b48129407290b41df"
+        "03396bb048b17ba7a46fb6624d6328005d46cec043588f26a5dd9d06b6d08d34e9"
     );
 }
 
@@ -564,6 +578,7 @@ fn invalid_authorization_does_not_expose_a_digest_signing_api() {
     invalid_payload.extend_from_slice(&[0; 32]);
     let invalid = AuthorizationRequest::new(
         registration.id(),
+        registration.key_epoch(),
         registration.derivation_version(),
         session(13),
         invalid_payload,
@@ -785,6 +800,7 @@ fn participant_duplicates_versions_and_debug_secrets_are_rejected_or_redacted() 
     let registration = wallet_registration();
     let wrong_version = AuthorizationRequest::new(
         registration.id(),
+        registration.key_epoch(),
         ApplicationDerivationVersion::new(2).expect("version"),
         session(18),
         vec![],

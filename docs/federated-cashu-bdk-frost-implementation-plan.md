@@ -89,6 +89,12 @@ federation partially ready.
   in plaintext persistence. Network requests remain transient, while durable
   sender and receiver records are now sealed and context-bound; preserve the
   ciphertext-envelope and idempotent-retry tests.
+- Milestone 5 found that the Milestone 3 application registration omitted its
+  key epoch even though the plan required epoch-separated rotation. The small
+  fix stays inside `cdk-frost`/`cdk-frost-bip32`: application derivation,
+  authorization, nonce IDs, wire transcripts, chain codes, descriptors, and
+  signing targets now bind the application key epoch. Preserve the wrong-epoch
+  rejection and epoch-separated descriptor vectors.
 
 ## 1. Problem and setting
 
@@ -770,55 +776,66 @@ state and make both explicit, versioned, validated, and catch-up safe.
 
 **Work:**
 
-- [ ] Add versioned public root config containing root epoch, DKG protocol and
+- [x] Add versioned public root config containing root epoch, DKG protocol and
   ciphersuite versions, threshold, participant verification shares, untweaked
   aggregate key, participant mapping, and transcript binding.
-- [ ] Add private root config containing only the local member's canonical root
+- [x] Add private root config containing only the local member's canonical root
   share, its verification binding, and sealed-storage metadata.
-- [ ] Add a separately versioned CDK on-chain application config containing its
+- [x] Add a separately versioned CDK on-chain application config containing its
   application ID and key epoch, referenced root epoch, derivation version,
   derived aggregate/verification keys, chain code, descriptors or descriptor
   commitment, network, confirmation policy, and fee policy version.
-- [ ] Define active, retiring, and retired states independently for root epochs
+- [x] Define active, retiring, and retired states independently for root epochs
   and application key epochs, plus an explicit registry of applications using
   each root epoch.
-- [ ] Add startup fail-closed validation for descriptor/group-key mismatch,
+- [x] Add startup fail-closed validation for descriptor/group-key mismatch,
   wrong network, wrong root share, root/application derivation mismatch,
   incomplete transcript, unregistered application, or unsupported protocol
   version.
-- [ ] Add database records for root config snapshots, application config
+- [x] Add database records for root config snapshots, application config
   snapshots, registered consumers, and active root/application epochs.
-- [ ] Include public root and CDK application configs and active epochs in the
+- [x] Include public root and CDK application configs and active epochs in the
   federation config digest.
-- [ ] Include materialized wallet records in state snapshots and catch-up
+- [x] Include materialized wallet records in state snapshots and catch-up
   verification.
-- [ ] Ensure private shares and nonce records are excluded from public snapshots
+- [x] Ensure private shares and nonce records are excluded from public snapshots
   and operator status output.
-- [ ] Define clean undeployed-schema migrations for SQLite and PostgreSQL.
+- [x] Define clean undeployed-schema migrations for SQLite and PostgreSQL.
 
 **Success criteria:**
 
-- [ ] Every honest member loads the same public wallet configuration and BDK
+- [x] Every honest member loads the same public wallet configuration and BDK
   descriptors.
-- [ ] A copied private root config from another member is rejected.
-- [ ] Public root plus application config is sufficient to derive addresses but
+- [x] A copied private root config from another member is rejected.
+- [x] Public root plus application config is sufficient to derive addresses but
   insufficient to sign.
-- [ ] Adding a registered test consumer does not change the root package or CDK
+- [x] Adding a registered test consumer does not change the root package or CDK
   descriptors.
-- [ ] Wallet config divergence changes state/config digests and blocks readiness.
+- [x] Wallet config divergence changes state/config digests and blocks readiness.
 
 **Required tests:**
 
-- [ ] Root public/private and application config round trips and canonical
+- [x] Root public/private and application config round trips and canonical
   digest vectors.
-- [ ] Wrong member, epoch, network, threshold, descriptor, transcript, and group
+- [x] Wrong member, epoch, network, threshold, descriptor, transcript, and group
   key startup rejection.
-- [ ] Wrong application ID, root reference, derivation version, derived key, and
+- [x] Wrong application ID, root reference, derivation version, derived key, and
   unregistered-consumer rejection.
-- [ ] Missing private share and extra unknown participant rejection.
-- [ ] SQLite/PostgreSQL schema and migration tests.
-- [ ] Snapshot/catch-up equality with wallet config present.
-- [ ] Secret-redaction tests for debug, JSON, status, and support output.
+- [x] Missing private share and extra unknown participant rejection.
+- [x] SQLite/PostgreSQL schema and migration tests.
+- [x] Snapshot/catch-up equality with wallet config present.
+- [x] Secret-redaction tests for debug, JSON, status, and support output.
+
+**Milestone record:** completed on 2026-07-13. Public root, local sealed
+root, CDK application, consumer registry, lifecycle, and active-selector
+configuration now live behind an isolated federation FROST config boundary.
+Dual-DKG completion atomically materializes the public/private root snapshots;
+startup validates the complete public derivation, exact persisted records, and
+reopens only the local member-bound sealed share before readiness. Public wallet
+configuration participates in the federation config digest and deterministic
+materialized-state projection, while private roots and nonces remain outside
+public snapshots and status fingerprints. SQLite and PostgreSQL share one
+undeployed schema and generic equivocation-safe persistence implementation.
 
 ### Milestone 6: initialize identical watch-only BDK wallets on every member
 

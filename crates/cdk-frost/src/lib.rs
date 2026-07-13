@@ -22,8 +22,8 @@ pub use crate::error::Error;
 pub use crate::key_manager::{ApplicationAuthorization, ParticipantKeyManager};
 pub use crate::sealed::{EncryptedSecret, SecretEncryptionKey};
 pub use crate::types::{
-    AggregateSignature, ApplicationDerivationVersion, ApplicationId, ApplicationRegistration,
-    AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
+    AggregateSignature, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
+    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
     DerivedSigningPublicPackage, FrostCiphersuite, MemberId, NonceCommitment, NonceCommitmentSet,
     NonceId, RootKeyEpoch, RootPublicPackage, SignatureMode, SignatureShare, SigningDerivation,
     SigningSessionId,
@@ -37,4 +37,12 @@ pub fn derive_signing_public(
     derivation: &SigningDerivation,
 ) -> Result<DerivedSigningPublicPackage, Error> {
     canonical::derive_signing_public(application, derivation)
+}
+
+/// Derive an application-scoped public package without participant secrets.
+pub fn derive_application_public(
+    root: &RootPublicPackage,
+    registration: ApplicationRegistration,
+) -> Result<DerivedPublicPackage, Error> {
+    canonical::derive_application_public(root, registration)
 }

@@ -12,7 +12,8 @@ use cdk::federation::{
     FederationDkgTranscriptSignatureRequest, FederationError,
     FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
-    FederationFrostDkgRound2Request, FederationFrostRootRecord, MemberId,
+    FederationFrostDkgRound2Request, FederationFrostEpochState, FederationFrostRootPrivateConfig,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, MemberId,
     ValidatedFederationDkgParticipantState,
 };
 use cdk_frost::rand_core::OsRng;
@@ -883,7 +884,7 @@ where
     Ok((FrostDkgPhase::Confirmation, delivery))
 }
 
-pub(super) fn frost_storage_key(
+pub(crate) fn frost_storage_key(
     private_config: &cdk::federation::MemberConfigPrivate,
     context: &FederationFrostDkgContext,
 ) -> Result<SecretEncryptionKey, cdk::Error> {
@@ -1517,27 +1518,40 @@ pub(crate) async fn complete_federation_dkg_ceremony(
         }
         .validate(public_config)?;
     }
+    let root_public = FederationFrostRootPublicConfig::from_dkg_record(
+        public_config,
+        &frost_root,
+        FederationFrostEpochState::Active,
+    )?;
+    let root_private =
+        FederationFrostRootPrivateConfig::from_dkg_record(&root_public, &frost_root)?;
     let ceremonies = db.get_federation_dkg_ceremonies().await?;
-    let Some(ceremony) = ceremonies
+    let ceremony = ceremonies
         .iter()
-        .find(|record| record.ceremony_id == ceremony_id)
-    else {
+        .find(|record| record.ceremony_id == ceremony_id);
+    let mut tx = db.begin_transaction().await?;
+    tx.add_federation_frost_root_public_config(&root_public)
+        .await?;
+    tx.add_federation_frost_root_private_config(&root_private)
+        .await?;
+    let Some(ceremony) = ceremony else {
+        tx.commit().await?;
         return Ok(());
     };
     match ceremony.state {
-        FederationDkgCeremonyState::Complete => Ok(()),
+        FederationDkgCeremonyState::Complete | FederationDkgCeremonyState::Active => {
+            if ceremony.state == FederationDkgCeremonyState::Active {
+                let completed = ceremony.completed()?;
+                tx.transition_federation_dkg_ceremony(ceremony, &completed)
+                    .await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        }
         FederationDkgCeremonyState::Aborted => Err(FederationError::DkgTranscriptMismatch {
             reason: format!("aborted DKG ceremony {ceremony_id} cannot complete"),
         }
         .into()),
-        FederationDkgCeremonyState::Active => {
-            let completed = ceremony.completed()?;
-            let mut tx = db.begin_transaction().await?;
-            tx.transition_federation_dkg_ceremony(ceremony, &completed)
-                .await?;
-            tx.commit().await?;
-            Ok(())
-        }
     }
 }
 

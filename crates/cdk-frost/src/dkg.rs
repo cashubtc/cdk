@@ -776,7 +776,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId,
+        ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
         ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest,
         NonceCommitmentSet, ParticipantKeyManager, SigningDerivation, SigningSessionId,
     };
@@ -950,6 +950,7 @@ mod tests {
             let roots = run_dkg(max_signers, threshold, profile);
             let registration = ApplicationRegistration::new(
                 ApplicationId::from_label("org.cashubtc.cdk.dkg-test").expect("application"),
+                ApplicationKeyEpoch::new(1).expect("key epoch"),
                 ApplicationDerivationVersion::new(1).expect("version"),
                 [profile; 32],
             )
@@ -968,6 +969,7 @@ mod tests {
             let second_registration = ApplicationRegistration::new(
                 ApplicationId::from_label("org.cashubtc.cdk.dkg-second-test")
                     .expect("second application"),
+                ApplicationKeyEpoch::new(1).expect("key epoch"),
                 ApplicationDerivationVersion::new(1).expect("version"),
                 [profile.wrapping_add(20); 32],
             )
@@ -1003,6 +1005,7 @@ mod tests {
             let set = NonceCommitmentSet::new(commitments.clone()).expect("commitment set");
             let request = AuthorizationRequest::new(
                 registration.id(),
+                registration.key_epoch(),
                 registration.derivation_version(),
                 session,
                 message.to_vec(),

@@ -6,18 +6,18 @@ use frost_secp256k1_tr as frost;
 
 use crate::canonical::validate_root_public;
 use crate::types::{
-    ApplicationDerivationVersion, ApplicationId, ApplicationRegistration, FrostCiphersuite,
-    MemberId, NonceCommitment, NonceId, RootKeyEpoch, RootPublicPackage, SignatureShare,
-    SigningSessionId, MAX_COMMITMENT_BYTES, MAX_PARTICIPANTS,
+    ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
+    FrostCiphersuite, MemberId, NonceCommitment, NonceId, RootKeyEpoch, RootPublicPackage,
+    SignatureShare, SigningSessionId, MAX_COMMITMENT_BYTES, MAX_PARTICIPANTS,
 };
 use crate::Error;
 
 const ROOT_MAGIC: &[u8; 8] = b"CDKFRT01";
-const COMMITMENT_MAGIC: &[u8; 8] = b"CDKFNC02";
-const SHARE_MAGIC: &[u8; 8] = b"CDKFSH02";
+const COMMITMENT_MAGIC: &[u8; 8] = b"CDKFNC03";
+const SHARE_MAGIC: &[u8; 8] = b"CDKFSH03";
 const ROOT_WIRE_MAX: usize = 128 + MAX_PARTICIPANTS * 35;
 const COMMITMENT_WIRE_MAX: usize = 192 + MAX_COMMITMENT_BYTES;
-const SHARE_WIRE_LEN: usize = 8 + 8 + 32 + 2 + 32 + 32 + 32 + 2 + 32;
+const SHARE_WIRE_LEN: usize = 8 + 8 + 32 + 8 + 2 + 32 + 32 + 32 + 2 + 32;
 
 impl RootPublicPackage {
     /// Encode the public root package canonically.
@@ -252,6 +252,7 @@ fn encode_scope(
 ) {
     output.extend_from_slice(&epoch.get().to_be_bytes());
     output.extend_from_slice(&registration.id().to_bytes());
+    output.extend_from_slice(&registration.key_epoch().get().to_be_bytes());
     output.extend_from_slice(&registration.derivation_version().get().to_be_bytes());
     output.extend_from_slice(&registration.authorization_policy());
     output.extend_from_slice(&session.to_bytes());
@@ -262,9 +263,15 @@ fn decode_scope(
 ) -> Result<(RootKeyEpoch, ApplicationRegistration, SigningSessionId), Error> {
     let epoch = RootKeyEpoch::new(reader.u64()?)?;
     let application_id = ApplicationId::from_bytes(reader.array::<32>()?)?;
+    let application_key_epoch = ApplicationKeyEpoch::new(reader.u64()?)?;
     let derivation_version = ApplicationDerivationVersion::new(reader.u16()?)?;
     let policy = reader.array::<32>()?;
-    let registration = ApplicationRegistration::new(application_id, derivation_version, policy)?;
+    let registration = ApplicationRegistration::new(
+        application_id,
+        application_key_epoch,
+        derivation_version,
+        policy,
+    )?;
     let session = SigningSessionId::from_bytes(reader.array::<32>()?)?;
     Ok((epoch, registration, session))
 }

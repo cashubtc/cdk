@@ -11,6 +11,7 @@ use bitcoin::hashes::Hash;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::dkg::{FederationDkgTranscript, FederationDkgTranscriptHash};
+use super::frost_config::FederationFrostWalletConfig;
 use super::operation::{
     FederationKeysetRotationOperation, FederationOperationId, FederationPaymentObservationQuorum,
 };
@@ -898,6 +899,9 @@ pub struct FederationConfig {
     pub setup_transcript: Option<FederationDkgTranscript>,
     /// Policy for mint and melt payment observations.
     pub payment_observation_policy: FederationPaymentObservationPolicy,
+    /// Optional reusable FROST root and federated on-chain wallet configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frost_wallet: Option<FederationFrostWalletConfig>,
 }
 
 impl FederationConfig {
@@ -920,6 +924,7 @@ impl FederationConfig {
             payment_observation_policy: FederationPaymentObservationPolicy::member_quorum(
                 threshold_params.consensus_threshold,
             ),
+            frost_wallet: None,
         };
         config.validate()?;
         Ok(config)
@@ -983,6 +988,9 @@ impl FederationConfig {
 
         self.payment_observation_policy
             .validate(self.threshold_params)?;
+        if let Some(wallet) = &self.frost_wallet {
+            wallet.validate(self)?;
+        }
 
         Ok(())
     }
@@ -1015,6 +1023,9 @@ impl FederationConfig {
 
         self.payment_observation_policy
             .validate(self.threshold_params)?;
+        if let Some(wallet) = &self.frost_wallet {
+            wallet.validate(self)?;
+        }
 
         Ok(())
     }

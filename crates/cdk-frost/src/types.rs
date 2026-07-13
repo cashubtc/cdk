@@ -121,10 +121,32 @@ impl ApplicationDerivationVersion {
     }
 }
 
+/// Non-zero epoch for one application's derived key lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ApplicationKeyEpoch(u64);
+
+impl ApplicationKeyEpoch {
+    /// Construct a non-zero application key epoch.
+    pub fn new(value: u64) -> Result<Self, Error> {
+        if value == 0 {
+            return Err(Error::Application(
+                "application key epoch must be greater than zero".to_string(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Numeric epoch value.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Immutable metadata for a reviewed application authorization adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplicationRegistration {
     id: ApplicationId,
+    key_epoch: ApplicationKeyEpoch,
     derivation_version: ApplicationDerivationVersion,
     authorization_policy: [u8; 32],
 }
@@ -133,6 +155,7 @@ impl ApplicationRegistration {
     /// Construct an application registration bound to a policy commitment.
     pub fn new(
         id: ApplicationId,
+        key_epoch: ApplicationKeyEpoch,
         derivation_version: ApplicationDerivationVersion,
         authorization_policy: [u8; 32],
     ) -> Result<Self, Error> {
@@ -143,6 +166,7 @@ impl ApplicationRegistration {
         }
         Ok(Self {
             id,
+            key_epoch,
             derivation_version,
             authorization_policy,
         })
@@ -151,6 +175,11 @@ impl ApplicationRegistration {
     /// Stable application identifier.
     pub fn id(self) -> ApplicationId {
         self.id
+    }
+
+    /// Application key epoch bound into derivation and signing transcripts.
+    pub fn key_epoch(self) -> ApplicationKeyEpoch {
+        self.key_epoch
     }
 
     /// Application derivation version.
@@ -213,6 +242,7 @@ pub(crate) fn derive_nonce_id(
     hasher.update(b"cdk/frost/nonce-id/v1");
     hasher.update(epoch.get().to_be_bytes());
     hasher.update(registration.id().to_bytes());
+    hasher.update(registration.key_epoch().get().to_be_bytes());
     hasher.update(registration.derivation_version().get().to_be_bytes());
     hasher.update(registration.authorization_policy());
     hasher.update(session_id.to_bytes());
@@ -227,6 +257,7 @@ pub(crate) fn derive_nonce_id(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationRequest {
     application_id: ApplicationId,
+    application_key_epoch: ApplicationKeyEpoch,
     derivation_version: ApplicationDerivationVersion,
     session_id: SigningSessionId,
     payload: Vec<u8>,
@@ -368,6 +399,7 @@ impl AuthorizationRequest {
     /// Construct an application-scoped authorization request.
     pub fn new(
         application_id: ApplicationId,
+        application_key_epoch: ApplicationKeyEpoch,
         derivation_version: ApplicationDerivationVersion,
         session_id: SigningSessionId,
         payload: Vec<u8>,
@@ -380,6 +412,7 @@ impl AuthorizationRequest {
         }
         Ok(Self {
             application_id,
+            application_key_epoch,
             derivation_version,
             session_id,
             payload,
@@ -389,6 +422,11 @@ impl AuthorizationRequest {
     /// Requested application identifier.
     pub fn application_id(&self) -> ApplicationId {
         self.application_id
+    }
+
+    /// Application key epoch expected by the caller.
+    pub fn application_key_epoch(&self) -> ApplicationKeyEpoch {
+        self.application_key_epoch
     }
 
     /// Requested derivation version.

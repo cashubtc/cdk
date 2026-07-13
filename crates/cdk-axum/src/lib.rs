@@ -3,7 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 #[cfg(feature = "federation")]
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 #[cfg(feature = "federation")]
 use std::sync::Mutex;
@@ -25,11 +25,11 @@ use cdk::federation::{
     FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSubmitOperationResponse,
-    MemberId,
+    FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -2432,6 +2432,7 @@ async fn create_federation_runtime_state(
     };
 
     let db = mint.localstore();
+    validate_and_materialize_frost_wallet_config(mint).await?;
     let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_config(&snapshot).await?;
@@ -2501,6 +2502,110 @@ async fn create_federation_runtime_state(
         Some(Arc::new(tokio::sync::Mutex::new(consensus))),
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
     ))
+}
+
+#[cfg(feature = "federation")]
+async fn validate_and_materialize_frost_wallet_config(mint: &Arc<Mint>) -> Result<()> {
+    let runtime = mint.federation_config().ok_or_else(|| {
+        cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+    })?;
+    let public = runtime.public_config();
+    let Some(wallet) = &public.frost_wallet else {
+        return Ok(());
+    };
+    wallet.validate(public)?;
+
+    let db = mint.localstore();
+    let mut tx = db.begin_transaction().await?;
+    for root in &wallet.roots {
+        tx.add_federation_frost_root_public_config(root).await?;
+    }
+    for application in &wallet.cdk_onchain_applications {
+        tx.add_federation_frost_application_config(application)
+            .await?;
+    }
+    for consumer in &wallet.registered_consumers {
+        tx.add_federation_frost_consumer_registration(consumer)
+            .await?;
+    }
+    tx.set_federation_frost_active_epochs(&wallet.active_epochs)
+        .await?;
+    tx.commit().await?;
+
+    let stored_roots = db.get_federation_frost_root_public_configs().await?;
+    let stored_applications = db.get_federation_frost_application_configs().await?;
+    let stored_consumers = db.get_federation_frost_consumer_registrations().await?;
+    let stored_active = db.get_federation_frost_active_epochs().await?;
+    let expected_roots = wallet
+        .roots
+        .iter()
+        .map(|root| (root.root_key_epoch, root))
+        .collect::<BTreeMap<_, _>>();
+    let actual_roots = stored_roots
+        .iter()
+        .map(|root| (root.root_key_epoch, root))
+        .collect::<BTreeMap<_, _>>();
+    let expected_applications = wallet
+        .cdk_onchain_applications
+        .iter()
+        .map(|application| {
+            (
+                (
+                    application.application_id,
+                    application.application_key_epoch,
+                ),
+                application,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let actual_applications = stored_applications
+        .iter()
+        .map(|application| {
+            (
+                (
+                    application.application_id,
+                    application.application_key_epoch,
+                ),
+                application,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let expected_consumers = wallet.registered_consumers.iter().collect::<BTreeSet<_>>();
+    let actual_consumers = stored_consumers.iter().collect::<BTreeSet<_>>();
+    if expected_roots != actual_roots
+        || expected_applications != actual_applications
+        || expected_consumers != actual_consumers
+        || stored_active.as_ref() != Some(&wallet.active_epochs)
+    {
+        return Err(cdk::Error::Custom(
+            "persisted federation FROST wallet configuration mismatch".to_string(),
+        )
+        .into());
+    }
+
+    let private_roots = db.get_federation_frost_root_private_configs().await?;
+    if private_roots.len() != wallet.roots.len() {
+        return Err(cdk::Error::Custom(
+            "missing or unknown participant-local FROST root configuration".to_string(),
+        )
+        .into());
+    }
+    for root in &wallet.roots {
+        let local = private_roots
+            .iter()
+            .find(|candidate| candidate.root_key_epoch == root.root_key_epoch)
+            .ok_or_else(|| {
+                cdk::Error::Custom(format!(
+                    "missing participant-local FROST root epoch {}",
+                    root.root_key_epoch
+                ))
+            })?;
+        let context =
+            FederationFrostDkgContext::new(public, root.ceremony_id, root.root_key_epoch)?;
+        let storage_key = self::federation::frost_storage_key(runtime.private_config(), &context)?;
+        local.open(public, root, runtime.member_id(), &storage_key)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "federation")]

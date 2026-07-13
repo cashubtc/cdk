@@ -191,3 +191,15 @@ CREATE TABLE federation_frost_dkg_records (
 
 CREATE INDEX idx_federation_frost_dkg_records_kind
 ON federation_frost_dkg_records (record_kind, ceremony_id, sender_id, receiver_id);
+
+CREATE TABLE federation_frost_wallet_config (
+    record_kind TEXT NOT NULL,
+    root_key_epoch INTEGER NOT NULL,
+    application_id TEXT NOT NULL,
+    application_key_epoch INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (record_kind, root_key_epoch, application_id, application_key_epoch)
+);
+
+CREATE INDEX idx_federation_frost_wallet_config_kind
+ON federation_frost_wallet_config (record_kind, root_key_epoch, application_id, application_key_epoch);

@@ -16,17 +16,21 @@ use crate::federation::{
     FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
     FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
     FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
-    FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
-    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
-    FederationFrostRootRecord, FederationId, FederationJournalAppendOutcome,
+    FederationFrostActiveEpochs, FederationFrostApplicationConfig, FederationFrostApplicationId,
+    FederationFrostConsumerRegistration, FederationFrostDkgConfirmationRequest,
+    FederationFrostDkgContext, FederationFrostDkgLocalPhase, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostEpochState,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationFrostSealedStorageMetadata, FederationId, FederationJournalAppendOutcome,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationOnchainConfirmationPolicy, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
+    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
@@ -2128,6 +2132,145 @@ where
         .await
         .is_err());
     tx.rollback().await.expect("rollback round-two conflict");
+}
+
+/// Assert FROST wallet config snapshots persist independently and equivocation-safely.
+pub async fn federation_frost_wallet_config_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let public_config = dkg_public_config();
+    let application_id =
+        FederationFrostApplicationId::from_bytes([42; 32]).expect("application id");
+    let root = FederationFrostRootPublicConfig {
+        version: 1,
+        federation_id: public_config.federation_id,
+        ceremony_id: dkg_ceremony_id(),
+        root_key_epoch: 1,
+        state: FederationFrostEpochState::Active,
+        dkg_protocol_version: 1,
+        ciphersuite_version: 1,
+        threshold: public_config.threshold_params.signature_threshold,
+        participant_mapping: [(member_id(1), 1), (member_id(2), 2)].into_iter().collect(),
+        verification_shares: [(member_id(1), [2; 33]), (member_id(2), [3; 33])]
+            .into_iter()
+            .collect(),
+        untweaked_group_key: [4; 33],
+        transcript_binding: [5; 32],
+        canonical_public_package: vec![6, 7],
+    };
+    let private = FederationFrostRootPrivateConfig {
+        version: 1,
+        federation_id: public_config.federation_id,
+        member_id: member_id(1),
+        root_key_epoch: 1,
+        public_root_digest: [8; 32],
+        local_verification_share: [2; 33],
+        encrypted_root_share: vec![9, 10],
+        sealed_storage: FederationFrostSealedStorageMetadata::member_identity_derived(
+            public_config.federation_id,
+            dkg_ceremony_id(),
+            member_id(1),
+            1,
+        ),
+    };
+    let application = FederationFrostApplicationConfig {
+        version: 1,
+        application_id,
+        application_key_epoch: 1,
+        root_key_epoch: 1,
+        state: FederationFrostEpochState::Active,
+        derivation_version: 1,
+        authorization_policy: [11; 32],
+        threshold: public_config.threshold_params.signature_threshold,
+        verification_shares: [(member_id(1), [12; 33]), (member_id(2), [13; 33])]
+            .into_iter()
+            .collect(),
+        derived_group_key: [14; 33],
+        chain_code: [15; 32],
+        external_descriptor: "tr(tpub-test/0/*)".to_string(),
+        internal_descriptor: "tr(tpub-test/1/*)".to_string(),
+        descriptor_commitment: [16; 32],
+        network: bitcoin::Network::Regtest,
+        confirmation_policy: FederationOnchainConfirmationPolicy {
+            version: 1,
+            minimum_confirmations: 2,
+        },
+        fee_policy_version: 1,
+    };
+    let consumer = FederationFrostConsumerRegistration {
+        version: 1,
+        root_key_epoch: 1,
+        application_id,
+        application_key_epoch: 1,
+    };
+    let active = FederationFrostActiveEpochs {
+        root_key_epoch: 1,
+        application_key_epochs: [(application_id, 1)].into_iter().collect(),
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_frost_root_public_config(&root)
+        .await
+        .expect("root public");
+    tx.add_federation_frost_root_public_config(&root)
+        .await
+        .expect("idempotent root public");
+    tx.add_federation_frost_root_private_config(&private)
+        .await
+        .expect("root private");
+    tx.add_federation_frost_application_config(&application)
+        .await
+        .expect("application");
+    tx.add_federation_frost_consumer_registration(&consumer)
+        .await
+        .expect("consumer");
+    tx.set_federation_frost_active_epochs(&active)
+        .await
+        .expect("active epochs");
+    tx.commit().await.expect("commit wallet config");
+
+    assert_eq!(
+        db.get_federation_frost_root_public_configs()
+            .await
+            .expect("public roots"),
+        vec![root.clone()]
+    );
+    assert_eq!(
+        db.get_federation_frost_root_private_configs()
+            .await
+            .expect("private roots"),
+        vec![private]
+    );
+    assert_eq!(
+        db.get_federation_frost_application_configs()
+            .await
+            .expect("applications"),
+        vec![application]
+    );
+    assert_eq!(
+        db.get_federation_frost_consumer_registrations()
+            .await
+            .expect("consumers"),
+        vec![consumer]
+    );
+    assert_eq!(
+        db.get_federation_frost_active_epochs()
+            .await
+            .expect("active epochs"),
+        Some(active)
+    );
+
+    let mut conflicting = root;
+    conflicting.transcript_binding[0] ^= 1;
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting root");
+    assert!(tx
+        .add_federation_frost_root_public_config(&conflicting)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback conflicting root");
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.

@@ -180,6 +180,7 @@ impl CanonicalRootKeyPackage {
         registration: ApplicationRegistration,
     ) -> Result<DerivedLibraryPackage, Error> {
         let tweak = application_tweak(&self.public, registration)?;
+        let public_boundary = derive_application_public(&self.public, registration)?;
         let root_share = scalar_from_bytes(&self.signing_share, "root signing share")?;
         let derived_share = root_share + tweak;
         if bool::from(derived_share.is_zero()) {
@@ -187,23 +188,15 @@ impl CanonicalRootKeyPackage {
                 "application derivation produced a zero signing share".to_string(),
             ));
         }
-        let tweak_point = ProjectivePoint::GENERATOR * tweak;
-        let group_key = point_from_bytes(&self.public.group_key, "root group key")? + tweak_point;
-
-        let mut boundary_shares = BTreeMap::new();
         let mut library_shares = BTreeMap::new();
-        for (member, encoded) in &self.public.verifying_shares {
-            let point = point_from_bytes(encoded, "root verification share")? + tweak_point;
-            let serialized = point_to_bytes(point);
-            boundary_shares.insert(*member, serialized);
+        for (member, serialized) in &public_boundary.verifying_shares {
             library_shares.insert(
                 identifier(*member)?,
-                frost::keys::VerifyingShare::deserialize(&serialized)
+                frost::keys::VerifyingShare::deserialize(serialized)
                     .map_err(|err| Error::Frost(err.to_string()))?,
             );
         }
-        let group_key = point_to_bytes(group_key);
-        let library_group_key = frost::VerifyingKey::deserialize(&group_key)
+        let library_group_key = frost::VerifyingKey::deserialize(&public_boundary.group_key)
             .map_err(|err| Error::Frost(err.to_string()))?;
         let library_signing_share =
             frost::keys::SigningShare::deserialize(derived_share.to_bytes().as_ref())
@@ -222,13 +215,6 @@ impl CanonicalRootKeyPackage {
             library_group_key,
             self.public.threshold,
         );
-        let public_boundary = DerivedPublicPackage {
-            root_epoch: self.public.epoch,
-            registration,
-            threshold: self.public.threshold,
-            verifying_shares: boundary_shares,
-            group_key,
-        };
         Ok(DerivedLibraryPackage {
             key,
             public_boundary,
@@ -279,6 +265,38 @@ impl CanonicalRootKeyPackage {
         );
         Ok(DerivedSigningLibraryPackage { key })
     }
+}
+
+pub(crate) fn derive_application_public(
+    public: &RootPublicPackage,
+    registration: ApplicationRegistration,
+) -> Result<DerivedPublicPackage, Error> {
+    validate_root_public(public)?;
+    let tweak = application_tweak(public, registration)?;
+    let tweak_point = ProjectivePoint::GENERATOR * tweak;
+    let mut verifying_shares = BTreeMap::new();
+    for (member, encoded) in &public.verifying_shares {
+        let point = point_from_bytes(encoded, "root verification share")? + tweak_point;
+        if bool::from(point.is_identity()) {
+            return Err(Error::Application(
+                "application derivation produced an identity verification share".to_string(),
+            ));
+        }
+        verifying_shares.insert(*member, point_to_bytes(point));
+    }
+    let group = point_from_bytes(&public.group_key, "root group key")? + tweak_point;
+    if bool::from(group.is_identity()) {
+        return Err(Error::Application(
+            "application derivation produced an identity group key".to_string(),
+        ));
+    }
+    DerivedPublicPackage::new(
+        public.epoch,
+        registration,
+        public.threshold,
+        verifying_shares,
+        point_to_bytes(group),
+    )
 }
 
 fn root_secret_aad(participant: MemberId, public: &RootPublicPackage) -> Vec<u8> {
@@ -481,6 +499,7 @@ fn application_tweak(
     hasher.update(public.transcript_binding);
     hasher.update(public.group_key);
     hasher.update(registration.id().to_bytes());
+    hasher.update(registration.key_epoch().get().to_be_bytes());
     hasher.update(registration.derivation_version().get().to_be_bytes());
     hasher.update(registration.authorization_policy());
     let tweak = Scalar::reduce(U256::from_be_slice(&hasher.finalize()));

@@ -2219,6 +2219,7 @@ impl FederationDkgTranscript {
             .map(FederationDkgKeysetTranscript::federated_keyset)
             .collect();
         setup_config.setup_transcript = None;
+        setup_config.frost_wallet = None;
         setup_config.validate()?;
         self.validate_against_config(&setup_config)?;
 

@@ -7,9 +7,9 @@ use bitcoin::key::TweakedPublicKey;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::{Address, Network};
 use cdk_frost::{
-    derive_signing_public, ApplicationDerivationVersion, ApplicationId, ApplicationRegistration,
-    DerivedPublicPackage, DerivedSigningPublicPackage, Error as FrostError, SignatureMode,
-    SigningDerivation,
+    derive_signing_public, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
+    ApplicationRegistration, DerivedPublicPackage, DerivedSigningPublicPackage,
+    Error as FrostError, SignatureMode, SigningDerivation,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -18,6 +18,8 @@ use thiserror::Error;
 pub const APPLICATION_LABEL: &str = "org.cashubtc.cdk.federated-onchain";
 /// Current application derivation contract version.
 pub const APPLICATION_DERIVATION_VERSION: u16 = 1;
+/// First CDK on-chain application key epoch.
+pub const INITIAL_APPLICATION_KEY_EPOCH: u64 = 1;
 const MAX_NORMAL_INDEX: u32 = (1 << 31) - 1;
 
 /// BIP32 branch used by the watch-only descriptor.
@@ -221,18 +223,30 @@ impl FrostBip32 {
 
 /// Stable registration for the CDK federated on-chain wallet adapter.
 pub fn application_registration() -> Result<ApplicationRegistration, Error> {
-    let id = ApplicationId::from_label(APPLICATION_LABEL)?;
-    let version = ApplicationDerivationVersion::new(APPLICATION_DERIVATION_VERSION)?;
-    let policy: [u8; 32] = Sha256::digest(b"cdk/frost/federated-onchain-authorization/v1").into();
-    Ok(ApplicationRegistration::new(id, version, policy)?)
+    application_registration_for_epoch(INITIAL_APPLICATION_KEY_EPOCH)
 }
 
-fn application_chain_code(application: &DerivedPublicPackage) -> [u8; 32] {
+/// Stable registration for one CDK federated on-chain application key epoch.
+pub fn application_registration_for_epoch(
+    application_key_epoch: u64,
+) -> Result<ApplicationRegistration, Error> {
+    let id = ApplicationId::from_label(APPLICATION_LABEL)?;
+    let key_epoch = ApplicationKeyEpoch::new(application_key_epoch)?;
+    let version = ApplicationDerivationVersion::new(APPLICATION_DERIVATION_VERSION)?;
+    let policy: [u8; 32] = Sha256::digest(b"cdk/frost/federated-onchain-authorization/v1").into();
+    Ok(ApplicationRegistration::new(
+        id, key_epoch, version, policy,
+    )?)
+}
+
+/// Deterministic BIP32 chain code for one application package.
+pub fn application_chain_code(application: &DerivedPublicPackage) -> [u8; 32] {
     let registration = application.registration();
     let mut hasher = Sha256::new();
     hasher.update(b"cdk/frost/bip32-chain-code/v1");
     hasher.update(application.root_epoch().get().to_be_bytes());
     hasher.update(registration.id().to_bytes());
+    hasher.update(registration.key_epoch().get().to_be_bytes());
     hasher.update(registration.derivation_version().get().to_be_bytes());
     hasher.update(registration.authorization_policy());
     hasher.update(application.group_key());
@@ -431,34 +445,60 @@ mod tests {
     }
 
     #[test]
+    fn application_key_epochs_change_chain_code_descriptors_and_targets() {
+        let first = application();
+        let second = application_with(
+            application_registration_for_epoch(2).expect("second registration"),
+            RootKeyEpoch::new(7).expect("root epoch"),
+            7,
+        );
+        let first = FrostBip32::new(first, Network::Regtest).expect("first epoch");
+        let second = FrostBip32::new(second, Network::Regtest).expect("second epoch");
+        assert_ne!(first.root_xpub(), second.root_xpub());
+        assert_ne!(first.descriptors(), second.descriptors());
+        assert_ne!(
+            first
+                .derive(WalletBranch::External, WalletIndex::new(0).expect("index"))
+                .expect("first target")
+                .signing_derivation()
+                .binding(),
+            second
+                .derive(WalletBranch::External, WalletIndex::new(0).expect("index"))
+                .expect("second target")
+                .signing_derivation()
+                .binding()
+        );
+    }
+
+    #[test]
     fn stable_vector() {
         let adapter = FrostBip32::new(application(), Network::Regtest).expect("adapter");
         let target = adapter
             .derive(WalletBranch::External, WalletIndex::new(0).expect("index"))
             .expect("target");
-        assert_eq!(adapter.root_xpub().to_string(), "tpubD6NzVbkrYhZ4XzHFcgP6FEE3aDGdGsiCHVKwSEHX8ykmuUekLF2m4CVAJDvJ48pRVeoLXsmtvGN3ZkW4fUt3FNn4sumG6kN6ah7Va18EPFN");
+        assert_eq!(adapter.root_xpub().to_string(), "tpubD6NzVbkrYhZ4X8ZspvJjW18vMCjs7N9y1FzCdoz5U4zBhvWe9H4f2texqTksriHuXPTz6zGXdjtdQDRxG4Ze27qvVTSZY5spazeJHzjiY8J");
         assert_eq!(
             target.public_package().internal_group_key(),
             [
-                0x02, 0x62, 0x4f, 0x78, 0x99, 0x7b, 0x3e, 0x6c, 0xfc, 0x37, 0x4f, 0xf2, 0x32, 0x72,
-                0x5d, 0x46, 0xbe, 0x41, 0xf1, 0xbc, 0x62, 0xd5, 0xf3, 0x3c, 0x6a, 0x7b, 0xd1, 0xb7,
-                0x70, 0x41, 0x36, 0x82, 0xa4,
+                0x02, 0xb6, 0x72, 0x7f, 0xa5, 0x63, 0xe2, 0x8c, 0x8a, 0x2e, 0x0d, 0x4a, 0x69, 0xaa,
+                0x53, 0xcc, 0x11, 0x21, 0xcf, 0x5d, 0x5f, 0x13, 0x0d, 0xd0, 0x8f, 0xeb, 0xff, 0x08,
+                0x5f, 0x6e, 0x74, 0x22, 0x7b,
             ]
         );
         assert_eq!(
             target.public_package().output_group_key(),
             [
-                0x03, 0xf0, 0x42, 0xb2, 0xf6, 0xf9, 0x07, 0xf5, 0x6d, 0xec, 0xab, 0x3a, 0x54, 0x8d,
-                0x72, 0x39, 0x48, 0x61, 0xa4, 0x46, 0x2a, 0x91, 0x5a, 0xbc, 0x0d, 0x12, 0x1d, 0xde,
-                0x7b, 0x65, 0xbc, 0xcb, 0xae,
+                0x02, 0x48, 0xfb, 0x10, 0xdc, 0xbf, 0xbd, 0x27, 0x72, 0xfd, 0x06, 0xd0, 0x3c, 0x52,
+                0x20, 0xda, 0xb0, 0x4b, 0x25, 0x9d, 0x67, 0x33, 0xb6, 0xb9, 0xa9, 0x4d, 0x66, 0x22,
+                0x89, 0x1a, 0xc2, 0xf8, 0x31,
             ]
         );
         assert_eq!(
             target.signing_derivation().binding(),
             [
-                0xe8, 0xea, 0x43, 0x17, 0x64, 0xf7, 0x9b, 0x1c, 0x94, 0x5d, 0x92, 0x64, 0x59, 0x72,
-                0xb0, 0x91, 0xda, 0x87, 0xd4, 0x77, 0x6e, 0xc7, 0x34, 0xd1, 0xf4, 0xc0, 0x87, 0x89,
-                0x82, 0x36, 0x2e, 0xf0,
+                0x6f, 0x38, 0x3c, 0x5f, 0x80, 0x8b, 0x17, 0xf0, 0xda, 0xc5, 0xca, 0x2f, 0x00, 0xd5,
+                0xd4, 0xd3, 0xb4, 0x6a, 0xfc, 0xa1, 0x71, 0x68, 0x76, 0x07, 0x6c, 0x4f, 0x43, 0x78,
+                0x21, 0x50, 0x06, 0xe0,
             ]
         );
         assert_eq!(
@@ -466,7 +506,7 @@ mod tests {
                 .address(Network::Regtest)
                 .expect("address")
                 .to_string(),
-            "bcrt1p7ppt9aheql6kmm9t8f2g6u3efps6g332j9dtcrgjrh08keduewhquz8jwf"
+            "bcrt1pfra3ph9lh5nh9lgx6q79ygx6kp9jt8t8xwmtn22dvc3gjxkzlqcs8fza9w"
         );
     }
 
@@ -503,6 +543,7 @@ mod tests {
         let base = application_registration().expect("base registration");
         let version_two = ApplicationRegistration::new(
             base.id(),
+            base.key_epoch(),
             ApplicationDerivationVersion::new(2).expect("version"),
             base.authorization_policy(),
         )
@@ -510,6 +551,7 @@ mod tests {
         let other_application = ApplicationRegistration::new(
             ApplicationId::from_label("org.cashubtc.cdk.another-onchain-test")
                 .expect("application ID"),
+            base.key_epoch(),
             base.derivation_version(),
             base.authorization_policy(),
         )

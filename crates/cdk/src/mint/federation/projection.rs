@@ -29,6 +29,50 @@ impl Mint {
     ) -> Result<FederationMaterializedStateSnapshot, Error> {
         let db = self.localstore();
         let mut snapshot = FederationMaterializedStateSnapshot::new();
+        for root in db.get_federation_frost_root_public_configs().await? {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_frost_root_public_config",
+                    root.root_key_epoch.to_string(),
+                )
+                .with_field("payload_json", serde_json::to_string(&root)?),
+            );
+        }
+        for application in db.get_federation_frost_application_configs().await? {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_frost_application_config",
+                    format!(
+                        "{}:{}",
+                        application.application_id, application.application_key_epoch
+                    ),
+                )
+                .with_field("payload_json", serde_json::to_string(&application)?),
+            );
+        }
+        for consumer in db.get_federation_frost_consumer_registrations().await? {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_frost_consumer_registration",
+                    format!(
+                        "{}:{}:{}",
+                        consumer.root_key_epoch,
+                        consumer.application_id,
+                        consumer.application_key_epoch
+                    ),
+                )
+                .with_field("payload_json", serde_json::to_string(&consumer)?),
+            );
+        }
+        if let Some(active_epochs) = db.get_federation_frost_active_epochs().await? {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_frost_active_epochs",
+                    "active".to_string(),
+                )
+                .with_field("payload_json", serde_json::to_string(&active_epochs)?),
+            );
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut payment_observation_quotes = BTreeSet::new();

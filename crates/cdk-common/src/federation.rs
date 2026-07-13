@@ -10,6 +10,7 @@ mod config;
 mod consensus;
 mod dkg;
 mod dkg_driver;
+mod frost_config;
 mod frost_dkg;
 mod journal;
 mod operation;
@@ -64,6 +65,13 @@ pub use self::dkg::{
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
+};
+pub use self::frost_config::{
+    FederationFrostActiveEpochs, FederationFrostApplicationConfig, FederationFrostApplicationId,
+    FederationFrostConsumerRegistration, FederationFrostEpochState,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
+    FederationFrostSealedStorageMetadata, FederationFrostWalletConfig,
+    FederationOnchainConfirmationPolicy,
 };
 pub use self::frost_dkg::{
     FederationDualDkgResult, FederationFrostDkgConfirmationRequest, FederationFrostDkgContext,
@@ -315,6 +323,12 @@ fn federation_operator_token_suffix(ch: char) -> bool {
 /// Errors returned by federation configuration helpers.
 #[derive(Debug, Error)]
 pub enum FederationError {
+    /// A public or private FROST wallet configuration failed validation.
+    #[error("Invalid federation FROST wallet configuration: {reason}")]
+    FrostConfigurationInvalid {
+        /// Stable validation reason without secret material.
+        reason: String,
+    },
     /// A federation ID must be exactly 32 bytes.
     #[error("Invalid federation id size: expected={expected}, found={found}")]
     InvalidFederationIdSize {

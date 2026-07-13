@@ -1096,6 +1096,7 @@ impl FederationDkgActivationRequest {
         let mut setup_public_config = final_public_config.clone();
         setup_public_config.keysets.clear();
         setup_public_config.setup_transcript = None;
+        setup_public_config.frost_wallet = None;
         let mut identity_config = private_config.clone();
         identity_config.keyset_secret_shares.clear();
         identity_config.setup_transcript_hash = None;
@@ -1179,6 +1180,7 @@ impl FederationDkgActivationRequest {
         let mut expected_setup = final_public_config.clone();
         expected_setup.keysets.clear();
         expected_setup.setup_transcript = None;
+        expected_setup.frost_wallet = None;
         if &expected_setup != setup_public_config {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "DKG activation final config does not extend the setup config".to_string(),

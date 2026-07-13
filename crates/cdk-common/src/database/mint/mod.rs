@@ -17,10 +17,13 @@ use crate::federation::{
     FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationFrostDkgConfirmationRequest,
-    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
-    FederationFrostRootRecord, FederationId, FederationJournalEntry, FederationJournalTip,
-    FederationOperationId, FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationDkgTranscriptSignatureRequest, FederationFrostActiveEpochs,
+    FederationFrostApplicationConfig, FederationFrostConsumerRegistration,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationId, FederationJournalEntry, FederationJournalTip, FederationOperationId,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, MemberId,
 };
 use crate::mint::{
@@ -962,6 +965,44 @@ pub trait FederationDkgTransaction {
 
 #[cfg(feature = "federation")]
 #[async_trait]
+/// Federation FROST wallet configuration transaction trait.
+pub trait FederationFrostWalletTransaction {
+    /// Federation FROST wallet database error.
+    type Err: Into<Error> + From<Error>;
+
+    /// Persist one immutable public root snapshot.
+    async fn add_federation_frost_root_public_config(
+        &mut self,
+        config: &FederationFrostRootPublicConfig,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist this member's sealed private root snapshot.
+    async fn add_federation_frost_root_private_config(
+        &mut self,
+        config: &FederationFrostRootPrivateConfig,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one immutable application-key snapshot.
+    async fn add_federation_frost_application_config(
+        &mut self,
+        config: &FederationFrostApplicationConfig,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one immutable root consumer registration.
+    async fn add_federation_frost_consumer_registration(
+        &mut self,
+        registration: &FederationFrostConsumerRegistration,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist the canonical active root/application epoch selectors.
+    async fn set_federation_frost_active_epochs(
+        &mut self,
+        active_epochs: &FederationFrostActiveEpochs,
+    ) -> Result<(), Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
 /// Federation journal database trait
 pub trait FederationJournalDatabase {
     /// Federation journal database error
@@ -1166,6 +1207,39 @@ pub trait FederationDkgDatabase {
     ) -> Result<Vec<FederationFrostDkgConfirmationRequest>, Self::Err>;
 }
 
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation FROST wallet configuration database trait.
+pub trait FederationFrostWalletDatabase {
+    /// Federation FROST wallet database error.
+    type Err: Into<Error> + From<Error>;
+
+    /// Load all immutable public root snapshots.
+    async fn get_federation_frost_root_public_configs(
+        &self,
+    ) -> Result<Vec<FederationFrostRootPublicConfig>, Self::Err>;
+
+    /// Load all participant-local sealed root snapshots.
+    async fn get_federation_frost_root_private_configs(
+        &self,
+    ) -> Result<Vec<FederationFrostRootPrivateConfig>, Self::Err>;
+
+    /// Load all immutable application-key snapshots.
+    async fn get_federation_frost_application_configs(
+        &self,
+    ) -> Result<Vec<FederationFrostApplicationConfig>, Self::Err>;
+
+    /// Load all immutable root consumer registrations.
+    async fn get_federation_frost_consumer_registrations(
+        &self,
+    ) -> Result<Vec<FederationFrostConsumerRegistration>, Self::Err>;
+
+    /// Load the canonical active root/application epoch selectors.
+    async fn get_federation_frost_active_epochs(
+        &self,
+    ) -> Result<Option<FederationFrostActiveEpochs>, Self::Err>;
+}
+
 #[cfg(not(feature = "federation"))]
 /// Base database writer
 ///
@@ -1205,6 +1279,7 @@ pub trait Transaction<Error>:
     + FederationJournalTransaction<Err = Error>
     + FederationApplicationTransaction<Err = Error>
     + FederationDkgTransaction<Err = Error>
+    + FederationFrostWalletTransaction<Err = Error>
 {
 }
 
@@ -1236,6 +1311,7 @@ pub trait Database<Error>:
     + FederationJournalDatabase<Err = Error>
     + FederationApplicationDatabase<Err = Error>
     + FederationDkgDatabase<Err = Error>
+    + FederationFrostWalletDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
