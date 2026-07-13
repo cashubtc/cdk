@@ -630,7 +630,7 @@ Verification:
 - all 94 Axum custom-handler tests pass, including pending mint, swap, and melt
   timeouts, duplicate waiter joins, manual finality, and persisted responses;
 - focused live-session startup, readiness, rotation, pending-mempool, restart,
-  status, and public `GET /v1/config` tests pass;
+  status, and public `GET /federation/v1/config` tests pass;
 - all 39 mintd federation-status tests pass and `cdk-mintd` checks without
   warnings under the federation feature;
 - all 424 Axum federation tests pass after correcting one stale test to
@@ -959,7 +959,7 @@ Verification:
 - all 22 SQLite federation persistence, fresh-schema, and index tests pass;
 - all 99 mint federation tests pass;
 - all 420 Axum federation tests pass, including live AlephBFT finalization,
-  restart, catch-up, mismatch detection, DKG, and public `GET /v1/config`;
+  restart, catch-up, mismatch detection, DKG, and public `GET /federation/v1/config`;
 - federation-enabled PostgreSQL and mintd checks pass;
 - all 28 standalone Axum and 134 standalone SQLite tests pass, and the
   federation-disabled mintd check passes.

@@ -78,12 +78,12 @@ Federation member identity is separate from Cashu signing keys:
 ## Public Federation Discovery
 
 An active federation member exposes its complete public federation config at
-`GET /v1/config`. This is a public, unauthenticated, read-only wallet discovery
-endpoint and is separate from signed member coordination under
-`/federation/v1/*`. Standalone mints do not expose it, and a member must not
-serve an incomplete setup config without a finalized transcript and active
-aggregate keyset. Responses use `Cache-Control: no-store` so key rotation or a
-restarted finalized config is not hidden by an intermediary cache.
+`GET /federation/v1/config`. This is a public, unauthenticated, read-only wallet
+discovery endpoint, unlike the signed member coordination endpoints under the
+same `/federation/v1/*` prefix. Standalone mints do not expose it, and a member
+must not serve an incomplete setup config without a finalized transcript and
+active aggregate keyset. Responses use `Cache-Control: no-store` so key rotation
+or a restarted finalized config is not hidden by an intermediary cache.
 
 The response contains only `FederationConfig`: member public URLs, member
 identity public keys, thresholds, v3/BLS aggregate keysets and public shares,
