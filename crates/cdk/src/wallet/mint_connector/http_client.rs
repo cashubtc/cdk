@@ -1465,9 +1465,11 @@ mod tests {
         let mint_response = MintQuoteCustomResponse::<String> {
             quote: quote_id.to_string(),
             request: "paypal://incoming".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
             amount: Some(cdk_common::Amount::from(1000)),
             amount_paid: cdk_common::Amount::ZERO,
             amount_issued: cdk_common::Amount::ZERO,
+            updated_at: 0,
             unit: Some(cdk_common::CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -1490,7 +1492,7 @@ mod tests {
                 MintQuoteRequest::Custom {
                     method: PaymentMethod::Custom("paypal".to_string()),
                     request: MintQuoteCustomRequest {
-                        amount: cdk_common::Amount::from(1000),
+                        amount: Some(cdk_common::Amount::from(1000)),
                         unit: cdk_common::CurrencyUnit::Sat,
                         description: None,
                         pubkey: None,
@@ -1516,6 +1518,7 @@ mod tests {
 
         let melt_response = cdk_common::nut05::MeltQuoteCustomResponse::<String> {
             quote: quote_id.to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
             amount: cdk_common::Amount::from(1000),
             fee_reserve: Some(cdk_common::Amount::ZERO),
             state: cdk_common::MeltQuoteState::Unpaid,
@@ -1544,6 +1547,7 @@ mod tests {
                     method: "paypal".to_string(),
                     request: "paypal://outgoing".to_string(),
                     unit: cdk_common::CurrencyUnit::Sat,
+                    amount: Some(cdk_common::Amount::from(1000)),
                     extra: serde_json::Value::Null,
                 }),
                 &quote_id,

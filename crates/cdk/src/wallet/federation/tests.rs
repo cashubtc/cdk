@@ -774,6 +774,7 @@ fn melt_response(
         change: Some(share_response(bundle, member_id, &signed_outputs).signatures),
         request: Some("bolt11-invoice".to_string()),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
     })
 }
 
@@ -788,6 +789,7 @@ fn melt_response_without_change() -> MeltQuoteResponse<String> {
         change: None,
         request: Some("bolt11-invoice".to_string()),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
     })
 }
 
@@ -816,6 +818,7 @@ fn melt_quote_create_response() -> MeltQuoteCreateResponse<String> {
         change: None,
         request: Some("bolt11-invoice".to_string()),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
     })
 }
 
@@ -857,6 +860,16 @@ fn mint_quote_status_response_for(
         request: "bolt11-invoice".to_string(),
         amount: Some(Amount::from(3)),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+        amount_paid: match state {
+            MintQuoteState::Unpaid => Amount::ZERO,
+            MintQuoteState::Paid | MintQuoteState::Issued => Amount::from(3),
+        },
+        amount_issued: match state {
+            MintQuoteState::Issued => Amount::from(3),
+            MintQuoteState::Unpaid | MintQuoteState::Paid => Amount::ZERO,
+        },
+        updated_at: 0,
         state,
         expiry: Some(42),
         pubkey: None,
@@ -1005,6 +1018,10 @@ fn bolt11_quote_response(quote: &QuoteId, amount: u64) -> MintQuoteResponse<Stri
         request: format!("invoice-{quote}"),
         amount: Some(Amount::from(amount)),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+        amount_paid: Amount::ZERO,
+        amount_issued: Amount::ZERO,
+        updated_at: 0,
         state: MintQuoteState::Unpaid,
         expiry: None,
         pubkey: None,
@@ -1097,6 +1114,7 @@ async fn persist_unpaid_bolt11_melt_quote_to_federation(
         change: None,
         request: Some(invoice.to_string()),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
     });
     let metadata = FederationMeltQuoteMetadata {
         request_lookup_id: Some(PaymentIdentifier::PaymentHash(

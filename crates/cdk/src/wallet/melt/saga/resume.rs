@@ -1005,6 +1005,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -1027,6 +1029,7 @@ mod tests {
             payment_preimage: Some("preimage123".to_string()),
             change: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;

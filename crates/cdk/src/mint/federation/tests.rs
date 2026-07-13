@@ -898,12 +898,14 @@ fn test_melt_quote_response(
                 change: None,
                 request: Some(request.request.to_string()),
                 unit: Some(request.unit.clone()),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
             })
         }
         MeltQuoteRequest::Custom(request) => MeltQuoteCreateResponse::Custom((
             PaymentMethod::from(request.method.as_str()),
             MeltQuoteCustomResponse {
                 quote: quote.clone(),
+                method: PaymentMethod::from(request.method.as_str()),
                 amount: Amount::from(1),
                 fee_reserve: Some(Amount::from(1)),
                 state: MeltQuoteState::Unpaid,
@@ -1331,6 +1333,10 @@ fn bolt11_quote_response(quote: &QuoteId, amount: u64) -> MintQuoteResponse<Stri
         request: format!("invoice-{quote}"),
         amount: Some(Amount::from(amount)),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+        amount_paid: Amount::ZERO,
+        amount_issued: Amount::ZERO,
+        updated_at: 0,
         state: MintQuoteState::Unpaid,
         expiry: None,
         pubkey: None,
@@ -1347,6 +1353,10 @@ fn locked_bolt11_quote_response(
         request: format!("invoice-{quote}"),
         amount: Some(Amount::from(amount)),
         unit: Some(CurrencyUnit::Sat),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+        amount_paid: Amount::ZERO,
+        amount_issued: Amount::ZERO,
+        updated_at: 0,
         state: MintQuoteState::Unpaid,
         expiry: None,
         pubkey: Some(pubkey),

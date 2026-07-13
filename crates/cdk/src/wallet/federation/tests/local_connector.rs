@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::federation::FederationJournalAppendOutcome;
-use cdk_http_client::HttpError;
+use cdk_http_client::{HttpError, RawResponse};
 
 use super::*;
 use crate::nuts::AuthToken;
@@ -683,6 +683,16 @@ impl Transport for LocalMemberHttpTransport {
         )))
     }
 
+    async fn http_get_raw(
+        &self,
+        _url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(
+            "raw GET is unsupported by the local member transport".to_string(),
+        ))
+    }
+
     async fn http_post<P, R>(
         &self,
         url: url::Url,
@@ -757,6 +767,20 @@ impl Transport for LocalMemberHttpTransport {
                 "unsupported local member POST path {path}"
             ))),
         }
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        _url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: serde::Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(
+            "raw form POST is unsupported by the local member transport".to_string(),
+        ))
     }
 }
 

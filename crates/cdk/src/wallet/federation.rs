@@ -2741,7 +2741,10 @@ fn set_melt_response_change(
     change: Option<Vec<BlindSignature>>,
 ) {
     match response {
-        MeltQuoteResponse::Bolt11(response) | MeltQuoteResponse::Bolt12(response) => {
+        MeltQuoteResponse::Bolt11(response) => {
+            response.change = change;
+        }
+        MeltQuoteResponse::Bolt12(response) => {
             response.change = change;
         }
         MeltQuoteResponse::Onchain(response) => {

@@ -3408,6 +3408,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: Default::default(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );

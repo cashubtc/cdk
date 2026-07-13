@@ -116,6 +116,7 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
         method: "custom".to_string(),
         request: String::new(),
         unit: CurrencyUnit::Sat,
+        amount: None,
         extra: serde_json::Value::Null,
     });
     let empty_melt_quote = FederationMeltQuoteOperation {
@@ -174,6 +175,36 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
             .is_err()),
         operation => panic!("unexpected operation: {operation:?}"),
     }
+}
+
+#[test]
+fn mint_quote_conversion_preserves_bolt11_accounting() {
+    let quote = QuoteId::new();
+    let mut response = bolt11_quote_response(&quote, 10);
+    let MintQuoteResponse::Bolt11(response) = &mut response else {
+        panic!("expected bolt11 response");
+    };
+    response.amount_paid = Amount::from(7);
+    response.amount_issued = Amount::from(3);
+    response.state = MintQuoteState::Paid;
+
+    let operation = FederationMintQuoteOperation {
+        quote: quote.to_string(),
+        request_lookup_id: PaymentIdentifier::QuoteId(quote),
+        request: bolt11_quote_request(10),
+        response: MintQuoteResponse::Bolt11(response.clone()),
+    };
+    let converted = super::super::mint_quote_from_federation_operation(&operation, 1)
+        .expect("convert mint quote");
+
+    assert_eq!(
+        converted.amount_paid(),
+        Amount::from(7).with_unit(CurrencyUnit::Sat)
+    );
+    assert_eq!(
+        converted.amount_issued(),
+        Amount::from(3).with_unit(CurrencyUnit::Sat)
+    );
 }
 
 #[tokio::test]

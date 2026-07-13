@@ -2606,6 +2606,7 @@ fn mint_quote_from_federation_operation(
         amount_issued,
         method,
         created_time,
+        created_time,
         Vec::new(),
         Vec::new(),
         extra_json,
@@ -2643,21 +2644,12 @@ fn mint_quote_response_amounts(
     ),
     Error,
 > {
-    let zero = Amount::new(0, unit.clone());
     match response {
-        MintQuoteResponse::Bolt11(response) => {
-            let amount = response
-                .amount
-                .clone()
-                .map(|amount| amount.with_unit(unit.clone()))
-                .unwrap_or_else(|| zero.clone());
-            let (amount_paid, amount_issued) = match response.state {
-                MintQuoteState::Unpaid => (zero.clone(), zero),
-                MintQuoteState::Paid => (amount, zero),
-                MintQuoteState::Issued => (amount.clone(), amount),
-            };
-            Ok((amount_paid, amount_issued, None))
-        }
+        MintQuoteResponse::Bolt11(response) => Ok((
+            response.amount_paid.with_unit(unit.clone()),
+            response.amount_issued.with_unit(unit.clone()),
+            None,
+        )),
         MintQuoteResponse::Bolt12(response) => Ok((
             response.amount_paid.with_unit(unit.clone()),
             response.amount_issued.with_unit(unit.clone()),

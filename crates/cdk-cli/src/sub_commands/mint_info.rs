@@ -3,8 +3,6 @@ use std::collections::HashSet;
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::wallet::{Wallet, WalletRepository};
-#[cfg(feature = "federation")]
-use cdk::wallet::MintConnector;
 use clap::Args;
 
 use crate::terminal::{escape_control, escape_json};
