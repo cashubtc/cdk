@@ -3,15 +3,25 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
 
 const DEFAULT_BITREQ_REQUEST_TIMEOUT_SECS: u64 = 300;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ProxyConfig {
     url: url::Url,
     matcher: Option<regex::Regex>,
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("url", &url_for_debug(self.url.as_str()))
+            .field("matcher", &self.matcher)
+            .finish()
+    }
 }
 
 fn validate_proxy_url(url: &url::Url) -> Response<()> {
@@ -65,6 +75,7 @@ impl std::fmt::Debug for HttpClient {
 impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
+        super::install_rustls_crypto_provider();
         Self {
             proxy_config: None,
             no_redirects: false,
@@ -78,6 +89,7 @@ impl HttpClient {
         no_redirects: bool,
         request_timeout_secs: Option<u64>,
     ) -> Self {
+        super::install_rustls_crypto_provider();
         Self {
             proxy_config,
             no_redirects,
@@ -207,6 +219,17 @@ impl HttpClient {
             self.request_timeout_secs,
         )
     }
+
+    /// PUT request builder for complex cases
+    pub fn put(&self, url: &str) -> BitreqRequestBuilder {
+        BitreqRequestBuilder::new(
+            bitreq::put(url),
+            url,
+            self.inner.clone(),
+            self.proxy_config.clone(),
+            self.no_redirects,
+        )
+    }
 }
 
 /// bitreq-based RequestBuilder wrapper
@@ -222,7 +245,7 @@ pub struct BitreqRequestBuilder {
 impl std::fmt::Debug for BitreqRequestBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BitreqRequestBuilder")
-            .field("url", &self.url)
+            .field("url", &url_for_debug(&self.url))
             .field("error", &self.error)
             .finish_non_exhaustive()
     }
@@ -414,5 +437,35 @@ impl HttpClientBuilder {
             self.no_redirects,
             self.request_timeout_secs,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpClient;
+
+    #[test]
+    fn request_builder_debug_redacts_url_credentials() {
+        let secret = "bitreq-url-token-secret";
+        let url = format!("https://user:{secret}@mint.example.com/api?token={secret}");
+        let request = HttpClient::new().post(&url);
+
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("https://mint.example.com/api"));
+        assert!(!debug.contains(secret));
+    }
+
+    #[test]
+    fn client_builder_debug_redacts_proxy_credentials() {
+        let secret = "bitreq-proxy-password-secret";
+        let proxy = url::Url::parse(&format!("http://user:{secret}@proxy.example.com:8080"))
+            .expect("valid proxy URL");
+        let builder = HttpClient::builder().proxy(proxy);
+
+        let debug = format!("{builder:?}");
+
+        assert!(debug.contains("http://proxy.example.com:8080"));
+        assert!(!debug.contains(secret));
     }
 }

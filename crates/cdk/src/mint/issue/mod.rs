@@ -15,7 +15,7 @@ use cdk_common::{
 };
 use tracing::instrument;
 
-use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
+use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
 use crate::Mint;
 
 mod auth;
@@ -251,6 +251,8 @@ impl Mint {
             let amount = mint_quote_request.amount();
             let payment_method = mint_quote_request.payment_method();
 
+            validate_custom_payment_method(&payment_method)?;
+
             // Validate the request before processing
             self.check_mint_request_acceptable(&mint_quote_request)
                 .await?;
@@ -258,7 +260,8 @@ impl Mint {
             // Extract pubkey using the getter
             let pubkey = mint_quote_request.pubkey();
 
-            let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+            let payment_backend =
+                self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -276,7 +279,7 @@ impl Mint {
 
                     let quote_expiry = unix_time() + mint_ttl;
 
-                    let settings = ln.get_settings().await?;
+                    let settings = payment_backend.get_settings().await?;
 
                     let description = bolt11_request.description;
 
@@ -307,6 +310,16 @@ impl Mint {
                     }
 
                     let description = bolt12_request.description;
+
+                    // Check that the backend supports offer descriptions
+                    let settings = payment_backend.get_settings().await?;
+
+                    if let Some(ref bolt12_settings) = settings.bolt12 {
+                        if description.is_some() && !bolt12_settings.invoice_description {
+                            tracing::error!("Backend does not support invoice description");
+                            return Err(Error::InvoiceDescriptionUnsupported);
+                        }
+                    }
 
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
@@ -351,9 +364,11 @@ impl Mint {
                     let custom_options = CustomIncomingPaymentOptions {
                         method: payment_method.to_string(),
                         description: request.description,
-                        amount: request.amount.with_unit(unit.clone()),
+                        amount: request.amount.map(|a| a.with_unit(unit.clone())),
                         unix_expiry: Some(quote_expiry),
                         extra_json,
+                        quote_id: quote_id.clone(),
+                        pubkey,
                     };
 
                     IncomingPaymentOptions::Custom(Box::new(custom_options))
@@ -365,7 +380,7 @@ impl Mint {
                 }
             };
 
-            let create_invoice_response = ln
+            let create_invoice_response = payment_backend
                 .create_incoming_payment_request(payment_options)
                 .await
                 .map_err(|err| {
@@ -373,6 +388,7 @@ impl Mint {
                     Error::InvalidPaymentRequest
                 })?;
 
+            let now = unix_time();
             let quote = MintQuote::new(
                 Some(quote_id),
                 create_invoice_response.request.to_string(),
@@ -384,7 +400,8 @@ impl Mint {
                 Amount::new(0, unit.clone()),
                 Amount::new(0, unit.clone()),
                 payment_method.clone(),
-                unix_time(),
+                now,
+                now,
                 vec![],
                 vec![],
                 Some(create_invoice_response.extra_json.unwrap_or_default()),
@@ -953,6 +970,11 @@ impl Mint {
             // Phase 5: Atomic database transaction
             let mut tx = self.localstore.begin_transaction().await?;
 
+            // Acquire every quote row in one ordered query before taking any other
+            // locks. The database returns the quotes in request order, while locking
+            // them by ID, so reversed batch requests cannot deadlock each other.
+            let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
+
             // For batch minting, outputs are shared across all quotes and should be persisted once.
             if input.is_batch() {
                 let batch_operation =
@@ -966,12 +988,8 @@ impl Mint {
                     .await?;
             }
 
-            for quote_id in &quote_ids {
-                // Get the mutable quote from transaction
-                let mut mint_quote = tx
-                    .get_mint_quote(quote_id)
-                    .await?
-                    .ok_or(Error::UnknownQuote)?;
+            for (quote_id, mint_quote) in quote_ids.iter().zip(locked_quotes) {
+                let mut mint_quote = mint_quote.ok_or(Error::UnknownQuote)?;
 
                 // Re-validate state within transaction (protects against race conditions)
                 match mint_quote.state() {
@@ -1056,6 +1074,7 @@ impl Mint {
 mod batch_mint_tests {
     use std::collections::{HashMap, HashSet};
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -1071,18 +1090,22 @@ mod batch_mint_tests {
     };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, QuoteId,
+        MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteState, MintRequest,
+        PaymentMethod, PublicKey, QuoteId,
     };
     use cdk_fake_wallet::FakeWallet;
     use futures::Stream;
     use tokio::time::sleep;
 
-    use crate::mint::{Mint, MintBuilder, MintMeltLimits};
+    use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
+    use crate::mint::verification::MAX_CUSTOM_PAYMENT_METHOD_LEN;
+    use crate::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteRequest};
     use crate::types::{FeeReserve, QuoteTTL};
 
     struct OnchainTestBackend {
         unit: CurrencyUnit,
         confirmations: u32,
+        check_count: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1142,6 +1165,7 @@ mod batch_mint_tests {
             &self,
             _payment_identifier: &PaymentIdentifier,
         ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.check_count.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
         }
 
@@ -1157,7 +1181,46 @@ mod batch_mint_tests {
         create_test_mint_with_onchain_limits(1, 10_000).await
     }
 
+    #[tokio::test]
+    async fn custom_mint_quote_method_must_fit_subscription_kind() {
+        let mint = create_test_mint().await;
+        let method = "a".repeat(MAX_CUSTOM_PAYMENT_METHOD_LEN + 1);
+        let err = mint
+            .get_mint_quote(MintQuoteRequest::Custom {
+                method: PaymentMethod::from(method),
+                request: MintQuoteCustomRequest {
+                    amount: None,
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                    extra: serde_json::Value::Null,
+                },
+            })
+            .await
+            .expect_err("oversized custom method");
+
+        assert!(matches!(
+            err,
+            Error::RequestFieldTooLarge {
+                field,
+                actual,
+                max,
+            } if field == "method"
+                && actual == MAX_CUSTOM_PAYMENT_METHOD_LEN + 1
+                && max == MAX_CUSTOM_PAYMENT_METHOD_LEN
+        ));
+    }
+
     async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Mint {
+        create_test_mint_with_onchain_limits_and_counter(onchain_min, onchain_max)
+            .await
+            .0
+    }
+
+    async fn create_test_mint_with_onchain_limits_and_counter(
+        onchain_min: u64,
+        onchain_max: u64,
+    ) -> (Mint, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1167,7 +1230,7 @@ mod batch_mint_tests {
             percent_fee_reserve: 1.0,
         };
 
-        let ln_fake_backend = FakeWallet::new(
+        let fake_payment_backend = FakeWallet::new(
             fee_reserve.clone(),
             HashMap::default(),
             HashSet::default(),
@@ -1180,14 +1243,16 @@ mod batch_mint_tests {
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(ln_fake_backend),
+                Arc::new(fake_payment_backend),
             )
             .await
             .unwrap();
 
+        let onchain_check_count = Arc::new(AtomicUsize::new(0));
         let onchain_backend = OnchainTestBackend {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
+            check_count: onchain_check_count.clone(),
         };
 
         mint_builder
@@ -1219,7 +1284,74 @@ mod batch_mint_tests {
 
         mint.start().await.unwrap();
 
-        mint
+        (mint, onchain_check_count)
+    }
+
+    #[tokio::test]
+    async fn repeated_quote_status_checks_throttle_payment_backend() {
+        let (mint, check_count) = create_test_mint_with_onchain_limits_and_counter(1, 10_000).await;
+        let quote_id = QuoteId::new();
+        let now = cdk_common::util::unix_time();
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("test public key");
+        let quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            CurrencyUnit::Sat,
+            None,
+            0,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            Some(pubkey),
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            now,
+            now,
+            vec![],
+            vec![],
+            None,
+        );
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        tx.add_mint_quote(quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let (first, second) = tokio::join!(
+            mint.check_mint_quote(&quote_id),
+            mint.check_mint_quote(&quote_id)
+        );
+        first.expect("first quote status check");
+        second.expect("second quote status check");
+
+        assert_eq!(check_count.load(Ordering::Relaxed), 1);
+        let last_checked = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .expect("stored quote")
+            .last_checked();
+        assert!(last_checked >= now);
+        assert!(!mint
+            .localstore()
+            .try_update_mint_quote_last_checked(
+                &quote_id,
+                last_checked + MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+                MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+            )
+            .await
+            .unwrap());
+        assert!(mint
+            .localstore()
+            .try_update_mint_quote_last_checked(
+                &quote_id,
+                last_checked + MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS + 1,
+                MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+            )
+            .await
+            .unwrap());
     }
 
     async fn configure_nut29(
@@ -1249,6 +1381,7 @@ mod batch_mint_tests {
 
     async fn add_paid_onchain_mint_quote(mint: &Mint, paid_amount: u64) -> QuoteId {
         let quote_id = QuoteId::new();
+        let now = cdk_common::util::unix_time();
         let quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -1260,7 +1393,8 @@ mod batch_mint_tests {
             Amount::new(paid_amount, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Onchain),
-            cdk_common::util::unix_time(),
+            now,
+            now,
             vec![],
             vec![],
             None,
@@ -1309,7 +1443,7 @@ mod batch_mint_tests {
     }
 
     #[tokio::test]
-    async fn test_process_batch_mint_basic() {
+    async fn test_process_batch_mint_with_reverse_quote_order() {
         let mint = create_test_mint().await;
 
         // Create two quotes
@@ -1367,8 +1501,13 @@ mod batch_mint_tests {
         )
         .unwrap();
 
+        // Keep the request order opposite to the database lock order. The rows
+        // must be locked by ID without changing quote-to-request association.
+        let mut quote_ids = vec![quote1.quote.clone(), quote2.quote.clone()];
+        quote_ids.sort_unstable_by(|left, right| right.cmp(left));
+
         let batch_request = BatchMintRequest {
-            quotes: vec![quote1.quote.clone(), quote2.quote.clone()],
+            quotes: quote_ids,
             quote_amounts: None,
             outputs: premint_secrets.blinded_messages().to_vec(),
             signatures: None,

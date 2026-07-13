@@ -22,8 +22,8 @@ cdk-lnd = "*"
 ### Config File
 
 ```toml
-[ln]
-ln_backend = "lnd"
+[payment_backend]
+backend = "lnd"
 
 [lnd]
 address = "https://localhost:10009"
@@ -39,7 +39,7 @@ All configuration can be set via environment variables:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `CDK_MINTD_LN_BACKEND` | Set to `lnd` | Yes |
+| `CDK_MINTD_PAYMENT_BACKEND` | Set to `lnd` | Yes |
 | `CDK_MINTD_LND_ADDRESS` | LND gRPC address (e.g., `https://localhost:10009`) | Yes |
 | `CDK_MINTD_LND_CERT_FILE` | Path to LND TLS certificate | Yes |
 | `CDK_MINTD_LND_MACAROON_FILE` | Path to LND macaroon file | Yes |
@@ -49,7 +49,7 @@ All configuration can be set via environment variables:
 ### Example
 
 ```bash
-export CDK_MINTD_LN_BACKEND=lnd
+export CDK_MINTD_PAYMENT_BACKEND=lnd
 export CDK_MINTD_LND_ADDRESS=https://127.0.0.1:10009
 export CDK_MINTD_LND_CERT_FILE=/home/user/.lnd/tls.cert
 export CDK_MINTD_LND_MACAROON_FILE=/home/user/.lnd/data/chain/bitcoin/mainnet/admin.macaroon

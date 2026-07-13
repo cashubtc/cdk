@@ -8,6 +8,10 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod migration_name;
+
+use migration_name::{rust_string_literal, validate_migration_path};
+
 fn main() {
     // Step 1: Find `migrations/` folder recursively
     let root = Path::new("src");
@@ -16,6 +20,15 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
 
     for migration_path in find_migrations_dirs(root) {
+        let migration_relative_path = migration_path
+            .strip_prefix(root)
+            .expect("migration path is below the source directory")
+            .to_str()
+            .expect("migration paths must be valid UTF-8")
+            .replace("\\", "/");
+        validate_migration_path(&migration_relative_path)
+            .unwrap_or_else(|reason| panic!("Invalid migration path: {reason}"));
+
         // Step 3: Output file path to OUT_DIR instead of source directory
         let parent = migration_path.parent().unwrap();
 
@@ -117,9 +130,14 @@ fn main() {
 
             // Use path relative to OUT_DIR for include_str
             let relative_to_out_dir = relative_path.to_str().unwrap().replace("\\", "/");
+            validate_migration_path(&relative_to_out_dir)
+                .unwrap_or_else(|reason| panic!("Invalid migration path: {reason}"));
+            let prefix = rust_string_literal(&prefix);
+            let rel_name = rust_string_literal(rel_name);
+            let relative_to_out_dir = rust_string_literal(&relative_to_out_dir);
             writeln!(
                 out_file,
-                "    (\"{prefix}\", \"{rel_name}\", include_str!(r#\"{relative_to_out_dir}\"#)),"
+                "    ({prefix}, {rel_name}, include_str!({relative_to_out_dir})),"
             )
             .unwrap();
             println!("cargo:rerun-if-changed={}", path.display());

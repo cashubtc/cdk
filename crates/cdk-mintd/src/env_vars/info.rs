@@ -25,14 +25,6 @@ impl Info {
             }
         }
 
-        if let Ok(signatory_url) = env::var(ENV_SIGNATORY_URL) {
-            self.signatory_url = Some(signatory_url);
-        }
-
-        if let Ok(signatory_certs) = env::var(ENV_SIGNATORY_CERTS) {
-            self.signatory_certs = Some(signatory_certs);
-        }
-
         if let Ok(seed) = env::var(ENV_SEED) {
             self.seed = Some(seed);
         }

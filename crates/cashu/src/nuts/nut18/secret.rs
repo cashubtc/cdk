@@ -1,7 +1,7 @@
 //! Secret types for NUT-18: Payment Requests
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut10::{Kind, SpendingConditions};
+use crate::nuts::nut10::{Error as Nut10Error, Kind, SpendingConditions};
 use crate::nuts::Nut10Secret;
 use crate::SecretData;
 
@@ -50,16 +50,21 @@ impl From<Nut10SecretRequest> for Nut10Secret {
     }
 }
 
-impl From<SpendingConditions> for Nut10SecretRequest {
-    fn from(conditions: SpendingConditions) -> Self {
-        match conditions {
+/// A request advertises a lock the payer will build, so it has to pass the same
+/// construction rules the secret itself would.
+impl TryFrom<SpendingConditions> for Nut10SecretRequest {
+    type Error = Nut10Error;
+    fn try_from(conditions: SpendingConditions) -> Result<Self, Self::Error> {
+        conditions.validate()?;
+
+        Ok(match conditions {
             SpendingConditions::P2PKConditions { data, conditions } => {
                 Self::new(Kind::P2PK, data.to_hex(), conditions)
             }
             SpendingConditions::HTLCConditions { data, conditions } => {
                 Self::new(Kind::HTLC, data.to_string(), conditions)
             }
-        }
+        })
     }
 }
 
@@ -95,6 +100,35 @@ mod tests {
         let decoded: Nut10SecretRequest = serde_json::from_str(&json).unwrap();
 
         assert_eq!(original, decoded);
+    }
+
+    /// A request advertises a lock the payer will go on to build, so it cannot
+    /// carry one the payer would refuse.
+    #[test]
+    fn test_request_rejects_duplicate_p2pk_key() {
+        use std::str::FromStr;
+
+        use crate::nuts::nut10::Conditions;
+        use crate::nuts::nut11::Error as Nut11Error;
+        use crate::PublicKey;
+
+        let key = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+
+        let result = Nut10SecretRequest::try_from(SpendingConditions::P2PKConditions {
+            data: key,
+            conditions: Some(Conditions {
+                pubkeys: Some(vec![key]),
+                ..Default::default()
+            }),
+        });
+
+        assert!(matches!(
+            result,
+            Err(Nut10Error::NUT11(Nut11Error::DuplicatePubkey))
+        ));
     }
 
     #[test]

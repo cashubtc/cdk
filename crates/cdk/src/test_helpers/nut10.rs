@@ -103,7 +103,10 @@ impl TestMintHelper {
         amount: Amount,
         spending_conditions: &SpendingConditions,
     ) -> (BlindedMessage, SecretKey, Secret) {
-        let nut10_secret: Nut10Secret = spending_conditions.clone().into();
+        let nut10_secret: Nut10Secret = spending_conditions
+            .clone()
+            .try_into()
+            .expect("test spending conditions must be valid");
         let secret: Secret = nut10_secret.try_into().unwrap();
         let (blinded_point, blinding_factor) = blind_message_for_version(
             &secret.to_bytes(),

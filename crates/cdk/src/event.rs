@@ -6,8 +6,9 @@ use std::ops::Deref;
 use cdk_common::nut17::NotificationId;
 use cdk_common::pub_sub::Event;
 use cdk_common::{
-    MeltQuoteBolt11Response, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteOnchainResponse, NotificationPayload, ProofState,
+    MeltQuoteBolt11Response, MeltQuoteBolt12Response, MeltQuoteOnchainResponse,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse,
+    NotificationPayload, ProofState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,15 @@ where
     }
 }
 
+impl<T> From<MeltQuoteBolt12Response<T>> for MintEvent<T>
+where
+    T: Clone + Eq + PartialEq,
+{
+    fn from(value: MeltQuoteBolt12Response<T>) -> Self {
+        Self(NotificationPayload::MeltQuoteBolt12Response(value))
+    }
+}
+
 impl<T> From<MintQuoteOnchainResponse<T>> for MintEvent<T>
 where
     T: Clone + Eq + PartialEq,
@@ -131,15 +141,7 @@ where
     fn get_topics(&self) -> Vec<Self::Topic> {
         match &self.0 {
             NotificationPayload::MeltQuoteBolt11Response(r) => {
-                // TODO: MeltQuoteBolt12Response is a type alias for MeltQuoteBolt11Response.
-                // Since NotificationPayload uses untagged serde, all melt responses are
-                // deserialized as Bolt11. We broadcast to both topics to ensure Bolt12
-                // subscribers receive the event. This workaround should be addressed by
-                // properly distinguishing the response types in the protocol.
-                vec![
-                    NotificationId::MeltQuoteBolt11(r.quote.to_owned()),
-                    NotificationId::MeltQuoteBolt12(r.quote.to_owned()),
-                ]
+                vec![NotificationId::MeltQuoteBolt11(r.quote.to_owned())]
             }
             NotificationPayload::MintQuoteBolt11Response(r) => {
                 vec![NotificationId::MintQuoteBolt11(r.quote.to_owned())]

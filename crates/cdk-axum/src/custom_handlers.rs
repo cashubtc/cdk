@@ -2215,7 +2215,7 @@ mod tests {
             .get_mint_quote(cdk::mint::MintQuoteRequest::Custom {
                 method: PaymentMethod::Custom(method.to_string()),
                 request: MintQuoteCustomRequest {
-                    amount: Amount::from(amount),
+                    amount: Some(Amount::from(amount)),
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
@@ -9763,6 +9763,7 @@ mod tests {
             method: "venmo".to_string(),
             request: "test-payment-request".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: Value::Null,
         })
         .unwrap();
@@ -9803,6 +9804,7 @@ mod tests {
             method: "PayPal".to_string(),
             request: "test-payment-request".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: Value::Null,
         })
         .unwrap();

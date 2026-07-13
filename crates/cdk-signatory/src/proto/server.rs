@@ -1,11 +1,13 @@
 //! This module contains the generated gRPC server code for the Signatory service.
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use cdk_common::grpc::create_version_check_interceptor;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_stream::Stream;
+use tokio_stream::wrappers::WatchStream;
+use tokio_stream::{Stream, StreamExt};
 use tonic::metadata::MetadataMap;
 use tonic::transport::server::Connected;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
@@ -135,6 +137,32 @@ where
         };
 
         Ok(Response::new(result))
+    }
+
+    type SubscribeKeysetsStream =
+        Pin<Box<dyn Stream<Item = Result<proto::KeysResponse, Status>> + Send>>;
+
+    async fn subscribe_keysets(
+        &self,
+        request: Request<proto::EmptyRequest>,
+    ) -> Result<Response<Self::SubscribeKeysetsStream>, Status> {
+        let metadata = request.metadata();
+        let signatory = self.load_signatory(metadata).await?;
+        let receiver = signatory
+            .subscribe_keysets()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        // WatchStream yields the current value on subscribe, then each replaced
+        // value, giving "snapshot first, then one per rotation".
+        let stream = WatchStream::new(receiver).map(|keysets| {
+            Ok(proto::KeysResponse {
+                keysets: Some(keysets.into()),
+                ..Default::default()
+            })
+        });
+
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn rotate_keyset(

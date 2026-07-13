@@ -2,7 +2,8 @@
 #![allow(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Write};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,15 +23,58 @@ use cdk_common::{
     QuoteId, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use tokio::sync::Barrier;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::fmt::MakeWriter;
 
 use crate::nuts::{
-    nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
-    MeltQuoteState, MintQuoteBolt11Response, NUT04Settings, NUT05Settings, PaymentMethod,
+    nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
+    MeltQuoteBolt11Response, MintQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
     SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
+
+/// In-memory writer for asserting on tracing output.
+#[derive(Debug, Clone, Default)]
+pub struct TraceWriter {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl TraceWriter {
+    /// Build a subscriber that records span creation and events.
+    pub fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync {
+        tracing_subscriber::fmt()
+            .with_writer(self.clone())
+            .with_span_events(FmtSpan::NEW)
+            .without_time()
+            .finish()
+    }
+
+    /// Return all tracing output captured so far.
+    pub fn output(&self) -> String {
+        String::from_utf8(self.buffer.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl Write for TraceWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.buffer.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for TraceWriter {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// Create test database
 pub async fn create_test_db() -> Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>
@@ -409,6 +453,16 @@ pub async fn create_test_wallet_with_mock(
 ) -> Wallet {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
 
+    create_test_wallet_with_mock_seed(db, mock_client, seed).await
+}
+
+/// Create a test wallet with a mock client and a fixed seed, so tests can
+/// simulate reopening a wallet on the same database and seed.
+pub async fn create_test_wallet_with_mock_seed(
+    db: Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+    mock_client: Arc<MockMintConnector>,
+    seed: [u8; 64],
+) -> Wallet {
     crate::wallet::WalletBuilder::new()
         .mint_url(test_mint_url())
         .unit(CurrencyUnit::Sat)
@@ -473,7 +527,7 @@ pub struct MockMintConnector {
     ///
     /// When non-empty, each `get_mint_quote_status` call pops the front entry.
     /// Takes precedence over `mint_quote_status_response`.
-    pub mint_quote_status_responses:
+    pub queued_mint_quote_status_responses:
         Mutex<std::collections::VecDeque<Result<MintQuoteBolt11Response<String>, Error>>>,
     /// Optional delay used by tests to simulate a slow mint quote status member.
     pub mint_quote_status_delay: Mutex<Option<Duration>>,
@@ -498,17 +552,37 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Queue of responses for successive post_mint_quote calls.
+    pub post_mint_quote_responses:
+        Mutex<std::collections::VecDeque<Result<MintQuoteResponse<String>, Error>>>,
+    /// Captured post_mint_quote requests.
+    pub post_mint_quote_requests: Mutex<Vec<MintQuoteRequest>>,
     /// Queue of responses for successive post_mint calls.
     ///
     /// When non-empty, each `post_mint` call pops the front entry.
     /// Takes precedence over `post_mint_response`.
     pub post_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
+    /// Captured post_mint requests.
+    pub post_mint_requests: Mutex<Vec<(PaymentMethod, MintRequest<String>)>>,
     /// Optional delay used by tests to simulate a slow mint member.
     pub post_mint_delay: Mutex<Option<Duration>>,
     /// Optional barrier used by tests to assert concurrent mint calls.
     pub post_mint_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Response for post_batch_mint calls
     pub post_batch_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Queue of responses for successive post_batch_mint calls.
+    pub post_batch_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
+    /// Captured post_batch_mint requests.
+    pub post_batch_mint_requests: Mutex<Vec<(PaymentMethod, BatchMintRequest<String>)>>,
+    /// Queue of responses for successive post_batch_check_mint_quote_status calls.
+    pub post_batch_check_mint_quote_status_responses:
+        Mutex<std::collections::VecDeque<Result<Vec<MintQuoteResponse<String>>, Error>>>,
+    /// Staged `get_mint_quote_status` responses by quote ID.
+    pub mint_quote_status_responses: Mutex<HashMap<String, MintQuoteResponse<String>>>,
+    /// Secret keys backing the active keyset when mint signing is enabled.
+    /// When set, unstaged `post_mint`/`post_batch_mint` calls are answered
+    /// with valid blind signatures for the requested outputs.
+    pub mint_signing_keys: Mutex<Option<BTreeMap<Amount, SecretKey>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
     /// Optional delay used by tests to simulate a slow swap member.
@@ -530,6 +604,11 @@ pub struct MockMintConnector {
     /// Takes precedence over `post_melt_response`.
     pub post_melt_responses:
         Mutex<std::collections::VecDeque<Result<MeltQuoteResponse<String>, Error>>>,
+    /// Queue of responses for successive post_melt_quote calls.
+    pub post_melt_quote_responses:
+        Mutex<std::collections::VecDeque<Result<MeltQuoteCreateResponse<String>, Error>>>,
+    /// Captured post_melt_quote requests.
+    pub post_melt_quote_requests: Mutex<Vec<MeltQuoteRequest>>,
     /// Last post_melt method/request captured by the mock
     pub last_post_melt_request: Mutex<Option<(PaymentMethod, MeltRequest<String>)>>,
     /// Response for LNURL pay request calls
@@ -571,7 +650,7 @@ impl MockMintConnector {
             post_mint_quote_delay: Mutex::new(None),
             assigned_mint_quote_ids: Mutex::new(Vec::new()),
             mint_quote_status_response: Mutex::new(None),
-            mint_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
+            queued_mint_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             mint_quote_status_delay: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
             post_melt_quote_response: Mutex::new(None),
@@ -580,10 +659,20 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
+            post_mint_quote_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_mint_quote_requests: Mutex::new(Vec::new()),
             post_mint_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_mint_requests: Mutex::new(Vec::new()),
             post_mint_delay: Mutex::new(None),
             post_mint_barrier: Mutex::new(None),
             post_batch_mint_response: Mutex::new(None),
+            post_batch_mint_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_batch_mint_requests: Mutex::new(Vec::new()),
+            post_batch_check_mint_quote_status_responses: Mutex::new(
+                std::collections::VecDeque::new(),
+            ),
+            mint_signing_keys: Mutex::new(None),
+            mint_quote_status_responses: Mutex::new(HashMap::new()),
             post_swap_response: Mutex::new(None),
             post_swap_delay: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -591,6 +680,8 @@ impl MockMintConnector {
             post_melt_response: Mutex::new(None),
             post_melt_delay: Mutex::new(None),
             post_melt_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_melt_quote_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_melt_quote_requests: Mutex::new(Vec::new()),
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
             lnurl_invoice_response: Mutex::new(None),
@@ -702,7 +793,7 @@ impl MockMintConnector {
         &self,
         response: Result<MintQuoteBolt11Response<String>, Error>,
     ) {
-        self.mint_quote_status_responses
+        self.queued_mint_quote_status_responses
             .lock()
             .unwrap()
             .push_back(response);
@@ -771,6 +862,22 @@ impl MockMintConnector {
         *self.post_mint_response.lock().unwrap() = Some(response);
     }
 
+    /// Enqueue a response for the next `post_mint_quote` call.
+    pub fn push_post_mint_quote_response(
+        &self,
+        response: Result<MintQuoteResponse<String>, Error>,
+    ) {
+        self.post_mint_quote_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Return all captured `post_mint_quote` requests.
+    pub fn post_mint_quote_requests(&self) -> Vec<MintQuoteRequest> {
+        self.post_mint_quote_requests.lock().unwrap().clone()
+    }
+
     /// Enqueue a response for the next `post_mint` call.
     pub fn push_post_mint_response(&self, response: Result<MintResponse, Error>) {
         self.post_mint_responses.lock().unwrap().push_back(response);
@@ -786,6 +893,97 @@ impl MockMintConnector {
 
     pub fn set_post_batch_mint_response(&self, response: Result<MintResponse, Error>) {
         *self.post_batch_mint_response.lock().unwrap() = Some(response);
+    }
+
+    /// Return all captured `post_mint` requests.
+    pub fn post_mint_requests(&self) -> Vec<(PaymentMethod, MintRequest<String>)> {
+        self.post_mint_requests.lock().unwrap().clone()
+    }
+
+    /// Enqueue a response for the next `post_batch_mint` call.
+    pub fn push_post_batch_mint_response(&self, response: Result<MintResponse, Error>) {
+        self.post_batch_mint_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Return all captured `post_batch_mint` requests.
+    pub fn post_batch_mint_requests(&self) -> Vec<(PaymentMethod, BatchMintRequest<String>)> {
+        self.post_batch_mint_requests.lock().unwrap().clone()
+    }
+
+    /// Enqueue a response for the next `post_batch_check_mint_quote_status` call.
+    pub fn push_post_batch_check_mint_quote_status_response(
+        &self,
+        response: Result<Vec<MintQuoteResponse<String>>, Error>,
+    ) {
+        self.post_batch_check_mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Stage the `get_mint_quote_status` response for a quote.
+    pub fn set_mint_quote_status_response(
+        &self,
+        quote_id: &str,
+        response: MintQuoteResponse<String>,
+    ) {
+        self.mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .insert(quote_id.to_string(), response);
+    }
+
+    /// Replace the active keyset with one backed by freshly generated secret
+    /// keys, so that unstaged `post_mint`/`post_batch_mint` calls are
+    /// answered with valid blind signatures for the requested outputs.
+    pub fn enable_mint_signing(&self) {
+        let mut signing_keys = BTreeMap::new();
+        let mut public_keys = BTreeMap::new();
+        for power in 0..32u8 {
+            let amount = Amount::from(1u64 << power);
+            let secret_key =
+                SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
+            public_keys.insert(amount, secret_key.public_key());
+            signing_keys.insert(amount, secret_key);
+        }
+        let keys = Keys::new(public_keys);
+
+        self.set_active_keyset(KeySet {
+            id: Id::v1_from_keys(&keys),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        });
+        *self.mint_signing_keys.lock().unwrap() = Some(signing_keys);
+    }
+
+    /// Sign the requested outputs when mint signing is enabled.
+    fn sign_outputs(
+        &self,
+        outputs: &[BlindedMessage],
+    ) -> Option<Result<Vec<BlindSignature>, Error>> {
+        let signing_keys = self.mint_signing_keys.lock().unwrap();
+        let signing_keys = signing_keys.as_ref()?;
+
+        Some(
+            outputs
+                .iter()
+                .map(|output| {
+                    let secret_key = signing_keys.get(&output.amount).ok_or(Error::AmountKey)?;
+                    Ok(BlindSignature {
+                        amount: output.amount,
+                        keyset_id: output.keyset_id,
+                        c: crate::dhke::sign_message(secret_key, &output.blinded_secret)?,
+                        dleq: None,
+                    })
+                })
+                .collect(),
+        )
     }
 
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
@@ -817,6 +1015,22 @@ impl MockMintConnector {
     /// Enqueue a response for the next `post_melt` call.
     pub fn push_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
         self.post_melt_responses.lock().unwrap().push_back(response);
+    }
+
+    /// Enqueue a response for the next `post_melt_quote` call.
+    pub fn push_post_melt_quote_response(
+        &self,
+        response: Result<MeltQuoteCreateResponse<String>, Error>,
+    ) {
+        self.post_melt_quote_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Return all captured `post_melt_quote` requests.
+    pub fn post_melt_quote_requests(&self) -> Vec<MeltQuoteRequest> {
+        self.post_melt_quote_requests.lock().unwrap().clone()
     }
 
     pub fn last_post_melt_request(&self) -> Option<(PaymentMethod, MeltRequest<String>)> {
@@ -936,18 +1150,23 @@ impl MintConnector for MockMintConnector {
 
     async fn post_mint_quote(
         &self,
-        _request: MintQuoteRequest,
+        request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
         let delay = *self.post_mint_quote_delay.lock().unwrap();
         if let Some(delay) = delay {
             tokio::time::sleep(delay).await;
         }
 
-        self.post_mint_quote_response
+        self.post_mint_quote_requests.lock().unwrap().push(request);
+        match self.post_mint_quote_responses.lock().unwrap().pop_front() {
+            Some(response) => response,
+            None => self.post_mint_quote_response
             .lock()
             .unwrap()
             .take()
             .expect("MockMintConnector: post_mint_quote called without configured response")
+        }
+
     }
 
     async fn post_mint_quote_with_id(
@@ -973,16 +1192,18 @@ impl MintConnector for MockMintConnector {
     async fn get_mint_quote_status(
         &self,
         _method: PaymentMethod,
-        _quote_id: &str,
+        quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
         let delay = *self.mint_quote_status_delay.lock().unwrap();
         if let Some(delay) = delay {
             tokio::time::sleep(delay).await;
         }
 
-        let mut response = match self.mint_quote_status_responses.lock().unwrap().pop_front() {
+        let mut response = match self.queued_mint_quote_status_responses.lock().unwrap().pop_front() {
             Some(response) => response,
-            None => self
+            None => match self.mint_quote_status_responses.lock().unwrap().get(quote_id).cloned() {
+                Some(response) => Ok(response),
+                None => self
                 .mint_quote_status_response
                 .lock()
                 .unwrap()
@@ -990,6 +1211,7 @@ impl MintConnector for MockMintConnector {
                 .expect(
                     "MockMintConnector: get_mint_quote_status called without configured response",
                 ),
+            },
         }?;
         response.quote = _quote_id.to_string();
         Ok(MintQuoteResponse::Bolt11(response))
@@ -997,9 +1219,14 @@ impl MintConnector for MockMintConnector {
 
     async fn post_mint(
         &self,
-        _method: &PaymentMethod,
-        _request: MintRequest<String>,
+        method: &PaymentMethod,
+        request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        self.post_mint_requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), request.clone()));
+
         let delay = *self.post_mint_delay.lock().unwrap();
         if let Some(delay) = delay {
             tokio::time::sleep(delay).await;
@@ -1013,29 +1240,40 @@ impl MintConnector for MockMintConnector {
         let queued = self.post_mint_responses.lock().unwrap().pop_front();
         match queued {
             Some(response) => response,
-            None => self
-                .post_mint_response
-                .lock()
-                .unwrap()
-                .take()
-                .expect("MockMintConnector: post_mint called without configured response"),
+            None => {
+                if let Some(signatures) = self.sign_outputs(&request.outputs) {
+                    return Ok(MintResponse {
+                        signatures: signatures?,
+                    });
+                }
+                self.post_mint_response
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("MockMintConnector: post_mint called without configured response")
+            }
         }
     }
 
     async fn post_melt_quote(
         &self,
-        _request: MeltQuoteRequest,
+        request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
         let delay = *self.post_melt_quote_delay.lock().unwrap();
         if let Some(delay) = delay {
             tokio::time::sleep(delay).await;
         }
 
-        self.post_melt_quote_response
+        self.post_melt_quote_requests.lock().unwrap().push(request);
+        match self.post_melt_quote_responses.lock().unwrap().pop_front() {
+            Some(response) => response,
+            None => self.post_melt_quote_response
             .lock()
             .unwrap()
             .take()
             .expect("MockMintConnector: post_melt_quote called without configured response")
+        }
+
     }
 
     async fn post_melt_quote_with_id(
@@ -1178,13 +1416,25 @@ impl MintConnector for MockMintConnector {
 
     async fn post_batch_mint(
         &self,
-        _method: &PaymentMethod,
-        _request: BatchMintRequest<String>,
+        method: &PaymentMethod,
+        request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        self.post_batch_mint_response
+        self.post_batch_mint_requests
             .lock()
             .unwrap()
-            .take()
-            .expect("MockMintConnector: post_batch_mint called without configured response")
+            .push((method.clone(), request.clone()));
+
+        let queued = self.post_batch_mint_responses.lock().unwrap().pop_front();
+        match queued {
+            Some(response) => response,
+            None => {
+                if let Some(signatures) = self.sign_outputs(&request.outputs) {
+                    return Ok(MintResponse {
+                        signatures: signatures?,
+                    });
+                }
+                panic!("MockMintConnector: post_batch_mint called without configured response")
+            }
+        }
     }
 }

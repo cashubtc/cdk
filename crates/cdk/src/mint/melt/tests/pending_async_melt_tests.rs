@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk_common::mint::MeltQuote;
@@ -25,8 +26,10 @@ struct NoEventPendingBackend {
     inner: FakeWallet,
     status_checks: AtomicUsize,
     settle_after_checks: usize,
+    dispatch_status: MeltQuoteState,
     final_status: Option<MeltQuoteState>,
     strip_quote_lookup_id: bool,
+    amount_mismatch_dispatch_error: bool,
 }
 
 impl NoEventPendingBackend {
@@ -46,8 +49,10 @@ impl NoEventPendingBackend {
             ),
             status_checks: AtomicUsize::new(0),
             settle_after_checks,
+            dispatch_status: MeltQuoteState::Pending,
             final_status,
             strip_quote_lookup_id: false,
+            amount_mismatch_dispatch_error: false,
         }
     }
 
@@ -55,6 +60,16 @@ impl NoEventPendingBackend {
     /// quote creation because no invoice exists until `make_payment`.
     fn with_stripped_quote_lookup_id(mut self) -> Self {
         self.strip_quote_lookup_id = true;
+        self
+    }
+
+    fn with_dispatch_status(mut self, dispatch_status: MeltQuoteState) -> Self {
+        self.dispatch_status = dispatch_status;
+        self
+    }
+
+    fn with_amount_mismatch_dispatch_error(mut self) -> Self {
+        self.amount_mismatch_dispatch_error = true;
         self
     }
 }
@@ -91,9 +106,16 @@ impl MintPayment for NoEventPendingBackend {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        if self.amount_mismatch_dispatch_error {
+            return Err(payment::Error::AmountMismatch);
+        }
+
         let mut response = self.inner.make_payment(unit, options).await?;
-        response.status = MeltQuoteState::Pending;
-        response.payment_proof = None;
+        response.status = self.dispatch_status;
+        if self.dispatch_status != MeltQuoteState::Paid {
+            response.payment_proof = None;
+            response.total_spent = Amount::new(0, CurrencyUnit::Sat);
+        }
         Ok(response)
     }
 
@@ -154,6 +176,20 @@ async fn create_pending_test_mint(
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
 ) -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
+    build_pending_test_mint(db, backend).await
+}
+
+async fn build_pending_test_mint<DB>(
+    db: Arc<DB>,
+    backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
+) -> Result<Mint, Error>
+where
+    DB: cdk_common::database::MintDatabase<cdk_common::database::Error>
+        + cdk_common::database::MintKeysDatabase<Err = cdk_common::database::Error>
+        + Send
+        + Sync
+        + 'static,
+{
     let mut mint_builder = MintBuilder::new(db.clone());
 
     mint_builder
@@ -218,8 +254,47 @@ fn create_test_melt_request(
     cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs.clone(), None)
 }
 
+/// A terminal status poll is an authoritative outcome by backend contract:
+/// the acknowledged pending melt is rolled back and the user can reclaim
+/// their proofs.
 #[tokio::test]
-async fn pending_melt_wait_completes_via_status_check_without_notification() {
+async fn acknowledged_pending_dispatch_rolls_back_after_terminal_poll() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Unpaid);
+    drop(pending);
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states.iter().all(Option::is_none));
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap();
+    assert!(saga.is_none());
+}
+
+#[tokio::test]
+async fn pending_melt_completes_via_explicit_status_check_without_notification() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid)));
     let mint = create_pending_test_mint(backend).await.unwrap();
@@ -228,6 +303,9 @@ async fn pending_melt_wait_completes_via_status_check_without_notification() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Paid);
+
     let response = pending.await.unwrap();
 
     assert_eq!(response.state(), MeltQuoteState::Paid);
@@ -241,10 +319,13 @@ async fn pending_melt_wait_completes_via_status_check_without_notification() {
     assert_eq!(stored_quote.state, MeltQuoteState::Paid);
 }
 
+/// An `Unknown` status poll is not an authoritative outcome (e.g. CLN
+/// reports it whenever a payment may still settle), so the acknowledged
+/// pending melt must stay reserved for a later authoritative signal.
 #[tokio::test]
-async fn pending_melt_wait_rolls_back_via_status_check_without_notification() {
+async fn unknown_status_poll_keeps_pending_melt_reserved() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
-        Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Failed)));
+        Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Unknown)));
     let mint = create_pending_test_mint(backend).await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -252,9 +333,9 @@ async fn pending_melt_wait_rolls_back_via_status_check_without_notification() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
-    let response = pending.await.unwrap();
-
-    assert_eq!(response.state(), MeltQuoteState::Unpaid);
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Pending);
+    drop(pending);
 
     let stored_quote = mint
         .localstore()
@@ -262,22 +343,135 @@ async fn pending_melt_wait_rolls_back_via_status_check_without_notification() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
 
     let proof_states = mint
         .localstore()
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(proof_states.iter().all(|state| state.is_none()));
+    assert!(proof_states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
+
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        saga.expect("an indeterminate poll must preserve the recovery saga")
+            .state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
+    );
+}
+
+#[tokio::test]
+async fn payment_error_that_looks_local_records_pending_acknowledgement() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
+        NoEventPendingBackend::new(usize::MAX, None).with_amount_mismatch_dispatch_error(),
+    );
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    // Even an error that resembles local validation can be returned after a
+    // backend crossed its dispatch boundary. A follow-up Pending read proves
+    // that the backend can identify the in-flight attempt.
+    let pending = mint.melt(&melt_request).await.unwrap();
+    assert_eq!(pending.pending_response().state(), MeltQuoteState::Pending);
+    let pending_saga = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let saga = mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote.id)
+                .await
+                .unwrap()
+                .expect("ambiguous payment should remain recoverable");
+            if saga.state
+                == cdk_common::mint::SagaStateEnum::Melt(
+                    cdk_common::mint::MeltSagaState::PaymentPending,
+                )
+            {
+                break saga;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ambiguous payment should reach its durable pending handoff");
+    drop(pending);
+
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Pending
+    );
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
+    assert_eq!(
+        pending_saga.state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
+    );
+}
+
+#[tokio::test]
+async fn authoritative_failed_response_survives_unknown_recheck() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
+        NoEventPendingBackend::new(1, Some(MeltQuoteState::Unknown))
+            .with_dispatch_status(MeltQuoteState::Failed),
+    );
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    let err = pending
+        .await
+        .expect_err("authoritative failed response should compensate the melt");
+    assert!(matches!(err, Error::PaymentFailed));
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Unpaid
+    );
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
 async fn pending_melt_wait_resolves_via_external_successful_event() {
     // Backend stays Pending forever on both pay and check; only the external
     // event delivered via handle_successful_melt_payment_event should resolve
-    // the wait loop. Verifies the polling loop observes DB-level settlement
-    // and that the finalization path is idempotent under concurrent resolution.
+    // the wait loop.
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(usize::MAX, None));
     let mint = create_pending_test_mint(backend).await.unwrap();
@@ -417,12 +611,10 @@ async fn pending_melt_persists_payment_lookup_id_when_quote_has_none() {
 }
 
 #[tokio::test]
-async fn pending_melt_without_quote_lookup_id_resolves_via_status_check() {
+async fn pending_melt_without_quote_lookup_id_resolves_via_explicit_status_check() {
     // End-to-end regression for the bolt12-style flow: with the quote created
-    // without a lookup id, the pending wait loop can only settle the quote by
-    // polling the backend with the lookup id persisted when the payment parked
-    // as Pending. Without that persistence this times out with
-    // PendingMeltTimeout and the quote is stuck.
+    // without a lookup id, an explicit quote check settles the payment using
+    // the lookup id persisted when make_payment parked as Pending.
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid)).with_stripped_quote_lookup_id(),
     );
@@ -436,6 +628,9 @@ async fn pending_melt_without_quote_lookup_id_resolves_via_status_check() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Paid);
+
     let response = pending.await.unwrap();
 
     assert_eq!(response.state(), MeltQuoteState::Paid);
@@ -448,4 +643,215 @@ async fn pending_melt_without_quote_lookup_id_resolves_via_status_check() {
         .unwrap();
     assert_eq!(stored_quote.state, MeltQuoteState::Paid);
     assert!(stored_quote.request_lookup_id.is_some());
+}
+
+/// Internally-settled melts never touch the backend, so a quote without a
+/// lookup id must still be finalized by on-demand checks rather than waiting
+/// for the next restart.
+#[tokio::test]
+async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(usize::MAX, None).with_stripped_quote_lookup_id());
+    let mint = create_pending_test_mint(backend).await.unwrap();
+
+    // A mint quote on THIS mint; its invoice makes the melt below an internal
+    // settlement.
+    let mint_quote_response = mint
+        .get_mint_quote(
+            cdk_common::MintQuoteBolt11Request {
+                amount: Amount::from(4_000),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let mint_quote = mint
+        .localstore()
+        .get_mint_quote(mint_quote_response.quote())
+        .await
+        .unwrap()
+        .expect("mint quote should exist");
+
+    let melt_quote_response = mint
+        .get_melt_quote(cdk_common::melt::MeltQuoteRequest::Bolt11(
+            MeltQuoteBolt11Request {
+                request: mint_quote.request.to_string().parse().unwrap(),
+                unit: CurrencyUnit::Sat,
+                options: None,
+            },
+        ))
+        .await
+        .unwrap();
+    let quote = mint
+        .localstore()
+        .get_melt_quote(melt_quote_response.quote().expect("single-quote method"))
+        .await
+        .unwrap()
+        .expect("melt quote should exist");
+    assert!(
+        quote.request_lookup_id.is_none(),
+        "test premise: quote persisted without a lookup id"
+    );
+
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let (payment_saga, _decision) = setup
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    // Simulate a crash before finalize: mint quote credited, proofs pending.
+    drop(payment_saga);
+    assert_eq!(
+        mint.localstore()
+            .get_mint_quote(mint_quote_response.quote())
+            .await
+            .unwrap()
+            .expect("mint quote should exist")
+            .state(),
+        cdk_common::MintQuoteState::Paid
+    );
+
+    // On-demand check finalizes instead of requiring a restart.
+    let mut quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    mint.handle_pending_melt_quote(&mut quote).await.unwrap();
+
+    assert_eq!(quote.state, MeltQuoteState::Paid);
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(
+        states.iter().all(|s| *s == Some(cdk_common::State::Spent)),
+        "internally-settled proofs must be consumed"
+    );
+}
+
+/// Startup recovery compensates a write-ahead attempt when the backend
+/// authoritatively reports the payment as never dispatched. By contract an
+/// `Unpaid` answer is only returned when the payment can never settle — for
+/// a quote without a persisted lookup id the backend derives the answer from
+/// the quote-scoped identifier (e.g. CLN's bolt12 binding is written before
+/// any dispatch, so its absence proves the payment never happened).
+#[tokio::test]
+async fn payment_attempt_without_lookup_id_compensates_at_startup() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
+        NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)).with_stripped_quote_lookup_id(),
+    );
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    assert!(
+        quote.request_lookup_id.is_none(),
+        "test premise: quote persisted without a lookup id"
+    );
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    drop(setup);
+
+    let operation_id = mint
+        .localstore()
+        .get_incomplete_sagas(cdk_common::mint::OperationKind::Melt)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("saga should exist")
+        .operation_id;
+
+    // Simulate a crash after the write-ahead PaymentAttempted marker. The
+    // durable state cannot prove whether make_payment ran before the crash.
+    {
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        let mut saga = tx
+            .get_saga_for_update(&operation_id)
+            .await
+            .unwrap()
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut saga,
+            cdk_common::mint::SagaStateEnum::Melt(
+                cdk_common::mint::MeltSagaState::PaymentAttempted,
+            ),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Inputs are reserved (Pending) at the moment of the crash.
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states
+        .iter()
+        .all(|s| *s == Some(cdk_common::State::Pending)));
+
+    mint.recover_from_incomplete_melt_sagas()
+        .await
+        .expect("recovery should succeed");
+
+    // The authoritative Unpaid resolves the ambiguous dispatch: the melt is
+    // compensated and the inputs are released back to the user.
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none));
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap();
+    assert!(saga.is_none());
 }

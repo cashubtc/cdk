@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::secp256k1::rand::rngs::OsRng;
@@ -18,10 +18,12 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
+use cdk_common::redact::url_for_logs;
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::wallet::{
-    self, MintQuote, Transaction, TransactionDirection, TransactionId, WalletSaga,
+    self, MintQuote, Transaction, TransactionDirection, TransactionId, TransactionStatus,
+    WalletSaga,
 };
 use reqwest::{Client, StatusCode};
 use scrypt::Params as ScryptParams;
@@ -50,7 +52,7 @@ pub(crate) fn get_schema_sql_inner() -> String {
 
 /// URL-encode a value for use in query parameters
 fn url_encode(value: &str) -> String {
-    urlencoding::encode(value).into_owned()
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 const ENCRYPTION_METADATA_VERSION: i64 = 1;
@@ -99,13 +101,26 @@ pub enum AuthProvider {
 }
 
 /// Response from Supabase Auth token refresh
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct SupabaseTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
     #[serde(skip)]
     _token_type: (),
+}
+
+impl fmt::Debug for SupabaseTokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SupabaseTokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 /// Supabase wallet database implementation
@@ -126,7 +141,7 @@ struct SupabaseTokenResponse {
 /// - **None**: No automatic token refresh, use API key only
 /// - **SupabaseAuth**: Uses Supabase's GoTrue API for token refresh
 /// - **Oidc**: Uses an external OIDC provider for token refresh
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SupabaseWalletDatabase {
     url: Url,
     api_key: String,
@@ -138,15 +153,30 @@ pub struct SupabaseWalletDatabase {
     encryption_key: Arc<RwLock<Option<Key<Aes256Gcm>>>>,
 }
 
+impl fmt::Debug for SupabaseWalletDatabase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SupabaseWalletDatabase")
+            .field("url", &url_for_logs(self.url.as_str()))
+            .field("api_key", &"[REDACTED]")
+            .field("jwt_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("token_expiration", &"[REDACTED]")
+            .field("auth_provider", &"[REDACTED]")
+            .field("client", &"Client")
+            .field("encryption_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
 impl SupabaseWalletDatabase {
     /// Create a new SupabaseWalletDatabase with API key only (legacy behavior)
     ///
     /// No automatic token refresh is configured.
     ///
     /// **Note**: This does NOT run or check migrations automatically. After
-    /// authentication, call [`check_schema_compatibility()`] to verify the
+    /// authentication, call [`Self::check_schema_compatibility`] to verify the
     /// database schema is ready. Migrations must be run separately by an
-    /// administrator — see [`get_schema_sql()`] or use `supabase db push`.
+    /// administrator: see [`Self::get_schema_sql`] or use `supabase db push`.
     pub async fn new(url: Url, api_key: String) -> Result<Self, Error> {
         Ok(Self {
             url,
@@ -166,9 +196,9 @@ impl SupabaseWalletDatabase {
     /// Token refresh uses `POST /auth/v1/token` with `grant_type=refresh_token`.
     ///
     /// **Note**: This does NOT run or check migrations automatically. After
-    /// authentication, call [`check_schema_compatibility()`] to verify the
+    /// authentication, call [`Self::check_schema_compatibility`] to verify the
     /// database schema is ready. Migrations must be run separately by an
-    /// administrator — see [`get_schema_sql()`] or use `supabase db push`.
+    /// administrator: see [`Self::get_schema_sql`] or use `supabase db push`.
     pub async fn with_supabase_auth(url: Url, api_key: String) -> Result<Self, Error> {
         Ok(Self {
             url,
@@ -188,9 +218,9 @@ impl SupabaseWalletDatabase {
     /// The OIDC provider must be configured in Supabase to validate the JWTs.
     ///
     /// **Note**: This does NOT run or check migrations automatically. After
-    /// authentication, call [`check_schema_compatibility()`] to verify the
+    /// authentication, call [`Self::check_schema_compatibility`] to verify the
     /// database schema is ready. Migrations must be run separately by an
-    /// administrator — see [`get_schema_sql()`] or use `supabase db push`.
+    /// administrator: see [`Self::get_schema_sql`] or use `supabase db push`.
     pub async fn with_oidc(
         url: Url,
         api_key: String,
@@ -213,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 7;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
 
     /// Get the full database schema SQL
     ///
@@ -396,7 +426,7 @@ impl SupabaseWalletDatabase {
         scrypt::scrypt(password.as_bytes(), &salt, &params, &mut key)
             .map_err(|_| Error::Supabase("wallet encryption key derivation failed".to_string()))?;
 
-        Ok(*Key::<Aes256Gcm>::from_slice(&key))
+        Ok(key.into())
     }
 
     async fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, DatabaseError> {
@@ -405,7 +435,7 @@ impl SupabaseWalletDatabase {
             .as_ref()
             .ok_or(DatabaseError::Internal("Encryption key not set".into()))?;
         let cipher = Aes256Gcm::new(key);
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
+        let nonce = Nonce::<Aes256Gcm>::generate(); // 96-bits; unique per message
         let ciphertext = cipher
             .encrypt(&nonce, data)
             .map_err(|_| DatabaseError::Internal("Encryption failed".into()))?;
@@ -427,7 +457,8 @@ impl SupabaseWalletDatabase {
             return Err(DatabaseError::Internal("Invalid ciphertext length".into()));
         }
 
-        let nonce = Nonce::from_slice(&data[0..12]);
+        let nonce = <&Nonce<Aes256Gcm>>::try_from(&data[0..12])
+            .map_err(|_| DatabaseError::Internal("Invalid nonce length".into()))?;
         let ciphertext = &data[12..];
 
         cipher
@@ -691,7 +722,7 @@ impl SupabaseWalletDatabase {
     }
 
     /// Make a POST request with JSON body
-    async fn post_request<T: Serialize + Debug>(
+    async fn post_request<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -726,7 +757,7 @@ impl SupabaseWalletDatabase {
     /// so PostgREST returns `409 Conflict` if a row with the same primary key already
     /// exists. This is used by the optimistic-locking insert path so a concurrent
     /// row can be detected instead of silently overwritten.
-    async fn insert_request<T: Serialize + Debug>(
+    async fn insert_request<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -756,7 +787,7 @@ impl SupabaseWalletDatabase {
     }
 
     /// Make a PATCH request with JSON body
-    async fn patch_request<T: Serialize + Debug>(
+    async fn patch_request<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -787,7 +818,7 @@ impl SupabaseWalletDatabase {
     /// Make a PATCH request and ask PostgREST to return the updated rows as JSON
     /// (`Prefer: return=representation`).  Returns `(status, body)` where body is
     /// an empty JSON array `[]` when the filter matched no rows.
-    async fn patch_request_returning<T: Serialize + Debug>(
+    async fn patch_request_returning<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -1542,6 +1573,48 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         )))
     }
 
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, DatabaseError> {
+        let rpc_body = serde_json::json!({
+            "p_namespace": namespace,
+            "p_increment": count
+        });
+        let url = self.join_url("rest/v1/rpc/increment_derivation_counter")?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        let res = self
+            .client
+            .post(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        if status.is_success() {
+            let new_counter: i64 = serde_json::from_str(&text).map_err(|err| {
+                DatabaseError::Internal(format!(
+                    "Failed to parse derivation counter response: {}",
+                    err
+                ))
+            })?;
+            return u32::try_from(new_counter).map_err(|_| DatabaseError::AmountOverflow);
+        }
+
+        Err(DatabaseError::Internal(format!(
+            "increment_derivation_counter RPC failed: HTTP {}. Ensure migrations have been run.",
+            status
+        )))
+    }
+
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -1991,55 +2064,60 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         ys: Vec<PublicKey>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), DatabaseError> {
-        let op_id_str = operation_id.to_string();
-        for y in &ys {
-            let y_hex = hex::encode(y.to_bytes());
-
-            // Update proof state to Reserved with operation_id atomically by filtering on state=Unspent
-            let update = serde_json::json!({
-                "state": State::Reserved.to_string(),
-                "used_by_operation": op_id_str,
-            });
-
-            // We filter on state=Unspent to ensure we only reserve proofs that are currently available.
-            // This prevents race conditions where two operations try to reserve the same proof.
-            let patch_path = format!(
-                "rest/v1/proof?y=eq.{}&state=eq.{}",
-                url_encode(&y_hex),
-                url_encode(&State::Unspent.to_string())
-            );
-
-            let (status, response_text) = self.patch_request(&patch_path, &update).await?;
-
-            if !status.is_success() {
-                return Err(DatabaseError::Internal(format!(
-                    "reserve_proofs: update failed: HTTP {} - {}",
-                    status, response_text
-                )));
-            }
-
-            // PostgREST returns 204 No Content for success.
-            // If the proof was already reserved or spent, the PATCH will succeed (HTTP 204)
-            // but no rows will be updated. We check if the proof is actually reserved.
-            let reserved_proofs = self.get_reserved_proofs(operation_id).await?;
-            if !reserved_proofs.iter().any(|p| p.y == *y) {
-                return Err(DatabaseError::ProofNotUnspent);
-            }
+        if ys.is_empty() {
+            return Ok(());
         }
+
+        let op_id_str = operation_id.to_string();
+        let update = serde_json::json!({
+            "state": State::Reserved.to_string(),
+            "used_by_operation": op_id_str,
+        });
+
+        // Filtering on state=Unspent keeps two operations from reserving the
+        // same proof, and a single PATCH keeps the whole set in one statement.
+        let y_list: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
+        let patch_path = format!(
+            "rest/v1/proof?y=in.({})&state=eq.{}",
+            y_list.join(","),
+            url_encode(&State::Unspent.to_string())
+        );
+
+        let (status, response_text) = self.patch_request(&patch_path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "reserve_proofs: update failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+
+        // PostgREST returns 204 No Content whether or not any row matched, so
+        // read back what was reserved. If some proof was not unspent, undo the
+        // partial reservation rather than leaving it behind.
+        let reserved_proofs = self.get_reserved_proofs(operation_id).await?;
+        if !ys.iter().all(|y| reserved_proofs.iter().any(|p| p.y == *y)) {
+            self.release_proofs(operation_id).await?;
+            return Err(DatabaseError::ProofNotUnspent);
+        }
+
         Ok(())
     }
 
     async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), DatabaseError> {
         let op_id_str = operation_id.to_string();
 
-        // Update all proofs reserved by this operation back to Unspent
+        // Release only live reservations owned by this operation. In
+        // particular, never resurrect a proof already finalized as Spent.
         let update = serde_json::json!({
             "state": State::Unspent.to_string(),
             "used_by_operation": null,
         });
         let path = format!(
-            "rest/v1/proof?used_by_operation=eq.{}",
-            url_encode(&op_id_str)
+            "rest/v1/proof?used_by_operation=eq.{}&state=in.({},{})",
+            url_encode(&op_id_str),
+            url_encode(&State::Reserved.to_string()),
+            url_encode(&State::Pending.to_string())
         );
         let (status, response_text) = self.patch_request(&path, &update).await?;
 
@@ -2455,6 +2533,8 @@ impl TryInto<MintInfo> for MintTable {
             time: self.mint_time.map(|t| t as u64),
             tos_url: self.tos_url,
             federation: None,
+            // Not persisted: a runtime hint the mint recomputes, refreshed with /v1/info.
+            max_array_length: None,
         })
     }
 }
@@ -2569,6 +2649,8 @@ struct MintQuoteTable {
     amount_issued: i64,
     amount_paid: i64,
     #[serde(default)]
+    updated_at: i64,
+    #[serde(default)]
     used_by_operation: Option<String>,
     #[serde(default)]
     version: Option<i32>,
@@ -2602,6 +2684,7 @@ impl TryInto<MintQuote> for MintQuoteTable {
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
             amount_issued: cdk_common::Amount::from(self.amount_issued as u64),
             amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
+            updated_at: self.updated_at as u64,
             estimated_blocks: None,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
@@ -2620,10 +2703,11 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             request: Some(q.request),
             state: q.state.to_string(),
             expiry: q.expiry as i64,
-            secret_key: q.secret_key.map(|k| k.to_string()),
+            secret_key: q.secret_key.map(|key| key.to_secret_hex()),
             payment_method: q.payment_method.to_string(),
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
+            updated_at: q.updated_at as i64,
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),
@@ -2725,6 +2809,8 @@ struct ProofTable {
     state: String,
     spending_condition: Option<String>,
     unit: String,
+    #[serde(default)]
+    derivation_index: Option<i64>,
     amount: i64,
     keyset_id: String,
     secret: String,
@@ -2764,6 +2850,11 @@ impl TryInto<ProofInfo> for ProofTable {
                 .transpose()?,
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
+            derivation_index: self
+                .derivation_index
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| DatabaseError::Internal("Invalid derivation index".to_owned()))?,
             proof: cdk_common::Proof {
                 amount: cdk_common::Amount::from(self.amount as u64),
                 keyset_id: Id::from_str(&self.keyset_id)
@@ -2819,6 +2910,7 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .map(|s| serde_json::to_string(&s))
                 .transpose()?,
             unit: p.unit.to_string(),
+            derivation_index: p.derivation_index.map(i64::from),
             amount: p.proof.amount.to_u64() as i64,
             keyset_id: p.proof.keyset_id.to_string(),
             secret: p.proof.secret.to_string(),
@@ -2869,6 +2961,8 @@ struct TransactionTable {
     payment_method: Option<String>,
     #[serde(default)]
     saga_id: Option<String>,
+    #[serde(default = "default_transaction_status")]
+    status: String,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2925,6 +3019,8 @@ impl TryInto<Transaction> for TransactionTable {
                 .map(|s| uuid::Uuid::parse_str(&s))
                 .transpose()
                 .map_err(|_| DatabaseError::Internal("Invalid saga_id uuid".into()))?,
+            status: TransactionStatus::from_str(&self.status)
+                .map_err(|_| DatabaseError::Internal("Invalid transaction status".into()))?,
         })
     }
 }
@@ -2952,9 +3048,14 @@ impl TryFrom<Transaction> for TransactionTable {
             payment_proof: t.payment_proof,
             payment_method: t.payment_method.map(|p| p.to_string()),
             saga_id: t.saga_id.map(|u| u.to_string()),
+            status: t.status.to_string(),
             _extra: Default::default(),
         })
     }
+}
+
+fn default_transaction_status() -> String {
+    TransactionStatus::Completed.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2971,7 +3072,7 @@ struct SagaTable {
 }
 
 /// Response from Supabase Auth sign-up/sign-in
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct SupabaseAuthResponse {
     /// Access token
     pub access_token: String,
@@ -2983,6 +3084,21 @@ pub struct SupabaseAuthResponse {
     pub refresh_token: Option<String>,
     /// User
     pub user: serde_json::Value,
+}
+
+impl fmt::Debug for SupabaseAuthResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SupabaseAuthResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("user", &self.user)
+            .finish()
+    }
 }
 
 /// Helper for Supabase Authentication
@@ -3083,6 +3199,91 @@ mod tests {
     use super::*;
     #[cfg(feature = "integration-tests")]
     use crate::Error;
+
+    #[test]
+    fn token_response_debug_redacts_tokens() {
+        let access_token = "supabase-internal-access-token";
+        let refresh_token = "supabase-internal-refresh-token";
+        let response = SupabaseTokenResponse {
+            access_token: access_token.to_string(),
+            refresh_token: Some(refresh_token.to_string()),
+            expires_in: Some(3_600),
+            _token_type: (),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("expires_in: Some(3600)"));
+        assert!(!debug.contains(access_token));
+        assert!(!debug.contains(refresh_token));
+    }
+
+    #[test]
+    fn auth_response_debug_redacts_tokens() {
+        let access_token = "supabase-public-access-token";
+        let refresh_token = "supabase-public-refresh-token";
+        let response = SupabaseAuthResponse {
+            access_token: access_token.to_string(),
+            token_type: "bearer".to_string(),
+            expires_in: Some(3_600),
+            refresh_token: Some(refresh_token.to_string()),
+            user: json!({"id": "public-user-id"}),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("public-user-id"));
+        assert!(!debug.contains(access_token));
+        assert!(!debug.contains(refresh_token));
+    }
+
+    #[tokio::test]
+    async fn wallet_database_debug_redacts_credentials() {
+        let api_key = "supabase-api-key-secret";
+        let url_secret = "supabase-url-secret";
+        let url = Url::parse(&format!(
+            "https://user:{url_secret}@example.supabase.co/rest/v1?token={url_secret}"
+        ))
+        .expect("valid Supabase URL");
+        let database = SupabaseWalletDatabase::new(url, api_key.to_string())
+            .await
+            .expect("database construction should succeed");
+
+        let debug = format!("{database:?}");
+
+        assert!(debug.contains("https://example.supabase.co/rest/v1"));
+        assert!(!debug.contains(api_key));
+        assert!(!debug.contains(url_secret));
+    }
+
+    #[test]
+    fn mint_quote_table_round_trip_preserves_secret_key_hex() {
+        let secret_key = cdk_common::nuts::SecretKey::generate();
+        let secret_hex = secret_key.to_secret_hex();
+        let quote = MintQuote {
+            id: "quote-with-secret-key".to_string(),
+            mint_url: MintUrl::from_str("https://example.com").expect("valid mint URL"),
+            payment_method: cdk_common::PaymentMethod::BOLT11,
+            amount: Some(cdk_common::Amount::from(1)),
+            unit: CurrencyUnit::Sat,
+            request: "lnbc1test".to_string(),
+            state: cdk_common::nuts::MintQuoteState::Unpaid,
+            expiry: 1,
+            secret_key: Some(secret_key.clone()),
+            amount_issued: cdk_common::Amount::ZERO,
+            amount_paid: cdk_common::Amount::ZERO,
+            updated_at: 0,
+            estimated_blocks: None,
+            used_by_operation: None,
+            version: 0,
+        };
+
+        let table = MintQuoteTable::try_from(quote).expect("quote converts to table row");
+        assert_eq!(table.secret_key.as_deref(), Some(secret_hex.as_str()));
+
+        let round_trip: MintQuote = table.try_into().expect("table row converts to quote");
+        assert_eq!(round_trip.secret_key, Some(secret_key));
+    }
     use crate::SupabaseWalletDatabase;
 
     fn extract_schema_versions(schema_sql: &str) -> Vec<u32> {
@@ -3149,6 +3350,14 @@ mod tests {
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS schema_info"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS p2pk_signing_key"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS wallet_encryption_metadata"));
+        assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS derivation_counter"));
+        assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION increment_derivation_counter"));
+        assert!(schema_sql
+            .contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS derivation_index INTEGER"));
+        assert!(schema_sql.contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS p2pk_e TEXT"));
+        assert!(schema_sql.contains(
+            "derivation_index = COALESCE(\n                EXCLUDED.derivation_index,\n                existing.derivation_index"
+        ));
         assert_eq!(
             versions.last().copied(),
             Some(SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION)
@@ -3157,6 +3366,24 @@ mod tests {
             versions.iter().max().copied(),
             Some(SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION)
         );
+    }
+
+    #[test]
+    fn proof_update_function_has_a_dedicated_migration() {
+        let (_, _, sql) = migrations::MIGRATIONS
+            .iter()
+            .find(|(_, name, _)| *name == "20260811000002_fn_update_proofs_atomic.sql")
+            .expect("proof update function migration should be embedded");
+
+        assert!(sql.contains("CREATE OR REPLACE FUNCTION update_proofs_atomic"));
+        assert!(sql.contains("SET search_path = ''"));
+        assert!(sql.contains("INSERT INTO public.proof AS existing"));
+        assert!(!sql.contains("ALTER TABLE"));
+        assert!(!sql.contains("schema_info"));
+        assert!(sql.contains("used_by_operation"));
+        assert!(sql.contains("created_by_operation"));
+        assert!(sql.contains("p2pk_e"));
+        assert!(sql.contains("derivation_index"));
     }
 
     #[tokio::test]

@@ -9,9 +9,10 @@ use cashu::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{
-    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteCustomResponse,
-    MeltQuoteOnchainResponse, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, Proofs, State,
+    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
+    MeltQuoteCustomResponse, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod,
+    Proofs, State,
 };
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
@@ -161,8 +162,15 @@ impl FromStr for SwapSagaState {
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
     SetupComplete,
-    /// Payment attempted to Lightning network (may or may not have succeeded)
+    /// Write-ahead marker recorded before dispatch to the configured backend.
+    /// A terminal negative status cannot prove that the payment was not sent.
     PaymentAttempted,
+    /// The backend acknowledged the payment attempt.
+    /// Later status checks may finalize it, but must never compensate it.
+    PaymentPending,
+    /// The backend authoritatively reported that the payment operation ended
+    /// without paying. Recovery may safely compensate this melt.
+    PaymentFailed,
     /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
     Finalizing,
 }
@@ -172,6 +180,8 @@ impl fmt::Display for MeltSagaState {
         match self {
             MeltSagaState::SetupComplete => write!(f, "setup_complete"),
             MeltSagaState::PaymentAttempted => write!(f, "payment_attempted"),
+            MeltSagaState::PaymentPending => write!(f, "payment_pending"),
+            MeltSagaState::PaymentFailed => write!(f, "payment_failed"),
             MeltSagaState::Finalizing => write!(f, "finalizing"),
         }
     }
@@ -184,6 +194,8 @@ impl FromStr for MeltSagaState {
         match value.as_str() {
             "setup_complete" => Ok(MeltSagaState::SetupComplete),
             "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
+            "payment_pending" => Ok(MeltSagaState::PaymentPending),
+            "payment_failed" => Ok(MeltSagaState::PaymentFailed),
             "finalizing" => Ok(MeltSagaState::Finalizing),
             _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
         }
@@ -224,6 +236,8 @@ impl SagaStateEnum {
             SagaStateEnum::Melt(state) => match state {
                 MeltSagaState::SetupComplete => "setup_complete",
                 MeltSagaState::PaymentAttempted => "payment_attempted",
+                MeltSagaState::PaymentPending => "payment_pending",
+                MeltSagaState::PaymentFailed => "payment_failed",
                 MeltSagaState::Finalizing => "finalizing",
             },
         }
@@ -253,7 +267,7 @@ pub struct Saga {
 }
 
 /// Persisted payment result for resuming melt finalization after a crash.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MeltFinalizationData {
     /// Total amount actually spent on the payment.
     pub total_spent: Amount<CurrencyUnit>,
@@ -261,6 +275,19 @@ pub struct MeltFinalizationData {
     pub payment_lookup_id: PaymentIdentifier,
     /// Optional payment proof / preimage.
     pub payment_proof: Option<String>,
+}
+
+impl fmt::Debug for MeltFinalizationData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltFinalizationData")
+            .field("total_spent", &self.total_spent)
+            .field("payment_lookup_id", &self.payment_lookup_id)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl Serialize for MeltFinalizationData {
@@ -554,7 +581,7 @@ pub struct MintQuote {
     pub request: String,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Value used by ln backend to look up state of request
+    /// Value used by the payment backend to look up state of request
     pub request_lookup_id: PaymentIdentifier,
     /// Pubkey
     pub pubkey: Option<PublicKey>,
@@ -564,6 +591,10 @@ pub struct MintQuote {
     amount_paid: Amount<CurrencyUnit>,
     /// Amount issued (typed for type safety)
     amount_issued: Amount<CurrencyUnit>,
+    /// Unix timestamp indicating when the quote accounting last changed.
+    updated_at: u64,
+    /// Unix timestamp of the most recent payment backend status check.
+    last_checked: u64,
     /// Payment of payment(s) that filled quote
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
@@ -595,6 +626,7 @@ impl MintQuote {
         amount_issued: Amount<CurrencyUnit>,
         payment_method: PaymentMethod,
         created_time: u64,
+        updated_at: u64,
         payments: Vec<IncomingPayment>,
         issuance: Vec<Issuance>,
         extra_json: Option<serde_json::Value>,
@@ -612,25 +644,14 @@ impl MintQuote {
             created_time,
             amount_paid,
             amount_issued,
+            updated_at,
+            last_checked: 0,
             payment_method,
             payments,
             issuance,
             extra_json,
             changes: None,
         }
-    }
-
-    /// Increment the amount paid on the mint quote by a given amount
-    #[instrument(skip(self))]
-    pub fn increment_amount_paid(
-        &mut self,
-        additional_amount: Amount<CurrencyUnit>,
-    ) -> Result<Amount, crate::Error> {
-        self.amount_paid = self
-            .amount_paid
-            .checked_add(&additional_amount)
-            .map_err(|_| crate::Error::AmountOverflow)?;
-        Ok(Amount::from(self.amount_paid.value()))
     }
 
     /// Amount paid
@@ -691,6 +712,26 @@ impl MintQuote {
     #[instrument(skip(self))]
     pub fn amount_issued(&self) -> Amount<CurrencyUnit> {
         self.amount_issued.clone()
+    }
+
+    /// Unix timestamp indicating when this quote was last updated.
+    pub fn updated_at(&self) -> u64 {
+        self.updated_at
+    }
+
+    /// Replaces `updated_at` with the value persisted by the database.
+    pub fn set_updated_at(&mut self, updated_at: u64) {
+        self.updated_at = updated_at;
+    }
+
+    /// Unix timestamp of the most recent payment backend status check.
+    pub fn last_checked(&self) -> u64 {
+        self.last_checked
+    }
+
+    /// Replaces `last_checked` with the value persisted by the database.
+    pub fn set_last_checked(&mut self, last_checked: u64) {
+        self.last_checked = last_checked;
     }
 
     /// Get state of mint quote
@@ -839,7 +880,7 @@ impl Issuance {
 }
 
 /// Melt Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct MeltQuote {
     /// Quote id
     pub id: QuoteId,
@@ -857,7 +898,7 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     pub payment_proof: Option<String>,
-    /// Value used by ln backend to look up state of request
+    /// Value used by the payment backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment options
     ///
@@ -885,6 +926,33 @@ pub struct MeltQuote {
     fee_options: Vec<MeltQuoteOnchainFeeOption>,
     /// Selected fee option index once an onchain quote is executed
     pub selected_fee_index: Option<u32>,
+}
+
+impl fmt::Debug for MeltQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuote")
+            .field("id", &self.id)
+            .field("unit", &self.unit)
+            .field("request", &self.request)
+            .field("amount", &self.amount)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("request_lookup_id", &self.request_lookup_id)
+            .field("options", &self.options)
+            .field("created_time", &self.created_time)
+            .field("paid_time", &self.paid_time)
+            .field("payment_method", &self.payment_method)
+            .field("extra_json", &self.extra_json)
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("fee_options", &self.fee_options)
+            .field("selected_fee_index", &self.selected_fee_index)
+            .finish()
+    }
 }
 
 impl MeltQuote {
@@ -1048,9 +1116,7 @@ impl MeltQuote {
     /// response with the provided signatures.
     ///
     /// Dispatches to the per-variant `From<MeltQuote>` conversions so that
-    /// field mapping stays centralized. Note that `MeltQuoteBolt12Response`
-    /// is a type alias for `MeltQuoteBolt11Response`, so both Bolt11 and
-    /// Bolt12 go through the same conversion.
+    /// field mapping stays centralized.
     pub fn into_response(
         self,
         change: Option<Vec<cashu::nuts::BlindSignature>>,
@@ -1062,7 +1128,7 @@ impl MeltQuote {
                 crate::MeltQuoteResponse::Bolt11(response)
             }
             PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12) => {
-                let mut response: MeltQuoteBolt11Response<QuoteId> = self.into();
+                let mut response: MeltQuoteBolt12Response<QuoteId> = self.into();
                 response.change = change;
                 crate::MeltQuoteResponse::Bolt12(response)
             }
@@ -1164,6 +1230,7 @@ impl From<MeltQuote> for MeltQuoteOnchainResponse<QuoteId> {
             quote: quote.id.clone(),
             amount: quote.amount().into(),
             unit: quote.unit.clone(),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
             state: quote.state,
             expiry: quote.expiry,
             request: quote.request.to_string(),
@@ -1182,10 +1249,12 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             quote: quote.id.clone(),
             request: quote.request.clone(),
             unit: quote.unit.clone(),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
             expiry: (quote.expiry != 0).then_some(quote.expiry),
             pubkey: quote.pubkey.ok_or(crate::error::Error::MissingPubkey)?,
             amount_paid: quote.amount_paid().into(),
             amount_issued: quote.amount_issued().into(),
+            updated_at: quote.updated_at(),
         })
     }
 }
@@ -1243,6 +1312,10 @@ impl From<MintKeySetInfo> for KeySetInfo {
 
 impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
     fn from(mint_quote: MintQuote) -> MintQuoteBolt11Response<QuoteId> {
+        let amount_paid = mint_quote.amount_paid().into();
+        let amount_issued = mint_quote.amount_issued().into();
+        let updated_at = mint_quote.updated_at();
+
         MintQuoteBolt11Response {
             quote: mint_quote.id.clone(),
             state: mint_quote.state(),
@@ -1251,6 +1324,10 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
             pubkey: mint_quote.pubkey,
             amount: mint_quote.amount.map(Into::into),
             unit: Some(mint_quote.unit),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
+            amount_paid,
+            amount_issued,
+            updated_at,
         }
     }
 }
@@ -1266,15 +1343,21 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<QuoteId> {
     type Error = Error;
 
     fn try_from(mint_quote: MintQuote) -> Result<Self, Self::Error> {
+        let amount_paid = mint_quote.amount_paid().into();
+        let amount_issued = mint_quote.amount_issued().into();
+        let updated_at = mint_quote.updated_at();
+
         Ok(MintQuoteBolt12Response {
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
-            expiry: Some(mint_quote.expiry),
-            amount_paid: mint_quote.amount_paid.into(),
-            amount_issued: mint_quote.amount_issued.into(),
+            expiry: (mint_quote.expiry != 0).then_some(mint_quote.expiry),
+            amount_paid,
+            amount_issued,
             pubkey: mint_quote.pubkey.ok_or(Error::PubkeyRequired)?,
             amount: mint_quote.amount.map(Into::into),
             unit: mint_quote.unit,
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+            updated_at,
         })
     }
 }
@@ -1294,16 +1377,19 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
         let amount_paid = quote.amount_paid().into();
         let amount_issued = quote.amount_issued().into();
+        let updated_at = quote.updated_at();
 
         Ok(MintQuoteCustomResponse {
             quote: quote.id,
             request: quote.request,
+            method: quote.payment_method,
             unit: Some(quote.unit),
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
             amount: quote.amount.map(Into::into),
             amount_paid,
             amount_issued,
+            updated_at,
             extra: quote.extra_json.unwrap_or_default(),
         })
     }
@@ -1320,6 +1406,7 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<String> {
 
 impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
     fn from(melt_quote: MeltQuote) -> Self {
+        let method = melt_quote.payment_method.clone();
         let request = match melt_quote.request {
             MeltPaymentRequest::Custom { request, .. } => Some(request),
             _ => None,
@@ -1327,6 +1414,7 @@ impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
 
         Self {
             quote: melt_quote.id,
+            method,
             amount: melt_quote.amount.into(),
             fee_reserve: Some(melt_quote.fee_reserve.into()),
             state: melt_quote.state,
@@ -1339,6 +1427,41 @@ impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
         }
     }
 }
+
+impl From<&MeltQuote> for MeltQuoteBolt12Response<QuoteId> {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt12Response<QuoteId> {
+        MeltQuoteBolt12Response {
+            quote: melt_quote.id.clone(),
+            payment_preimage: None,
+            change: None,
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            amount: melt_quote.amount().into(),
+            fee_reserve: melt_quote.fee_reserve().into(),
+            request: None,
+            unit: Some(melt_quote.unit.clone()),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+        }
+    }
+}
+
+impl From<MeltQuote> for MeltQuoteBolt12Response<QuoteId> {
+    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt12Response<QuoteId> {
+        MeltQuoteBolt12Response {
+            quote: melt_quote.id.clone(),
+            amount: melt_quote.amount().into(),
+            fee_reserve: melt_quote.fee_reserve().into(),
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            payment_preimage: melt_quote.payment_proof,
+            change: None,
+            request: Some(melt_quote.request.to_string()),
+            unit: Some(melt_quote.unit.clone()),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+        }
+    }
+}
+
 impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
     type Error = Error;
 
@@ -1351,7 +1474,11 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 expiry: Some(quote.expiry),
                 amount: quote.amount.as_ref().map(|a| a.clone().into()),
                 unit: Some(quote.unit.clone()),
+                method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
                 pubkey: quote.pubkey,
+                amount_paid: quote.amount_paid().into(),
+                amount_issued: quote.amount_issued().into(),
+                updated_at: quote.updated_at(),
             }))
         } else if quote.payment_method.is_bolt12() {
             Ok(Self::Bolt12(crate::nuts::nut25::MintQuoteBolt12Response {
@@ -1359,10 +1486,12 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 request: quote.request.clone(),
                 amount: quote.amount.as_ref().map(|a| a.clone().into()),
                 unit: quote.unit.clone(),
-                expiry: Some(quote.expiry),
+                method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+                expiry: (quote.expiry != 0).then_some(quote.expiry),
                 pubkey: quote.pubkey.ok_or(Error::PubkeyRequired)?,
                 amount_paid: quote.amount_paid().into(),
                 amount_issued: quote.amount_issued().into(),
+                updated_at: quote.updated_at(),
             }))
         } else if quote.payment_method.is_onchain() {
             let onchain_response = MintQuoteOnchainResponse::try_from(quote)?;
@@ -1370,14 +1499,16 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
         } else {
             let method = quote.payment_method.clone();
             Ok(MintQuoteResponse::Custom {
-                method,
+                method: method.clone(),
                 response: crate::nuts::nut04::MintQuoteCustomResponse {
                     quote: quote.id.clone(),
                     request: quote.request.clone(),
+                    method: method.clone(),
                     expiry: Some(quote.expiry),
                     amount: quote.amount.as_ref().map(|a| a.clone().into()),
                     amount_paid: quote.amount_paid().into(),
                     amount_issued: quote.amount_issued().into(),
+                    updated_at: quote.updated_at(),
                     unit: Some(quote.unit.clone()),
                     pubkey: quote.pubkey,
                     extra: quote.extra_json.clone().unwrap_or_default(),
@@ -1412,6 +1543,10 @@ impl From<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<String> {
                 pubkey: bolt11_response.pubkey,
                 amount: bolt11_response.amount,
                 unit: bolt11_response.unit,
+                method: bolt11_response.method,
+                amount_paid: bolt11_response.amount_paid,
+                amount_issued: bolt11_response.amount_issued,
+                updated_at: bolt11_response.updated_at,
             },
             _ => panic!("Expected Bolt11 response"),
         }
@@ -1463,6 +1598,7 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             fee_reserve: melt_quote.fee_reserve().into(),
             request: None,
             unit: Some(melt_quote.unit.clone()),
+            method: melt_quote.payment_method.clone(),
         }
     }
 }
@@ -1479,6 +1615,7 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             change: None,
             request: Some(melt_quote.request.to_string()),
             unit: Some(melt_quote.unit.clone()),
+            method: melt_quote.payment_method.clone(),
         }
     }
 }
@@ -1561,6 +1698,40 @@ mod tests {
         let operation = Operation::new_mint(Amount::from(100), PaymentMethod::BOLT11);
 
         assert_eq!(operation.id.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
+    fn mint_payment_records_debug_redact_payment_proofs() {
+        let secret = "mint-payment-preimage-secret";
+        let lookup_id = PaymentIdentifier::CustomId("public-lookup-id".to_string());
+        let mut quote = MeltQuote::new(
+            Some(QuoteId::new()),
+            MeltPaymentRequest::Custom {
+                method: "custom".to_string(),
+                request: "public-payment-request".to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(100, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            unix_time() + 3_600,
+            Some(lookup_id.clone()),
+            None,
+            PaymentMethod::Custom("custom".to_string()),
+            None,
+            None,
+        );
+        quote.payment_proof = Some(secret.to_string());
+        let finalization = MeltFinalizationData {
+            total_spent: Amount::new(102, CurrencyUnit::Sat),
+            payment_lookup_id: lookup_id,
+            payment_proof: Some(secret.to_string()),
+        };
+
+        for debug in [format!("{quote:?}"), format!("{finalization:?}")] {
+            assert!(debug.contains("public-lookup-id"));
+            assert!(debug.contains("[REDACTED]"));
+            assert!(!debug.contains(secret));
+        }
     }
 
     #[test]
@@ -1755,6 +1926,7 @@ mod tests {
         )
         .unwrap();
         let quote_id = QuoteId::new();
+        let now = unix_time();
         let mint_quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -1766,7 +1938,8 @@ mod tests {
             Amount::new(10_000, CurrencyUnit::Sat),
             Amount::new(1_000, CurrencyUnit::Sat),
             PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
-            unix_time(),
+            now,
+            now,
             vec![],
             vec![],
             None,
@@ -1779,6 +1952,76 @@ mod tests {
         assert_eq!(response.pubkey, pubkey);
         assert_eq!(response.amount_paid, Amount::from(10_000));
         assert_eq!(response.amount_issued, Amount::from(1_000));
+    }
+
+    fn dummy_bolt12_mint_quote(expiry: u64) -> (MintQuote, QuoteId, PublicKey) {
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("test pubkey must parse");
+        let quote_id = QuoteId::new();
+        let now = unix_time();
+        let mint_quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "lno1testoffer".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(10_000, CurrencyUnit::Sat)),
+            expiry,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            Some(pubkey),
+            Amount::new(10_000, CurrencyUnit::Sat),
+            Amount::new(1_000, CurrencyUnit::Sat),
+            PaymentMethod::BOLT12,
+            now,
+            now,
+            vec![],
+            vec![],
+            None,
+        );
+
+        (mint_quote, quote_id, pubkey)
+    }
+
+    #[test]
+    fn test_mint_quote_bolt12_response_converts_zero_expiry_to_none() {
+        let (mint_quote, quote_id, pubkey) = dummy_bolt12_mint_quote(0);
+
+        let response: MintQuoteBolt12Response<QuoteId> =
+            MintQuoteBolt12Response::try_from(mint_quote).unwrap();
+
+        assert_eq!(response.quote, quote_id);
+        assert_eq!(response.expiry, None);
+        assert_eq!(response.pubkey, pubkey);
+        assert_eq!(response.amount_paid, Amount::from(10_000));
+        assert_eq!(response.amount_issued, Amount::from(1_000));
+    }
+
+    #[test]
+    fn test_mint_quote_bolt12_response_preserves_nonzero_expiry() {
+        let expiry = unix_time() + 3600;
+        let (mint_quote, quote_id, _) = dummy_bolt12_mint_quote(expiry);
+
+        let response: MintQuoteBolt12Response<QuoteId> =
+            MintQuoteBolt12Response::try_from(mint_quote).unwrap();
+
+        assert_eq!(response.quote, quote_id);
+        assert_eq!(response.expiry, Some(expiry));
+    }
+
+    #[test]
+    fn test_mint_quote_response_bolt12_converts_zero_expiry_to_none() {
+        let (mint_quote, quote_id, pubkey) = dummy_bolt12_mint_quote(0);
+
+        let response = MintQuoteResponse::try_from(mint_quote).unwrap();
+
+        match response {
+            MintQuoteResponse::Bolt12(response) => {
+                assert_eq!(response.quote, quote_id);
+                assert_eq!(response.expiry, None);
+                assert_eq!(response.pubkey, pubkey);
+            }
+            _ => panic!("expected MintQuoteResponse::Bolt12 variant"),
+        }
     }
 
     #[test]
@@ -2100,6 +2343,7 @@ mod tests {
     #[test]
     fn test_custom_mint_quote_response_surfaces_extra_json() {
         let extra = serde_json::json!({"payment_url": "https://example.com/pay", "ref": 42});
+        let now = unix_time();
         let quote = MintQuote::new(
             Some(QuoteId::new()),
             "custom://request".to_string(),
@@ -2111,7 +2355,8 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Custom("custom".to_string()),
-            unix_time(),
+            now,
+            now,
             Vec::new(),
             Vec::new(),
             Some(extra.clone()),

@@ -7,6 +7,10 @@ use arti_client::{TorClient, TorClientConfig};
 use arti_hyper::ArtiHttpConnector;
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
+#[cfg(feature = "bip353")]
+use dnssec_prover::query::{ProofBuilder, QueryBuf};
+#[cfg(feature = "bip353")]
+use dnssec_prover::rr::TXT_TYPE;
 use http::header::{self, HeaderName, HeaderValue};
 use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
@@ -17,7 +21,7 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 use crate::transport::Transport;
-use crate::HttpError;
+use crate::{HttpError, RawResponse};
 
 /// Fixed-size pool size.
 pub const DEFAULT_TOR_POOL_SIZE: usize = 5;
@@ -43,7 +47,7 @@ impl fmt::Debug for TorAsync {
 #[inline]
 fn gen_salt() -> [u8; 4] {
     let mut s = [0u8; 4];
-    getrandom::getrandom(&mut s).expect("failed to obtain random bytes for TorAsync salt");
+    getrandom::fill(&mut s).expect("failed to obtain random bytes for TorAsync salt");
     s
 }
 
@@ -141,23 +145,37 @@ impl TorAsync {
         (h as usize) % pool_len.max(1)
     }
 
-    async fn request<R>(
+    async fn raw_request(
         &self,
         method: http::Method,
         url: Url,
         auth: Option<AuthToken>,
-        mut body: Option<Vec<u8>>,
-    ) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
+        body: Option<(Vec<u8>, &'static str)>,
+    ) -> Result<RawResponse, HttpError> {
+        self.raw_request_with_accept(method, url, auth, body, "application/json")
+            .await
+    }
+
+    async fn raw_request_with_accept(
+        &self,
+        method: http::Method,
+        url: Url,
+        auth: Option<AuthToken>,
+        mut body: Option<(Vec<u8>, &'static str)>,
+        accept: &'static str,
+    ) -> Result<RawResponse, HttpError> {
         let tls = tls_api_native_tls::TlsConnector::builder()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?
             .build()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?;
 
         let pool = self.ensure_pool().await?;
-        let idx = self.index_for_request(&method, &url, body.as_deref(), pool.len());
+        let idx = self.index_for_request(
+            &method,
+            &url,
+            body.as_ref().map(|(bytes, _)| bytes.as_slice()),
+            pool.len(),
+        );
         let client_for_request = pool[idx].clone();
 
         let connector = ArtiHttpConnector::new(client_for_request, tls);
@@ -169,12 +187,12 @@ impl TorAsync {
             .map_err(|e| HttpError::Other(e.to_string()))?;
 
         let mut builder = Request::builder().method(method).uri(uri);
-        builder = builder.header(header::ACCEPT, "application/json");
+        builder = builder.header(header::ACCEPT, accept);
 
         let mut req = match body.take() {
-            Some(b) => builder
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(b))
+            Some((body, content_type)) => builder
+                .header(http::header::CONTENT_TYPE, content_type)
+                .body(Body::from(body))
                 .map_err(|e| HttpError::Other(e.to_string()))?,
             None => builder
                 .body(Body::empty())
@@ -201,14 +219,22 @@ impl TorAsync {
             .await
             .map_err(|e| HttpError::Other(e.to_string()))?;
 
-        if !(200..300).contains(&status) {
-            return Err(HttpError::Status {
-                status,
-                message: String::from_utf8_lossy(&bytes).to_string(),
-            });
-        }
+        Ok(RawResponse::new(status, bytes.to_vec()))
+    }
 
-        serde_json::from_slice::<R>(&bytes).map_err(|e| HttpError::Serialization(e.to_string()))
+    async fn request<R>(
+        &self,
+        method: http::Method,
+        url: Url,
+        auth: Option<AuthToken>,
+        body: Option<(Vec<u8>, &'static str)>,
+    ) -> Result<R, HttpError>
+    where
+        R: DeserializeOwned,
+    {
+        self.raw_request(method, url, auth, body)
+            .await?
+            .json_or_status_error()
     }
 }
 
@@ -226,72 +252,58 @@ impl Transport for TorAsync {
     }
 
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
-        #[derive(serde::Deserialize)]
-        struct Answer {
-            #[serde(default)]
-            data: String,
-            #[allow(dead_code)]
-            #[serde(default)]
-            name: String,
-            #[allow(dead_code)]
-            #[serde(default)]
-            r#type: u32,
-        }
-
-        #[allow(non_snake_case)]
-        #[derive(serde::Deserialize)]
-        struct DnsResp {
-            #[serde(default)]
-            Answer: Option<Vec<Answer>>,
-            #[allow(dead_code)]
-            #[serde(default)]
-            Status: Option<u32>,
-        }
-
-        fn dequote_txt(s: &str) -> String {
-            let mut result = String::new();
-            let mut in_quote = false;
-            let mut buf = String::new();
-            for ch in s.chars() {
-                if ch == '"' {
-                    if in_quote {
-                        result.push_str(&buf);
-                        buf.clear();
-                        in_quote = false;
-                    } else {
-                        in_quote = true;
-                    }
-                } else if in_quote {
-                    buf.push(ch);
-                }
-            }
-            if !result.is_empty() {
-                result
-            } else {
-                s.trim_matches('"').to_string()
-            }
-        }
-
-        let mut url = Url::parse("https://dns.google/resolve")
+        let name = crate::dns::name_from_domain(domain)?;
+        let (mut proof_builder, initial_query) = ProofBuilder::new(&name, TXT_TYPE);
+        let mut pending_queries = vec![initial_query];
+        let url = Url::parse("https://dns.google/dns-query")
             .map_err(|e| HttpError::Other(e.to_string()))?;
-        {
-            let mut qp = url.query_pairs_mut();
-            qp.append_pair("name", domain);
-            qp.append_pair("type", "TXT");
+
+        while let Some(query) = pending_queries.pop() {
+            let response = self
+                .raw_request_with_accept(
+                    Method::POST,
+                    url.clone(),
+                    None,
+                    Some((query.into_vec(), "application/dns-message")),
+                    "application/dns-message",
+                )
+                .await?;
+            if !response.is_success() {
+                return Err(HttpError::Status {
+                    status: response.status(),
+                    message: response.body_lossy(),
+                });
+            }
+
+            let mut answer = QueryBuf::new_zeroed(0);
+            answer.extend_from_slice(&response.bytes().await?);
+            let queries = proof_builder
+                .process_response(&answer)
+                .map_err(|_| HttpError::Other("Invalid DNS-over-HTTPS response".to_owned()))?;
+            pending_queries.extend(queries);
         }
 
-        let resp: DnsResp = self
-            .request::<DnsResp>(Method::GET, url, None, None)
-            .await?;
+        let (proof, _ttl) = proof_builder.finish_proof().map_err(|()| {
+            HttpError::Other("Too many queries required to build DNSSEC proof".to_owned())
+        })?;
 
-        let answers = resp.Answer.unwrap_or_default();
-        let txts = answers
-            .into_iter()
-            .filter(|a| !a.data.is_empty())
-            .map(|a| dequote_txt(&a.data))
-            .collect::<Vec<_>>();
+        crate::dns::validated_txt_records(&name, &proof)
+    }
 
-        Ok(txts)
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(crate::ws::WsSender, crate::ws::WsReceiver), crate::ws::WsError> {
+        let parsed_url = Url::parse(url)
+            .map_err(|e| crate::ws::WsError::Terminal(format!("Invalid URL: {e}")))?;
+        let pool = self
+            .ensure_pool()
+            .await
+            .map_err(|e| crate::ws::WsError::Transient(e.to_string()))?;
+        let idx = self.index_for_request(&http::Method::GET, &parsed_url, None, pool.len());
+
+        crate::ws::connect_tor(pool[idx].clone(), url, headers).await
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
@@ -299,6 +311,14 @@ impl Transport for TorAsync {
         R: DeserializeOwned,
     {
         self.request::<R>(Method::GET, url, auth, None).await
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        self.raw_request(Method::GET, url, auth, None).await
     }
 
     async fn http_post<P, R>(
@@ -313,7 +333,32 @@ impl Transport for TorAsync {
     {
         let body =
             serde_json::to_vec(payload).map_err(|e| HttpError::Serialization(e.to_string()))?;
-        self.request::<R>(Method::POST, url, auth_token, Some(body))
-            .await
+        self.request::<R>(
+            Method::POST,
+            url,
+            auth_token,
+            Some((body, "application/json")),
+        )
+        .await
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        let body = serde_urlencoded::to_string(payload)
+            .map_err(|e| HttpError::Serialization(e.to_string()))?;
+        self.raw_request(
+            Method::POST,
+            url,
+            auth_token,
+            Some((body.into_bytes(), "application/x-www-form-urlencoded")),
+        )
+        .await
     }
 }

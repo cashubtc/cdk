@@ -1,10 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context as AnyhowContext};
 use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, IncomingPaymentOptions as CdkIncomingPaymentOptions,
@@ -72,41 +72,17 @@ impl std::fmt::Debug for PaymentProcessorClient {
 }
 
 impl PaymentProcessorClient {
-    /// Payment Processor
+    /// Connect to a payment processor.
+    ///
+    /// When `tls_dir` is provided, it must contain `ca.pem`, `client.pem`, and
+    /// `client.key`. The CA certificate authenticates the server, while the
+    /// client certificate and key authenticate this client to the server.
     pub async fn new(addr: &str, port: u16, tls_dir: Option<PathBuf>) -> anyhow::Result<Self> {
         let scheme = if tls_dir.is_some() { "https" } else { "http" };
         let endpoint = format!("{scheme}://{addr}:{port}");
 
         let channel = if let Some(tls_dir) = tls_dir {
-            // TLS directory exists, configure TLS
-
-            // Check for ca.pem
-            let ca_pem_path = tls_dir.join("ca.pem");
-            if !ca_pem_path.exists() {
-                let err_msg = format!("CA certificate file not found: {}", ca_pem_path.display());
-                tracing::error!("{}", err_msg);
-                return Err(anyhow!(err_msg));
-            }
-
-            // Check for client.pem
-            let client_pem_path = tls_dir.join("client.pem");
-
-            // Check for client.key
-            let client_key_path = tls_dir.join("client.key");
-            // check for ca cert
-            let server_root_ca_cert = std::fs::read_to_string(&ca_pem_path)?;
-            let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
-            let tls: ClientTlsConfig = match client_pem_path.exists() && client_key_path.exists() {
-                true => {
-                    let client_cert = std::fs::read_to_string(&client_pem_path)?;
-                    let client_key = std::fs::read_to_string(&client_key_path)?;
-                    let client_identity = Identity::from_pem(client_cert, client_key);
-                    ClientTlsConfig::new()
-                        .ca_certificate(server_root_ca_cert)
-                        .identity(client_identity)
-                }
-                false => ClientTlsConfig::new().ca_certificate(server_root_ca_cert),
-            };
+            let tls = load_mtls_config(&tls_dir)?;
             Channel::from_shared(endpoint)?
                 .tls_config(tls)?
                 .connect()
@@ -128,6 +104,31 @@ impl PaymentProcessorClient {
             cancel_payment_event_stream: Arc::new(Mutex::new(CancellationToken::new())),
         })
     }
+}
+
+fn load_mtls_config(tls_dir: &Path) -> anyhow::Result<ClientTlsConfig> {
+    let ca_pem_path = tls_dir.join("ca.pem");
+    let client_pem_path = tls_dir.join("client.pem");
+    let client_key_path = tls_dir.join("client.key");
+
+    let server_root_ca_cert = std::fs::read(&ca_pem_path)
+        .with_context(|| format!("failed to read CA certificate `{}`", ca_pem_path.display()))?;
+    let client_cert = std::fs::read(&client_pem_path).with_context(|| {
+        format!(
+            "failed to read client certificate `{}`",
+            client_pem_path.display()
+        )
+    })?;
+    let client_key = std::fs::read(&client_key_path).with_context(|| {
+        format!(
+            "failed to read client private key `{}`",
+            client_key_path.display()
+        )
+    })?;
+
+    Ok(ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(server_root_ca_cert))
+        .identity(Identity::from_pem(client_cert, client_key)))
 }
 
 #[async_trait]
@@ -159,6 +160,7 @@ impl MintPayment for PaymentProcessorClient {
                 .bolt12
                 .map(|b| cdk_common::payment::Bolt12Settings {
                     amountless: b.amountless,
+                    invoice_description: b.invoice_description,
                 }),
             onchain: settings
                 .onchain
@@ -183,9 +185,11 @@ impl MintPayment for PaymentProcessorClient {
                 options: Some(super::incoming_payment_options::Options::Custom(
                     super::CustomIncomingPaymentOptions {
                         description: opts.description,
-                        amount: Some(opts.amount.into()),
+                        amount: opts.amount.map(Into::into),
                         unix_expiry: opts.unix_expiry,
-                        extra_json: opts.extra_json.clone(),
+                        extra_json: opts.extra_json,
+                        quote_id: opts.quote_id.to_string(),
+                        pubkey: opts.pubkey.map(|p| p.to_hex()),
                     },
                 )),
             },
@@ -288,6 +292,13 @@ impl MintPayment for PaymentProcessorClient {
             _ => None,
         };
 
+        let amount = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => {
+                opts.amount.clone().into_proto()
+            }
+            _ => None,
+        };
+
         let quote_id = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.quote_id.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.quote_id.to_string(),
@@ -304,6 +315,7 @@ impl MintPayment for PaymentProcessorClient {
                 extra_json,
                 quote_id,
                 onchain_options,
+                amount,
             }))
             .await
             .map_err(|err| {
@@ -332,6 +344,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Custom(
                         super::CustomOutgoingPaymentOptions {
                             offer: opts.request.to_string(),
+                            amount: opts.amount.map(Into::into),
                             max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
@@ -515,5 +528,67 @@ impl MintPayment for PaymentProcessorClient {
         Ok(check_outgoing
             .try_into()
             .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::load_mtls_config;
+
+    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "cdk-payment-processor-mtls-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).expect("create mTLS test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn configured_tls_requires_ca_and_client_identity() {
+        let tls_dir = TestDirectory::new();
+
+        let error = load_mtls_config(tls_dir.path()).expect_err("missing CA should fail");
+        assert!(error.to_string().contains("failed to read CA certificate"));
+
+        fs::write(tls_dir.path().join("ca.pem"), "test CA").expect("write test CA");
+        let error =
+            load_mtls_config(tls_dir.path()).expect_err("missing client certificate should fail");
+        assert!(error
+            .to_string()
+            .contains("failed to read client certificate"));
+
+        fs::write(tls_dir.path().join("client.pem"), "test client certificate")
+            .expect("write test client certificate");
+        let error =
+            load_mtls_config(tls_dir.path()).expect_err("missing client private key should fail");
+        assert!(error
+            .to_string()
+            .contains("failed to read client private key"));
+
+        fs::write(tls_dir.path().join("client.key"), "test client key")
+            .expect("write test client key");
+        load_mtls_config(tls_dir.path()).expect("complete mTLS configuration should load");
     }
 }

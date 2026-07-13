@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::mint_url::MintUrl;
+use cdk_common::wallet::Transaction;
 use cdk_common::Id;
 use redb::{
     Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
@@ -14,6 +15,7 @@ use redb::{
 use super::Error;
 use crate::wallet::{
     KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE, P2PK_SIGNING_KEYS_TABLE,
+    TRANSACTIONS_TABLE,
 };
 
 // <Mint_url, Info>
@@ -219,4 +221,125 @@ pub(crate) fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
     tracing::info!("Finished migration from version 4 to 5: P2PK_SIGNING_KEYS_TABLE initialized");
 
     Ok(5)
+}
+
+pub(crate) fn migrate_05_to_06(db: Arc<Database>) -> Result<u32, Error> {
+    tracing::info!("Starting migration from version 5 to 6: Rekeying saga transactions");
+    let write_txn = db.begin_write().map_err(Error::from)?;
+
+    let transactions = {
+        let table = write_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .map_err(Error::from)?;
+        let mut transactions = Vec::new();
+
+        for entry in table.iter().map_err(Error::from)? {
+            let (id, value) = entry.map_err(Error::from)?;
+            let transaction = serde_json::from_str::<Transaction>(value.value())?;
+            if transaction.saga_id.is_some() {
+                transactions.push((
+                    id.value().to_vec(),
+                    transaction.id(),
+                    value.value().to_owned(),
+                ));
+            }
+        }
+
+        transactions
+    };
+
+    {
+        let mut table = write_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .map_err(Error::from)?;
+
+        for (old_id, new_id, value) in transactions {
+            if old_id == new_id.as_slice() {
+                continue;
+            }
+
+            table.remove(old_id.as_slice()).map_err(Error::from)?;
+            table
+                .insert(new_id.as_slice(), value.as_str())
+                .map_err(Error::from)?;
+        }
+    }
+
+    write_txn.commit()?;
+    tracing::info!("Finished migration from version 5 to 6: Rekeying saga transactions");
+
+    Ok(6)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use cdk_common::wallet::{TransactionDirection, TransactionId, TransactionStatus};
+    use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+    use super::*;
+
+    #[test]
+    fn migration_05_to_06_rekeys_saga_transactions() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database_path = directory.path().join("wallet.redb");
+        let database = Arc::new(Database::create(database_path).expect("database"));
+        let saga_id = uuid::Uuid::new_v4();
+        let transaction = Transaction {
+            mint_url: MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(10),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Pending,
+        };
+        let legacy_id = TransactionId::new(transaction.ys.clone());
+        let saga_transaction_id = transaction.id();
+        assert_ne!(legacy_id, saga_transaction_id);
+
+        let write_txn = database.begin_write().expect("write transaction");
+        {
+            let mut table = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .expect("transactions table");
+            table
+                .insert(
+                    legacy_id.as_slice(),
+                    serde_json::to_string(&transaction)
+                        .expect("serialize transaction")
+                        .as_str(),
+                )
+                .expect("insert transaction");
+        }
+        write_txn.commit().expect("commit transaction");
+
+        assert_eq!(
+            migrate_05_to_06(Arc::clone(&database)).expect("migration"),
+            6
+        );
+
+        let read_txn = database.begin_read().expect("read transaction");
+        let table = read_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .expect("transactions table");
+        assert!(table
+            .get(legacy_id.as_slice())
+            .expect("legacy lookup")
+            .is_none());
+        assert!(table
+            .get(saga_transaction_id.as_slice())
+            .expect("saga lookup")
+            .is_some());
+    }
 }

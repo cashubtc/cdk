@@ -1,7 +1,7 @@
 > [!Warning]
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind losing.
 
-[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk) [![License](https://img.shields.io/github/license/cashubtc/cdk)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
+[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk) [![License](https://img.shields.io/github/license/cashubtc/cdk)](https://github.com/cashubtc/cdk/blob/main/LICENSE.md)
 
 # Cashu Development Kit
 
@@ -38,16 +38,15 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-axum**](./crates/cdk-axum/): Axum webserver for mint.
     * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
-    * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint. **Note: Only LNBits v1 API is supported.**
     * [**cdk-ldk-node**](./crates/cdk-ldk-node/): LDK Node Lightning backend for mint.
     * [**cdk-bdk**](./crates/cdk-bdk/): Onchain Bitcoin backend using BDK.
-    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake payment backend for mint. To be used only for testing, quotes are automatically filled.
     * [**cdk-common**](./crates/cdk-common/): Common utilities and shared code.
     * [**cdk-sql-common**](./crates/cdk-sql-common/): Common SQL utilities for storage backends.
     * [**cdk-signatory**](./crates/cdk-signatory/): Signing utilities and cryptographic operations.
-    * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality.
+    * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality; LNbits integrations should use an external payment processor.
     * [**cdk-prometheus**](./crates/cdk-prometheus/): Prometheus metrics integration.
-    * [**cdk-npubcash**](./crates/cdk-npubcash/): npub.cash SDK integration.
+    * [**cdk-nostr**](./crates/cdk-nostr/): Nostr integration — keys, NIP-44 encryption, NIP-17 inbox listener, NIP-47 wallet service, npub.cash SDK.
     * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.
     * [**cdk-integration-tests**](./crates/cdk-integration-tests/): Integration test suite.
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
@@ -84,7 +83,7 @@ The project is split up into several crates in the `crates/` directory:
 | [13][13] | Deterministic secrets | :heavy_check_mark: |
 | [14][14] | Hashed Timelock Contracts (HTLCs) | :heavy_check_mark: |
 | [15][15] | Partial multi-path payments (MPP) | :heavy_check_mark: |
-| [16][16] | Animated QR codes | :x: |
+| [16][16] | Animated QR codes | :heavy_check_mark: |
 | [17][17] | WebSocket subscriptions  | :heavy_check_mark: |
 | [18][18] | Payment Requests  | :heavy_check_mark: |
 | [19][19] | Cached responses  | :heavy_check_mark: |
@@ -102,7 +101,9 @@ The project is split up into several crates in the `crates/` directory:
 
 ## License
 
-Code is under the [MIT License](LICENSE)
+Code is licensed under either the [Apache License 2.0](LICENSE-APACHE) or the
+[MIT License](LICENSE-MIT), at your option. See [LICENSE.md](LICENSE.md) for
+details.
 
 ## Contribution
 

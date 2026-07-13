@@ -26,7 +26,7 @@ use cdk::nuts::{
     PreMintSecrets, Proofs, SecretKey, State, SwapRequest,
 };
 use cdk::wallet::types::TransactionDirection;
-use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk::wallet::{HttpClient, MeltOutcome, MintConnector, Wallet};
 use cdk::StreamExt;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_sqlite::wallet::memory;
@@ -89,8 +89,8 @@ async fn test_fake_tokens_pending() {
         .is_empty());
 }
 
-/// Tests that if the pay error fails and the check returns unknown or failed,
-/// the input proofs should be unset as spending (returned to unspent state)
+/// Tests that an unknown follow-up keeps proofs pending while a confirmed
+/// failure returns only that payment's proofs to the wallet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail() {
     let wallet = Wallet::new(
@@ -129,20 +129,27 @@ async fn test_fake_melt_payment_fail() {
         .await
         .unwrap();
 
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let outcome = prepared.confirm_prefer_async().await.unwrap();
+    assert!(matches!(outcome, MeltOutcome::Pending(_)));
 
+    let pending_before_failed = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap()
+        .len();
+    assert!(pending_before_failed > 0);
+
+    // Model an authoritative backend failure response. A dispatch error remains
+    // ambiguous even if an immediate follow-up check reports Failed.
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
         check_payment_state: MeltQuoteState::Failed,
-        pay_err: true,
+        pay_err: false,
         check_err: false,
     };
 
@@ -153,18 +160,24 @@ async fn test_fake_melt_payment_fail() {
         .await
         .unwrap();
 
-    // The melt should error at the payment invoice command
-    let melt = async {
+    // A confirmed failure should return an error and release its proofs.
+    let melt = tokio::time::timeout(Duration::from_secs(15), async {
         let prepared = wallet
             .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
             .await?;
         prepared.confirm().await
-    }
-    .await;
+    })
+    .await
+    .expect("authoritative failure should not remain pending");
     assert!(melt.is_err());
 
-    let wallet_bal = wallet.total_balance().await.unwrap();
-    assert_eq!(wallet_bal, 100.into());
+    let pending_after_failed = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap()
+        .len();
+    assert_eq!(pending_after_failed, pending_before_failed);
 }
 
 /// Tests that when both the pay_invoice and check_invoice both fail,
@@ -222,8 +235,8 @@ async fn test_fake_melt_payment_fail_and_check() {
         .is_empty());
 }
 
-/// Tests that when the ln backend returns a failed status but does not error,
-/// the mint should do a second check, then remove proofs from pending state
+/// Tests that a failed backend status releases proofs while an unknown status
+/// keeps them pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_return_fail_status() {
     let wallet = Wallet::new(
@@ -262,7 +275,7 @@ async fn test_fake_melt_payment_return_fail_status() {
         .await
         .unwrap();
 
-    // The melt should error at the payment invoice command
+    // A confirmed failure should return an error and release its proofs.
     let melt = async {
         let prepared = wallet
             .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
@@ -296,19 +309,16 @@ async fn test_fake_melt_payment_return_fail_status() {
         .await
         .unwrap();
 
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let outcome = prepared.confirm_prefer_async().await.unwrap();
+    assert!(matches!(outcome, MeltOutcome::Pending(_)));
 
     wallet.check_all_pending_proofs().await.unwrap();
 
-    assert!(wallet
+    assert!(!wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
@@ -316,8 +326,8 @@ async fn test_fake_melt_payment_return_fail_status() {
         .is_empty());
 }
 
-/// Tests that when the ln backend returns an error with unknown status,
-/// the mint should do a second check, then remove proofs from pending state
+/// Tests that when the payment backend returns an error with unknown status,
+/// the mint should do a second check and keep proofs pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_error_unknown() {
     let wallet = Wallet::new(
@@ -356,15 +366,12 @@ async fn test_fake_melt_payment_error_unknown() {
         .await
         .unwrap();
 
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let outcome = prepared.confirm_prefer_async().await.unwrap();
+    assert!(matches!(outcome, MeltOutcome::Pending(_)));
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -380,17 +387,14 @@ async fn test_fake_melt_payment_error_unknown() {
         .await
         .unwrap();
 
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .unwrap();
+    let outcome = prepared.confirm_prefer_async().await.unwrap();
+    assert!(matches!(outcome, MeltOutcome::Pending(_)));
 
-    assert!(wallet
+    assert!(!wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
@@ -398,7 +402,7 @@ async fn test_fake_melt_payment_error_unknown() {
         .is_empty());
 }
 
-/// Tests that when the ln backend returns an error but the second check returns paid,
+/// Tests that when the payment backend returns an error but the second check returns paid,
 /// proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_err_paid() {
@@ -1848,11 +1852,13 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
 
     assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
 
-    // Create a melt quote that will fail
+    // Model an authoritative backend failure response. An error from the
+    // dispatch call would be ambiguous even if an immediate status check
+    // reported Unpaid.
     let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Unknown,
-        check_payment_state: MeltQuoteState::Unpaid,
-        pay_err: true,
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Failed,
+        pay_err: false,
         check_err: false,
     };
 
@@ -1863,13 +1869,14 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
         .unwrap();
 
     // Attempt to melt - this should fail but trigger proof recovery
-    let melt_result = async {
+    let melt_result = tokio::time::timeout(Duration::from_secs(15), async {
         let prepared = wallet
             .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
             .await?;
         prepared.confirm().await
-    }
-    .await;
+    })
+    .await
+    .expect("authoritative failure should not remain pending");
     assert!(melt_result.is_err(), "Melt should have failed");
 
     // Verify wallet still has balance (proofs recovered)

@@ -8,14 +8,27 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::HttpError;
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 use crate::{HttpClient, HttpClientBuilder};
+use crate::{HttpError, RawResponse};
 
-/// Expected HTTP transport
+/// Expected HTTP transport.
+///
+/// Callers that construct a transport implicitly may add a [`Default`] bound,
+/// while configured transports can be supplied directly without implementing
+/// a meaningless default configuration.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Transport: Default + Send + Sync + Debug + Clone {
+pub trait Transport: Send + Sync + Debug + Clone {
+    /// Connect to a WebSocket endpoint using this transport.
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(crate::ws::WsSender, crate::ws::WsReceiver), crate::ws::WsError> {
+        crate::ws::connect(url, headers).await
+    }
+
     /// Make the transport use a proxy.
     ///
     /// SOCKS proxy schemes such as `socks5h` are available only when this crate
@@ -29,12 +42,27 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
     ) -> Result<(), HttpError>;
 
     /// DNS resolver to get TXT records from a domain name.
-    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError>;
+    ///
+    /// Transports that support DNS resolution should override this method. The
+    /// default implementation keeps the trait API stable when the `bip353`
+    /// feature is disabled.
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+        Err(HttpError::Other(
+            "DNS TXT resolution is not enabled for this transport".to_owned(),
+        ))
+    }
 
     /// HTTP GET request.
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
     where
         R: DeserializeOwned;
+
+    /// HTTP GET request returning a raw response.
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError>;
 
     /// HTTP POST request.
     async fn http_post<P, R>(
@@ -46,6 +74,16 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
     where
         P: Serialize + Send + Sync,
         R: DeserializeOwned;
+
+    /// HTTP POST request with a form body returning a raw response.
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync;
 }
 
 /// Default async transport backed by the crate `HttpClient`.
@@ -53,45 +91,16 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 #[derive(Debug, Clone)]
 pub struct Async {
     inner: HttpClient,
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    resolver: std::sync::Arc<
-        hickory_resolver::Resolver<hickory_resolver::name_server::TokioConnectionProvider>,
-    >,
-}
-
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-fn default_resolver(
-) -> hickory_resolver::Resolver<hickory_resolver::name_server::TokioConnectionProvider> {
-    use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-    use hickory_resolver::name_server::TokioConnectionProvider;
-    use hickory_resolver::Resolver;
-
-    let mut resolver_opts = ResolverOpts::default();
-    resolver_opts.validate = true;
-
-    Resolver::builder_with_config(
-        ResolverConfig::default(),
-        TokioConnectionProvider::default(),
-    )
-    .with_options(resolver_opts)
-    .build()
 }
 
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 impl Default for Async {
     fn default() -> Self {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "bip353"))]
-        if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-
         Self {
             inner: HttpClient::builder()
                 .no_redirects()
                 .build()
                 .expect("default no-redirect client"),
-            #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-            resolver: std::sync::Arc::new(default_resolver()),
         }
     }
 }
@@ -120,42 +129,21 @@ impl Transport for Async {
     }
 
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
-        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-        {
-            use std::str::FromStr;
-
-            let name = hickory_resolver::Name::from_str(domain)
-                .map_err(|e| HttpError::Other(format!("Invalid domain name: {}", e)))?;
-
-            Ok(self
-                .resolver
-                .txt_lookup(name)
-                .await
-                .map_err(|e| HttpError::Other(e.to_string()))?
-                .into_iter()
-                .map(|txt| {
-                    txt.txt_data()
-                        .iter()
-                        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                        .collect::<Vec<_>>()
-                        .join("")
-                })
-                .collect::<Vec<_>>())
-        }
-
-        #[cfg(any(not(feature = "bip353"), target_arch = "wasm32"))]
-        {
-            let _ = domain;
-            Err(HttpError::Other(
-                "DNS TXT resolution requires the bip353 feature".to_string(),
-            ))
-        }
+        crate::dns::resolve_dns_txt(domain).await
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
     where
         R: DeserializeOwned,
     {
+        self.http_get_raw(url, auth).await?.json_or_status_error()
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
         let url_str = url.to_string();
         let mut request = self.inner.get(&url_str);
 
@@ -163,7 +151,7 @@ impl Transport for Async {
             request = request.header(auth.header_key(), auth.to_string());
         }
 
-        request.send_json::<R>().await
+        request.send().await
     }
 
     async fn http_post<P, R>(
@@ -184,6 +172,25 @@ impl Transport for Async {
         }
 
         request.send_json::<R>().await
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        let url_str = url.to_string();
+        let mut request = self.inner.post(&url_str).form(payload);
+
+        if let Some(auth) = auth_token {
+            request = request.header(auth.header_key(), auth.to_string());
+        }
+
+        request.send().await
     }
 }
 

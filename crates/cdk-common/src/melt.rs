@@ -298,6 +298,7 @@ where
                     change: None,
                     request: Some(value.request.to_string()),
                     unit: Some(value.unit.clone()),
+                    method: PaymentMethod::Known(KnownMethod::Bolt11),
                 })
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
@@ -311,6 +312,7 @@ where
                     change: None,
                     request: Some(value.request.to_string()),
                     unit: Some(value.unit.clone()),
+                    method: PaymentMethod::Known(KnownMethod::Bolt12),
                 })
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {
@@ -318,6 +320,7 @@ where
                     quote: value.id.clone().into(),
                     amount: value.amount().into(),
                     unit: value.unit.clone(),
+                    method: PaymentMethod::Known(KnownMethod::Onchain),
                     state: value.state,
                     expiry: value.expiry,
                     request: value.request.to_string(),
@@ -331,6 +334,7 @@ where
                 method.clone(),
                 crate::nuts::nut05::MeltQuoteCustomResponse {
                     quote: value.id.clone().into(),
+                    method: method.clone(),
                     amount: value.amount().into(),
                     fee_reserve: Some(value.fee_reserve().into()),
                     state: value.state,
@@ -365,6 +369,7 @@ mod tests {
             change: None,
             request: Some("lnbc100".to_string()),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
         }
     }
 
@@ -379,6 +384,7 @@ mod tests {
             change: None,
             request: Some("lno200".to_string()),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
         }
     }
 
@@ -387,6 +393,7 @@ mod tests {
             quote: quote.to_string(),
             amount: Amount::from(400),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Onchain),
             state: MeltQuoteState::Paid,
             expiry: 4000,
             request: "bc1qonchainaddress".to_string(),
@@ -404,6 +411,7 @@ mod tests {
     fn custom_response(quote: &str) -> MeltQuoteCustomResponse<String> {
         MeltQuoteCustomResponse {
             quote: quote.to_string(),
+            method: PaymentMethod::Custom("custom".to_string()),
             amount: Amount::from(300),
             fee_reserve: Some(Amount::from(3)),
             state: MeltQuoteState::Paid,
@@ -500,6 +508,7 @@ mod tests {
             method: "cashapp".to_string(),
             unit: CurrencyUnit::Sat,
             request: "$tag".to_string(),
+            amount: None,
             extra: serde_json::Value::Null,
         };
         let req: MeltQuoteRequest = custom_req.into();

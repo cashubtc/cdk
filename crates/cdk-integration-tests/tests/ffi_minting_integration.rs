@@ -47,6 +47,7 @@ async fn create_test_ffi_wallet() -> FfiWallet {
     let mnemonic = Mnemonic::generate(12).unwrap().to_string();
     let config = WalletConfig {
         target_proof_count: Some(3),
+        rate_limit: None,
     };
 
     FfiWallet::new(
@@ -300,6 +301,7 @@ async fn test_ffi_minting_error_handling() {
     let mnemonic = Mnemonic::generate(12).unwrap().to_string();
     let config = WalletConfig {
         target_proof_count: Some(3),
+        rate_limit: None,
     };
 
     let invalid_wallet_result = FfiWallet::new(
@@ -355,6 +357,7 @@ async fn test_ffi_wallet_configuration() {
     for target_count in proof_counts {
         let config = WalletConfig {
             target_proof_count: Some(target_count),
+            rate_limit: None,
         };
 
         let wallet = FfiWallet::new(
@@ -379,6 +382,7 @@ async fn test_ffi_wallet_configuration() {
     // Test wallet restoration with same mnemonic
     let config = WalletConfig {
         target_proof_count: Some(3),
+        rate_limit: None,
     };
 
     let wallet1 = FfiWallet::new(

@@ -11,7 +11,7 @@ use cdk::wallet::{BaseHttpClient, HttpTransport, SendOptions, WalletBuilder};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{AuthToken, PaymentMethod};
-use cdk_http_client::HttpError;
+use cdk_http_client::{HttpError, RawResponse};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 use serde::de::DeserializeOwned;
@@ -70,6 +70,29 @@ impl HttpTransport for CustomHttp {
             .map_err(|e| HttpError::Serialization(e.to_string()))
     }
 
+    async fn http_get_raw(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        let mut request = self.agent.get(url.as_str());
+
+        if let Some(auth) = auth {
+            request = request.header(auth.header_key(), auth.to_string());
+        }
+
+        let mut response = request
+            .call()
+            .map_err(|e| HttpError::Connection(e.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_vec()
+            .map_err(|e| HttpError::Connection(e.to_string()))?;
+
+        Ok(RawResponse::new(status, body))
+    }
+
     async fn http_post<P, R>(
         &self,
         url: Url,
@@ -87,6 +110,38 @@ impl HttpTransport for CustomHttp {
             .body_mut()
             .read_json()
             .map_err(|e| HttpError::Serialization(e.to_string()))
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        let encoded = serde_urlencoded::to_string(payload)
+            .map_err(|e| HttpError::Serialization(e.to_string()))?;
+        let mut request = self
+            .agent
+            .post(url.as_str())
+            .header("Content-Type", "application/x-www-form-urlencoded");
+
+        if let Some(auth) = auth_token {
+            request = request.header(auth.header_key(), auth.to_string());
+        }
+
+        let mut response = request
+            .send(&encoded)
+            .map_err(|e| HttpError::Connection(e.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_vec()
+            .map_err(|e| HttpError::Connection(e.to_string()))?;
+
+        Ok(RawResponse::new(status, body))
     }
 }
 

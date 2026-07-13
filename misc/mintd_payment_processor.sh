@@ -36,7 +36,7 @@ cleanup() {
     unset CDK_ITESTS_MINT_ADDR
     unset CDK_ITESTS_MINT_PORT_0
     unset CDK_REGTEST_PID
-    unset LN_BACKEND
+    unset PAYMENT_BACKEND
     unset MINT_DATABASE
     unset CDK_TEST_REGTEST
     unset CDK_TEST_MINT_URL
@@ -44,7 +44,7 @@ cleanup() {
     unset CDK_PAYMENT_PROCESSOR_LND_ADDRESS
     unset CDK_PAYMENT_PROCESSOR_LND_CERT_FILE
     unset CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE
-    unset CDK_PAYMENT_PROCESSOR_LN_BACKEND
+    unset CDK_PAYMENT_PROCESSOR_BACKEND
     unset CDK_PAYMENT_PROCESSOR_LISTEN_HOST
     unset CDK_PAYMENT_PROCESSOR_LISTEN_PORT
     unset CDK_PAYMENT_PROCESSOR_PID
@@ -52,7 +52,7 @@ cleanup() {
     unset CDK_MINTD_WORK_DIR
     unset CDK_MINTD_LISTEN_HOST
     unset CDK_MINTD_LISTEN_PORT
-    unset CDK_MINTD_LN_BACKEND
+    unset CDK_MINTD_PAYMENT_BACKEND
     unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS
     unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT
     unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS
@@ -100,7 +100,7 @@ export CDK_ITESTS_MINT_ADDR="127.0.0.1";
 export CDK_ITESTS_MINT_PORT_0=8086;
 
 
-export LN_BACKEND="$1";
+export PAYMENT_BACKEND="$1";
 
 URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0/v1/info"
 # Check if the temporary directory was created successfully
@@ -119,7 +119,7 @@ fi
 
 
 export CDK_TEST_REGTEST=0
-if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
+if [ "$PAYMENT_BACKEND" != "FAKEWALLET" ]; then
     export CDK_TEST_REGTEST=1
     run_bin_bg start_regtest "$CDK_ITESTS_DIR"
     CDK_REGTEST_PID=$!
@@ -166,14 +166,14 @@ export CDK_PAYMENT_PROCESSOR_LND_ADDRESS="https://localhost:10010";
 export CDK_PAYMENT_PROCESSOR_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert";
 export CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon";
 
-export CDK_PAYMENT_PROCESSOR_LN_BACKEND=$LN_BACKEND;
+export CDK_PAYMENT_PROCESSOR_BACKEND=$PAYMENT_BACKEND;
 export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1";
 export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090";
 
 echo "$CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH"
 
 # Wait for LND certificate and macaroon files to exist (only if using LND backend)
-if [ "$LN_BACKEND" = "LND" ]; then
+if [ "$PAYMENT_BACKEND" = "LND" ]; then
     echo "Waiting for LND certificate and macaroon files..."
     CERT_TIMEOUT=120
     CERT_START_TIME=$(date +%s)
@@ -205,22 +205,39 @@ CDK_PAYMENT_PROCESSOR_PID=$!
 wait_for_payment_processor "$CDK_PAYMENT_PROCESSOR_LISTEN_HOST" "$CDK_PAYMENT_PROCESSOR_LISTEN_PORT" "$CDK_PAYMENT_PROCESSOR_PID"
 
 
-export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0";
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR";
-export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR;
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0;
-export CDK_MINTD_LN_BACKEND="grpcprocessor";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS="127.0.0.1";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT="8090";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS="sat";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ALLOW_INSECURE=true;
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
- 
+
+MINTD_CONFIG_FILE="$CDK_ITESTS_DIR/mintd.toml"
+cat > "$MINTD_CONFIG_FILE" <<EOF
+[info]
+url = "http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+listen_host = "$CDK_ITESTS_MINT_ADDR"
+listen_port = $CDK_ITESTS_MINT_PORT_0
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[database]
+engine = "sqlite"
+
+[[payment_backend]]
+backend = "grpcprocessor"
+unit = "sat"
+
+[grpc_processor]
+address = "127.0.0.1"
+port = 8090
+supported_units = ["sat"]
+allow_insecure = true
+EOF
+
 if ! command -v cdk-mintd &>/dev/null; then
-    cargo build --bin cdk-mintd --no-default-features --features grpc-processor
+    cargo build --bin cdk-mintd --no-default-features --features grpc-processor,sqlite
 fi
 
-run_mintd_bg
+if ! run_mintd_bg "$CDK_MINTD_WORK_DIR" "$MINTD_CONFIG_FILE"; then
+    echo "Failed to initialize cdk-mintd configuration"
+    exit 1
+fi
 CDK_MINTD_PID=$!
 
 echo $CDK_ITESTS_DIR
@@ -260,7 +277,7 @@ run_test happy_path_mint_wallet -- --test-threads 1
 # Capture the exit status of cargo test
 test_status=$?
 
-if [ "$LN_BACKEND" = "CLN" ]; then
+if [ "$PAYMENT_BACKEND" = "CLN" ]; then
     echo "Running bolt12 tests for CLN backend"
     run_test bolt12
     bolt12_test_status=$?

@@ -10,7 +10,9 @@ mod native;
 mod wasm;
 
 pub use error::WsError;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub(crate) use native::connect_tor;
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{connect, WsReceiver, WsSender};
+pub use native::{connect, from_websocket_stream, WsReceiver, WsSender};
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{connect, WsReceiver, WsSender};

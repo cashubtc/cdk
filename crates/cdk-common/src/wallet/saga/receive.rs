@@ -1,5 +1,7 @@
 //! Receive saga types
 
+use core::fmt;
+
 use cashu::BlindedMessage;
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +38,7 @@ impl std::str::FromStr for ReceiveSagaState {
 }
 
 /// Operation-specific data for Receive operations
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiveOperationData {
     /// Token to receive
     pub token: Option<String>,
@@ -52,4 +54,61 @@ pub struct ReceiveOperationData {
     /// we can use these to query the mint for signatures and reconstruct proofs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blinded_messages: Option<Vec<BlindedMessage>>,
+}
+
+impl fmt::Debug for ReceiveOperationData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceiveOperationData")
+            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
+            .field("counter_start", &self.counter_start)
+            .field("counter_end", &self.counter_end)
+            .field("amount", &self.amount)
+            .field(
+                "blinded_message_count",
+                &self.blinded_messages.as_ref().map(Vec::len),
+            )
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use cashu::MintUrl;
+    use uuid::Uuid;
+
+    use super::{ReceiveOperationData, ReceiveSagaState};
+    use crate::wallet::{OperationData, WalletSaga, WalletSagaState};
+    use crate::{Amount, CurrencyUnit};
+
+    const TOKEN_MARKER: &str = "cashuB_super_secret_bearer_token_marker";
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn receive_operation_data_and_wallet_saga_debug_redact_token() {
+        let data = ReceiveOperationData {
+            token: Some(TOKEN_MARKER.to_string()),
+            counter_start: Some(4),
+            counter_end: Some(5),
+            amount: Some(Amount::from(1)),
+            blinded_messages: None,
+        };
+
+        let data_debug = format!("{data:?}");
+        assert!(!data_debug.contains(TOKEN_MARKER));
+        assert!(data_debug.contains("[redacted]"));
+
+        let saga = WalletSaga::new(
+            Uuid::nil(),
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(1),
+            MintUrl::from_str("https://example.com").expect("valid mint URL"),
+            CurrencyUnit::Sat,
+            OperationData::Receive(data),
+        );
+        let saga_debug = format!("{saga:?}");
+        assert!(!saga_debug.contains(TOKEN_MARKER));
+        assert!(saga_debug.contains("[redacted]"));
+    }
 }

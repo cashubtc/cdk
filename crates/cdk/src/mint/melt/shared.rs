@@ -8,7 +8,7 @@
 
 use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
-use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
     FederationJournalConsensusEvidence, FederationOperationId, FederationSignatureShareRecord,
@@ -126,6 +126,31 @@ pub(crate) fn total_spent_for_quote_unit(
     }
 }
 
+/// Persist a paid payment result as a durable finalization handoff.
+///
+/// Once committed, recovery will see `Finalizing` and must never compensate
+/// the melt.
+pub(crate) async fn persist_melt_finalization_handoff(
+    tx: &mut DynMintTransaction,
+    saga: &mut Acquired<mint_types::Saga>,
+    payment_response: &cdk_common::payment::MakePaymentResponse,
+) -> Result<(), Error> {
+    let finalization_data = mint_types::MeltFinalizationData {
+        total_spent: payment_response.total_spent.clone(),
+        payment_lookup_id: payment_response.payment_lookup_id.clone(),
+        payment_proof: payment_response.payment_proof.clone(),
+    };
+
+    tx.update_acquired_saga_with_finalization_data(
+        saga,
+        mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::Finalizing),
+        Some(&finalization_data),
+    )
+    .await?;
+
+    Ok(())
+}
+
 /// Rolls back a melt quote by removing all setup artifacts and resetting state.
 ///
 /// This function is used by both:
@@ -135,10 +160,15 @@ pub(crate) fn total_spent_for_quote_unit(
 /// # What This Does
 ///
 /// Within a single database transaction:
-/// 1. Removes input proofs from database
-/// 2. Removes change output blinded messages
-/// 3. Resets quote state from Pending to Unpaid
-/// 4. Deletes melt request tracking record
+/// 1. Locks the quote and saga rows (in that order, matching the
+///    finalization path's lock order)
+/// 2. Verifies the saga still exists and has not advanced to `Finalizing`;
+///    a stale compensation whose saga was already rolled back or superseded
+///    is a no-op, and a saga already being finalized is never rolled back
+/// 3. Removes input proofs from database
+/// 4. Removes change output blinded messages
+/// 5. Resets quote state from Pending to Unpaid
+/// 6. Deletes melt request tracking record
 ///
 /// This restores the database to its pre-melt state, allowing retry.
 ///
@@ -151,7 +181,9 @@ pub(crate) fn total_spent_for_quote_unit(
 ///
 /// # Errors
 ///
-/// Returns database errors if transaction fails
+/// Returns database errors if transaction fails, `Error::PaidQuote` if the
+/// quote is already paid, and `Error::UnknownPaymentState` if the saga has
+/// already advanced to `Finalizing` and must not be rolled back.
 pub async fn rollback_melt_quote(
     db: &DynMintDatabase,
     pubsub: &PubSubManager,
@@ -164,6 +196,88 @@ pub async fn rollback_melt_quote(
         return Ok(());
     }
 
+    let mut tx = db.begin_transaction().await?;
+    tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
+    rollback_melt_quote_inner(
+        tx,
+        pubsub,
+        quote_id,
+        input_ys,
+        blinded_secrets,
+        operation_id,
+        None,
+    )
+    .await
+}
+
+/// Roll back setup only if the saga still proves payment was never attempted.
+pub(crate) async fn rollback_setup_melt_quote(
+    db: &DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote_id: &QuoteId,
+    input_ys: &[PublicKey],
+    blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
+) -> Result<(), Error> {
+    if input_ys.is_empty() && blinded_secrets.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = db.begin_transaction().await?;
+    tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
+    rollback_melt_quote_inner(
+        tx,
+        pubsub,
+        quote_id,
+        input_ys,
+        blinded_secrets,
+        operation_id,
+        Some(mint_types::MeltSagaState::SetupComplete),
+    )
+    .await
+}
+
+/// Roll back a melt only after an authoritative payment failure was recorded.
+pub(crate) async fn rollback_failed_melt_quote(
+    db: &DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote_id: &QuoteId,
+    input_ys: &[PublicKey],
+    blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
+) -> Result<(), Error> {
+    if input_ys.is_empty() && blinded_secrets.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = db.begin_transaction().await?;
+    tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
+    rollback_melt_quote_inner(
+        tx,
+        pubsub,
+        quote_id,
+        input_ys,
+        blinded_secrets,
+        operation_id,
+        Some(mint_types::MeltSagaState::PaymentFailed),
+    )
+    .await
+}
+
+async fn rollback_melt_quote_inner(
+    mut tx: DynMintTransaction,
+    pubsub: &PubSubManager,
+    quote_id: &QuoteId,
+    input_ys: &[PublicKey],
+    blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
+    required_saga_state: Option<mint_types::MeltSagaState>,
+) -> Result<(), Error> {
+    if input_ys.is_empty() && blinded_secrets.is_empty() {
+        tx.rollback().await?;
+        return Ok(());
+    }
+
     tracing::info!(
         "Rolling back melt quote {} ({} proofs, {} blinded messages, saga {})",
         quote_id,
@@ -172,36 +286,54 @@ pub async fn rollback_melt_quote(
         operation_id
     );
 
-    let mut tx = db.begin_transaction().await?;
+    // Acquire quote locks before touching the saga, melt-request,
+    // blinded-signature, or proof rows. Finalization uses the same order.
+    let locked_quotes = tx.lock_melt_quote_and_related(quote_id).await?;
 
-    let mut proofs_recovered = false;
-
-    // Remove input proofs
-    if !input_ys.is_empty() {
-        match tx.remove_proofs(input_ys, Some(quote_id.clone())).await {
-            Ok(_) => {
-                proofs_recovered = true;
+    // Ownership and state guard: only the saga that still owns this melt may
+    // roll it back. Acquiring the saga locks its row, so a concurrent rollback
+    // that already deleted the row, or a concurrent finalizer that already
+    // committed `Finalizing`, is observed before any setup artifact is removed.
+    match tx.get_saga_for_update(operation_id).await? {
+        None => {
+            tracing::info!(
+                "Skipping rollback for melt quote {} because saga {} no longer exists",
+                quote_id,
+                operation_id
+            );
+            tx.rollback().await?;
+            return Ok(());
+        }
+        Some(saga) => {
+            if let Some(required_state) = required_saga_state {
+                if saga.state != mint_types::SagaStateEnum::Melt(required_state.clone()) {
+                    tracing::info!(
+                        "Refusing setup rollback for melt quote {} because saga {} advanced to {}",
+                        quote_id,
+                        operation_id,
+                        saga.state.state()
+                    );
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                }
             }
-            Err(database::Error::AttemptRemoveSpentProof) => {
+
+            if matches!(
+                &saga.state,
+                mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::Finalizing)
+            ) {
                 tracing::warn!(
-                    "Proofs already spent or missing during rollback for quote {}",
-                    quote_id
+                    "Refusing rollback for melt quote {}: saga {} is already Finalizing",
+                    quote_id,
+                    operation_id
                 );
+                tx.rollback().await?;
+                return Err(Error::UnknownPaymentState);
             }
-            Err(e) => return Err(e.into()),
         }
     }
 
-    // Remove blinded messages (change outputs)
-    if !blinded_secrets.is_empty() {
-        tx.delete_blinded_messages(blinded_secrets).await?;
-    }
-
-    let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
-        // Rollback transitions Pending → Unpaid (not Pending → Pending): the input
-        // proofs, change outputs, and melt request tracking have all been removed
-        // above, so no payment attempt is in flight. Unpaid is the correct
-        // retryable pre-melt state.
+    let quote_option = if let Some(mut quote) = locked_quotes.target {
         match quote.state {
             MeltQuoteState::Pending => {
                 tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
@@ -209,10 +341,8 @@ pub async fn rollback_melt_quote(
                 Some(quote)
             }
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
-                // Already in a non-pending state; fall through to saga /
-                // melt-request cleanup so the rollback is idempotent and the
-                // saga isn't orphaned when recovery invokes rollback_melt_quote
-                // twice or when the quote was reset by another path first.
+                // Already in a non-pending state; fall through to saga / melt-request
+                // cleanup so rollback remains idempotent.
                 None
             }
             MeltQuoteState::Paid => {
@@ -233,8 +363,33 @@ pub async fn rollback_melt_quote(
         None
     };
 
-    // Delete melt request tracking record
+    // Finalization locks melt-request and blinded-signature rows before proofs.
+    // Delete them in that same order during rollback.
     tx.delete_melt_request(quote_id).await?;
+
+    // Delete by blinded secret as a defensive cleanup for legacy or incomplete rows
+    // that may not have the expected quote association.
+    if !blinded_secrets.is_empty() {
+        tx.delete_blinded_messages(blinded_secrets).await?;
+    }
+
+    let mut proofs_recovered = false;
+
+    // Remove input proofs
+    if !input_ys.is_empty() {
+        match tx.remove_proofs(input_ys, Some(quote_id.clone())).await {
+            Ok(_) => {
+                proofs_recovered = true;
+            }
+            Err(database::Error::AttemptRemoveSpentProof) => {
+                tracing::warn!(
+                    "Proofs already spent or missing during rollback for quote {}",
+                    quote_id
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 
     // Delete saga state in the same transaction as proof and quote recovery.
     tx.delete_saga(operation_id).await?;
@@ -266,6 +421,62 @@ pub async fn rollback_melt_quote(
     Ok(())
 }
 
+enum MeltCleanupTransaction {
+    Ready(Box<dyn database::MintTransaction<database::Error> + Send + Sync>),
+    AlreadyCompleted,
+}
+
+async fn begin_melt_cleanup_transaction(
+    db: &DynMintDatabase,
+    quote_id: &QuoteId,
+) -> Result<MeltCleanupTransaction, Error> {
+    let mut tx = db.begin_transaction().await?;
+
+    // TX1 finalization and rollback both acquire these locks in this order. TX2
+    // must do the same so a duplicate finalizer cannot hold melt_request while
+    // waiting for blind_signature rows already held by this transaction.
+    let locked_quotes = tx.lock_melt_quote_and_related(quote_id).await?;
+    if locked_quotes.target.is_none() {
+        tx.rollback().await?;
+        return Err(Error::UnknownQuote);
+    }
+
+    if tx
+        .get_melt_request_and_blinded_messages(quote_id)
+        .await?
+        .is_none()
+    {
+        // Another finalizer can complete TX2 after this finalizer releases its
+        // TX1 locks. Treat the missing request as completed instead of trying
+        // to sign change or insert the completed operation a second time.
+        tx.rollback().await?;
+        return Ok(MeltCleanupTransaction::AlreadyCompleted);
+    }
+
+    Ok(MeltCleanupTransaction::Ready(tx))
+}
+
+pub(super) enum MeltChangeResult {
+    Ready {
+        change_sigs: Option<Vec<BlindSignature>>,
+        tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+    },
+    AlreadyCompleted,
+}
+
+async fn begin_melt_change_without_signatures(
+    db: &DynMintDatabase,
+    quote_id: &QuoteId,
+) -> Result<MeltChangeResult, Error> {
+    Ok(match begin_melt_cleanup_transaction(db, quote_id).await? {
+        MeltCleanupTransaction::Ready(tx) => MeltChangeResult::Ready {
+            change_sigs: None,
+            tx,
+        },
+        MeltCleanupTransaction::AlreadyCompleted => MeltChangeResult::AlreadyCompleted,
+    })
+}
+
 /// Processes change for a melt operation.
 ///
 /// This function handles the complete change workflow:
@@ -294,9 +505,9 @@ pub async fn rollback_melt_quote(
 ///
 /// # Returns
 ///
-/// Tuple of:
-/// - `Option<Vec<BlindSignature>>` - Signed change outputs (if any)
-/// - `Box<dyn MintTransaction>` - New transaction with signatures stored
+/// [`MeltChangeResult::Ready`] contains the signed change outputs and the new
+/// transaction. [`MeltChangeResult::AlreadyCompleted`] indicates that another
+/// finalizer completed cleanup after this finalizer released its initial locks.
 ///
 /// # Errors
 ///
@@ -304,7 +515,7 @@ pub async fn rollback_melt_quote(
 /// - Change calculation fails
 /// - Blind signing fails
 /// - Database operations fail
-pub async fn process_melt_change(
+pub(super) async fn process_melt_change(
     mint: &super::super::Mint,
     db: &DynMintDatabase,
     quote_id: &QuoteId,
@@ -312,13 +523,7 @@ pub async fn process_melt_change(
     total_spent: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
     change_outputs: Vec<BlindedMessage>,
-) -> Result<
-    (
-        Option<Vec<BlindSignature>>,
-        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-    ),
-    Error,
-> {
+) -> Result<MeltChangeResult, Error> {
     let change_target: Amount = match inputs_amount
         .checked_sub(&total_spent)
         .ok()
@@ -326,9 +531,7 @@ pub async fn process_melt_change(
     {
         Some(amt) if amt.value() > 0 => amt.into(),
         Some(_) => {
-            // Exactly 0 change needed - open transaction and return empty result
-            let tx = db.begin_transaction().await?;
-            return Ok((None, tx));
+            return begin_melt_change_without_signatures(db, quote_id).await;
         }
         None => {
             tracing::warn!(
@@ -338,14 +541,12 @@ pub async fn process_melt_change(
                 total_spent,
                 inputs_fee
             );
-            let tx = db.begin_transaction().await?;
-            return Ok((None, tx));
+            return begin_melt_change_without_signatures(db, quote_id).await;
         }
     };
 
     if change_outputs.is_empty() {
-        let tx = db.begin_transaction().await?;
-        return Ok((None, tx));
+        return begin_melt_change_without_signatures(db, quote_id).await;
     }
 
     // Get keyset configuration
@@ -373,8 +574,14 @@ pub async fn process_melt_change(
     // External call: sign change outputs (no DB transaction held)
     let change_sigs = mint.blind_sign(blinded_messages_to_sign.clone()).await?;
 
-    // Open new transaction to store signatures
-    let mut tx = db.begin_transaction().await?;
+    // Open a transaction with quote, melt-request, and change-output locks
+    // acquired in the same order as finalization and rollback.
+    let mut tx = match begin_melt_cleanup_transaction(db, quote_id).await? {
+        MeltCleanupTransaction::Ready(tx) => tx,
+        MeltCleanupTransaction::AlreadyCompleted => {
+            return Ok(MeltChangeResult::AlreadyCompleted);
+        }
+    };
 
     let blinded_secrets: Vec<_> = blinded_messages_to_sign
         .iter()
@@ -384,7 +591,10 @@ pub async fn process_melt_change(
     tx.add_blind_signatures(&blinded_secrets, &change_sigs, Some(quote_id.clone()))
         .await?;
 
-    Ok((Some(change_sigs), tx))
+    Ok(MeltChangeResult::Ready {
+        change_sigs: Some(change_sigs),
+        tx,
+    })
 }
 
 #[cfg(feature = "federation")]
@@ -647,16 +857,7 @@ pub async fn load_melt_quotes_exclusively(
     // Lock ALL related quotes in a single atomic query to prevent deadlocks.
     // The query locks quotes ordered by ID, ensuring consistent lock acquisition order
     // across concurrent transactions.
-    let locked = tx
-        .lock_melt_quote_and_related(quote_id)
-        .await
-        .map_err(|e| match e {
-            database::Error::Locked => {
-                tracing::warn!("Quote {quote_id} or related quotes are locked by another process");
-                database::Error::Duplicate
-            }
-            e => e,
-        })?;
+    let locked = tx.lock_melt_quote_and_related(quote_id).await?;
 
     let quote = locked.target.ok_or(Error::UnknownQuote)?;
 
@@ -780,8 +981,8 @@ pub(crate) async fn finalize_melt_core(
         quote.fee_reserve().display_with_unit(),
     );
 
-    // This can only happen on backends where we cannot set the max fee (e.g., LNbits).
-    // LNbits does not allow setting a fee limit, so payments can exceed the fee reserve.
+    // This can happen with external payment processors that cannot set a maximum fee,
+    // allowing payments to exceed the fee reserve.
     debug_assert!(
         net_inputs >= total_spent,
         "Over paid melt quote {}: net_inputs ({}) < total_spent ({}). Payment already complete, finalizing with no change.",
@@ -1239,12 +1440,15 @@ async fn finalize_melt_quote_inner(
     let should_record_payment_metrics = locked_quote.state != MeltQuoteState::Paid;
 
     // Check if TX1 already completed (e.g., crash between TX1 commit and TX2 commit).
-    // If the quote is already Paid, proofs are already Spent — calling finalize_melt_core
-    // would fail on the Paid→Paid and Spent→Spent state transitions. Skip directly to
-    // change signing and cleanup so the user receives their change.
+    // If the quote is already Paid, calling finalize_melt_core would fail on the
+    // Paid→Paid state transition. Skip directly to change signing and cleanup so
+    // the user receives their change.
     //
-    // We still need the proofs for fee calculation (operation recording), so fetch them
-    // from the DB even in the already-Paid case.
+    // The proofs may still be Pending here; spend any that are still Pending,
+    // otherwise this is a no-op.
+    //
+    // We still need the proofs for fee calculation (operation recording), so fetch
+    // them from the DB even in the already-Paid case.
     let (proofs, quote) = if locked_quote.state == MeltQuoteState::Paid {
         let locked_quote = locked_quote.inner();
 
@@ -1257,8 +1461,23 @@ async fn finalize_melt_quote_inner(
             "Melt quote {} already Paid, skipping to change/cleanup",
             quote.id
         );
-        let proofs = tx.get_proofs(&input_ys).await?.to_vec();
+        let mut proofs_with_state = tx.get_proofs(&input_ys).await?;
+        let spend_pending = proofs_with_state.state == State::Pending;
+        if spend_pending {
+            if let Err(err) =
+                Mint::update_proofs_state(&mut tx, &mut proofs_with_state, State::Spent).await
+            {
+                tx.rollback().await?;
+                return Err(err);
+            }
+        }
+        let proofs = proofs_with_state.to_vec();
         tx.commit().await?;
+        if spend_pending {
+            for pk in input_ys.iter() {
+                pubsub.proof_state((*pk, State::Spent));
+            }
+        }
         (proofs, locked_quote)
     } else {
         let (proofs, quote) = finalize_melt_core(
@@ -1303,9 +1522,9 @@ async fn finalize_melt_quote_inner(
 
     // Process change (if needed) - opens new transaction.
     #[cfg(feature = "federation")]
-    let (change_sigs, mut tx) = if let Some(federation_operation_id) = federation_operation_id {
+    let change_result = if let Some(federation_operation_id) = federation_operation_id {
         let signature_share_provenance = signature_share_provenance.ok_or(Error::Internal)?;
-        process_federation_melt_change(
+        let (change_sigs, tx) = process_federation_melt_change(
             mint,
             db,
             &quote.id,
@@ -1316,7 +1535,8 @@ async fn finalize_melt_quote_inner(
             melt_request_info.inputs_fee.clone(),
             melt_request_info.change_outputs.clone(),
         )
-        .await?
+        .await?;
+        MeltChangeResult::Ready { change_sigs, tx }
     } else {
         process_melt_change(
             mint,
@@ -1330,7 +1550,7 @@ async fn finalize_melt_quote_inner(
         .await?
     };
     #[cfg(not(feature = "federation"))]
-    let (change_sigs, mut tx) = process_melt_change(
+    let change_result = process_melt_change(
         mint,
         db,
         &quote.id,
@@ -1340,6 +1560,23 @@ async fn finalize_melt_quote_inner(
         melt_request_info.change_outputs.clone(),
     )
     .await?;
+
+    let (change_sigs, mut tx) = match change_result {
+        MeltChangeResult::Ready { change_sigs, tx } => (change_sigs, tx),
+        MeltChangeResult::AlreadyCompleted => {
+            let stored_quote = db
+                .get_melt_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+
+            if stored_quote.state != MeltQuoteState::Paid || !settlement_matches(&stored_quote) {
+                return Err(Error::PaidQuote);
+            }
+
+            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+            return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+        }
+    };
 
     // Compute the fee breakdown from the spent proofs before cleanup.
     // We reuse the cloned proofs from TX1 / recovery so TX2 can atomically

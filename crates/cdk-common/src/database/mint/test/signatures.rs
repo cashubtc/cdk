@@ -1,5 +1,6 @@
 //! Blind signature tests
 
+use std::cmp::Reverse;
 use std::str::FromStr;
 
 use cashu::{Amount, BlindSignature, Id, SecretKey};
@@ -16,9 +17,13 @@ where
     let quote_id = QuoteId::new();
 
     // Create blinded messages and signatures
-    let blinded_message1 = SecretKey::generate().public_key();
-    let blinded_message2 = SecretKey::generate().public_key();
-    let blinded_messages = vec![blinded_message1, blinded_message2];
+    // Use reverse key order to verify physical lock ordering preserves the
+    // request order represented by order_index.
+    let mut blinded_messages = [
+        SecretKey::generate().public_key(),
+        SecretKey::generate().public_key(),
+    ];
+    blinded_messages.sort_unstable_by_key(|message| Reverse(message.to_bytes()));
 
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
@@ -119,8 +124,12 @@ where
     let quote_id1 = QuoteId::new();
     let quote_id2 = QuoteId::new();
 
-    let blinded_message1 = SecretKey::generate().public_key();
-    let blinded_message2 = SecretKey::generate().public_key();
+    // Keep request order opposite to physical lock order so order_index is exercised.
+    let mut blinded_messages = [
+        SecretKey::generate().public_key(),
+        SecretKey::generate().public_key(),
+    ];
+    blinded_messages.sort_unstable_by_key(|message| Reverse(message.to_bytes()));
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
@@ -147,7 +156,7 @@ where
     // Add signatures with different quote ids
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_blind_signatures(
-        &[blinded_message1, blinded_message2],
+        &blinded_messages,
         &[sig1.clone(), sig2.clone()],
         Some(quote_id1.clone()),
     )

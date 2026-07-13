@@ -1,11 +1,14 @@
 //! WASM fetch-based backend implementation
 
+use core::fmt;
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
 
@@ -85,10 +88,14 @@ impl HttpClient {
     pub fn patch(&self, url: &str) -> WasmRequestBuilder {
         WasmRequestBuilder::new("PATCH", url, self.no_redirects)
     }
+
+    /// PUT request builder for complex cases
+    pub fn put(&self, url: &str) -> WasmRequestBuilder {
+        WasmRequestBuilder::new("PUT", url, self.no_redirects)
+    }
 }
 
 /// WASM fetch-based RequestBuilder wrapper
-#[derive(Debug)]
 pub struct WasmRequestBuilder {
     method: String,
     url: String,
@@ -98,10 +105,36 @@ pub struct WasmRequestBuilder {
     no_redirects: bool,
 }
 
-#[derive(Debug)]
 enum WasmBody {
     Json(Vec<u8>),
     Form(String),
+}
+
+impl fmt::Debug for WasmBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(bytes) => f
+                .debug_struct("Json")
+                .field("length", &bytes.len())
+                .finish(),
+            Self::Form(form) => f.debug_struct("Form").field("length", &form.len()).finish(),
+        }
+    }
+}
+
+impl fmt::Debug for WasmRequestBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+
+        f.debug_struct("WasmRequestBuilder")
+            .field("method", &self.method)
+            .field("url", &url_for_debug(&self.url))
+            .field("header_names", &header_names)
+            .field("body", &self.body)
+            .field("has_error", &self.error.is_some())
+            .field("no_redirects", &self.no_redirects)
+            .finish()
+    }
 }
 
 impl WasmRequestBuilder {
@@ -337,5 +370,26 @@ mod tests {
             }
             _ => panic!("Expected HttpError::Proxy"),
         }
+    }
+
+    #[test]
+    fn request_builder_debug_redacts_header_values_and_body() {
+        let header_secret = "replayable-authorization-token";
+        let body_secret = "refresh-token-in-request-body";
+        let url_secret = "url-query-token";
+        let request = WasmRequestBuilder::new(
+            "POST",
+            &format!("https://user:{url_secret}@mint.example.com/api?token={url_secret}"),
+            false,
+        )
+        .header("Authorization", header_secret)
+        .json(&serde_json::json!({ "refresh_token": body_secret }));
+
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("Authorization"));
+        assert!(!debug.contains(header_secret));
+        assert!(!debug.contains(body_secret));
+        assert!(!debug.contains(url_secret));
     }
 }

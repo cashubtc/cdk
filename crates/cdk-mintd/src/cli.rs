@@ -1,15 +1,12 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "federation")]
-use clap::{Args, Subcommand, ValueEnum};
+use clap::ValueEnum;
 
 #[derive(Debug, Parser)]
 #[command(about = "A cashu mint written in rust", author = env!("CARGO_PKG_AUTHORS"), version = env!("CARGO_PKG_VERSION"))]
 pub struct CLIArgs {
-    #[cfg(feature = "federation")]
-    #[command(subcommand)]
-    pub command: Option<CliCommand>,
     #[arg(
         short,
         long,
@@ -18,18 +15,25 @@ pub struct CLIArgs {
     )]
     pub work_dir: Option<PathBuf>,
     #[cfg(feature = "sqlcipher")]
-    #[arg(short, long, help = "Database password for sqlcipher", required = true)]
-    pub password: String,
     #[arg(
         short,
         long,
-        help = "Use the <file name> as the location of the config file",
+        global = true,
+        help = "Database password for SQLCipher (required when opening an encrypted database)"
+    )]
+    pub password: Option<String>,
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Legacy startup flag; use `config init` or `config apply` instead",
         required = false
     )]
     pub config: Option<PathBuf>,
     #[arg(
         long,
-        help = "Read the mint and active payment backend seed phrase from the specified file",
+        global = true,
+        help = "Legacy seed file; accepted only by `config migrate`",
         required = false
     )]
     pub seed_file: Option<PathBuf>,
@@ -41,13 +45,285 @@ pub struct CLIArgs {
         default_value = "true"
     )]
     pub enable_logging: bool,
+    #[command(subcommand)]
+    pub command: Option<Commands>,
 }
 
-#[cfg(feature = "federation")]
+/// Commands exposed by the `cdk-mintd` binary.
 #[derive(Debug, Subcommand)]
-pub enum CliCommand {
+pub enum Commands {
+    #[cfg(feature = "federation")]
     /// Generate or inspect federation setup material.
     Federation(FederationArgs),
+    /// Manage the database-backed mintd configuration.
+    Config(ConfigArgs),
+}
+
+/// Arguments for database-backed configuration management.
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommands,
+}
+
+/// Database-backed configuration operations.
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommands {
+    /// Convert a legacy TOML plus environment overrides into an import document.
+    Migrate(MigrateConfigArgs),
+    /// Initialize an unconfigured database from a TOML document.
+    Init(InitConfigArgs),
+    /// Validate a TOML document without changing the database.
+    Validate(ConfigFileArgs),
+    /// Replace the configuration used by the next mintd start.
+    Apply(ApplyConfigArgs),
+    /// Restore the last configuration known to have been applied.
+    Rollback,
+    /// Print the stored configuration document.
+    Show,
+    /// Export the stored configuration document.
+    Export(ExportConfigArgs),
+}
+
+/// Arguments for initializing database-backed configuration.
+#[derive(Debug, Args)]
+pub struct InitConfigArgs {
+    /// TOML document to import.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Initialize a database that has never served a mint.
+    #[arg(
+        long,
+        required_unless_present = "existing_mint",
+        conflicts_with = "existing_mint"
+    )]
+    pub new_mint: bool,
+    /// Import configuration into a database containing an existing mint.
+    #[arg(
+        long,
+        required_unless_present = "new_mint",
+        conflicts_with = "new_mint"
+    )]
+    pub existing_mint: bool,
+    /// Permit an existing mint to create a BDK wallet when no wallet database exists.
+    #[arg(long, requires = "existing_mint", conflicts_with = "new_mint")]
+    pub allow_new_bdk_wallet: bool,
+}
+
+/// Arguments for migrating a legacy configuration.
+#[derive(Debug, Args)]
+pub struct MigrateConfigArgs {
+    /// Legacy TOML document to read.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Migrated TOML document to write.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Directory for literal secrets extracted from the legacy TOML.
+    #[arg(long)]
+    pub secrets_dir: Option<PathBuf>,
+    /// Overwrite generated output and secret files.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Arguments containing a configuration document path.
+#[derive(Debug, Args)]
+pub struct ConfigFileArgs {
+    /// TOML document to read or write.
+    #[arg(long)]
+    pub file: PathBuf,
+}
+
+/// Arguments for exporting the stored configuration.
+#[derive(Debug, Args)]
+pub struct ExportConfigArgs {
+    /// TOML document to write.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Overwrite the destination if it already exists.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Arguments for replacing the stored configuration.
+#[derive(Debug, Args)]
+pub struct ApplyConfigArgs {
+    /// TOML document to validate and store.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Validate the document and persisted constraints without writing it.
+    #[arg(long)]
+    pub validate_only: bool,
+    /// Permit creation of a BDK wallet when no wallet database exists.
+    #[arg(long)]
+    pub allow_new_bdk_wallet: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_configuration_commands() {
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("new-mint initialization should parse");
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--existing-mint",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("existing-mint initialization should parse");
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "validate",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("configuration validation should parse");
+
+        let args =
+            CLIArgs::try_parse_from(["cdk-mintd", "config", "export", "--file", "/tmp/mint.toml"])
+                .expect("configuration export should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Export(ExportConfigArgs { force: false, .. }),
+            }))
+        ));
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "export",
+            "--file",
+            "/tmp/mint.toml",
+            "--force",
+        ])
+        .expect("configuration export should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Export(ExportConfigArgs { force: true, .. }),
+            }))
+        ));
+
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "apply",
+            "--file",
+            "/tmp/mint.toml",
+            "--validate-only",
+        ])
+        .expect("configuration apply should parse");
+        CLIArgs::try_parse_from(["cdk-mintd", "config", "show"])
+            .expect("configuration show should parse");
+        CLIArgs::try_parse_from(["cdk-mintd", "config", "rollback"])
+            .expect("configuration rollback should parse");
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "migrate",
+            "--file",
+            "/tmp/legacy.toml",
+            "--output",
+            "/tmp/migrated.toml",
+            "--secrets-dir",
+            "/tmp/mint-secrets",
+        ])
+        .expect("configuration migration should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Migrate(MigrateConfigArgs { force: false, .. }),
+            }))
+        ));
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "--seed-file",
+            "/tmp/seed.txt",
+            "config",
+            "migrate",
+            "--file",
+            "/tmp/legacy.toml",
+            "--output",
+            "/tmp/migrated.toml",
+        ])
+        .expect("legacy seed-file migration should parse");
+        assert_eq!(args.seed_file, Some(PathBuf::from("/tmp/seed.txt")));
+    }
+
+    #[test]
+    fn initialization_requires_exactly_one_mint_mode() {
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--existing-mint",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--allow-new-bdk-wallet",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--existing-mint",
+            "--allow-new-bdk-wallet",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("existing mint may explicitly allow a new BDK wallet");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Init(InitConfigArgs {
+                    allow_new_bdk_wallet: true,
+                    ..
+                }),
+            }))
+        ));
+    }
+
+    #[test]
+    fn no_subcommand_still_parses_daemon_startup() {
+        let args = CLIArgs::try_parse_from(["cdk-mintd"]).expect("daemon arguments should parse");
+        assert!(args.command.is_none());
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -517,7 +793,7 @@ mod tests {
             "member-2-private.json",
         ])
         .expect("dkg-member command parses");
-        let Some(CliCommand::Federation(member)) = member.command else {
+        let Some(Commands::Federation(member)) = member.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -541,7 +817,7 @@ mod tests {
             "dkg-ceremony.toml",
         ])
         .expect("dkg-roster command parses");
-        let Some(CliCommand::Federation(roster)) = roster.command else {
+        let Some(Commands::Federation(roster)) = roster.command else {
             panic!("expected federation command");
         };
         let FederationCommand::DkgRoster(roster) = roster.command else {
@@ -579,7 +855,7 @@ mod tests {
             "member-2-bound.json",
         ])
         .expect("dkg-bind command parses");
-        let Some(CliCommand::Federation(bind)) = bind.command else {
+        let Some(Commands::Federation(bind)) = bind.command else {
             panic!("expected federation command");
         };
         assert!(matches!(bind.command, FederationCommand::DkgBind(_)));
@@ -629,7 +905,7 @@ mod tests {
         ])
         .expect("dkg status command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::DkgStatus(status) = federation.command else {
@@ -676,7 +952,7 @@ mod tests {
         ])
         .expect("DKG progress command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::DkgStatus(status) = federation.command else {
@@ -703,7 +979,7 @@ mod tests {
         ])
         .expect("fake invoice command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::FakeInvoice(fake_invoice) = federation.command else {
@@ -734,7 +1010,7 @@ mod tests {
         ])
         .expect("trusted-dealer command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::TestTrustedDealer(trusted_dealer) = federation.command else {
@@ -771,7 +1047,7 @@ mod tests {
         ])
         .expect("trusted-dealer local fakewallet command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::TestTrustedDealer(trusted_dealer) = federation.command else {
@@ -796,7 +1072,7 @@ mod tests {
         ])
         .expect("trusted-dealer postgres command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::TestTrustedDealer(trusted_dealer) = federation.command else {
@@ -829,7 +1105,7 @@ mod tests {
         ])
         .expect("trusted-dealer postgres base-url command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::TestTrustedDealer(trusted_dealer) = federation.command else {
@@ -859,7 +1135,7 @@ mod tests {
         ])
         .expect("inspect command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::Inspect(inspect) = federation.command else {
@@ -898,7 +1174,7 @@ mod tests {
         ])
         .expect("quarantine command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::QuarantinePaymentObservation(quarantine) = federation.command else {
@@ -946,7 +1222,7 @@ mod tests {
         ])
         .expect("compare digests command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::CompareDigests(compare) = federation.command else {
@@ -986,7 +1262,7 @@ mod tests {
         ])
         .expect("payment observations command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::PaymentObservations(observations) = federation.command else {
@@ -1029,7 +1305,7 @@ mod tests {
         ])
         .expect("smoke operations command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::SmokeOperations(smoke) = federation.command else {
@@ -1062,7 +1338,7 @@ mod tests {
         ])
         .expect("quarantine smoke operations command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::SmokeOperations(smoke) = federation.command else {
@@ -1095,7 +1371,7 @@ mod tests {
         ])
         .expect("keyset rotation smoke operations command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::SmokeOperations(smoke) = federation.command else {
@@ -1124,7 +1400,7 @@ mod tests {
         ])
         .expect("offline keyset rotation smoke operations command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::SmokeOperations(smoke) = federation.command else {
@@ -1156,7 +1432,7 @@ mod tests {
         ])
         .expect("offline smoke operations command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::SmokeOperations(smoke) = federation.command else {
@@ -1194,7 +1470,7 @@ mod tests {
         ])
         .expect("status command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::Status(status) = federation.command else {

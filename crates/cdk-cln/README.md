@@ -22,8 +22,8 @@ cdk-cln = "*"
 ### Config File
 
 ```toml
-[ln]
-ln_backend = "cln"
+[payment_backend]
+backend = "cln"
 
 [cln]
 rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"
@@ -38,7 +38,7 @@ All configuration can be set via environment variables:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `CDK_MINTD_LN_BACKEND` | Set to `cln` | Yes |
+| `CDK_MINTD_PAYMENT_BACKEND` | Set to `cln` | Yes |
 | `CDK_MINTD_CLN_RPC_PATH` | Path to CLN RPC socket | Yes |
 | `CDK_MINTD_CLN_BOLT12` | Enable BOLT12 support (default: `true`) | No |
 | `CDK_MINTD_CLN_FEE_PERCENT` | Fee percentage (default: `0.02`) | No |
@@ -47,7 +47,7 @@ All configuration can be set via environment variables:
 ### Example
 
 ```bash
-export CDK_MINTD_LN_BACKEND=cln
+export CDK_MINTD_PAYMENT_BACKEND=cln
 export CDK_MINTD_CLN_RPC_PATH=/home/user/.lightning/bitcoin/lightning-rpc
 cdk-mintd
 ```

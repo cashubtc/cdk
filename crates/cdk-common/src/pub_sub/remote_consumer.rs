@@ -232,8 +232,7 @@ where
                     Ok(()) if still_subscribed => {
                         tracing::warn!("Long connection ended; retrying after {:?}", backoff);
                         retry_at = Some(Instant::now() + backoff);
-                        backoff = (backoff + STREAM_CONNECTION_BACKOFF)
-                            .min(STREAM_CONNECTION_MAX_BACKOFF);
+                        backoff = backoff.saturating_mul(2).min(STREAM_CONNECTION_MAX_BACKOFF);
                     }
                     Ok(()) => {
                         retry_at = None;
@@ -242,14 +241,13 @@ where
                     Err(err) => {
                         if still_subscribed {
                             retry_at = Some(Instant::now() + backoff);
-                            backoff = (backoff + STREAM_CONNECTION_BACKOFF)
-                                .min(STREAM_CONNECTION_MAX_BACKOFF);
+                            backoff = backoff.saturating_mul(2).min(STREAM_CONNECTION_MAX_BACKOFF);
                         } else {
                             retry_at = None;
                             backoff = STREAM_CONNECTION_BACKOFF;
                         }
 
-                        if matches!(err, Error::NotSupported) {
+                        if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
                             stream_supported = false;
                         }
                         tracing::error!("Long connection failed with error {:?}", err);
@@ -287,7 +285,7 @@ where
                     )
                     .await
                 {
-                    if matches!(err, Error::NotSupported) {
+                    if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
                         poll_supported = false;
                         poll_not_supported = true;
                     }
@@ -579,6 +577,12 @@ mod tests {
         rx: Mutex<mpsc::Receiver<Message>>,
     }
 
+    struct FailingStreamTransport {
+        name_ctr: AtomicUsize,
+        attempts: Arc<AtomicUsize>,
+        terminal: bool,
+    }
+
     impl TestTransport {
         fn new(
             support_long: bool,
@@ -601,6 +605,20 @@ mod tests {
             };
 
             (t, events_tx, observe_ctrl_rx)
+        }
+    }
+
+    impl FailingStreamTransport {
+        fn new(terminal: bool) -> (Self, Arc<AtomicUsize>) {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    name_ctr: AtomicUsize::new(1),
+                    attempts: attempts.clone(),
+                    terminal,
+                },
+                attempts,
+            )
         }
     }
 
@@ -672,6 +690,78 @@ mod tests {
             Ok(())
         }
     }
+
+    #[async_trait::async_trait]
+    impl Transport for FailingStreamTransport {
+        type Spec = CustomPubSub;
+
+        fn new_name(&self) -> <Self::Spec as Spec>::SubscriptionId {
+            format!("sub-{}", self.name_ctr.fetch_add(1, Ordering::Relaxed))
+        }
+
+        async fn stream(
+            &self,
+            _subscribe_changes: mpsc::Receiver<StreamCtrl<Self::Spec>>,
+            _topics: Vec<SubscribeMessage<Self::Spec>>,
+            _reply_to: InternalRelay<Self::Spec>,
+        ) -> Result<(), Error> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            match self.terminal {
+                true => Err(Error::Terminal("permanent failure".to_string())),
+                false => Err(Error::InternalStr("temporary failure".to_string())),
+            }
+        }
+
+        async fn poll(
+            &self,
+            _topics: Vec<SubscribeMessage<Self::Spec>>,
+            _reply_to: InternalRelay<Self::Spec>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    // ===== Helpers =====
+
+    async fn recv_next<T: Transport>(
+        sub: &mut RemoteActiveConsumer<T>,
+        dur_ms: u64,
+    ) -> Option<<T::Spec as Spec>::Event> {
+        timeout(Duration::from_millis(dur_ms), sub.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn expect_ctrl(
+        rx: &mut mpsc::Receiver<StreamCtrl<CustomPubSub>>,
+        dur_ms: u64,
+        pred: impl Fn(&StreamCtrl<CustomPubSub>) -> bool,
+    ) -> StreamCtrl<CustomPubSub> {
+        timeout(Duration::from_millis(dur_ms), async {
+            loop {
+                if let Some(msg) = rx.recv().await {
+                    if pred(&msg) {
+                        break msg;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for control message")
+    }
+
+    async fn wait_for_attempts(attempts: &AtomicUsize, expected: usize) {
+        for _ in 0..20 {
+            if attempts.load(Ordering::Relaxed) >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("timed out waiting for {expected} stream attempts");
+    }
+
+    // ===== Tests =====
 
     struct EndingStreamTransport {
         name_ctr: AtomicUsize,
@@ -987,6 +1077,42 @@ mod tests {
             .await
             .expect("event relayed via polling");
         assert_eq!(got, Message { foo: 9, bar: 5 });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_stream_failure_is_not_retried() {
+        let (transport, attempts) = FailingStreamTransport::new(true);
+        let consumer = Consumer::new(transport, false, ());
+        let _subscription = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .expect("subscribe");
+
+        wait_for_attempts(&attempts, 1).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_stream_failures_use_increasing_backoff() {
+        let (transport, attempts) = FailingStreamTransport::new(false);
+        let consumer = Consumer::new(transport, false, ());
+        let _subscription = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .expect("subscribe");
+
+        wait_for_attempts(&attempts, 1).await;
+
+        tokio::time::advance(Duration::from_secs(3)).await;
+        wait_for_attempts(&attempts, 2).await;
+
+        tokio::time::advance(Duration::from_secs(3)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        wait_for_attempts(&attempts, 3).await;
     }
 
     #[tokio::test]

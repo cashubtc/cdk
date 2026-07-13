@@ -1,5 +1,6 @@
 //! Transaction-related FFI types
 
+use core::fmt;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -14,7 +15,7 @@ use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Transaction
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Transaction {
     /// Transaction ID
     pub id: TransactionId,
@@ -46,6 +47,35 @@ pub struct Transaction {
     pub payment_method: Option<PaymentMethod>,
     /// Saga ID if this transaction was part of a saga
     pub saga_id: Option<String>,
+    /// Transaction status
+    #[serde(default)]
+    pub status: TransactionStatus,
+}
+
+impl fmt::Debug for Transaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Transaction")
+            .field("id", &self.id)
+            .field("mint_url", &self.mint_url)
+            .field("direction", &self.direction)
+            .field("amount", &self.amount)
+            .field("fee", &self.fee)
+            .field("unit", &self.unit)
+            .field("ys", &self.ys)
+            .field("timestamp", &self.timestamp)
+            .field("memo", &self.memo)
+            .field("metadata", &self.metadata)
+            .field("quote_id", &self.quote_id)
+            .field("payment_request", &self.payment_request)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("payment_method", &self.payment_method)
+            .field("saga_id", &self.saga_id)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -66,6 +96,7 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
             payment_proof: tx.payment_proof,
             payment_method: tx.payment_method.map(Into::into),
             saga_id: tx.saga_id.map(|id| id.to_string()),
+            status: tx.status.into(),
         }
     }
 }
@@ -98,6 +129,7 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
                 .map(|id| Uuid::from_str(&id))
                 .transpose()
                 .map_err(|e| FfiError::internal(format!("Invalid saga_id: {}", e)))?,
+            status: tx.status.into(),
         })
     }
 }
@@ -163,6 +195,38 @@ impl From<TransactionDirection> for cdk::wallet::types::TransactionDirection {
     }
 }
 
+/// FFI-compatible transaction status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, uniffi::Enum)]
+pub enum TransactionStatus {
+    /// The transaction is still in progress.
+    Pending,
+    /// The transaction completed successfully.
+    #[default]
+    Completed,
+    /// The transaction failed or was revoked.
+    Failed,
+}
+
+impl From<cdk::wallet::types::TransactionStatus> for TransactionStatus {
+    fn from(status: cdk::wallet::types::TransactionStatus) -> Self {
+        match status {
+            cdk::wallet::types::TransactionStatus::Pending => Self::Pending,
+            cdk::wallet::types::TransactionStatus::Completed => Self::Completed,
+            cdk::wallet::types::TransactionStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<TransactionStatus> for cdk::wallet::types::TransactionStatus {
+    fn from(status: TransactionStatus) -> Self {
+        match status {
+            TransactionStatus::Pending => Self::Pending,
+            TransactionStatus::Completed => Self::Completed,
+            TransactionStatus::Failed => Self::Failed,
+        }
+    }
+}
+
 /// FFI-compatible TransactionId
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(transparent)]
@@ -191,7 +255,7 @@ impl TransactionId {
         Ok(Self { hex })
     }
 
-    /// Create from proofs
+    /// Create a legacy proof-derived transaction ID.
     pub fn from_proofs(proofs: &Proofs) -> Result<Self, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.iter().map(|p| p.clone().try_into()).collect();
@@ -199,6 +263,15 @@ impl TransactionId {
         let id = cdk::wallet::types::TransactionId::from_proofs(cdk_proofs)?;
         Ok(Self {
             hex: id.to_string(),
+        })
+    }
+
+    /// Create a transaction ID from a wallet saga ID.
+    pub fn from_saga_id(saga_id: String) -> Result<Self, FfiError> {
+        let saga_id = Uuid::parse_str(&saga_id)
+            .map_err(|error| FfiError::internal(format!("Invalid saga ID: {error}")))?;
+        Ok(Self {
+            hex: cdk::wallet::types::TransactionId::from_saga_id(saga_id).to_string(),
         })
     }
 }
@@ -221,7 +294,7 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 }
 
 /// FFI-compatible AuthProof
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AuthProof {
     /// Keyset ID
     pub keyset_id: String,
@@ -231,6 +304,17 @@ pub struct AuthProof {
     pub c: String,
     /// Y value (hash_to_curve of secret)
     pub y: String,
+}
+
+impl fmt::Debug for AuthProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthProof")
+            .field("keyset_id", &self.keyset_id)
+            .field("secret", &"[REDACTED]")
+            .field("c", &self.c)
+            .field("y", &self.y)
+            .finish()
+    }
 }
 
 impl From<cdk::nuts::AuthProof> for AuthProof {
@@ -284,4 +368,51 @@ pub fn decode_auth_proof(json: String) -> Result<AuthProof, FfiError> {
 #[uniffi::export]
 pub fn encode_auth_proof(proof: AuthProof) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&proof)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_and_auth_proof_debug_redact_secrets() {
+        let payment_proof = "ffi-transaction-payment-preimage";
+        let auth_secret = "ffi-auth-proof-secret";
+        let transaction = Transaction {
+            id: TransactionId {
+                hex: "00".repeat(32),
+            },
+            mint_url: MintUrl {
+                url: "https://mint.example.com".to_string(),
+            },
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::new(10),
+            fee: Amount::new(1),
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some("public-quote-id".to_string()),
+            payment_request: None,
+            payment_proof: Some(payment_proof.to_string()),
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        };
+        let auth_proof = AuthProof {
+            keyset_id: "public-keyset-id".to_string(),
+            secret: auth_secret.to_string(),
+            c: "public-signature".to_string(),
+            y: "public-y".to_string(),
+        };
+
+        let transaction_debug = format!("{transaction:?}");
+        let auth_debug = format!("{auth_proof:?}");
+
+        assert!(transaction_debug.contains("public-quote-id"));
+        assert!(auth_debug.contains("public-keyset-id"));
+        assert!(!transaction_debug.contains(payment_proof));
+        assert!(!auth_debug.contains(auth_secret));
+    }
 }

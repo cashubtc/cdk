@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
@@ -17,6 +17,7 @@ enum Request {
     ),
     VerifyProof((Vec<Proof>, oneshot::Sender<Result<(), Error>>)),
     Keysets(oneshot::Sender<Result<SignatoryKeysets, Error>>),
+    SubscribeKeysets(oneshot::Sender<Result<watch::Receiver<SignatoryKeysets>, Error>>),
     RotateKeyset(
         (
             RotateKeyArguments,
@@ -66,26 +67,34 @@ impl Service {
             match request {
                 Request::BlindSign((blinded_message, response)) => {
                     let output = handler.blind_sign(blinded_message).await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending blind-sign response: receiver dropped");
                     }
                 }
                 Request::VerifyProof((proof, response)) => {
                     let output = handler.verify_proofs(proof).await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!(
+                            "Error sending proof-verification response: receiver dropped"
+                        );
                     }
                 }
                 Request::Keysets(response) => {
                     let output = handler.keysets().await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending keysets response: receiver dropped");
+                    }
+                }
+                Request::SubscribeKeysets(response) => {
+                    let output = handler.subscribe_keysets().await;
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending keyset subscription");
                     }
                 }
                 Request::RotateKeyset((args, response)) => {
                     let output = handler.rotate_keyset(args).await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending keyset-rotation response: receiver dropped");
                     }
                 }
             }
@@ -129,6 +138,17 @@ impl Signatory for Service {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::Keysets(tx))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
+
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.pipeline
+            .send(Request::SubscribeKeysets(tx))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 

@@ -9,8 +9,9 @@ pub mod wallet;
 
 // Re-export shared KVStore types at the top level for both mint and wallet
 pub use kvstore::{
-    validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreDatabase, KVStoreTransaction,
-    KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
+    validate_kvstore_params, validate_kvstore_string, KVStore, KVStoreCompareAndSwap,
+    KVStoreDatabase, KVStoreTransaction, KVSTORE_NAMESPACE_KEY_ALPHABET,
+    KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
 
 /// Arc-wrapped KV store for shared ownership

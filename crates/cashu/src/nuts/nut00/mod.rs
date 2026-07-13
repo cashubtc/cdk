@@ -8,6 +8,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
+use std::sync::Arc;
 
 #[cfg(feature = "mint")]
 use bitcoin::hashes::Hash as BitcoinHash;
@@ -666,7 +667,14 @@ pub enum CurrencyUnit {
     /// Auth
     Auth,
     /// Custom currency unit
-    Custom(String),
+    Custom(Arc<str>),
+}
+
+impl CurrencyUnit {
+    /// Construct a custom unit, normalizing to lowercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(normalize_custom_unit(value.as_ref()).into())
+    }
 }
 
 #[cfg(feature = "mint")]
@@ -687,11 +695,6 @@ impl CurrencyUnit {
         }
     }
 
-    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
-    pub fn custom<S: AsRef<str>>(value: S) -> Self {
-        Self::Custom(normalize_custom_unit(value.as_ref()).to_uppercase())
-    }
-
     ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
     pub fn hashed_derivation_index(&self) -> u32 {
         use bitcoin::hashes::sha256;
@@ -707,7 +710,11 @@ impl CurrencyUnit {
 
 fn normalize_custom_unit(value: &str) -> String {
     let trimmed = value.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
-    trimmed.nfc().collect::<String>()
+    trimmed
+        .chars()
+        .flat_map(char::to_lowercase)
+        .nfc()
+        .collect::<String>()
 }
 
 impl FromStr for CurrencyUnit {
@@ -720,32 +727,26 @@ impl FromStr for CurrencyUnit {
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            _ => Ok(Self::Custom(normalize_custom_unit(value))),
+            _ => Ok(Self::custom(value)),
         }
     }
 }
 
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // let binding = normalize_custom_unit(&self).clone();
         let s = match self {
             CurrencyUnit::Sat => "SAT",
             CurrencyUnit::Msat => "MSAT",
             CurrencyUnit::Usd => "USD",
             CurrencyUnit::Eur => "EUR",
             CurrencyUnit::Auth => "AUTH",
-            CurrencyUnit::Custom(unit) => unit,
+            CurrencyUnit::Custom(unit) => unit.as_ref(),
         };
 
         if let Some(width) = f.width() {
-            write!(
-                f,
-                "{:width$}",
-                normalize_custom_unit(s).to_lowercase(),
-                width = width
-            )
+            write!(f, "{:width$}", normalize_custom_unit(s), width = width)
         } else {
-            write!(f, "{}", normalize_custom_unit(s).to_lowercase())
+            write!(f, "{}", normalize_custom_unit(s))
         }
     }
 }
@@ -755,7 +756,7 @@ impl Serialize for CurrencyUnit {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string().to_lowercase())
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -1000,6 +1001,9 @@ pub struct PreMint {
     pub r: SecretKey,
     /// Amount
     pub amount: Amount,
+    /// NUT-13 derivation index for deterministic secrets.
+    #[serde(skip)]
+    pub derivation_index: Option<u32>,
 }
 
 #[cfg(feature = "wallet")]
@@ -1059,6 +1063,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1087,6 +1092,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1114,6 +1120,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount: Amount::ZERO,
+                derivation_index: None,
             })
         }
 
@@ -1134,9 +1141,19 @@ impl PreMintSecrets {
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        use crate::nuts::nut10::spending_conditions::{check_locking_slots, validate_p2pk};
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
 
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+
+        validate_p2pk(receiver_pubkey, conditions.as_ref())?;
+
+        if let Some(conditions) = conditions.as_ref() {
+            check_locking_slots(
+                conditions.pubkeys.as_ref().map(Vec::len).unwrap_or(0),
+                conditions.refund_keys.as_deref(),
+            )?;
+        }
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -1188,7 +1205,7 @@ impl PreMintSecrets {
                 conditions: blinded_conditions,
             };
 
-            let secret: crate::nuts::nut10::Secret = p2pk_conditions.into();
+            let secret: crate::nuts::nut10::Secret = p2pk_conditions.try_into()?;
             let secret: Secret = secret.try_into()?;
             let (blinded, rs) =
                 blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
@@ -1200,6 +1217,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r: rs,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1222,7 +1240,7 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret: nut10::Secret = conditions.clone().into();
+            let secret: nut10::Secret = conditions.clone().try_into()?;
 
             let secret: Secret = secret.try_into()?;
             let (blinded, r) =
@@ -1235,6 +1253,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1474,18 +1493,25 @@ mod tests {
 
     #[test]
     fn custom_unit_ser_der() {
-        let unit = CurrencyUnit::Custom(String::from("test"));
+        let unit = CurrencyUnit::from_str("BADCOIN").unwrap();
         let serialized = serde_json::to_string(&unit).unwrap();
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(unit, deserialized)
+        let deserialized_uppercase: CurrencyUnit = serde_json::from_str(r#""BADCOIN""#).unwrap();
+
+        assert_eq!(unit, CurrencyUnit::Custom("badcoin".into()));
+        assert_eq!(unit, CurrencyUnit::from_str("badcoin").unwrap());
+        assert_eq!(unit, CurrencyUnit::custom("BADCOIN"));
+        assert_eq!(unit.to_string(), "badcoin");
+        assert_eq!(serialized, r#""badcoin""#);
+        assert_eq!(unit, deserialized);
+        assert_eq!(unit, deserialized_uppercase);
     }
 
     #[test]
-    #[cfg(feature = "mint")]
     fn test_currency_unit_custom_normalizes_and_stays_custom() {
         let unit = CurrencyUnit::custom(" usd\n");
 
-        assert_eq!(unit, CurrencyUnit::Custom("USD".to_string()));
+        assert_eq!(unit, CurrencyUnit::Custom("usd".into()));
         assert_ne!(unit, CurrencyUnit::default());
         assert_eq!(unit.to_string(), "usd");
     }
@@ -1506,7 +1532,11 @@ mod tests {
         // Custom
         assert_eq!(
             CurrencyUnit::from_str("custom").unwrap(),
-            CurrencyUnit::Custom("custom".to_string())
+            CurrencyUnit::Custom("custom".into())
+        );
+        assert_eq!(
+            CurrencyUnit::from_str("CuStOm").unwrap(),
+            CurrencyUnit::Custom("custom".into())
         );
     }
 
@@ -2062,7 +2092,7 @@ mod tests {
         let refund_key_1 = crate::nuts::nut01::SecretKey::generate().public_key();
         let refund_key_2 = crate::nuts::nut01::SecretKey::generate().public_key();
         let conditions = Conditions::new(
-            None,
+            Some(crate::util::unix_time() + 3600),
             Some(vec![additional_key_1, additional_key_2]),
             Some(vec![refund_key_1, refund_key_2]),
             Some(1),
@@ -2128,6 +2158,150 @@ mod tests {
             }
             SpendingConditions::HTLCConditions { .. } => panic!("expected P2PK conditions"),
         }
+    }
+
+    /// Each key is blinded under its own slot, so a repeated key would blind
+    /// into two different keys and hide the duplicate from verification. The
+    /// rejection has to land before any output is built.
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_p2bk_rejects_duplicate_pubkeys_before_blinding() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
+        let mut bytes = receiver_secret_key.public_key().to_bytes();
+        bytes[0] = 0x02;
+        let pk_02 = PublicKey::from_slice(&bytes).unwrap();
+        bytes[0] = 0x03;
+        let pk_03 = PublicKey::from_slice(&bytes).unwrap();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(vec![pk_03]),
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        };
+        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let err = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(1_u64),
+            &SplitTarget::default(),
+            pk_02,
+            Some(conditions),
+            std::slice::from_ref(&ephemeral_key),
+            &fee_and_amounts,
+        )
+        .expect_err("duplicate key should be rejected before blinding");
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                    crate::nuts::nut11::Error::DuplicatePubkey
+                ))
+            ),
+            "Expected DuplicatePubkey, got: {err:?}"
+        );
+    }
+
+    /// Every output in the batch carries the same conditions, so the batch has
+    /// to be rejected before the first secret is built.
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_conditions_rejects_duplicate_pubkeys() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let pubkey = crate::nuts::nut01::SecretKey::generate().public_key();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(vec![pubkey]),
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let err = PreMintSecrets::with_conditions(
+            keyset_id,
+            Amount::from(2_u64),
+            &SplitTarget::default(),
+            &SpendingConditions::P2PKConditions {
+                data: pubkey,
+                conditions: Some(conditions),
+            },
+            &fee_and_amounts,
+        )
+        .expect_err("duplicate key should be rejected for the whole batch");
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                    crate::nuts::nut11::Error::DuplicatePubkey
+                ))
+            ),
+            "Expected DuplicatePubkey, got: {err:?}"
+        );
+    }
+
+    /// Twelve slots have to fail as TooManyPubkeys, not as the
+    /// InvalidCanonicalSlot the key derivation would raise on its own.
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn test_with_p2bk_rejects_more_slots_than_nut28_allows() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_pubkey = crate::nuts::nut01::SecretKey::generate().public_key();
+        let pubkeys: Vec<PublicKey> = (0..11)
+            .map(|_| crate::nuts::nut01::SecretKey::generate().public_key())
+            .collect();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(pubkeys),
+            refund_keys: None,
+            num_sigs: Some(1),
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        };
+        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let err = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(1_u64),
+            &SplitTarget::default(),
+            receiver_pubkey,
+            Some(conditions),
+            std::slice::from_ref(&ephemeral_key),
+            &fee_and_amounts,
+        )
+        .expect_err("twelve slots should be rejected");
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                    crate::nuts::nut11::Error::TooManyPubkeys { slots: 12 }
+                ))
+            ),
+            "Expected TooManyPubkeys, got: {err:?}"
+        );
     }
 
     #[test]
@@ -2304,9 +2478,6 @@ mod tests {
         assert_eq!(CurrencyUnit::Auth.derivation_index(), Some(4));
 
         // Custom units should return None
-        assert_eq!(
-            CurrencyUnit::Custom("btc".to_string()).derivation_index(),
-            None
-        );
+        assert_eq!(CurrencyUnit::Custom("btc".into()).derivation_index(), None);
     }
 }

@@ -29,12 +29,15 @@ pub async fn generate_public_key(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::str::FromStr;
 
     use bip39::Mnemonic;
     use bitcoin::bip32::{ChildNumber, DerivationPath};
+    use cdk_common::nuts::{CurrencyUnit, SecretKey};
 
     use super::*;
+    use crate::Wallet;
 
     #[tokio::test]
     async fn nut13_test_vector() {
@@ -123,5 +126,59 @@ mod tests {
         assert_eq!(derivation_path_2.to_string(), "129373'/10'/0'/0'/2");
         assert_eq!(derivation_path_1.to_string(), "129373'/10'/0'/0'/1");
         assert_eq!(derivation_path_0.to_string(), "129373'/10'/0'/0'/0");
+    }
+
+    #[tokio::test]
+    async fn p2pk_generation_reserves_unique_indexes_after_existing_keys() {
+        let seed = [42; 64];
+        let db = crate::wallet::test_utils::create_test_db().await;
+        let existing_path = DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(P2PK_PURPOSE).expect("valid purpose"),
+            ChildNumber::from_hardened_idx(P2PK_ACCOUNT).expect("valid account"),
+            ChildNumber::from_hardened_idx(0).expect("valid branch"),
+            ChildNumber::from_hardened_idx(0).expect("valid branch"),
+            ChildNumber::from_normal_idx(5).expect("valid index"),
+        ]);
+        db.add_p2pk_key(&SecretKey::generate().public_key(), existing_path, 5)
+            .await
+            .expect("existing key should be stored");
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            db.clone(),
+            seed,
+            None,
+        )
+        .expect("wallet should build");
+
+        let (a, b, c, d, e, f, g, h) = tokio::join!(
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+            wallet.generate_public_key(),
+        );
+        let public_keys = [a, b, c, d, e, f, g, h]
+            .into_iter()
+            .collect::<Result<HashSet<_>, _>>()
+            .expect("keys should derive");
+        assert_eq!(public_keys.len(), 8);
+
+        let mut indexes = db
+            .list_p2pk_keys()
+            .await
+            .expect("keys should load")
+            .into_iter()
+            .filter_map(|key| {
+                public_keys
+                    .contains(&key.pubkey)
+                    .then_some(key.derivation_index)
+            })
+            .collect::<Vec<_>>();
+        indexes.sort_unstable();
+        assert_eq!(indexes, (6..14).collect::<Vec<_>>());
     }
 }

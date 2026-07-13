@@ -125,13 +125,16 @@ impl Serialize for MintMethodSettings {
             num_fields += 1;
         }
 
-        let mut description_in_top_level = false;
+        let mut nested_description: Option<bool> = None;
         let mut onchain_confirmations: Option<u32> = None;
 
         match &self.options {
-            Some(MintMethodOptions::Bolt11 { description }) if *description => {
-                num_fields += 1;
-                description_in_top_level = true;
+            // NUT-23 (bolt11) and NUT-25 (bolt12) advertise description support
+            // in a nested options object.
+            Some(MintMethodOptions::Bolt11 { description })
+            | Some(MintMethodOptions::Bolt12 { description }) => {
+                nested_description = Some(*description);
+                num_fields += 1; // for the "options" field
             }
             Some(MintMethodOptions::Onchain { confirmations }) => {
                 onchain_confirmations = Some(*confirmations);
@@ -157,11 +160,6 @@ impl Serialize for MintMethodSettings {
             state.serialize_field("max_amount", max_amount)?;
         }
 
-        // If there's a description flag in Bolt11 options, add it at the top level
-        if description_in_top_level {
-            state.serialize_field("description", &true)?;
-        }
-
         // Serialize onchain options as a nested "options" object
         if let Some(confirmations) = onchain_confirmations {
             #[derive(Serialize)]
@@ -169,6 +167,15 @@ impl Serialize for MintMethodSettings {
                 confirmations: u32,
             }
             state.serialize_field("options", &OnchainOptions { confirmations })?;
+        }
+
+        // Serialize bolt11/bolt12 description as a nested "options" object
+        if let Some(description) = nested_description {
+            #[derive(Serialize)]
+            struct DescriptionOptions {
+                description: bool,
+            }
+            state.serialize_field("options", &DescriptionOptions { description })?;
         }
 
         state.end()
@@ -270,8 +277,13 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the description flag
+        // Note: the wire format of both bolt11 and bolt12 description options is
+        // {"description": bool}, which untagged deserialization maps to the
+        // Bolt11 variant. It is remapped here based on the method.
         let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) {
             description.map(|desc| MintMethodOptions::Bolt11 { description: desc })
+        } else if method == PaymentMethod::Known(KnownMethod::Bolt12) {
+            description.map(|desc| MintMethodOptions::Bolt12 { description: desc })
         } else if method == PaymentMethod::Known(KnownMethod::Onchain) {
             confirmations.map(|conf| MintMethodOptions::Onchain {
                 confirmations: conf,
@@ -307,6 +319,11 @@ pub enum MintMethodOptions {
     /// Bolt11 Options
     Bolt11 {
         /// Mint supports setting bolt11 description
+        description: bool,
+    },
+    /// Bolt12 Options
+    Bolt12 {
+        /// Mint supports setting bolt12 description
         description: bool,
     },
     /// Onchain Options
@@ -381,7 +398,11 @@ impl Settings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuoteCustomRequest {
     /// Amount to mint
-    pub amount: Amount,
+    ///
+    /// Optional common field. Method-specific NUTs make it required or ignore
+    /// it as needed (e.g. NUT-23 requires `amount`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<Amount>,
     /// Currency unit
     pub unit: CurrencyUnit,
     /// Optional description
@@ -409,6 +430,7 @@ pub struct MintQuoteCustomRequest {
 /// ```json
 /// {
 ///   "quote": "abc123",
+///   "method": "paypal",
 ///   "amount": 1000,
 ///   "amount_paid": 0,
 ///   "amount_issued": 0,
@@ -431,12 +453,17 @@ pub struct MintQuoteCustomResponse<Q> {
     pub quote: Q,
     /// Payment request string (method-specific format)
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount
     pub amount: Option<Amount>,
     /// Amount that has been paid
     pub amount_paid: Amount,
     /// Amount that has been issued
     pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
     /// Unix timestamp until the quote is valid
@@ -463,9 +490,11 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
         MintQuoteCustomResponse {
             quote: self.quote.to_string(),
             request: self.request.clone(),
+            method: self.method.clone(),
             amount: self.amount,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -480,9 +509,11 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
         Self {
             quote: value.quote.to_string(),
             request: value.request,
+            method: value.method,
             amount: value.amount,
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
             unit: value.unit,
             expiry: value.expiry,
             pubkey: value.pubkey,
@@ -835,16 +866,16 @@ mod tests {
             _ => panic!("Expected Bolt11 options with description = true"),
         }
 
-        // Serialize it back
+        // Serialize it back as nested options per NUT-23
         let serialized = to_string(&settings).unwrap();
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
-        // Verify the description is at the top level
-        assert_eq!(parsed["description"], json!(true));
+        assert_eq!(parsed["options"]["description"], json!(true));
+        assert!(parsed.get("description").is_none());
     }
 
     #[test]
-    fn test_mint_method_settings_does_not_serialize_false_description() {
+    fn test_mint_method_settings_serializes_false_description_in_options() {
         let settings = MintMethodSettings {
             method: PaymentMethod::Known(KnownMethod::Bolt11),
             unit: CurrencyUnit::Sat,
@@ -859,7 +890,35 @@ mod tests {
 
         assert_eq!(parsed["method"], json!("bolt11"));
         assert!(parsed.get("description").is_none());
-        assert!(parsed.get("options").is_none());
+        assert_eq!(parsed["options"]["description"], json!(false));
+    }
+
+    #[test]
+    fn test_bolt11_settings_nested_options_round_trip() {
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "min_amount": 0,
+            "max_amount": 10000,
+            "options": {
+                "description": true
+            }
+        }"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        match settings.options {
+            Some(MintMethodOptions::Bolt11 { description }) => {
+                assert!(description);
+            }
+            _ => panic!("Expected Bolt11 options with description = true"),
+        }
+
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["options"]["description"], json!(true));
+        assert!(parsed.get("description").is_none());
     }
 
     #[test]
@@ -945,9 +1004,11 @@ mod tests {
         let response = MintQuoteCustomResponse {
             quote: "abc123".to_string(),
             request: "paypal://pay?id=123".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
             amount: Some(Amount::from(1000)),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -958,6 +1019,7 @@ mod tests {
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
         assert!(parsed.get("state").is_none());
+        assert_eq!(parsed["method"], json!("paypal"));
         assert_eq!(parsed["amount_paid"], json!(0));
         assert_eq!(parsed["amount_issued"], json!(0));
     }
@@ -967,9 +1029,11 @@ mod tests {
         let response = MintQuoteCustomResponse {
             quote: "q1".to_string(),
             request: "custom://pay".to_string(),
+            method: PaymentMethod::Custom("custom".to_string()),
             amount: Some(Amount::from(100)),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999),
             pubkey: None,
@@ -1049,6 +1113,75 @@ mod tests {
 
         let err = from_str::<MintMethodSettings>(json_str).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn test_bolt12_settings_nested_options_round_trip() {
+        // NUT-25 spec format: description nested inside "options"
+        let json_str = r#"{
+            "method": "bolt12",
+            "unit": "sat",
+            "min_amount": 0,
+            "max_amount": 10000,
+            "options": {
+                "description": true
+            }
+        }"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt12));
+        assert_eq!(settings.unit, CurrencyUnit::Sat);
+
+        match settings.options {
+            Some(MintMethodOptions::Bolt12 { description }) => {
+                assert!(description);
+            }
+            _ => panic!("Expected Bolt12 options with description = true"),
+        }
+
+        // Serialize it back and verify the nested "options" structure
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["method"], json!("bolt12"));
+        assert_eq!(parsed["options"]["description"], json!(true));
+        // Verify description is NOT at top level
+        assert!(parsed.get("description").is_none());
+    }
+
+    #[test]
+    fn test_bolt12_settings_top_level_description_accepted() {
+        // Some mints place the description flag at the top level; it should be
+        // mapped to the Bolt12 options based on the method
+        let json_str = r#"{
+            "method": "bolt12",
+            "unit": "sat",
+            "description": true
+        }"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt12));
+        match settings.options {
+            Some(MintMethodOptions::Bolt12 { description }) => {
+                assert!(description);
+            }
+            _ => panic!("Expected Bolt12 options with description = true"),
+        }
+    }
+
+    #[test]
+    fn test_bolt12_settings_no_options_when_description_absent() {
+        let json_str = r#"{
+            "method": "bolt12",
+            "unit": "sat"
+        }"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt12));
+        assert_eq!(settings.options, None);
     }
 
     #[test]

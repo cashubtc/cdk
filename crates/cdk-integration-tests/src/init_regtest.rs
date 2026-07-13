@@ -278,12 +278,34 @@ where
     cln_client.wait_chain_sync().await?;
     lnd_client.wait_chain_sync().await?;
 
-    lnd_client
-        .open_channel(1_500_000, &cln_pubkey.to_string(), Some(750_000))
-        .await
-        .unwrap();
+    let max_retries = 10;
+    let mut delay = Duration::from_millis(500);
 
-    Ok(())
+    for attempt in 1..=max_retries {
+        match lnd_client
+            .open_channel(1_500_000, &cln_pubkey.to_string(), Some(750_000))
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let err_str = err.to_string();
+                let retryable = err_str.contains("Could not afford") || err_str.contains("UTXO");
+
+                if !retryable || attempt == max_retries {
+                    return Err(err);
+                }
+
+                tracing::warn!(
+                    "Channel open failed (attempt {attempt}/{max_retries}): {err_str}, retrying in {delay:?}..."
+                );
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(delay * 2, Duration::from_secs(5));
+                lnd_client.wait_chain_sync().await?;
+            }
+        }
+    }
+
+    bail!("Channel open retries exhausted")
 }
 
 fn summarize_ldk_channels(node: &Node) -> String {
@@ -466,10 +488,9 @@ pub async fn start_regtest_end(
         open_channel(&cln_client, &lnd_client).await.unwrap();
         tracing::info!("Opened channel between cln and lnd one");
         generate_block(&bitcoin_client)?;
-        // open_channel(&bitcoin_client, &cln_client, &cln_two_client)
-        //     .await
-        //     .unwrap();
-        // tracing::info!("Opened channel between cln and cln two");
+        open_channel(&cln_client, &cln_two_client).await.unwrap();
+        tracing::info!("Opened channel between cln and cln two");
+        generate_block(&bitcoin_client)?;
 
         open_channel(&lnd_client, &lnd_two_client).await.unwrap();
         tracing::info!("Opened channel between lnd and lnd two");

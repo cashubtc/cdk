@@ -12,43 +12,23 @@ use std::sync::Arc;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
-    WsErrorResponse, WsMethodRequest, WsNotification, WsRequest, WsResponse, WsUnsubscribeRequest,
+    RawWsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
 };
-use cdk_common::nut17::{Kind, NotificationId};
+use cdk_common::nut17::{deserialize_payload_for_kind, Kind, NotificationId};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::pub_sub::remote_consumer::{
     Consumer, InternalRelay, RemoteActiveConsumer, StreamCtrl, SubscribeMessage, Transport,
 };
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
-use cdk_common::ws_client::{connect as ws_connect, WsError};
-use cdk_common::{
-    CheckStateRequest, MeltQuoteBolt11Response, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
-    MeltQuoteOnchainResponse, Method, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, ProofState, RoutePath,
-};
+use cdk_common::ws_client::WsError;
+use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
 use crate::wallet::MintConnector;
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct RawNotificationInner<I> {
-    #[serde(rename = "subId")]
-    sub_id: I,
-    payload: serde_json::Value,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(bound = "I: serde::Serialize + serde::de::DeserializeOwned")]
-#[serde(untagged)]
-enum RawWsMessageOrResponse<I> {
-    Response(WsResponse<I>),
-    ErrorResponse(WsErrorResponse),
-    Notification(Box<WsNotification<RawNotificationInner<I>>>),
-}
 
 /// Notification Payload
 pub type NotificationPayload = crate::nuts::NotificationPayload<String>;
@@ -222,7 +202,7 @@ impl SubscriptionClient {
             .ok()
     }
 
-    fn get_unsub_request(&self, sub_id: String) -> Option<String> {
+    fn get_unsub_request(&self, sub_id: String) -> Option<(usize, String)> {
         let request: WsRequest<_> = (
             WsMethodRequest::Unsubscribe(WsUnsubscribeRequest { sub_id }),
             self.req_id
@@ -230,59 +210,12 @@ impl SubscriptionClient {
         )
             .into();
 
-        match serde_json::to_string(&request) {
-            Ok(json) => Some(json),
-            Err(err) => {
+        serde_json::to_string(&request)
+            .inspect_err(|err| {
                 tracing::error!("Could not serialize unsubscribe message: {:?}", err);
-                None
-            }
-        }
-    }
-}
-
-fn decode_notification_payload(
-    kind: &Kind,
-    payload: serde_json::Value,
-) -> Result<NotificationPayload, PubsubError> {
-    match kind {
-        Kind::ProofState => serde_json::from_value::<ProofState>(payload)
-            .map(NotificationPayload::ProofState)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt11MintQuote => serde_json::from_value::<MintQuoteBolt11Response<String>>(payload)
-            .map(NotificationPayload::MintQuoteBolt11Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt11MeltQuote => serde_json::from_value::<MeltQuoteBolt11Response<String>>(payload)
-            .map(NotificationPayload::MeltQuoteBolt11Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt12MintQuote => serde_json::from_value::<MintQuoteBolt12Response<String>>(payload)
-            .map(NotificationPayload::MintQuoteBolt12Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt12MeltQuote => serde_json::from_value::<MeltQuoteBolt12Response<String>>(payload)
-            .map(NotificationPayload::MeltQuoteBolt12Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::OnchainMintQuote => {
-            serde_json::from_value::<MintQuoteOnchainResponse<String>>(payload)
-                .map(NotificationPayload::MintQuoteOnchainResponse)
-                .map_err(|err| PubsubError::ParsingError(err.to_string()))
-        }
-        Kind::OnchainMeltQuote => {
-            serde_json::from_value::<MeltQuoteOnchainResponse<String>>(payload)
-                .map(NotificationPayload::MeltQuoteOnchainResponse)
-                .map_err(|err| PubsubError::ParsingError(err.to_string()))
-        }
-        Kind::Custom(method) if method.ends_with("_mint_quote") => serde_json::from_value::<
-            MintQuoteCustomResponse<String>,
-        >(payload)
-        .map(|response| NotificationPayload::CustomMintQuoteResponse(method.clone(), response))
-        .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Custom(method) if method.ends_with("_melt_quote") => serde_json::from_value::<
-            MeltQuoteCustomResponse<String>,
-        >(payload)
-        .map(|response| NotificationPayload::CustomMeltQuoteResponse(method.clone(), response))
-        .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Custom(method) => Err(PubsubError::ParsingError(format!(
-            "Unsupported custom websocket notification kind: {method}"
-        ))),
+            })
+            .map(|json| (request.id, json))
+            .ok()
     }
 }
 
@@ -292,7 +225,7 @@ impl Transport for SubscriptionClient {
     type Spec = MintSubTopics;
 
     fn new_name(&self) -> <Self::Spec as Spec>::SubscriptionId {
-        Uuid::new_v4().to_string()
+        new_subscription_id()
     }
 
     async fn stream(
@@ -534,6 +467,10 @@ impl Transport for SubscriptionClient {
     }
 }
 
+fn new_subscription_id() -> String {
+    Uuid::now_v7().to_string()
+}
+
 async fn stream_client(
     client: &SubscriptionClient,
     mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
@@ -541,6 +478,7 @@ async fn stream_client(
     reply_to: InternalRelay<MintSubTopics>,
 ) -> Result<(), PubsubError> {
     let mut sub_id_to_kind = HashMap::new();
+    let mut pending_requests = HashMap::new();
 
     let mut url = client
         .mint_url
@@ -586,23 +524,28 @@ async fn stream_client(
     let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     tracing::debug!("Connecting to {}", url);
-    let (mut sender, mut receiver) = ws_connect(&url_str, &header_refs).await.map_err(|err| {
-        tracing::error!("Error connecting: {err:?}");
-        map_ws_error(err)
-    })?;
+    let (mut sender, mut receiver) = client
+        .http_client
+        .connect_websocket(&url_str, &header_refs)
+        .await
+        .map_err(|err| {
+            tracing::error!("Error connecting: {err:?}");
+            map_ws_error(err)
+        })?;
 
     tracing::debug!("Connected to {}", url);
 
     for (name, index) in topics {
         let kind = SubscriptionClient::subscription_kind(&index);
-        let (_, req) = if let Some(req) = client.get_sub_request(name.clone(), index) {
+        let (request_id, req) = if let Some(req) = client.get_sub_request(name.clone(), index) {
             req
         } else {
             continue;
         };
 
-        sub_id_to_kind.insert(name, kind);
-        let _ = sender.send(req).await;
+        sub_id_to_kind.insert(name.clone(), kind);
+        sender.send(req).await.map_err(map_ws_error)?;
+        pending_requests.insert(request_id, PendingRequest::Subscribe { sub_id: name });
     }
 
     loop {
@@ -611,44 +554,52 @@ async fn stream_client(
                 match msg {
                     StreamCtrl::Subscribe(msg) => {
                         let kind = SubscriptionClient::subscription_kind(&msg.1);
-                        let (_, req) = if let Some(req) = client.get_sub_request(msg.0.clone(), msg.1) {
+                        let (request_id, req) = if let Some(req) = client.get_sub_request(msg.0.clone(), msg.1) {
                             req
                         } else {
                             continue;
                         };
-                        sub_id_to_kind.insert(msg.0, kind);
-                        let _ = sender.send(req).await;
+                        sub_id_to_kind.insert(msg.0.clone(), kind);
+                        sender.send(req).await.map_err(map_ws_error)?;
+                        pending_requests.insert(
+                            request_id,
+                            PendingRequest::Subscribe { sub_id: msg.0 },
+                        );
                     }
                     StreamCtrl::Unsubscribe(msg) => {
                         sub_id_to_kind.remove(&msg);
-                        let req = if let Some(req) = client.get_unsub_request(msg) {
+                        let (request_id, req) = if let Some(req) = client.get_unsub_request(msg.clone()) {
                             req
                         } else {
                             continue;
                         };
-                        let _ = sender.send(req).await;
+                        sender.send(req).await.map_err(map_ws_error)?;
+                        pending_requests.insert(
+                            request_id,
+                            PendingRequest::Unsubscribe { sub_id: msg },
+                        );
                     }
                     StreamCtrl::Stop => {
                         if let Err(err) = sender.close().await {
                             tracing::error!("Closing error {err:?}");
                         }
-                        break;
+                        return Ok(());
                     }
                 };
             }
             msg = receiver.recv() => {
                 let msg = match msg {
                     Some(Ok(msg)) => msg,
-                    Some(Err(_)) => {
+                    Some(Err(err)) => {
                         if let Err(err) = sender.close().await {
                             tracing::error!("Closing error {err:?}");
                         }
-                        sub_id_to_kind.clear();
-                        break;
+                        return Err(map_ws_error(err));
                     }
                     None => {
-                        sub_id_to_kind.clear();
-                        break;
+                        return Err(PubsubError::InternalStr(
+                            "WebSocket stream closed unexpectedly".to_string(),
+                        ));
                     }
                 };
                 let msg = match serde_json::from_str::<RawWsMessageOrResponse<String>>(&msg) {
@@ -666,31 +617,106 @@ async fn stream_client(
                             continue;
                         };
 
-                        let payload = decode_notification_payload(
+                        if let Some(payload) = decode_notification_payload_for_stream(
                             kind,
+                            &payload.params.sub_id,
                             payload.params.payload.clone(),
-                        )?;
-                        reply_to.send(payload);
+                        ) {
+                            reply_to.send(payload);
+                        }
                     }
                     RawWsMessageOrResponse::Response(response) => {
-                        tracing::debug!("Received response from server: {:?}", response);
+                        let Some(request) = pending_requests.remove(&response.id) else {
+                            tracing::warn!(
+                                "Received websocket response for unknown request id {}",
+                                response.id
+                            );
+                            continue;
+                        };
+
+                        if response.result.sub_id != request.sub_id() {
+                            tracing::warn!(
+                                "Received {} response for subId {}, expected {}",
+                                request.method(),
+                                response.result.sub_id,
+                                request.sub_id()
+                            );
+                            continue;
+                        }
+
+                        tracing::debug!(
+                            "Received {} response from server for subId {} with status {}",
+                            request.method(),
+                            response.result.sub_id,
+                            response.result.status
+                        );
                     }
                     RawWsMessageOrResponse::ErrorResponse(error) => {
-                        tracing::debug!("Received an error from server: {:?}", error);
+                        match pending_requests.remove(&error.id) {
+                            Some(request) => tracing::debug!(
+                                "Received an error from server for {} request and subId {}: {}",
+                                request.method(),
+                                request.sub_id(),
+                                error.error.message
+                            ),
+                            None => tracing::debug!(
+                                "Received an error from server for unknown request id {}: {}",
+                                error.id,
+                                error.error.message
+                            ),
+                        }
                         return Err(PubsubError::InternalStr(error.error.message));
                     }
                 }
             }
         }
     }
+}
 
-    Ok(())
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingRequest {
+    Subscribe { sub_id: String },
+    Unsubscribe { sub_id: String },
+}
+
+impl PendingRequest {
+    fn method(&self) -> &'static str {
+        match self {
+            Self::Subscribe { .. } => "subscribe",
+            Self::Unsubscribe { .. } => "unsubscribe",
+        }
+    }
+
+    fn sub_id(&self) -> &str {
+        match self {
+            Self::Subscribe { sub_id } | Self::Unsubscribe { sub_id } => sub_id,
+        }
+    }
+}
+
+fn decode_notification_payload_for_stream(
+    kind: &Kind,
+    sub_id: &str,
+    payload: serde_json::Value,
+) -> Option<NotificationPayload> {
+    match deserialize_payload_for_kind::<String, serde_json::Error>(kind, payload) {
+        Ok(payload) => Some(payload),
+        Err(err) => {
+            tracing::warn!(
+                "Dropping unsupported websocket notification for subId {}: {}",
+                sub_id,
+                err
+            );
+            None
+        }
+    }
 }
 
 fn map_ws_error(err: WsError) -> PubsubError {
     match err {
-        WsError::Connection(_) => PubsubError::NotSupported,
-        other => PubsubError::InternalStr(other.to_string()),
+        WsError::Transient(message) => PubsubError::InternalStr(message),
+        WsError::NotSupported(_) => PubsubError::NotSupported,
+        WsError::Terminal(message) => PubsubError::Terminal(message),
     }
 }
 
@@ -701,6 +727,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nut17_subscription_ids_use_uuid_v7() {
+        let id = Uuid::parse_str(&new_subscription_id()).expect("valid subscription UUID");
+
+        assert_eq!(id.get_version_num(), 7);
+    }
+
+    #[test]
+    fn unsupported_notification_does_not_block_the_next_notification() {
+        let unsupported = json!({
+            "Y": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
+            "state": "FUTURE_STATE",
+            "witness": null
+        });
+        let supported = json!({
+            "Y": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
+            "state": "UNSPENT",
+            "witness": null
+        });
+
+        assert!(
+            decode_notification_payload_for_stream(&Kind::ProofState, "sub-id", unsupported)
+                .is_none()
+        );
+        assert!(matches!(
+            decode_notification_payload_for_stream(&Kind::ProofState, "sub-id", supported),
+            Some(NotificationPayload::ProofState(_))
+        ));
+    }
+
+    #[test]
+    fn transient_websocket_failure_keeps_streaming_enabled() {
+        let error = map_ws_error(WsError::Transient("temporary disconnect".to_string()));
+
+        assert!(matches!(error, PubsubError::InternalStr(_)));
+    }
+
+    #[test]
+    fn unsupported_websocket_failure_disables_streaming() {
+        let error = map_ws_error(WsError::NotSupported("404".to_string()));
+
+        assert!(matches!(error, PubsubError::NotSupported));
+    }
+
+    #[test]
+    fn terminal_websocket_failure_disables_streaming() {
+        let error = map_ws_error(WsError::Terminal("attestation failed".to_string()));
+
+        assert!(matches!(error, PubsubError::Terminal(_)));
+    }
+
+    #[test]
     fn decode_proof_state_notification() {
         let payload = json!({
             "Y": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
@@ -708,7 +785,9 @@ mod tests {
             "witness": null
         });
 
-        let decoded = decode_notification_payload(&Kind::ProofState, payload).unwrap();
+        let decoded =
+            deserialize_payload_for_kind::<String, serde_json::Error>(&Kind::ProofState, payload)
+                .unwrap();
 
         assert!(matches!(decoded, NotificationPayload::ProofState(_)));
     }
@@ -718,6 +797,7 @@ mod tests {
         let mint_payload = json!({
             "quote": "mint-quote",
             "request": "lnbc1...",
+            "method": "bolt11",
             "state": "PAID",
             "expiry": 1234,
             "paid": true
@@ -726,15 +806,22 @@ mod tests {
             "quote": "melt-quote",
             "amount": 21,
             "fee_reserve": 1,
+            "method": "bolt11",
             "state": "PAID",
             "expiry": 1234,
             "payment_proof": "abc"
         });
 
-        let mint_decoded =
-            decode_notification_payload(&Kind::Bolt11MintQuote, mint_payload).unwrap();
-        let melt_decoded =
-            decode_notification_payload(&Kind::Bolt11MeltQuote, melt_payload).unwrap();
+        let mint_decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt11MintQuote,
+            mint_payload,
+        )
+        .unwrap();
+        let melt_decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt11MeltQuote,
+            melt_payload,
+        )
+        .unwrap();
 
         assert!(matches!(
             mint_decoded,
@@ -748,30 +835,81 @@ mod tests {
 
     #[test]
     fn decode_bolt12_notification() {
-        let payload = json!({
+        let mint_payload = json!({
             "quote": "quote-id",
             "request": "lni1...",
             "amount": null,
             "unit": "sat",
-            "state": "UNPAID",
+            "method": "bolt12",
             "expiry": 1234,
             "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
             "amount_paid": 0,
             "amount_issued": 0
         });
+        let melt_payload = json!({
+            "quote": "melt-quote",
+            "amount": 21,
+            "fee_reserve": 1,
+            "state": "PAID",
+            "expiry": 1234,
+            "request": "lni1...",
+            "unit": "sat"
+        });
 
-        let decoded = decode_notification_payload(&Kind::Bolt12MintQuote, payload).unwrap();
+        let mint_decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MintQuote,
+            mint_payload,
+        )
+        .unwrap();
+        let melt_decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MeltQuote,
+            melt_payload,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            mint_decoded,
+            NotificationPayload::MintQuoteBolt12Response(_)
+        ));
+        match melt_decoded {
+            NotificationPayload::MeltQuoteBolt12Response(response) => {
+                assert_eq!(response.method, PaymentMethod::BOLT12);
+            }
+            _ => panic!("expected bolt12 melt response"),
+        }
+    }
+
+    #[test]
+    fn decode_onchain_mint_notification_uses_subscription_kind() {
+        let payload = json!({
+            "quote": "onchain-quote",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1234,
+            "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "state": "future-extension"
+        });
+
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::OnchainMintQuote,
+            payload,
+        )
+        .unwrap();
 
         assert!(matches!(
             decoded,
-            NotificationPayload::MintQuoteBolt12Response(_)
+            NotificationPayload::MintQuoteOnchainResponse(_)
         ));
     }
 
     #[test]
     fn decode_custom_notifications() {
-        let mint_method = "foo_mint_quote".to_string();
-        let melt_method = "foo_melt_quote".to_string();
+        let mint_method = "foo".to_string();
+        let melt_method = "foo".to_string();
+        let mint_kind = Kind::Custom(format!("{}_mint_quote", mint_method));
+        let melt_kind = Kind::Custom(format!("{}_melt_quote", melt_method));
         let mint_payload = json!({
             "quote": "mint-custom",
             "request": "custom-request",
@@ -796,26 +934,31 @@ mod tests {
         });
 
         let mint_decoded =
-            decode_notification_payload(&Kind::Custom(mint_method.clone()), mint_payload).unwrap();
+            deserialize_payload_for_kind::<String, serde_json::Error>(&mint_kind, mint_payload)
+                .unwrap();
         let melt_decoded =
-            decode_notification_payload(&Kind::Custom(melt_method.clone()), melt_payload).unwrap();
+            deserialize_payload_for_kind::<String, serde_json::Error>(&melt_kind, melt_payload)
+                .unwrap();
 
         assert!(matches!(
             mint_decoded,
-            NotificationPayload::CustomMintQuoteResponse(method, _) if method == mint_method
+            NotificationPayload::CustomMintQuoteResponse(method, response)
+                if method == mint_method && response.method == "foo"
         ));
         assert!(matches!(
             melt_decoded,
-            NotificationPayload::CustomMeltQuoteResponse(method, _) if method == melt_method
+            NotificationPayload::CustomMeltQuoteResponse(method, response)
+                if method == melt_method && response.method == "foo"
         ));
     }
 
     #[test]
     fn decode_unknown_custom_kind_errors() {
-        let err = decode_notification_payload(&Kind::Custom("foo_status".to_string()), json!({}))
-            .unwrap_err();
-
-        assert!(matches!(err, PubsubError::ParsingError(_)));
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Custom("foo_status".to_string()),
+            json!({}),
+        )
+        .is_err());
     }
 
     #[test]
@@ -826,8 +969,10 @@ mod tests {
             "witness": null
         });
 
-        let err = decode_notification_payload(&Kind::Bolt12MintQuote, payload).unwrap_err();
-
-        assert!(matches!(err, PubsubError::ParsingError(_)));
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MintQuote,
+            payload,
+        )
+        .is_err());
     }
 }

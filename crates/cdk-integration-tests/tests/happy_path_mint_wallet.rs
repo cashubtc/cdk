@@ -22,6 +22,7 @@ use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::nut17::{deserialize_payload_for_kind, Kind};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletRepositoryBuilder};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
@@ -43,6 +44,7 @@ fn get_test_temp_dir() -> PathBuf {
 
 async fn get_notifications<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
+    kind: &Kind,
     timeout_to_wait: Duration,
     total: usize,
 ) -> Vec<(String, NotificationPayload<String>)> {
@@ -72,7 +74,11 @@ async fn get_notifications<T: StreamExt<Item = Result<Message, E>> + Unpin, E: D
                 .as_str()
                 .unwrap()
                 .to_string(),
-            serde_json::from_value(params_map.remove("payload").unwrap()).unwrap(),
+            deserialize_payload_for_kind::<String, serde_json::Error>(
+                kind,
+                params_map.remove("payload").unwrap(),
+            )
+            .unwrap(),
         ))
     }
     results
@@ -180,8 +186,13 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(response_json, expected_json);
 
     // Read the initial state notification before starting the melt to ensure we capture Unpaid
-    let initial_notification =
-        get_notifications(&mut reader, Duration::from_millis(15000), 1).await;
+    let initial_notification = get_notifications(
+        &mut reader,
+        &Kind::Bolt11MeltQuote,
+        Duration::from_millis(15000),
+        1,
+    )
+    .await;
     let (sub_id, payload) = &initial_notification[0];
     assert_eq!("test-sub", sub_id);
     let initial_melt = match payload {
@@ -212,7 +223,13 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(tx.metadata, metadata);
 
     // Read remaining notifications (Pending -> Paid)
-    let notifications = get_notifications(&mut reader, Duration::from_millis(15000), 2).await;
+    let notifications = get_notifications(
+        &mut reader,
+        &Kind::Bolt11MeltQuote,
+        Duration::from_millis(15000),
+        2,
+    )
+    .await;
 
     let (sub_id, payload) = &notifications[0];
     assert_eq!("test-sub", sub_id);
@@ -396,6 +413,11 @@ async fn test_restore_large_proof_count() {
     )
     .expect("failed to create new wallet");
 
+    // This stress test runs against a controlled localhost mint. Disable pacing
+    // before the first request so the default client rate limit does not dominate
+    // the runtime of the 3,000-proof restore workload.
+    wallet.disable_rate_limiting();
+
     let mint_amount: u64 = 3000;
     let batch_size: u64 = 999; // Keep under 1000 outputs per request
 
@@ -442,6 +464,10 @@ async fn test_restore_large_proof_count() {
         None,
     )
     .expect("failed to create new wallet");
+
+    // This is a separate client and therefore has its own limiter. Disable it
+    // before restore so all restore batches run without artificial delays.
+    wallet_2.disable_rate_limiting();
 
     assert_eq!(wallet_2.total_balance().await.unwrap(), 0.into());
 
@@ -513,6 +539,10 @@ async fn test_restore_with_counter_gap() {
     )
     .expect("failed to create new wallet");
 
+    // This test runs against a controlled localhost mint. Disable pacing before
+    // the first request so its timing reflects restore/counter-gap behavior.
+    wallet.disable_rate_limiting();
+
     // Mint first batch of proofs (uses counters starting at 0)
     let mint_quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
@@ -580,6 +610,10 @@ async fn test_restore_with_counter_gap() {
         None,
     )
     .expect("failed to create restored wallet");
+
+    // The restored wallet is a separate client with a separate limiter. Disable
+    // it before restore and the post-restore swaps exercised below.
+    wallet_restored.disable_rate_limiting();
 
     assert_eq!(wallet_restored.total_balance().await.unwrap(), 0.into());
 
@@ -938,12 +972,12 @@ async fn test_fake_melt_change_in_quote() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_pay_invoice_twice() {
-    let ln_backend = match env::var("LN_BACKEND") {
+    let payment_backend = match env::var("PAYMENT_BACKEND") {
         Ok(val) => Some(val),
-        Err(_) => env::var("CDK_MINTD_LN_BACKEND").ok(),
+        Err(_) => env::var("CDK_MINTD_PAYMENT_BACKEND").ok(),
     };
 
-    if ln_backend.map(|ln| ln.to_uppercase()) == Some("FAKEWALLET".to_string()) {
+    if payment_backend.map(|backend| backend.to_uppercase()) == Some("FAKEWALLET".to_string()) {
         // We can only perform this test on regtest backends as fake wallet just marks the quote as paid
         return;
     }

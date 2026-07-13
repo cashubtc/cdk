@@ -13,9 +13,12 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
 bitcoin = { version = "0.32.2", default-features = false }
+ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
+ur = { version = "0.5.2", default-features = false, features = ["std"] }
 
 [dependencies.cashu]
 path = "../crates/cashu"
+features = ["nostr"]
 
 [dependencies.cdk-common]
 path = "../crates/cdk-common"
@@ -219,8 +222,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_nut16_ur_decode"
+path = "fuzz_targets/fuzz_nut16_ur_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_bls_dhke"
 path = "fuzz_targets/fuzz_bls_dhke.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut16_ur_multipart"
+path = "fuzz_targets/fuzz_nut16_ur_multipart.rs"
 test = false
 doc = false
 bench = false
@@ -265,8 +282,78 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_amount_split"
+path = "fuzz_targets/fuzz_amount_split.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_federation_request_conversion"
 path = "fuzz_targets/fuzz_federation_request_conversion.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut20_quote_signature"
+path = "fuzz_targets/fuzz_nut20_quote_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut28_p2bk"
+path = "fuzz_targets/fuzz_nut28_p2bk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut13_deterministic_secrets"
+path = "fuzz_targets/fuzz_nut13_deterministic_secrets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut17_websocket"
+path = "fuzz_targets/fuzz_nut17_websocket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dhke_end_to_end"
+path = "fuzz_targets/fuzz_dhke_end_to_end.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut27_backup_event"
+path = "fuzz_targets/fuzz_nut27_backup_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut04_mint_settings"
+path = "fuzz_targets/fuzz_nut04_mint_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut21_route_path"
+path = "fuzz_targets/fuzz_nut21_route_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut21_settings"
+path = "fuzz_targets/fuzz_nut21_settings.rs"
 test = false
 doc = false
 bench = false

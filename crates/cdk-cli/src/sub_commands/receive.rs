@@ -13,6 +13,7 @@ use nostr_sdk::nips::nip04;
 use nostr_sdk::{Filter, Keys, Kind, Timestamp};
 
 use crate::nostr_storage;
+use crate::terminal::escape_control;
 use crate::utils::get_or_create_wallet;
 
 #[derive(Args)]
@@ -122,7 +123,9 @@ pub async fn receive(
                         total_amount += amount;
                     }
                     Err(err) => {
-                        println!("{err}");
+                        // Errors may embed mint-controlled data such as error
+                        // bodies or token mint URLs; escape before printing.
+                        println!("{}", escape_control(&format!("{err:#}")));
                     }
                 }
             }
@@ -160,14 +163,16 @@ async fn receive_token(
         #[cfg(feature = "federation")]
         return Err(anyhow!(
             "Mint {} is not trusted or imported as a federation member. Run `cdk-cli federation add --mint-url {}` for federated tokens, or use --allow-untrusted to receive from untrusted standalone mints.",
-            mint_url,
-            mint_url
+            escape_control(&mint_url.to_string()),
+            escape_control(&mint_url.to_string())
         ));
 
         #[cfg(not(feature = "federation"))]
+        // The mint URL comes from the received token and may be
+        // attacker-controlled; escape it before it reaches the terminal.
         return Err(anyhow!(
             "Mint {} is not trusted. Use --allow-untrusted to receive from untrusted mints.",
-            mint_url
+            escape_control(&mint_url.to_string())
         ));
     }
 

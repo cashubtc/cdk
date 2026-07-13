@@ -1,10 +1,11 @@
 //! Wallet client
 
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::{
-    MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
+    AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse, QuoteId,
 };
 
@@ -16,23 +17,72 @@ use crate::nuts::{
     KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-use crate::wallet::AuthWallet;
+use crate::wallet::{AuthMintConnector, AuthWallet};
+use crate::OidcClient;
 
 pub mod http_client;
 pub mod transport;
+
+use transport::RateLimitedTransport;
+pub use transport::{RateLimitConfig, RateLimiterManager, TokenBucket};
 
 /// Auth HTTP Client with async transport
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
 pub type HttpClient = http_client::HttpClient<transport::Async>;
+/// Rate-limited HTTP Client with async transport
+pub type RateLimitedHttpClient = http_client::HttpClient<RateLimitedTransport<transport::Async>>;
+/// Rate-limited Auth HTTP Client with async transport
+pub type RateLimitedAuthHttpClient =
+    http_client::AuthHttpClient<RateLimitedTransport<transport::Async>>;
+/// Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub type TorAuthHttpClient = http_client::AuthHttpClient<transport::TorAsync>;
 /// Tor Http Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorHttpClient = http_client::HttpClient<transport::TorAsync>;
+/// Rate-limited Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub type RateLimitedTorAuthHttpClient =
+    http_client::AuthHttpClient<RateLimitedTransport<transport::TorAsync>>;
+/// Rate-limited Tor Http Client with async transport (only when `tor` feature is enabled and not on wasm32)
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub type RateLimitedTorHttpClient =
+    http_client::HttpClient<RateLimitedTransport<transport::TorAsync>>;
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: Debug {
+    /// Create an auth connector using the same underlying transport when possible.
+    fn auth_connector(
+        &self,
+        mint_url: crate::mint_url::MintUrl,
+        cat: Option<AuthToken>,
+    ) -> Arc<dyn AuthMintConnector + Send + Sync> {
+        Arc::new(AuthHttpClient::new(mint_url, cat))
+    }
+
+    /// Create an OIDC client using the same underlying transport when possible.
+    fn oidc_client(&self, openid_discovery: String, client_id: Option<String>) -> OidcClient {
+        OidcClient::new(openid_discovery, client_id)
+    }
+
+    /// Connect to a WebSocket endpoint using the connector's transport.
+    async fn connect_websocket(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<
+        (
+            cdk_common::ws_client::WsSender,
+            cdk_common::ws_client::WsReceiver,
+        ),
+        cdk_common::ws_client::WsError,
+    > {
+        cdk_common::ws_client::connect(url, headers).await
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// Resolve the DNS record getting the TXT value
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;

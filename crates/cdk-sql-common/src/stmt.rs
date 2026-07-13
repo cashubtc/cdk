@@ -1,9 +1,8 @@
 //! Stataments mod
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use cdk_common::database::Error;
-use once_cell::sync::Lazy;
 
 use crate::database::DatabaseExecutor;
 use crate::value::Value;
@@ -420,7 +419,8 @@ impl Statement {
 /// Creates a new query statement
 #[inline(always)]
 pub fn query(sql: &str) -> Result<Statement, Error> {
-    static CACHE: Lazy<Arc<RwLock<Cache>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+    static CACHE: LazyLock<Arc<RwLock<Cache>>> =
+        LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
     Statement::new(sql, CACHE.clone()).map_err(|e| Error::Database(Box::new(e)))
 }
 

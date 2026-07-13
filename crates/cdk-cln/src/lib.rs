@@ -26,11 +26,11 @@ use cdk_common::util::{hex, unix_time};
 use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
-    OfferRequest, PayRequest, WaitanyinvoiceRequest,
+    OfferRequest, WaitanyinvoiceRequest, XpayRequest,
 };
 use cln_rpc::model::responses::{
     DecodeResponse, InvoiceResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus,
-    ListpaysPays, ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    ListpaysPays, ListpaysPaysStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
@@ -46,7 +46,12 @@ pub mod error;
 const CLN_KV_PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
 const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
 const CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
+const CLN_KV_BOLT12_CLEANUP_MARKER: &[u8] = b"cleanup-in-progress";
 const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
+const XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE: i32 = 203;
+const XPAY_ROUTE_NOT_FOUND_ERROR_CODE: i32 = 205;
+const XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE: i32 = 206;
+const XPAY_INVOICE_EXPIRED_ERROR_CODE: i32 = 207;
 
 /// CLN mint backend
 #[derive(Clone)]
@@ -54,6 +59,7 @@ pub struct Cln {
     rpc_socket: PathBuf,
     fee_reserve: FeeReserve,
     expose_private_channels: bool,
+    bolt12: bool,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     kv_store: DynKVStore,
@@ -80,10 +86,17 @@ impl Cln {
             rpc_socket,
             fee_reserve,
             expose_private_channels,
+            bolt12: true,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             kv_store,
         })
+    }
+
+    /// Enable or disable BOLT12 support.
+    pub fn with_bolt12(mut self, bolt12: bool) -> Self {
+        self.bolt12 = bolt12;
+        self
     }
 }
 
@@ -100,7 +113,10 @@ impl MintPayment for Cln {
                 amountless: true,
                 invoice_description: true,
             }),
-            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            bolt12: self.bolt12.then_some(payment::Bolt12Settings {
+                amountless: true,
+                invoice_description: true,
+            }),
             onchain: None,
             custom: HashMap::new(),
         })
@@ -419,6 +435,7 @@ impl MintPayment for Cln {
         let mut partial_amount: Option<u64> = None;
         let mut amount_msat: Option<u64> = None;
         let payment_lookup_id: PaymentIdentifier;
+        let mut bolt12_binding = None;
 
         let mut cln_client = self.cln_client().await?;
 
@@ -451,6 +468,12 @@ impl MintPayment for Cln {
                 let offer = &bolt12_options.offer;
                 let quote_id = bolt12_options.quote_id.clone();
                 let quote_payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+
+                max_fee_msat = bolt12_options
+                    .max_fee_amount
+                    .as_ref()
+                    .map(|a| a.to_msat())
+                    .transpose()?;
 
                 self.check_outgoing_unpaided(&quote_payment_identifier)
                     .await?;
@@ -488,6 +511,10 @@ impl MintPayment for Cln {
                         Error::ClnRpc(err)
                     })?;
 
+                if cln_response.invoice.is_empty() {
+                    return Err(Error::UnknownInvoice.into());
+                }
+
                 let decode_response = self.decode_string(cln_response.invoice.clone()).await?;
 
                 let payment_hash = Self::parse_payment_hash(
@@ -502,12 +529,7 @@ impl MintPayment for Cln {
                 self.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
                     .await?;
                 payment_lookup_id = quote_payment_identifier;
-
-                max_fee_msat = bolt12_options
-                    .max_fee_amount
-                    .clone()
-                    .map(|a| a.to_msat())
-                    .transpose()?;
+                bolt12_binding = Some((quote_id, payment_hash));
 
                 cln_response.invoice
             }
@@ -522,45 +544,101 @@ impl MintPayment for Cln {
         tracing::debug!("Attempting payment with max fee: {:?}", max_fee_msat);
 
         let cln_response = cln_client
-            .call_typed(&PayRequest {
-                bolt11: invoice,
+            .call_typed(&XpayRequest {
+                invstring: invoice,
                 amount_msat: amount_msat.map(CLN_Amount::from_msat),
+                dev_use_shadow: None,
                 label: None,
-                riskfactor: None,
-                maxfeepercent: None,
-                retry_for: None,
-                maxdelay: None,
-                exemptfee: None,
                 localinvreqid: None,
-                exclude: None,
+                maxdelay: None,
                 maxfee: max_fee_msat.map(CLN_Amount::from_msat),
-                description: None,
+                layers: None,
+                payer_note: None,
+                retry_for: None,
                 partial_msat: partial_amount.map(CLN_Amount::from_msat),
             })
             .await;
 
         let response = match cln_response {
-            Ok(pay_response) => {
-                let status = match pay_response.status {
-                    PayStatus::COMPLETE => MeltQuoteState::Paid,
-                    PayStatus::PENDING => MeltQuoteState::Pending,
-                    PayStatus::FAILED => MeltQuoteState::Failed,
+            Ok(pay_response) => MakePaymentResponse {
+                payment_lookup_id,
+                payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
+                status: MeltQuoteState::Paid,
+                total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat)
+                    .convert_to(unit)?,
+            },
+            Err(err) => {
+                tracing::warn!("xpay returned an error: {}", err);
+
+                // Reconcile BOLT12 payments by hash so a failed observation does
+                // not release the quote binding before the xpay error itself has
+                // been classified.
+                let reconciliation_payment_identifier = match &bolt12_binding {
+                    Some((_, payment_hash)) => PaymentIdentifier::Bolt12PaymentHash(*payment_hash),
+                    None => payment_lookup_id.clone(),
                 };
 
-                MakePaymentResponse {
-                    payment_lookup_id,
-                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
-                    status,
-                    total_spent: Amount::new(
-                        pay_response.amount_sent_msat.msat(),
-                        CurrencyUnit::Msat,
-                    )
-                    .convert_to(unit)?,
+                let (observed_state, response) = match self
+                    .check_outgoing_payment(&reconciliation_payment_identifier)
+                    .await
+                {
+                    Ok(observed_response)
+                        if matches!(
+                            observed_response.status,
+                            MeltQuoteState::Paid | MeltQuoteState::Pending
+                        ) =>
+                    {
+                        (
+                            Some(observed_response.status),
+                            MakePaymentResponse {
+                                payment_lookup_id: payment_lookup_id.clone(),
+                                ..observed_response
+                            },
+                        )
+                    }
+                    Ok(observed_response) => {
+                        let observed_state = Some(observed_response.status);
+                        (
+                            observed_state,
+                            outgoing_payment_response_with_status(
+                                &payment_lookup_id,
+                                xpay_error_state(&err, observed_state),
+                            ),
+                        )
+                    }
+                    Err(status_err) => {
+                        tracing::warn!(
+                            "Could not reconcile xpay error with listpays: {}",
+                            status_err
+                        );
+                        (
+                            None,
+                            outgoing_payment_response_with_status(
+                                &payment_lookup_id,
+                                xpay_error_state(&err, None),
+                            ),
+                        )
+                    }
+                };
+
+                if let Some((quote_id, payment_hash)) = &bolt12_binding {
+                    match should_retain_bolt12_binding_after_xpay_error(&err, observed_state) {
+                        true => {
+                            tracing::warn!(
+                                quote_id = %quote_id,
+                                "CLN xpay failed without a definitive terminal payment state; \
+                                 retaining the BOLT12 quote binding because the payment may have \
+                                 been dispatched"
+                            );
+                        }
+                        false => {
+                            self.cleanup_bolt12_quote_payment_hash(quote_id, payment_hash)
+                                .await;
+                        }
+                    }
                 }
-            }
-            Err(err) => {
-                tracing::error!("Could not pay invoice: {}", err);
-                return Err(Error::ClnRpc(err).into());
+
+                response
             }
         };
 
@@ -669,7 +747,9 @@ impl MintPayment for Cln {
                         recurrence_base: None,
                         recurrence_limit: None,
                         recurrence_paywindow: None,
-                        recurrence_start_any_period: None,
+                        optional_recurrence: None,
+                        proportional_amount: None,
+                        fronting_nodes: None,
                     })
                     .await
                     .map_err(Error::from)?;
@@ -766,6 +846,19 @@ impl MintPayment for Cln {
     }
 
     #[instrument(skip(self))]
+    /// Check the status of an outgoing payment.
+    ///
+    /// CLN never reports `Unpaid`/`Failed` for a dispatched payment: an
+    /// `xpay` command may survive a client disconnect and keep retrying, so a
+    /// not-paid observation is not an authoritative terminal outcome and is
+    /// reported as `Unknown` to keep the mint fail-closed (see
+    /// [`MintPayment::check_outgoing_payment`]). A failed payment's BOLT12
+    /// quote binding is retained for the same reason — releasing it would
+    /// turn a later poll's missing-binding answer into an authoritative
+    /// `Unpaid`. The one exception is a BOLT12 quote with no recorded
+    /// payment-hash binding: the binding is written before any payment is
+    /// dispatched, so its absence proves the payment was never attempted and
+    /// `Unpaid` is truthful.
     async fn check_outgoing_payment(
         &self,
         payment_identifier: &PaymentIdentifier,
@@ -780,7 +873,7 @@ impl MintPayment for Cln {
                 .map_err(payment::Error::from)?
             {
                 Bolt12QuotePaymentHashLookup::Found(payment_hash) => {
-                    (payment_hash, MeltQuoteState::Unpaid)
+                    (payment_hash, MeltQuoteState::Unknown)
                 }
                 Bolt12QuotePaymentHashLookup::Missing => {
                     return Ok(outgoing_payment_response_with_status(
@@ -817,7 +910,19 @@ impl MintPayment for Cln {
 
         match select_cln_payment(&listpays_response.pays) {
             Some(pays_response) => {
-                let status = cln_pays_status_to_mint_state(pays_response.status);
+                // A negative CLN status is not an authoritative terminal
+                // outcome for the mint; report it as Unknown so recovery
+                // cannot refund proofs while the payment may still settle.
+                // The BOLT12 quote binding is deliberately retained as well:
+                // releasing it would let a later poll observe the missing
+                // binding as authoritative `Unpaid` and compensate a payment
+                // that may still settle. Only the synchronous make_payment
+                // error path may release a binding, once it holds a
+                // definitive terminal failure.
+                let status = match cln_pays_status_to_mint_state(pays_response.status) {
+                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => MeltQuoteState::Unknown,
+                    status => status,
+                };
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: payment_identifier.clone(),
@@ -859,6 +964,12 @@ impl Cln {
             .map_err(|_| Error::InvalidHash)
     }
 
+    /// Binds the BOLT12 quote id to the fetched invoice's payment hash.
+    ///
+    /// The binding is write-once: the first dispatch for a quote claims it
+    /// atomically, so a duplicate or concurrent dispatch is rejected before
+    /// any funds move. Repeating the same payment hash is an idempotent
+    /// no-op for recovery.
     async fn write_bolt12_quote_payment_hash(
         &self,
         quote_id: &QuoteId,
@@ -872,11 +983,102 @@ impl Cln {
             .await
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        tx.kv_write(
+        let written = tx
+            .kv_write_if_absent(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+                value.as_bytes(),
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        if written {
+            tx.commit()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            return Ok(());
+        }
+
+        let existing = tx
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+        tx.rollback()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        match existing {
+            Some(existing) if existing.as_slice() == value.as_bytes() => Ok(()),
+            _ => Err(Error::Bolt12QuoteBindingConflict {
+                quote_id: quote_id.to_string(),
+            }),
+        }
+    }
+
+    /// Best-effort release of a binding whose exact payment attempt is known
+    /// to have failed terminally.
+    async fn cleanup_bolt12_quote_payment_hash(&self, quote_id: &QuoteId, payment_hash: &[u8; 32]) {
+        match self
+            .delete_bolt12_quote_payment_hash_if_equals(quote_id, payment_hash)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    quote_id = %quote_id,
+                    "BOLT12 quote binding changed before failed-payment cleanup"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    "Could not release failed BOLT12 quote binding: {err}"
+                );
+            }
+        }
+    }
+
+    /// Atomically removes the binding only if it still names `payment_hash`.
+    async fn delete_bolt12_quote_payment_hash_if_equals(
+        &self,
+        quote_id: &QuoteId,
+        payment_hash: &[u8; 32],
+    ) -> Result<bool, Error> {
+        let key = Self::bolt12_quote_payment_hash_key(quote_id)?;
+        let expected = hex::encode(payment_hash);
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let claimed = tx
+            .kv_write_if_equals(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+                expected.as_bytes(),
+                CLN_KV_BOLT12_CLEANUP_MARKER,
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        if !claimed {
+            tx.rollback()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            return Ok(false);
+        }
+
+        tx.kv_remove(
             CLN_KV_PRIMARY_NAMESPACE,
             CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
             &key,
-            value.as_bytes(),
         )
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
@@ -884,7 +1086,7 @@ impl Cln {
             .await
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        Ok(())
+        Ok(true)
     }
 
     async fn read_bolt12_quote_payment_hash(
@@ -1039,6 +1241,15 @@ enum Bolt12QuotePaymentHashLookup {
     Malformed,
 }
 
+/// Whether an `xpay` error and the reconciled CLN payment state require the
+/// BOLT12 quote binding to be retained.
+fn should_retain_bolt12_binding_after_xpay_error(
+    xpay_error: &cln_rpc::RpcError,
+    observed_state: Option<MeltQuoteState>,
+) -> bool {
+    xpay_error_state(xpay_error, observed_state) != MeltQuoteState::Failed
+}
+
 fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
     match status {
         ListpaysPaysStatus::PENDING => MeltQuoteState::Pending,
@@ -1125,6 +1336,35 @@ fn outgoing_payment_response_with_status(
     }
 }
 
+fn xpay_error_state(
+    error: &cln_rpc::RpcError,
+    observed_state: Option<MeltQuoteState>,
+) -> MeltQuoteState {
+    // listpays aggregates attempts by payment hash, so a negative or missing
+    // record cannot prove what happened to this specific xpay invocation. Only
+    // positive evidence (Paid/Pending) may override the RPC result. Explicit
+    // terminal xpay errors prove that this invocation cannot settle even when
+    // no send attempt was created and listpays has no row.
+    match observed_state {
+        Some(MeltQuoteState::Paid) => MeltQuoteState::Paid,
+        Some(MeltQuoteState::Pending) => MeltQuoteState::Pending,
+        _ if xpay_error_is_explicit_terminal_failure(error) => MeltQuoteState::Failed,
+        _ => MeltQuoteState::Unknown,
+    }
+}
+
+fn xpay_error_is_explicit_terminal_failure(error: &cln_rpc::RpcError) -> bool {
+    matches!(
+        error.code,
+        Some(
+            XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE
+                | XPAY_ROUTE_NOT_FOUND_ERROR_CODE
+                | XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE
+                | XPAY_INVOICE_EXPIRED_ERROR_CODE
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
@@ -1138,6 +1378,8 @@ mod tests {
     use cdk_common::payment::Bolt11OutgoingPaymentOptions;
 
     use super::*;
+
+    const XPAY_ALREADY_PAID_ERROR_CODE: i32 = 219;
 
     type MemoryKvKey = (String, String, String);
 
@@ -1156,6 +1398,14 @@ mod tests {
         DatabaseError::Database(Box::new(std::io::Error::other(
             "memory kv store lock poisoned",
         )))
+    }
+
+    fn test_rpc_error(code: Option<i32>) -> cln_rpc::RpcError {
+        cln_rpc::RpcError {
+            code,
+            message: "xpay failed".to_string(),
+            data: None,
+        }
     }
 
     fn memory_kv_key(primary_namespace: &str, secondary_namespace: &str, key: &str) -> MemoryKvKey {
@@ -1281,6 +1531,59 @@ mod tests {
             Ok(())
         }
 
+        async fn kv_write_if_absent(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            value: &[u8],
+        ) -> Result<bool, DatabaseError> {
+            let key = memory_kv_key(primary_namespace, secondary_namespace, key);
+
+            let exists = match self.writes.get(&key) {
+                Some(pending) => pending.is_some(),
+                None => {
+                    let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+                    entries.contains_key(&key)
+                }
+            };
+
+            if exists {
+                return Ok(false);
+            }
+
+            self.writes.insert(key, Some(value.to_vec()));
+
+            Ok(true)
+        }
+
+        async fn kv_write_if_equals(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            expected: &[u8],
+            replacement: &[u8],
+        ) -> Result<bool, DatabaseError> {
+            let key = memory_kv_key(primary_namespace, secondary_namespace, key);
+
+            let current = match self.writes.get(&key) {
+                Some(pending) => pending.clone(),
+                None => {
+                    let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+                    entries.get(&key).cloned()
+                }
+            };
+
+            match current {
+                Some(current) if current == expected => {
+                    self.writes.insert(key, Some(replacement.to_vec()));
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
         async fn kv_list(
             &mut self,
             primary_namespace: &str,
@@ -1383,6 +1686,7 @@ mod tests {
                 percent_fee_reserve: 0.0,
             },
             expose_private_channels: false,
+            bolt12: true,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             kv_store,
@@ -1481,18 +1785,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bolt12_quote_payment_hash_write_overwrites_existing_mapping() {
+    async fn bolt12_quote_payment_hash_repeat_of_same_hash_is_idempotent() {
         let cln = test_cln_with_memory_kv();
         let quote_id = QuoteId::new();
-        let first_payment_hash = [1; 32];
-        let second_payment_hash = [2; 32];
+        let payment_hash = [1; 32];
 
-        cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+        cln.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
             .await
             .expect("first payment hash should be written");
-        cln.write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+        cln.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
             .await
-            .expect("second payment hash should be written");
+            .expect("repeating the same payment hash must succeed for recovery");
 
         let stored_payment_hash = cln
             .read_bolt12_quote_payment_hash(&quote_id)
@@ -1501,7 +1804,111 @@ mod tests {
 
         assert_eq!(
             stored_payment_hash,
-            Bolt12QuotePaymentHashLookup::Found(second_payment_hash)
+            Bolt12QuotePaymentHashLookup::Found(payment_hash)
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_binding_is_write_once() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::new();
+        let first_payment_hash = [1; 32];
+        let second_payment_hash = [2; 32];
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+            .await
+            .expect("first payment hash should be written");
+
+        let err = cln
+            .write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+            .await
+            .expect_err("a conflicting payment hash must be rejected");
+        assert!(
+            matches!(err, Error::Bolt12QuoteBindingConflict { .. }),
+            "unexpected error: {err}"
+        );
+
+        let stored_payment_hash = cln
+            .read_bolt12_quote_payment_hash(&quote_id)
+            .await
+            .expect("payment hash should be read");
+
+        assert_eq!(
+            stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(first_payment_hash),
+            "the first binding must be retained"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_bolt12_binding_can_be_released_without_removing_a_retry() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::new();
+        let failed_payment_hash = [1; 32];
+        let retry_payment_hash = [2; 32];
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &failed_payment_hash)
+            .await
+            .expect("failed payment hash should be written");
+        assert!(cln
+            .delete_bolt12_quote_payment_hash_if_equals(&quote_id, &failed_payment_hash)
+            .await
+            .expect("failed binding should be released"));
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &retry_payment_hash)
+            .await
+            .expect("retry should claim the released quote");
+        assert!(!cln
+            .delete_bolt12_quote_payment_hash_if_equals(&quote_id, &failed_payment_hash)
+            .await
+            .expect("stale cleanup should be checked atomically"));
+
+        assert_eq!(
+            cln.read_bolt12_quote_payment_hash(&quote_id)
+                .await
+                .expect("retry binding should remain readable"),
+            Bolt12QuotePaymentHashLookup::Found(retry_payment_hash),
+            "stale failed-payment cleanup must not remove a newer retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_concurrent_claims_have_single_winner() {
+        let kv_store = Arc::new(MemoryKvStore::default());
+        let first_cln = test_cln_with_kv(kv_store.clone());
+        let second_cln = test_cln_with_kv(kv_store);
+        let quote_id = QuoteId::new();
+        let first_payment_hash = [1; 32];
+        let second_payment_hash = [2; 32];
+
+        let (first_result, second_result) = tokio::join!(
+            first_cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash),
+            second_cln.write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash),
+        );
+
+        let outcomes = [&first_result, &second_result];
+        let winners = outcomes.iter().filter(|result| result.is_ok()).count();
+        let conflicts = outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(Error::Bolt12QuoteBindingConflict { .. })))
+            .count();
+
+        assert_eq!(winners, 1, "exactly one dispatch may claim the quote");
+        assert_eq!(conflicts, 1, "the losing dispatch must be rejected");
+
+        let winner_hash = if first_result.is_ok() {
+            first_payment_hash
+        } else {
+            second_payment_hash
+        };
+        let stored_payment_hash = first_cln
+            .read_bolt12_quote_payment_hash(&quote_id)
+            .await
+            .expect("payment hash should be read");
+        assert_eq!(
+            stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(winner_hash),
+            "the stored binding must belong to the winning dispatch"
         );
     }
 
@@ -1515,6 +1922,63 @@ mod tests {
 
         assert_eq!(selected.status, ListpaysPaysStatus::PENDING);
         assert_eq!(selected.payment_hash, *Sha256::from_bytes_ref(&[2; 32]));
+    }
+
+    #[test]
+    fn xpay_error_classification_controls_bolt12_binding_retention() {
+        let transport_error = cln_rpc::RpcError {
+            code: None,
+            message: "no response from lightningd".to_string(),
+            data: None,
+        };
+        let coded_error = cln_rpc::RpcError {
+            code: Some(209),
+            message: "other payment error".to_string(),
+            data: None,
+        };
+        let already_paid_error = cln_rpc::RpcError {
+            code: Some(219),
+            message: "invoice already paid".to_string(),
+            data: None,
+        };
+        let no_route_error = cln_rpc::RpcError {
+            code: Some(XPAY_ROUTE_NOT_FOUND_ERROR_CODE),
+            message: "could not find a route".to_string(),
+            data: None,
+        };
+
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &transport_error,
+            Some(MeltQuoteState::Failed)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &coded_error,
+            None
+        ));
+        assert!(!should_retain_bolt12_binding_after_xpay_error(
+            &no_route_error,
+            None
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &coded_error,
+            Some(MeltQuoteState::Unknown)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &coded_error,
+            Some(MeltQuoteState::Pending)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &already_paid_error,
+            Some(MeltQuoteState::Paid)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &coded_error,
+            Some(MeltQuoteState::Failed)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &coded_error,
+            Some(MeltQuoteState::Unpaid)
+        ));
     }
 
     #[test]
@@ -1542,6 +2006,82 @@ mod tests {
     #[test]
     fn cln_payment_selection_returns_none_when_missing() {
         assert!(select_cln_payment(&[]).is_none());
+    }
+
+    #[test]
+    fn xpay_explicit_terminal_errors_do_not_require_payment_record() {
+        for code in [
+            XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE,
+            XPAY_ROUTE_NOT_FOUND_ERROR_CODE,
+            XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE,
+            XPAY_INVOICE_EXPIRED_ERROR_CODE,
+        ] {
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), None),
+                MeltQuoteState::Failed
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unknown)),
+                MeltQuoteState::Failed
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Failed)),
+                MeltQuoteState::Failed
+            );
+        }
+    }
+
+    #[test]
+    fn xpay_nonspecific_rpc_errors_ignore_negative_reconciliation() {
+        for code in [-1, 209] {
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), None),
+                MeltQuoteState::Unknown
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unknown)),
+                MeltQuoteState::Unknown
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Failed)),
+                MeltQuoteState::Unknown
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unpaid)),
+                MeltQuoteState::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn xpay_transport_and_already_paid_errors_are_ambiguous() {
+        assert_eq!(
+            xpay_error_state(&test_rpc_error(None), None),
+            MeltQuoteState::Unknown
+        );
+        assert_eq!(
+            xpay_error_state(&test_rpc_error(Some(XPAY_ALREADY_PAID_ERROR_CODE)), None),
+            MeltQuoteState::Unknown
+        );
+        assert_eq!(
+            xpay_error_state(&test_rpc_error(None), Some(MeltQuoteState::Failed)),
+            MeltQuoteState::Unknown
+        );
+    }
+
+    #[test]
+    fn xpay_positive_reconciliation_takes_precedence() {
+        let transport_error = test_rpc_error(None);
+        let terminal_rpc_error = test_rpc_error(Some(XPAY_ROUTE_NOT_FOUND_ERROR_CODE));
+
+        assert_eq!(
+            xpay_error_state(&transport_error, Some(MeltQuoteState::Paid)),
+            MeltQuoteState::Paid
+        );
+        assert_eq!(
+            xpay_error_state(&terminal_rpc_error, Some(MeltQuoteState::Pending)),
+            MeltQuoteState::Pending
+        );
     }
 
     #[tokio::test]

@@ -14,20 +14,22 @@ use std::collections::HashMap;
 
 use cdk_common::wallet::{
     IssueSagaState, MintOperationData, OperationData, ProofInfo, Transaction, TransactionDirection,
-    WalletSaga,
+    TransactionId, TransactionStatus, WalletSaga,
 };
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::construct_proofs;
-use crate::nuts::{MintRequest, State};
+use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::nuts::{MintRequest, PreMintSecrets, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
-use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
+use crate::wallet::issue::saga::state::PreparedMintRequest;
+use crate::wallet::recovery::{OutputRecoveryResult, RecoveryAction};
 use crate::wallet::saga::CompensatingAction;
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 fn is_mint_limit_error(error: &Error) -> bool {
@@ -76,6 +78,7 @@ impl Wallet {
                     "Issue saga {} in SecretsPrepared state - cleaning up",
                     saga.id
                 );
+                self.mark_transaction_failed(saga.id).await?;
                 self.compensate_issue(&saga.id).await?;
                 Ok(RecoveryAction::Compensated)
             }
@@ -98,12 +101,13 @@ impl Wallet {
         saga_id: &uuid::Uuid,
         data: &MintOperationData,
     ) -> Result<RecoveryAction, Error> {
-        let quote_ids = data.quote_ids();
+        self.ensure_pending_issue_transaction(saga_id, data).await?;
 
         // Try replay first
         let replay_result = self.try_replay_mint(saga_id, data).await;
         if let Err(e) = &replay_result {
             if is_mint_limit_error(e) {
+                self.mark_transaction_failed(*saga_id).await?;
                 self.compensate_issue(saga_id).await?;
             }
         }
@@ -114,25 +118,18 @@ impl Wallet {
                 .update_proofs(proofs.clone(), vec![])
                 .await?;
 
-            // Record transaction (best-effort, don't fail recovery if this fails)
-            if let Err(e) = self
-                .record_recovered_issue_transaction(saga_id, &quote_ids, &proofs)
-                .await
-            {
-                tracing::warn!(
-                    "Failed to record transaction for recovered issue saga {}: {}",
-                    saga_id,
-                    e
-                );
-            }
+            self.record_recovered_issue_transaction(saga_id, data, &proofs)
+                .await?;
+            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+                .await?;
 
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
 
         // Replay failed, fall back to /restore
-        let new_proofs = self
-            .restore_outputs(
+        let recovery_result = self
+            .restore_outputs_with_result(
                 saga_id,
                 "Issue",
                 data.blinded_messages.as_deref(),
@@ -141,102 +138,214 @@ impl Wallet {
             )
             .await?;
 
-        match new_proofs {
-            Some(proofs) => {
+        match recovery_result {
+            OutputRecoveryResult::Restored(proofs) => {
                 // Issue has no input proofs to remove - just add the recovered proofs
                 self.localstore
                     .update_proofs(proofs.clone(), vec![])
                     .await?;
 
-                // Record transaction (best-effort, don't fail recovery if this fails)
-                if let Err(e) = self
-                    .record_recovered_issue_transaction(saga_id, &quote_ids, &proofs)
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to record transaction for recovered issue saga {}: {}",
-                        saga_id,
-                        e
-                    );
-                }
+                self.record_recovered_issue_transaction(saga_id, data, &proofs)
+                    .await?;
+                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+                    .await?;
 
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
             }
-            None => {
-                // Couldn't restore outputs - issue saga has no inputs to mark spent
+            OutputRecoveryResult::EmptyResponse => {
+                // The mint definitively has no signatures for these outputs.
                 tracing::warn!(
-                    "Issue saga {} - couldn't restore outputs. \
-                     Run wallet.restore() to recover any missing proofs.",
+                    "Issue saga {} - mint returned no restorable outputs",
                     saga_id
                 );
+                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
+                    .await?;
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Compensated)
+            }
+            OutputRecoveryResult::Unavailable => {
+                tracing::warn!(
+                    "Issue saga {} - output recovery is unavailable, keeping it pending",
+                    saga_id
+                );
+                Ok(RecoveryAction::Skipped)
             }
         }
     }
 
+    /// Recreate a pending issue transaction if a crash happened after the saga
+    /// write-ahead update but before the transaction was stored.
+    async fn ensure_pending_issue_transaction(
+        &self,
+        saga_id: &uuid::Uuid,
+        data: &MintOperationData,
+    ) -> Result<(), Error> {
+        let blinded_messages = match data.blinded_messages.as_deref() {
+            Some(messages) if !messages.is_empty() => messages,
+            _ => return Ok(()),
+        };
+        let (counter_start, counter_end) = match (data.counter_start, data.counter_end) {
+            (Some(start), Some(end)) => (start, end),
+            _ => return Ok(()),
+        };
+
+        let premint_secrets = PreMintSecrets::restore_batch(
+            blinded_messages[0].keyset_id,
+            &self.seed,
+            counter_start,
+            counter_end,
+        )?;
+        let ys = premint_secrets
+            .secrets
+            .iter()
+            .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let quote_ids = data.quote_ids();
+        let output_counts = data
+            .batch_output_counts
+            .clone()
+            .unwrap_or_else(|| vec![ys.len()]);
+        let quote_amounts = data
+            .batch_quote_amounts
+            .clone()
+            .unwrap_or_else(|| vec![data.amount]);
+        let is_batch = quote_ids.len() > 1 && output_counts.len() == quote_ids.len();
+        let mut offset: usize = 0;
+
+        for (index, quote_id) in quote_ids.iter().enumerate() {
+            if !is_batch && index > 0 {
+                break;
+            }
+            let transaction_id = if is_batch {
+                TransactionId::from_batch_quote(*saga_id, quote_id)
+            } else {
+                TransactionId::from_saga_id(*saga_id)
+            };
+            if self
+                .localstore
+                .get_transaction(transaction_id)
+                .await?
+                .is_some()
+            {
+                offset += output_counts.get(index).copied().unwrap_or_default();
+                continue;
+            }
+
+            let count = output_counts.get(index).copied().unwrap_or(ys.len());
+            let end = offset.checked_add(count).ok_or(Error::AmountOverflow)?;
+            let transaction_ys = ys.get(offset..end).ok_or(Error::AmountUndefined)?.to_vec();
+            offset = end;
+            let quote = self.localstore.get_mint_quote(quote_id).await?;
+            let mut metadata = HashMap::new();
+            if is_batch {
+                metadata.insert("batch_quote_id".to_string(), quote_id.clone());
+            }
+
+            self.upsert_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: quote_amounts.get(index).copied().unwrap_or(data.amount),
+                fee: Amount::ZERO,
+                unit: self.unit.clone(),
+                ys: transaction_ys,
+                timestamp: unix_time(),
+                memo: None,
+                metadata,
+                quote_id: Some(quote_id.clone()),
+                payment_request: quote.as_ref().map(|quote| quote.request.clone()),
+                payment_proof: None,
+                payment_method: quote.map(|quote| quote.payment_method),
+                saga_id: Some(*saga_id),
+                status: TransactionStatus::Pending,
+            })
+            .await?;
+        }
+
+        Ok(())
+    }
+
     /// Record a transaction for recovered issue proofs.
     /// Skipped if quote not found (recovery still succeeds).
-    /// For batch operations, records transaction using the first quote.
     async fn record_recovered_issue_transaction(
         &self,
         saga_id: &uuid::Uuid,
-        quote_ids: &[String],
+        data: &MintOperationData,
         proofs: &[ProofInfo],
     ) -> Result<(), Error> {
-        // Use the first quote for transaction recording
-        let quote_id = quote_ids.first().ok_or(Error::UnknownQuote)?;
+        let quote_ids = data.quote_ids();
+        let output_counts = data
+            .batch_output_counts
+            .clone()
+            .unwrap_or_else(|| vec![proofs.len()]);
+        let quote_amounts = data
+            .batch_quote_amounts
+            .clone()
+            .unwrap_or_else(|| vec![data.amount]);
+        let is_batch = quote_ids.len() > 1 && output_counts.len() == quote_ids.len();
+        let mut offset: usize = 0;
 
-        // Get and update quote state from mint
-        let quote = match self.localstore.get_mint_quote(quote_id).await? {
-            Some(mut q) => {
-                // Update state from mint
-                if let Err(e) = self.check_state(&mut q).await {
-                    tracing::warn!(
-                        "Failed to check quote state for transaction recording: {}",
-                        e
-                    );
-                }
-                // Save updated quote state
-                if let Err(e) = self.localstore.add_mint_quote(q.clone()).await {
-                    tracing::warn!("Failed to save updated quote state: {}", e);
-                }
-                q
+        for (index, quote_id) in quote_ids.iter().enumerate() {
+            if !is_batch && index > 0 {
+                break;
             }
-            None => {
-                tracing::warn!(
-                    "Issue saga {} - quote {} not found, skipping transaction recording",
-                    saga_id,
-                    quote_id
-                );
-                return Ok(());
+            // Consume this quote's output segment before the quote lookup so a
+            // missing quote still advances the slice offset for later quotes.
+            let count = output_counts.get(index).copied().unwrap_or(proofs.len());
+            let end = offset.checked_add(count).ok_or(Error::AmountOverflow)?;
+            let quote_proofs = proofs.get(offset..end).ok_or(Error::AmountUndefined)?;
+            offset = end;
+            let quote = match self.localstore.get_mint_quote(quote_id).await? {
+                Some(mut quote) => {
+                    // Update state from mint
+                    if let Err(e) = self.check_state(&mut quote).await {
+                        tracing::warn!(
+                            "Failed to check quote state for transaction recording: {}",
+                            escape_log_value(&e)
+                        );
+                    }
+                    if let Err(e) = self.localstore.add_mint_quote(quote.clone()).await {
+                        tracing::warn!(
+                            "Failed to save updated quote state: {}",
+                            escape_log_value(&e)
+                        );
+                    }
+                    quote
+                }
+                None => continue,
+            };
+            let amount = match quote_amounts.get(index).copied() {
+                Some(amount) => amount,
+                None => quote_proofs.iter().try_fold(Amount::ZERO, |sum, proof| {
+                    sum.checked_add(proof.proof.amount)
+                        .ok_or(Error::AmountOverflow)
+                })?,
+            };
+            let mut metadata = HashMap::new();
+            if is_batch {
+                metadata.insert("batch_quote_id".to_string(), quote_id.clone());
             }
-        };
 
-        let minted_amount = proofs
-            .iter()
-            .fold(Amount::ZERO, |acc, p| acc + p.proof.amount);
-        let ys: Vec<_> = proofs.iter().map(|p| p.y).collect();
-
-        self.localstore
-            .add_transaction(Transaction {
+            self.upsert_transaction(Transaction {
                 mint_url: self.mint_url.clone(),
                 direction: TransactionDirection::Incoming,
-                amount: minted_amount,
+                amount,
                 fee: Amount::ZERO,
                 unit: self.unit.clone(),
-                ys,
+                ys: quote_proofs.iter().map(|proof| proof.y).collect(),
                 timestamp: unix_time(),
                 memo: None,
-                metadata: HashMap::new(),
-                quote_id: Some(quote_id.to_string()),
+                metadata,
+                quote_id: Some(quote_id.clone()),
                 payment_request: Some(quote.request.clone()),
                 payment_proof: None,
                 payment_method: Some(quote.payment_method.clone()),
                 saga_id: Some(*saga_id),
+                status: TransactionStatus::Completed,
             })
             .await?;
+        }
 
         Ok(())
     }
@@ -298,8 +407,12 @@ impl Wallet {
             let payment_method = payment_method.ok_or(Error::UnknownQuote)?;
 
             // Build quote amounts
-            let quote_amounts: Vec<Amount> =
-                quote_infos.iter().map(|q| q.amount_mintable()).collect();
+            let quote_amounts = data.batch_quote_amounts.clone().unwrap_or_else(|| {
+                quote_infos
+                    .iter()
+                    .map(|quote| quote.amount_mintable())
+                    .collect()
+            });
 
             // Construct batch mint request
             let mut batch_request = BatchMintRequest {
@@ -331,11 +444,23 @@ impl Wallet {
                 saga_id
             );
 
+            let mint_request = PreparedMintRequest::Batch {
+                quote_ids: quote_ids.clone(),
+                quote_infos: quote_infos.clone(),
+                output_counts: data
+                    .batch_output_counts
+                    .clone()
+                    .unwrap_or_else(|| vec![blinded_messages.len()]),
+                request: batch_request,
+            };
+
             // Attempt batch replay
-            let mint_response = match self
-                .client
-                .post_batch_mint(&payment_method, batch_request)
-                .await
+            let mint_response = match super::post_mint_request_with_legacy_fallback(
+                self,
+                &payment_method,
+                &mint_request,
+            )
+            .await
             {
                 Ok(response) => response,
                 Err(e) => {
@@ -343,7 +468,7 @@ impl Wallet {
                         tracing::warn!(
                             "Issue saga {} - batch replay failed with mint limit: {}",
                             saga_id,
-                            e
+                            escape_log_value(&e)
                         );
                         return Err(e);
                     }
@@ -351,7 +476,7 @@ impl Wallet {
                     tracing::info!(
                         "Issue saga {} - batch replay failed ({}), falling back to restore",
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Ok(None);
                 }
@@ -397,8 +522,18 @@ impl Wallet {
 
             let proof_infos: Vec<ProofInfo> = proofs
                 .into_iter()
-                .map(|p| {
-                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())
+                .zip(&premint_secrets.secrets)
+                .map(|(p, premint)| {
+                    let proof_info = ProofInfo::new(
+                        p,
+                        self.mint_url.clone(),
+                        State::Unspent,
+                        self.unit.clone(),
+                    )?;
+                    Ok::<_, Error>(match premint.derivation_index {
+                        Some(index) => proof_info.with_derivation_index(index),
+                        None => proof_info,
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -435,7 +570,7 @@ impl Wallet {
                 tracing::warn!(
                     "Issue saga {} - failed to sign mint request: {}, cannot replay",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 return Ok(None);
             }
@@ -446,11 +581,19 @@ impl Wallet {
             saga_id
         );
 
+        let mint_request = PreparedMintRequest::Single {
+            quote_id: data.primary_quote_id().to_string(),
+            quote_info: quote.clone(),
+            request: mint_request,
+        };
+
         // Attempt the replay
-        let mint_response = match self
-            .client
-            .post_mint(&quote.payment_method, mint_request)
-            .await
+        let mint_response = match super::post_mint_request_with_legacy_fallback(
+            self,
+            &quote.payment_method,
+            &mint_request,
+        )
+        .await
         {
             Ok(response) => response,
             Err(e) => {
@@ -458,7 +601,7 @@ impl Wallet {
                     tracing::warn!(
                         "Issue saga {} - replay failed with mint limit: {}",
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Err(e);
                 }
@@ -466,7 +609,7 @@ impl Wallet {
                 tracing::info!(
                     "Issue saga {} - replay failed ({}), falling back to restore",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 return Ok(None);
             }
@@ -519,7 +662,15 @@ impl Wallet {
 
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
-            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
+            .zip(&premint_secrets.secrets)
+            .map(|(p, premint)| {
+                let proof_info =
+                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
+                Ok::<_, Error>(match premint.derivation_index {
+                    Some(index) => proof_info.with_derivation_index(index),
+                    None => proof_info,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Some(proof_infos))
@@ -538,7 +689,7 @@ impl Wallet {
             tracing::warn!(
                 "Failed to release mint quote for saga {}: {}. Continuing with saga cleanup.",
                 saga_id,
-                e
+                escape_log_value(&e)
             );
         }
 
@@ -554,7 +705,8 @@ mod tests {
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
     use cdk_common::nuts::{CurrencyUnit, RestoreResponse};
     use cdk_common::wallet::{
-        IssueSagaState, MintOperationData, OperationData, WalletSaga, WalletSagaState,
+        IssueSagaState, MintOperationData, OperationData, ProofInfo, TransactionId,
+        TransactionStatus, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -578,6 +730,110 @@ mod tests {
             Some(429),
             "Too Many Requests".to_string()
         )));
+    }
+
+    #[tokio::test]
+    async fn test_recovered_batch_transaction_missing_mid_quote_keeps_offset() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Three-quote batch where the middle quote is missing from the store
+        let quote_a = test_mint_quote(mint_url.clone());
+        let quote_b = test_mint_quote(mint_url.clone());
+        let quote_c = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(quote_a.clone()).await.unwrap();
+        db.add_mint_quote(quote_c.clone()).await.unwrap();
+        // quote_b deliberately NOT stored
+
+        let proof_infos: Vec<ProofInfo> = (1..=3)
+            .map(|i| {
+                crate::wallet::test_utils::test_proof_info(
+                    test_keyset_id(),
+                    i * 100,
+                    mint_url.clone(),
+                )
+            })
+            .collect();
+        let expected_ys: Vec<_> = proof_infos.iter().map(|p| p.y).collect();
+
+        let data = MintOperationData::new_partitioned_batch(
+            vec![quote_a.id.clone(), quote_b.id.clone(), quote_c.id.clone()],
+            Amount::from(600),
+            None,
+            None,
+            None,
+            vec![1, 1, 1],
+            vec![Amount::from(100), Amount::from(200), Amount::from(300)],
+        );
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        wallet
+            .record_recovered_issue_transaction(&saga_id, &data, &proof_infos)
+            .await
+            .unwrap();
+
+        // Quote A must record its own proof (index 0)
+        let tx_a = db
+            .get_transaction(TransactionId::from_batch_quote(saga_id, &quote_a.id))
+            .await
+            .unwrap()
+            .expect("transaction for quote A");
+        assert_eq!(tx_a.ys, vec![expected_ys[0]]);
+
+        // Missing middle quote records nothing
+        assert!(db
+            .get_transaction(TransactionId::from_batch_quote(saga_id, &quote_b.id))
+            .await
+            .unwrap()
+            .is_none());
+
+        // Quote C must record its own proof (index 2), not the missing quote's (index 1)
+        let tx_c = db
+            .get_transaction(TransactionId::from_batch_quote(saga_id, &quote_c.id))
+            .await
+            .unwrap()
+            .expect("transaction for quote C");
+        assert_eq!(tx_c.ys, vec![expected_ys[2]]);
+    }
+
+    #[tokio::test]
+    async fn test_recovered_batch_transaction_rejects_proof_amount_overflow() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_a = test_mint_quote(mint_url.clone());
+        let quote_b = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(quote_a.clone()).await.unwrap();
+        db.add_mint_quote(quote_b.clone()).await.unwrap();
+
+        let proof_infos = vec![
+            crate::wallet::test_utils::test_proof_info(
+                test_keyset_id(),
+                u64::MAX,
+                mint_url.clone(),
+            ),
+            crate::wallet::test_utils::test_proof_info(test_keyset_id(), 1, mint_url),
+        ];
+        let mut data = MintOperationData::new_batch(
+            vec![quote_a.id, quote_b.id],
+            Amount::ZERO,
+            None,
+            None,
+            None,
+        );
+        data.batch_output_counts = Some(vec![0, 2]);
+
+        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let result = wallet
+            .record_recovered_issue_transaction(&saga_id, &data, &proof_infos)
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -630,8 +886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_issue_mint_requested_replay_succeeds() {
-        // Mock: post_mint succeeds → recovered
+    async fn test_recover_issue_mint_requested_without_recovery_data_stays_pending() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let saga_id = uuid::Uuid::new_v4();
@@ -658,7 +913,6 @@ mod tests {
         let mint_quote = test_mint_quote(mint_url.clone());
         db.add_mint_quote(mint_quote).await.unwrap();
 
-        // Mock: post_mint succeeds
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_post_mint_response(Ok(crate::nuts::MintResponse { signatures: vec![] }));
 
@@ -667,71 +921,75 @@ mod tests {
             .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await;
 
-        // Verify recovery
         assert!(result.is_ok());
         let recovery_action = result.unwrap();
 
-        // With empty blinded_messages, falls back to restore
-        // With empty restore response, saga deleted as Compensated
-        assert_eq!(recovery_action, RecoveryAction::Compensated);
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        // Without stable output data, recovery cannot make a terminal decision.
+        assert_eq!(recovery_action, RecoveryAction::Skipped);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
 
         // No proofs created
         let proofs = db.get_proofs(None, None, None, None).await.unwrap();
         assert!(proofs.is_empty());
 
-        // No transaction recorded for compensated issue
+        // No transaction can be reconstructed without stable output identifiers.
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert!(transactions.is_empty());
     }
 
     #[tokio::test]
-    async fn test_recover_issue_mint_requested_restore_succeeds() {
-        // Mock: post_mint fails, restore succeeds → recovered
+    async fn test_recover_issue_empty_restore_marks_transaction_failed() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let saga_id = uuid::Uuid::new_v4();
         let quote_id = format!("test_mint_quote_{}", uuid::Uuid::new_v4());
 
-        // Create saga in MintRequested state
-        let saga = WalletSaga::new(
-            saga_id,
-            WalletSagaState::Issue(IssueSagaState::MintRequested),
-            Amount::from(1000),
-            mint_url.clone(),
-            CurrencyUnit::Sat,
-            OperationData::Mint(MintOperationData::new_single(
-                quote_id.clone(),
-                Amount::from(1000),
-                Some(0),
-                Some(10),
-                Some(vec![]),
-            )),
-        );
-        db.add_saga(saga).await.unwrap();
-
-        // Store mint quote
-        let mint_quote = test_mint_quote(mint_url.clone());
-        db.add_mint_quote(mint_quote).await.unwrap();
-
-        // Mock: post_mint fails, restore returns proofs
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_post_mint_response(Err(crate::Error::Custom("Mint failed".to_string())));
         mock_client._set_restore_response(Ok(RestoreResponse {
             signatures: vec![],
             outputs: vec![],
         }));
-
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1]));
+        let premint_secrets = PreMintSecrets::from_seed(
+            test_keyset_id(),
+            0,
+            &wallet.seed,
+            Amount::from(1),
+            &SplitTarget::None,
+            &fee_and_amounts,
+        )
+        .unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(1),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                Amount::from(1),
+                Some(0),
+                Some(1),
+                Some(premint_secrets.blinded_messages()),
+            )),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mut mint_quote = test_mint_quote(mint_url);
+        mint_quote.id = quote_id;
+        mint_quote.used_by_operation = Some(saga_id.to_string());
+        db.add_mint_quote(mint_quote).await.unwrap();
+
         let result = wallet
             .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await;
 
-        // Verify recovery
         assert!(result.is_ok());
         let recovery_action = result.unwrap();
 
-        // post_mint fails, restore returns empty -> Compensated
         assert_eq!(recovery_action, RecoveryAction::Compensated);
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
 
@@ -739,9 +997,9 @@ mod tests {
         let proofs = db.get_proofs(None, None, None, None).await.unwrap();
         assert!(proofs.is_empty());
 
-        // No transaction for compensated issue
         let transactions = db.list_transactions(None, None, None).await.unwrap();
-        assert!(transactions.is_empty());
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Failed);
     }
 
     #[tokio::test]
@@ -800,5 +1058,8 @@ mod tests {
 
         let mint_quote = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
         assert!(mint_quote.used_by_operation.is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Failed);
     }
 }

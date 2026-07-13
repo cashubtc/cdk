@@ -28,7 +28,7 @@ impl GrpcProcessor {
         }
 
         if let Ok(addr) = env::var(ENV_GRPC_PROCESSOR_ADDRESS) {
-            self.addr = addr;
+            self.address = addr;
         }
 
         if let Ok(port) = env::var(ENV_GRPC_PROCESSOR_PORT) {

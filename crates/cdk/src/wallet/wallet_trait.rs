@@ -7,14 +7,14 @@ use async_trait::async_trait;
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut07::ProofState;
-use cdk_common::nuts::nut18::PaymentRequest;
 use cdk_common::nuts::{
     AuthProof, CurrencyUnit, Id, MeltOptions, MintInfo, PaymentMethod, Proofs, SpendingConditions,
 };
+use cdk_common::rate_limit::RateLimitConfig;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
-    MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
-    TransactionId, Wallet as WalletTrait,
+    CrossMintTransferQuote, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions,
+    Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
@@ -34,6 +34,7 @@ impl WalletTrait for super::Wallet {
     type KeySetInfo = cdk_common::KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
+    type CrossMintTransferQuote = CrossMintTransferQuote;
     type PaymentMethod = PaymentMethod;
     type MeltOptions = MeltOptions;
     type OperationId = Uuid;
@@ -116,7 +117,7 @@ impl WalletTrait for super::Wallet {
         self.get_keyset_fees_and_amounts_by_id(keyset_id).await
     }
 
-    #[instrument(skip(self, method))]
+    #[instrument(skip(self, method, extra))]
     async fn mint_quote(
         &self,
         method: PaymentMethod,
@@ -136,6 +137,14 @@ impl WalletTrait for super::Wallet {
         extra: Option<String>,
     ) -> Result<MeltQuote, Self::Error> {
         self.melt_quote(method, request, options, extra).await
+    }
+
+    #[instrument(skip_all)]
+    async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: &Self,
+    ) -> Result<CrossMintTransferQuote, Self::Error> {
+        self.cross_mint_transfer_quote_max(target_wallet).await
     }
 
     #[instrument(skip(self))]
@@ -238,6 +247,11 @@ impl WalletTrait for super::Wallet {
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Self::Error> {
         self.mint(quote_id, split_target, spending_conditions).await
+    }
+
+    #[instrument(skip(self))]
+    async fn mint_unissued_quotes(&self) -> Result<Amount, Self::Error> {
+        self.mint_unissued_quotes().await
     }
 
     #[instrument(skip(self))]
@@ -356,15 +370,6 @@ impl WalletTrait for super::Wallet {
         self.verify_token_signatures(&token).await
     }
 
-    #[instrument(skip(self, request))]
-    async fn pay_request(
-        &self,
-        request: PaymentRequest,
-        custom_amount: Option<Amount>,
-    ) -> Result<(), Self::Error> {
-        self.pay_request(request, custom_amount).await
-    }
-
     #[instrument(skip(self, method))]
     async fn subscribe_mint_quote_state(
         &self,
@@ -377,6 +382,21 @@ impl WalletTrait for super::Wallet {
     fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
         let ttl = ttl_secs.map(std::time::Duration::from_secs);
         self.set_metadata_cache_ttl(ttl);
+    }
+
+    fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>) {
+        match config {
+            Some(config) => self.set_rate_limiting_config(config),
+            None => self.disable_rate_limiting(),
+        }
+    }
+
+    fn is_rate_limited(&self) -> bool {
+        self.is_rate_limited()
+    }
+
+    async fn flush_rate_limits(&self) {
+        self.flush_rate_limits().await;
     }
 
     #[instrument(skip(self, params))]
@@ -460,5 +480,81 @@ impl WalletTrait for super::Wallet {
     async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Self::Error> {
         let signing_key = self.get_signing_key(pubkey).await?;
         Ok(signing_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::nut00::KnownMethod;
+    use cdk_common::rate_limit::RateLimitConfig;
+
+    use super::*;
+    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
+    use crate::wallet::WalletBuilder;
+
+    async fn test_wallet() -> super::super::Wallet {
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_round_trips_through_the_trait() {
+        let wallet = test_wallet().await;
+        assert!(WalletTrait::is_rate_limited(&wallet));
+
+        WalletTrait::set_rate_limiting_config(&wallet, None);
+        assert!(!WalletTrait::is_rate_limited(&wallet));
+
+        WalletTrait::set_rate_limiting_config(&wallet, Some(RateLimitConfig::default()));
+        assert!(WalletTrait::is_rate_limited(&wallet));
+    }
+
+    #[tokio::test]
+    async fn flushing_an_untouched_wallet_returns() {
+        let wallet = test_wallet().await;
+        WalletTrait::flush_rate_limits(&wallet).await;
+    }
+
+    #[tokio::test]
+    async fn custom_payment_extra_is_omitted_from_mint_quote_spans() {
+        let extra = "private-custom-payment-extra";
+        let description = "public-description-marker";
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        let connector = Arc::new(MockMintConnector::new());
+        connector.push_post_mint_quote_response(Err(Error::UnsupportedPaymentMethod));
+        let wallet = WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .shared_client(connector)
+            .build()
+            .unwrap();
+        let capture = TraceWriter::default();
+        let subscriber = capture.subscriber();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = WalletTrait::mint_quote(
+            &wallet,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(Amount::from(7)),
+            Some(description.to_string()),
+            Some(extra.to_string()),
+        )
+        .await;
+
+        drop(guard);
+        let trace = capture.output();
+        assert!(trace.contains("mint_quote"));
+        assert!(trace.contains(description));
+        assert!(!trace.contains(extra));
     }
 }

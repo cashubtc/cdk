@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::{InterceptedCdkMintClient, UpdateUrlRequest};
+use crate::info::{AddUrlRequest, RemoveUrlRequest};
+use crate::InterceptedMintInfoServiceClient;
 
 /// Command to add a URL to the mint's list of endpoints
 ///
@@ -23,11 +24,11 @@ pub struct AddUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The URL to add to the mint
 pub async fn add_url(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &AddUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .add_url(Request::new(UpdateUrlRequest {
+        .add_url(Request::new(AddUrlRequest {
             url: sub_command_args.url.clone(),
         }))
         .await?;
@@ -53,11 +54,11 @@ pub struct RemoveUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The URL to remove from the mint
 pub async fn remove_url(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &RemoveUrlCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_url(Request::new(UpdateUrlRequest {
+        .remove_url(Request::new(RemoveUrlRequest {
             url: sub_command_args.url.clone(),
         }))
         .await?;

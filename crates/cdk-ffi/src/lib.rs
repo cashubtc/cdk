@@ -10,8 +10,12 @@ pub mod bip321;
 pub mod database;
 pub mod error;
 pub mod logging;
+#[cfg(feature = "nostr")]
+pub mod nostr;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
+#[cfg(feature = "nwc")]
+pub mod nwc;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 mod runtime;
@@ -27,8 +31,12 @@ mod wallet_trait;
 pub use database::*;
 pub use error::*;
 pub use logging::*;
+#[cfg(feature = "nostr")]
+pub use nostr::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
+#[cfg(feature = "nwc")]
+pub use nwc::*;
 pub use types::*;
 pub use wallet::*;
 pub use wallet_repository::*;
@@ -316,7 +324,7 @@ mod tests {
         assert!(encoded.contains(&secret_hex));
         assert!(encoded.contains("p2pk_signing_keys"));
         assert!(!debug.contains(&secret_hex));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[REDACTED]"));
 
         let decoded = crate::types::wallet::decode_send_options(encoded).unwrap();
 
@@ -373,7 +381,7 @@ mod tests {
         assert!(encoded.contains(&secret_hex));
         assert!(encoded.contains("p2pk_signing_keys"));
         assert!(!debug.contains(&secret_hex));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[REDACTED]"));
 
         let decoded = crate::types::wallet::decode_receive_options(encoded).unwrap();
 
@@ -458,6 +466,7 @@ mod tests {
             payment_proof: None,
             payment_method: None,
             saga_id: Some("not-a-valid-uuid".to_string()),
+            status: TransactionStatus::Completed,
         };
 
         let result: Result<cdk::wallet::types::Transaction, _> = transaction.try_into();
@@ -478,6 +487,7 @@ mod tests {
                 .expect("valid mint URL should convert successfully"),
             amount_issued: Amount::zero(),
             amount_paid: Amount::zero(),
+            updated_at: 0,
             estimated_blocks: None,
             payment_method: PaymentMethod::Bolt11,
             secret_key: None,
@@ -495,11 +505,13 @@ mod tests {
     fn test_wallet_config() {
         let config = WalletConfig {
             target_proof_count: None,
+            rate_limit: None,
         };
         assert!(config.target_proof_count.is_none());
 
         let config_with_values = WalletConfig {
             target_proof_count: Some(5),
+            rate_limit: None,
         };
         assert_eq!(config_with_values.target_proof_count, Some(5));
     }

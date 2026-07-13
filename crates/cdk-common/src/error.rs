@@ -42,6 +42,27 @@ pub enum Error {
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
+    /// A payment-request token was created but transport delivery failed.
+    ///
+    /// The token remains a pending send. Callers can pass `operation_id` to
+    /// `Wallet::revoke_send` to reclaim it if the receiver has not claimed it.
+    #[cfg(feature = "wallet")]
+    #[error("Payment token created but delivery failed for operation {operation_id}: {source}")]
+    PaymentRequestDeliveryFailed {
+        /// Pending send operation that can be passed to `Wallet::revoke_send`.
+        operation_id: uuid::Uuid,
+        /// Transport error returned while delivering the created token.
+        #[source]
+        source: Box<Error>,
+    },
+    /// No Nostr relay accepted a published event.
+    #[error("No Nostr relay accepted event {event_id}")]
+    NostrPublishFailed {
+        /// Event that could not be published.
+        event_id: String,
+        /// Relays that failed to accept the event.
+        failed_relays: Vec<String>,
+    },
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -241,7 +262,7 @@ pub enum Error {
     /// regardless since the quote remains `Pending`.
     #[error("Timed out waiting for pending melt to complete{}", .last_backend_error.as_ref().map(|e| format!(": last backend error: {}", e)).unwrap_or_default())]
     PendingMeltTimeout {
-        /// Last error observed from the LN backend status check, if any.
+        /// Last error observed from the payment backend status check, if any.
         last_backend_error: Option<String>,
     },
     /// ecash already issued for quote
@@ -437,6 +458,9 @@ pub enum Error {
     /// Invalid transaction direction
     #[error("Invalid transaction direction")]
     InvalidTransactionDirection,
+    /// Invalid transaction status
+    #[error("Invalid transaction status")]
+    InvalidTransactionStatus,
     /// Invalid transaction id
     #[error("Invalid transaction id")]
     InvalidTransactionId,
@@ -590,7 +614,6 @@ mod tests {
     fn test_is_definitive_failure() {
         // Test definitive failures
         assert!(Error::AmountOverflow.is_definitive_failure());
-        assert!(Error::TokenAlreadySpent.is_definitive_failure());
         assert!(Error::MintingDisabled.is_definitive_failure());
         assert!(Error::MaxInputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
         assert!(Error::MaxOutputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
@@ -606,6 +629,14 @@ mod tests {
         assert!(!Error::Timeout.is_definitive_failure());
         assert!(!Error::Internal.is_definitive_failure());
         assert!(!Error::ConcurrentUpdate.is_definitive_failure());
+        assert!(!Error::BlindedMessageAlreadySigned.is_definitive_failure());
+        assert!(!Error::TokenAlreadySpent.is_definitive_failure());
+        #[cfg(feature = "wallet")]
+        assert!(!Error::PaymentRequestDeliveryFailed {
+            operation_id: uuid::Uuid::new_v4(),
+            source: Box::new(Error::Timeout),
+        }
+        .is_definitive_failure());
 
         // Test HTTP server errors (5xx)
         assert!(
@@ -729,6 +760,19 @@ mod tests {
         ));
         assert!(max_outputs.is_definitive_failure());
     }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn payment_backend_error_response_redacts_backend_detail() {
+        const BACKEND_DETAIL: &str = "backend secret: rpc-token-123";
+        let error = Error::Payment(crate::payment::Error::Custom(BACKEND_DETAIL.to_string()));
+
+        let response = ErrorResponse::from(error);
+
+        assert_eq!(response.code, ErrorCode::Unknown(50000));
+        assert_eq!(response.detail, "Payment backend error");
+        assert!(!response.detail.contains(BACKEND_DETAIL));
+    }
 }
 
 impl Error {
@@ -769,7 +813,6 @@ impl Error {
             | Self::PaidQuote
             | Self::MeltingDisabled
             | Self::UnknownKeySet
-            | Self::BlindedMessageAlreadySigned
             | Self::InactiveKeyset
             | Self::ExpiredKeyset
             | Self::TransactionUnbalanced(_, _, _)
@@ -782,7 +825,6 @@ impl Error {
             | Self::MultipleUnits
             | Self::UnitMismatch
             | Self::SigAllUsedInMelt
-            | Self::TokenAlreadySpent
             | Self::P2PKConditionsNotMet(_)
             | Self::DuplicateSignatureError
             | Self::LocktimeNotProvided
@@ -800,6 +842,7 @@ impl Error {
             | Self::IncorrectQuoteAmount
             | Self::InvoiceDescriptionUnsupported
             | Self::InvalidTransactionDirection
+            | Self::InvalidTransactionStatus
             | Self::InvalidTransactionId
             | Self::InvalidOperationKind
             | Self::InvalidOperationState
@@ -851,10 +894,14 @@ impl Error {
             | Self::Bip353Resolve(_)
             | Self::LightningAddressRequest(_) => false,
 
+            #[cfg(feature = "wallet")]
+            Self::PaymentRequestDeliveryFailed { .. } => false,
+
             // Network/IO/Parsing Errors (Usually ambiguous as they could happen reading response)
             Self::HttpError(None, _) // No status code means network error
             | Self::SerdeJsonError(_) // Could be malformed success response
             | Self::Database(_)
+            | Self::NostrPublishFailed { .. }
             | Self::Custom(_) => false,
 
             // Auth Errors (Generally definitive if rejected)
@@ -1203,6 +1250,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::Unknown(50000),
                 detail: err.to_string(),
             },
+            #[cfg(feature = "mint")]
+            Error::Payment(payment_error) => {
+                tracing::error!(error = %payment_error, "Payment backend error");
+                ErrorResponse {
+                    code: ErrorCode::Unknown(50000),
+                    detail: "Payment backend error".to_string(),
+                }
+            }
 
             // Transaction/amount errors
             Error::SplitValuesGreater => ErrorResponse {

@@ -2,23 +2,24 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::fs;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use std::{fmt, fs};
 
 use async_trait::async_trait;
 use bdk_wallet::bitcoin::Network;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
-use bdk_wallet::rusqlite::Connection;
+use bdk_wallet::rusqlite::{Connection, OpenFlags};
 use bdk_wallet::template::Bip84;
-use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
+use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, Update, Wallet};
+use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
@@ -34,7 +35,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::chain::{BitcoinRpcConfig, ChainSource, EsploraConfig};
+pub use crate::chain::{BitcoinRpcConfig, ChainSource, ElectrumConfig, EsploraConfig};
 pub use crate::error::Error;
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{
@@ -52,6 +53,64 @@ pub mod storage;
 pub(crate) mod sync;
 pub mod types;
 pub(crate) mod util;
+pub mod wallet_info;
+
+pub use crate::wallet_info::{
+    WalletAddress, WalletBalance, WalletKeychain, WalletPage, WalletTransaction,
+    WalletTransactionInput, WalletTransactionOutput,
+};
+
+const MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS: usize = 100;
+
+/// Verify that an existing BDK wallet is present and belongs to the configured
+/// mnemonic and network without modifying its database.
+pub fn validate_existing_wallet(
+    mnemonic: Mnemonic,
+    network: Network,
+    storage_dir_path: &Path,
+) -> Result<(), Error> {
+    let wallet_path = storage_dir_path.join("bdk_wallet/bdk_wallet.sqlite");
+    match fs::metadata(&wallet_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::ExistingWalletMissing { path: wallet_path });
+        }
+        Err(error) => return Err(Error::Io(error)),
+    }
+
+    let mut db = Connection::open_with_flags(&wallet_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_wallet_table = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bdk_wallet')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_wallet_table {
+        return Err(Error::ExistingWalletNotInitialized { path: wallet_path });
+    }
+
+    let changeset = {
+        let transaction = db.transaction()?;
+        ChangeSet::from_sqlite(&transaction)?
+    };
+
+    let xkey: ExtendedKey = mnemonic.into_extended_key()?;
+    let xprv = xkey.into_xprv(network.into()).ok_or(Error::Path)?;
+    let descriptor = Bip84(xprv, KeychainKind::External);
+    let change_descriptor = Bip84(xprv, KeychainKind::Internal);
+    let wallet = Wallet::load()
+        .descriptor(KeychainKind::External, Some(descriptor))
+        .descriptor(KeychainKind::Internal, Some(change_descriptor))
+        .extract_keys()
+        .check_network(network)
+        .load_wallet_no_persist(changeset)
+        .map_err(|e| Error::Wallet(e.to_string()))?;
+
+    match wallet {
+        Some(_) => Ok(()),
+        None => Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
+    }
+}
 
 /// Wrapper struct that combines wallet and database to prevent deadlocks
 pub(crate) struct WalletWithDb {
@@ -149,6 +208,63 @@ pub struct CdkBdk {
 }
 
 impl CdkBdk {
+    fn outgoing_payment_failure_response(
+        unit: &CurrencyUnit,
+        quote_id: &cdk_common::QuoteId,
+        reason: impl fmt::Display,
+    ) -> MakePaymentResponse {
+        tracing::warn!(
+            quote_id = %quote_id,
+            "BDK rejected onchain payment before dispatch: {reason}"
+        );
+        MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+            payment_proof: None,
+            status: MeltQuoteState::Failed,
+            total_spent: Amount::new(0, unit.clone()),
+        }
+    }
+
+    fn ensure_supported_payment_unit(
+        unit: &CurrencyUnit,
+    ) -> Result<(), cdk_common::payment::Error> {
+        match unit {
+            CurrencyUnit::Sat | CurrencyUnit::Msat => Ok(()),
+            _ => Err(cdk_common::payment::Error::UnsupportedUnit),
+        }
+    }
+
+    fn ensure_amount_unit(unit: &CurrencyUnit, amount: &Amount<CurrencyUnit>) -> Result<(), Error> {
+        if amount.unit() != unit {
+            return Err(Error::AmountUnitMismatch {
+                expected: unit.clone(),
+                actual: amount.unit().clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn payment_amount_to_sat(
+        unit: &CurrencyUnit,
+        amount: &Amount<CurrencyUnit>,
+    ) -> Result<u64, Error> {
+        Self::ensure_amount_unit(unit, amount)?;
+
+        if unit == &CurrencyUnit::Msat && amount.value() % MSAT_IN_SAT != 0 {
+            return Err(Error::FractionalSatoshiAmount {
+                amount_msat: amount.value(),
+            });
+        }
+
+        amount.to_sat().map_err(Error::from)
+    }
+
+    fn fee_limit_to_sat(unit: &CurrencyUnit, amount: &Amount<CurrencyUnit>) -> Result<u64, Error> {
+        Self::ensure_amount_unit(unit, amount)?;
+        amount.to_sat().map_err(Error::from)
+    }
+
     pub(crate) fn validate_send_amount_against_dust(
         &self,
         address: &str,
@@ -247,6 +363,8 @@ impl CdkBdk {
         shutdown_timeout_secs: Option<u64>,
         sync_config: Option<SyncConfig>,
     ) -> Result<Self, Error> {
+        chain_source.validate()?;
+
         let storage_dir_path = PathBuf::from(storage_dir_path);
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
         fs::create_dir_all(&storage_dir_path)?;
@@ -267,12 +385,36 @@ impl CdkBdk {
             .load_wallet(&mut db)
             .map_err(|e| Error::Wallet(e.to_string()))?;
 
+        // A fresh Bitcoin Core wallet should start at the current tip rather
+        // than scanning from genesis. An explicit rescan height overrides the
+        // tip for seed recovery. Fetch this before creating the wallet so an
+        // unreachable or misconfigured node cannot persist a genesis-pinned
+        // wallet by accident.
+        let initial_checkpoint = match wallet_opt.is_none() {
+            true => chain_source.initial_checkpoint()?,
+            false => None,
+        };
+
         let mut wallet = match wallet_opt {
             Some(wallet) => wallet,
-            None => Wallet::create(descriptor, change_descriptor)
-                .network(network)
-                .create_wallet(&mut db)
-                .map_err(|e| Error::Wallet(e.to_string()))?,
+            None => {
+                let mut wallet = Wallet::create(descriptor, change_descriptor)
+                    .network(network)
+                    .create_wallet(&mut db)
+                    .map_err(|e| Error::Wallet(e.to_string()))?;
+
+                if let Some(block_id) = initial_checkpoint {
+                    let checkpoint = wallet.latest_checkpoint().insert(block_id);
+                    wallet
+                        .apply_update(Update {
+                            chain: Some(checkpoint),
+                            ..Default::default()
+                        })
+                        .map_err(|e| Error::Wallet(e.to_string()))?;
+                }
+
+                wallet
+            }
         };
 
         wallet.persist(&mut db)?;
@@ -400,6 +542,7 @@ impl MintPayment for CdkBdk {
 
         self.recover_receive_saga().await?;
         self.recover_send_saga().await?;
+        self.storage.ensure_send_outpoint_quote_id_index().await?;
 
         let cancel = CancellationToken::new();
 
@@ -481,19 +624,18 @@ impl MintPayment for CdkBdk {
 
     async fn get_payment_quote(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
+        Self::ensure_supported_payment_unit(unit)?;
+
         let onchain_options = match options {
             OutgoingPaymentOptions::Onchain(o) => o,
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
         };
 
-        self.validate_send_amount(
-            &onchain_options.address,
-            onchain_options.amount.clone().to_u64(),
-        )?;
-        let amount_sat = onchain_options.amount.clone().to_u64();
+        let amount_sat = Self::payment_amount_to_sat(unit, &onchain_options.amount)?;
+        self.validate_send_amount(&onchain_options.address, amount_sat)?;
 
         // Estimate fee_reserve for each configured tier so the mint presents
         // only the operator-enabled options. The configured order owns the
@@ -503,9 +645,12 @@ impl MintPayment for CdkBdk {
             let fee_estimate = self
                 .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, *tier)
                 .await?;
+            let fee_reserve = Amount::new(fee_estimate.fee_reserve_sat, CurrencyUnit::Sat)
+                .convert_to(unit)
+                .map_err(Error::AmountConversion)?;
             fee_options.push(MeltQuoteOnchainFeeOption {
                 fee_index: idx as u32,
-                fee_reserve: Amount::from(fee_estimate.fee_reserve_sat),
+                fee_reserve: fee_reserve.into(),
                 estimated_blocks: tier.estimated_blocks(),
             });
         }
@@ -526,7 +671,7 @@ impl MintPayment for CdkBdk {
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(PaymentIdentifier::QuoteId(onchain_options.quote_id.clone())),
             amount: onchain_options.amount,
-            fee: Amount::new(cheapest.fee_reserve.into(), CurrencyUnit::Sat),
+            fee: Amount::new(cheapest.fee_reserve.into(), unit.clone()),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
             estimated_blocks: Some(cheapest.estimated_blocks),
@@ -536,7 +681,7 @@ impl MintPayment for CdkBdk {
 
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         let onchain_options = match options {
@@ -548,30 +693,72 @@ impl MintPayment for CdkBdk {
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
 
-        self.validate_send_amount(&address, amount.clone().to_u64())?;
+        if let Err(err) = Self::ensure_supported_payment_unit(unit) {
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
+        }
 
-        let max_fee = onchain_options
-            .max_fee_amount
-            .unwrap_or(Amount::new(1000, CurrencyUnit::Sat));
-        let amount_sat = amount.clone().to_u64();
-        let max_fee_sat = max_fee.clone().to_u64();
+        let amount_sat = match Self::payment_amount_to_sat(unit, &amount) {
+            Ok(amount_sat) => amount_sat,
+            Err(err) => {
+                return Ok(Self::outgoing_payment_failure_response(
+                    unit, &quote_id, err,
+                ));
+            }
+        };
+        if let Err(err) = self.validate_send_amount(&address, amount_sat) {
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
+        }
+
+        let max_fee_sat = match onchain_options.max_fee_amount {
+            Some(max_fee) => match Self::fee_limit_to_sat(unit, &max_fee) {
+                Ok(max_fee_sat) => max_fee_sat,
+                Err(err) => {
+                    return Ok(Self::outgoing_payment_failure_response(
+                        unit, &quote_id, err,
+                    ));
+                }
+            },
+            None => 1_000,
+        };
         // Resolve the wallet-selected `fee_index` back to a configured tier.
         // Older callers that omit `fee_index` continue to default to
         // Immediate.
-        let tier = self
+        let tier = match self
             .batch_config
             .tier_for_fee_index(onchain_options.fee_index)
-            .map_err(Error::UnknownFeeIndex)?;
+            .map_err(Error::UnknownFeeIndex)
+        {
+            Ok(tier) => tier,
+            Err(err) => {
+                return Ok(Self::outgoing_payment_failure_response(
+                    unit, &quote_id, err,
+                ));
+            }
+        };
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
-        let fee_estimate = self
+        let fee_estimate = match self
             .estimate_onchain_fee_reserve(&address, amount_sat, tier)
-            .await?;
+            .await
+        {
+            Ok(fee_estimate) => fee_estimate,
+            Err(err) => {
+                return Ok(Self::outgoing_payment_failure_response(
+                    unit, &quote_id, err,
+                ));
+            }
+        };
         if fee_estimate.raw_fee_sat > max_fee_sat {
-            return Err(Error::EstimatedFeeTooHigh {
+            let err = Error::EstimatedFeeTooHigh {
                 estimated_fee: fee_estimate.raw_fee_sat,
                 max_fee: max_fee_sat,
-            }
-            .into());
+            };
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
         }
 
         crate::send::payment_intent::SendIntent::new(
@@ -599,7 +786,7 @@ impl MintPayment for CdkBdk {
             payment_lookup_id: PaymentIdentifier::QuoteId(quote_id),
             payment_proof: None,
             status: MeltQuoteState::Pending,
-            total_spent: Amount::new(0, CurrencyUnit::Sat),
+            total_spent: Amount::new(0, unit.clone()),
         })
     }
 
@@ -612,23 +799,48 @@ impl MintPayment for CdkBdk {
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
         };
 
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
-        let address = wallet_with_db
-            .wallet
-            .reveal_next_address(KeychainKind::External);
-        let address_str = address.address.to_string();
-
-        wallet_with_db.persist().map_err(|err| {
-            tracing::error!("Could not persist to bdk db: {}", err);
-
-            Error::BdkPersist
-        })?;
-
         let quote_id = onchain_options.quote_id;
+        let quote_id_string = quote_id.to_string();
 
-        self.storage
-            .track_receive_address(&address_str, &quote_id.to_string())
-            .await?;
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+
+        // An address already tracked for another quote (derived by another
+        // instance sharing this seed, or by a re-initialised local wallet)
+        // must not be handed out again; advance to a fresh address.
+        let address_str = 'reserve_address: {
+            for attempt in 1..=MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS {
+                let address = wallet_with_db
+                    .wallet
+                    .reveal_next_address(KeychainKind::External);
+                let candidate = address.address.to_string();
+
+                wallet_with_db.persist().map_err(|err| {
+                    tracing::warn!("Could not persist to bdk db: {}", err);
+
+                    Error::BdkPersist
+                })?;
+
+                if self
+                    .storage
+                    .track_receive_address(&candidate, &quote_id_string)
+                    .await?
+                {
+                    break 'reserve_address candidate;
+                }
+
+                tracing::debug!(
+                    quote_id = %quote_id,
+                    attempt,
+                    max_attempts = MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS,
+                    "Receive address is already reserved for another quote"
+                );
+            }
+
+            return Err(Error::ReceiveAddressReservationExhausted {
+                attempts: MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS,
+            }
+            .into());
+        };
 
         Ok(CreateIncomingPaymentResponse {
             request_lookup_id: PaymentIdentifier::QuoteId(quote_id),
@@ -763,6 +975,7 @@ impl MintPayment for CdkBdk {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::str::FromStr;
 
     use bdk_wallet::bitcoin::hashes::Hash as _;
@@ -771,11 +984,60 @@ mod tests {
     };
     use bdk_wallet::keys::bip39::Mnemonic;
     use cdk_common::common::FeeReserve;
-    use cdk_common::payment::MintPayment;
+    use cdk_common::payment::{MintPayment, OnchainIncomingPaymentOptions};
     use futures::StreamExt;
 
     use super::*;
     use crate::fee::apply_quote_fee_safety;
+
+    const TEST_MNEMONIC: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const OTHER_TEST_MNEMONIC: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    #[tokio::test]
+    async fn existing_wallet_preflight_requires_matching_persisted_wallet() {
+        let (backend, tempdir) = build_test_instance_with_tempdir(5).await;
+        drop(backend);
+
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic");
+        validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path())
+            .expect("matching wallet should pass preflight");
+
+        let other_mnemonic = Mnemonic::from_str(OTHER_TEST_MNEMONIC).expect("other mnemonic");
+        assert!(matches!(
+            validate_existing_wallet(other_mnemonic, Network::Regtest, tempdir.path()),
+            Err(Error::Wallet(_))
+        ));
+        assert!(matches!(
+            validate_existing_wallet(
+                Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic"),
+                Network::Signet,
+                tempdir.path(),
+            ),
+            Err(Error::Wallet(_))
+        ));
+    }
+
+    #[test]
+    fn existing_wallet_preflight_does_not_create_missing_or_empty_wallet() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic");
+        let wallet_path = tempdir.path().join("bdk_wallet/bdk_wallet.sqlite");
+        assert!(matches!(
+            validate_existing_wallet(mnemonic.clone(), Network::Regtest, tempdir.path()),
+            Err(Error::ExistingWalletMissing { .. })
+        ));
+        assert!(!wallet_path.exists());
+
+        fs::create_dir_all(wallet_path.parent().expect("wallet directory"))
+            .expect("create wallet directory");
+        drop(Connection::open(&wallet_path).expect("create empty sqlite file"));
+        assert!(matches!(
+            validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()),
+            Err(Error::ExistingWalletNotInitialized { .. })
+        ));
+    }
 
     /// Build a `CdkBdk` instance pointed at a bogus Esplora URL so the sync
     /// loop spins without needing a real backend. The ticks are short so
@@ -799,20 +1061,32 @@ mod tests {
         batch_config: Option<BatchConfig>,
         sync_interval_secs: u64,
     ) -> Result<(CdkBdk, tempfile::TempDir), Error> {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mnemonic = Mnemonic::from_str(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        )
-        .expect("mnemonic");
-
-        let kv = cdk_sqlite::mint::memory::empty()
-            .await
-            .expect("in-memory kv store");
-
         let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
         });
+
+        build_test_instance_with_chain_source(
+            shutdown_timeout_secs,
+            batch_config,
+            sync_interval_secs,
+            chain_source,
+        )
+        .await
+    }
+
+    async fn build_test_instance_with_chain_source(
+        shutdown_timeout_secs: u64,
+        batch_config: Option<BatchConfig>,
+        sync_interval_secs: u64,
+        chain_source: ChainSource,
+    ) -> Result<(CdkBdk, tempfile::TempDir), Error> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
+
+        let kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
@@ -838,14 +1112,549 @@ mod tests {
         Ok((backend, tmp))
     }
 
-    async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
+    /// Build a `CdkBdk` instance with its own local wallet directory but a
+    /// shared KV store, like a second replica or a re-initialised node using
+    /// the same seed.
+    async fn build_test_instance_with_shared_kv(
+        kv: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+    ) -> (CdkBdk, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("mnemonic");
+        let chain_source = ChainSource::Esplora(EsploraConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            parallel_requests: 1,
+        });
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+            percent_fee_reserve: 0.02,
+        };
+
+        let backend = CdkBdk::new(
+            mnemonic,
+            Network::Regtest,
+            chain_source,
+            tmp.path().to_string_lossy().into_owned(),
+            fee_reserve,
+            kv,
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(5),
+            None,
+        )
+        .expect("build CdkBdk test instance");
+
+        (backend, tmp)
+    }
+
+    #[tokio::test]
+    async fn instances_sharing_seed_and_kv_never_share_a_receive_address() {
+        let kv = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory kv store"),
+        );
+        let (first, _tmp_first) = build_test_instance_with_shared_kv(kv.clone()).await;
+        let (second, _tmp_second) = build_test_instance_with_shared_kv(kv).await;
+
+        let first_request = first
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("first receive request");
+        let second_request = second
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("second receive request");
+
+        assert_ne!(
+            first_request.request, second_request.request,
+            "each instance must hand out a distinct receive address"
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_deposit_address_is_not_associated_with_a_quote() {
+        let kv = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory kv store"),
+        );
+        let (backend, _tmp) = build_test_instance_with_shared_kv(kv).await;
+
+        let operator_address = backend
+            .create_operator_deposit_address()
+            .await
+            .expect("create operator deposit address");
+        let quote_request = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("create quote receive request");
+
+        assert_ne!(operator_address, quote_request.request);
+        assert!(backend
+            .storage
+            .get_quote_id_by_receive_address(&operator_address)
+            .await
+            .expect("look up operator address")
+            .is_none());
+        assert!(!backend
+            .storage
+            .get_tracked_receive_addresses()
+            .await
+            .expect("list quote receive addresses")
+            .contains(&operator_address));
+    }
+
+    #[tokio::test]
+    async fn receive_address_reservation_stops_after_attempt_limit() {
+        let kv = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory kv store"),
+        );
+        let (first, _tmp_first) = build_test_instance_with_shared_kv(kv.clone()).await;
+        let (second, _tmp_second) = build_test_instance_with_shared_kv(kv).await;
+
+        for _ in 0..MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS {
+            first
+                .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                    OnchainIncomingPaymentOptions {
+                        quote_id: cdk_common::QuoteId::new(),
+                    },
+                ))
+                .await
+                .expect("reserve receive address");
+        }
+
+        let err = second
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect_err("reservation should stop after the attempt limit");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<Error>(),
+            Some(Error::ReceiveAddressReservationExhausted { attempts })
+                if *attempts == MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS
+        ));
+    }
+
+    #[tokio::test]
+    async fn wallet_info_lists_revealed_addresses_without_revealing_more() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+
+        let initial_addresses = backend
+            .wallet_addresses(0, 100)
+            .await
+            .expect("list initial addresses");
+        assert_eq!(initial_addresses.total, 0);
+
+        backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("create on-chain request");
+
+        let addresses = backend
+            .wallet_addresses(0, 100)
+            .await
+            .expect("list revealed addresses");
+        assert_eq!(addresses.total, 1);
+        assert_eq!(addresses.items.len(), 1);
+        assert_eq!(addresses.items[0].keychain, WalletKeychain::External);
+        assert_eq!(addresses.items[0].derivation_index, 0);
+        assert!(!addresses.items[0].used);
+        assert_eq!(addresses.items[0].balance_sat, 0);
+
+        let balance = backend.wallet_balance().await;
+        assert_eq!(balance.total_sat, 0);
+        assert_eq!(
+            backend
+                .wallet_transactions(0, 20)
+                .await
+                .expect("list transactions")
+                .total,
+            0
+        );
+
+        let addresses_again = backend
+            .wallet_addresses(0, 100)
+            .await
+            .expect("list revealed addresses again");
+        assert_eq!(addresses_again.total, 1);
+    }
+
+    #[tokio::test]
+    async fn wallet_info_paginates_revealed_addresses_across_keychains() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+
+        {
+            let mut wallet_with_db = backend.wallet_with_db.lock().await;
+            let _ = wallet_with_db
+                .wallet
+                .reveal_addresses_to(KeychainKind::External, 1)
+                .count();
+            let _ = wallet_with_db
+                .wallet
+                .reveal_addresses_to(KeychainKind::Internal, 1)
+                .count();
+            wallet_with_db
+                .persist()
+                .expect("persist revealed addresses");
+        }
+
+        let page = backend
+            .wallet_addresses(1, 2)
+            .await
+            .expect("list paginated addresses");
+
+        assert_eq!(page.total, 4);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].keychain, WalletKeychain::External);
+        assert_eq!(page.items[0].derivation_index, 1);
+        assert_eq!(page.items[1].keychain, WalletKeychain::Internal);
+        assert_eq!(page.items[1].derivation_index, 0);
+    }
+
+    async fn fund_backend_wallet_transactions(backend: &CdkBdk, amounts_sat: &[u64]) -> Vec<Txid> {
         let mut wallet_with_db = backend.wallet_with_db.lock().await;
         let funding_script = wallet_with_db
             .wallet
             .reveal_next_address(KeychainKind::External)
             .address
             .script_pubkey();
-        let funding_tx = Transaction {
+        let funding_transactions = amounts_sat
+            .iter()
+            .enumerate()
+            .map(|(index, amount_sat)| Transaction {
+                version: transaction::Version::TWO,
+                lock_time: absolute::LockTime::ZERO,
+                input: vec![TxIn {
+                    previous_output: OutPoint::new(
+                        Txid::all_zeros(),
+                        u32::try_from(index).expect("test transaction index fits in u32"),
+                    ),
+                    script_sig: Default::default(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::new(),
+                }],
+                output: vec![TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(*amount_sat),
+                    script_pubkey: funding_script.clone(),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let txids = funding_transactions
+            .iter()
+            .map(Transaction::compute_txid)
+            .collect();
+
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs(funding_transactions.into_iter().map(|tx| (tx, 0)));
+        wallet_with_db.persist().expect("persist funded wallet");
+
+        txids
+    }
+
+    async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
+        fund_backend_wallet_transactions(backend, &[amount_sat]).await;
+    }
+
+    #[tokio::test]
+    async fn wallet_info_reports_unconfirmed_funding() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        fund_backend_wallet(&backend, 42_000).await;
+
+        let balance = backend.wallet_balance().await;
+        assert_eq!(balance.untrusted_pending_sat, 42_000);
+        assert_eq!(balance.total_sat, 42_000);
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+        assert_eq!(transactions.total, 1);
+        assert_eq!(transactions.items[0].received_sat, 42_000);
+        assert_eq!(transactions.items[0].sent_sat, 0);
+        assert_eq!(transactions.items[0].balance_delta_sat, 42_000);
+        assert_eq!(transactions.items[0].confirmation_height, None);
+        assert_eq!(transactions.items[0].first_seen, Some(0));
+        assert_eq!(
+            transactions.items[0].inputs,
+            vec![WalletTransactionInput {
+                txid: Txid::all_zeros().to_string(),
+                vout: 0,
+                amount_sat: None,
+                address: None,
+            }]
+        );
+
+        let addresses = backend
+            .wallet_addresses(0, 20)
+            .await
+            .expect("list addresses");
+        assert_eq!(addresses.total, 1);
+        assert!(addresses.items[0].used);
+        assert_eq!(
+            transactions.items[0].outputs,
+            vec![WalletTransactionOutput {
+                vout: 0,
+                address: addresses.items[0].address.clone(),
+                amount_sat: 42_000,
+                quote_id: None,
+            }]
+        );
+        assert_eq!(addresses.items[0].balance_sat, 42_000);
+        assert_eq!(addresses.items[0].confirmed_balance_sat, 0);
+
+        let empty_page = backend
+            .wallet_transactions(0, 0)
+            .await
+            .expect("list empty transaction page");
+        assert_eq!(empty_page.total, 1);
+        assert!(empty_page.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wallet_info_pairs_unconfirmed_incoming_output_with_quote_id() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        fund_backend_wallet(&backend, 42_000).await;
+        let address = backend
+            .wallet_addresses(0, 20)
+            .await
+            .expect("list addresses")
+            .items[0]
+            .address
+            .clone();
+        backend
+            .storage
+            .track_receive_address(&address, "mint-quote")
+            .await
+            .expect("track receive address");
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+        assert_eq!(
+            transactions.items[0].outputs,
+            vec![WalletTransactionOutput {
+                vout: 0,
+                address,
+                amount_sat: 42_000,
+                quote_id: Some("mint-quote".to_string()),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_info_pairs_batched_outputs_with_quote_ids() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        let funding_txids = fund_backend_wallet_transactions(&backend, &[20_000, 22_000]).await;
+        let funding_address = backend
+            .wallet_addresses(0, 20)
+            .await
+            .expect("list funding address")
+            .items[0]
+            .address
+            .clone();
+        let first_address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
+        let second_address = "bcrt1q6rhpng9evdsfnn833a4f4vej0asu6dk5srld6x".to_string();
+
+        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let first_recipient_script = bdk_wallet::bitcoin::Address::from_str(&first_address)
+            .expect("valid address")
+            .require_network(Network::Regtest)
+            .expect("regtest address")
+            .script_pubkey();
+        let second_recipient_script = bdk_wallet::bitcoin::Address::from_str(&second_address)
+            .expect("valid address")
+            .require_network(Network::Regtest)
+            .expect("regtest address")
+            .script_pubkey();
+        let change_script = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::Internal)
+            .address
+            .script_pubkey();
+        let spending_transaction = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: funding_txids
+                .iter()
+                .rev()
+                .map(|txid| TxIn {
+                    previous_output: OutPoint::new(*txid, 0),
+                    script_sig: Default::default(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::new(),
+                })
+                .collect(),
+            output: vec![
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(20_000),
+                    script_pubkey: first_recipient_script,
+                },
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(10_000),
+                    script_pubkey: second_recipient_script,
+                },
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(11_900),
+                    script_pubkey: change_script,
+                },
+            ],
+        };
+        let spending_txid = spending_transaction.compute_txid();
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs([(spending_transaction, 1)]);
+        wallet_with_db
+            .persist()
+            .expect("persist spending transaction");
+        drop(wallet_with_db);
+
+        let batch_id = Uuid::new_v4();
+        let intents = [
+            (Uuid::new_v4(), "quote-first", &first_address, 20_000, 0),
+            (Uuid::new_v4(), "quote-second", &second_address, 10_000, 1),
+        ];
+        for (intent_id, quote_id, address, amount_sat, vout) in &intents {
+            backend
+                .storage
+                .create_send_intent_if_absent(
+                    &crate::send::payment_intent::record::SendIntentRecord {
+                        intent_id: *intent_id,
+                        quote_id: quote_id.to_string(),
+                        address: address.to_string(),
+                        amount_sat: *amount_sat,
+                        max_fee_amount_sat: 1_000,
+                        tier: PaymentTier::Immediate,
+                        metadata: PaymentMetadata::default(),
+                        state: crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
+                            batch_id,
+                            txid: spending_txid.to_string(),
+                            outpoint: format!("{spending_txid}:{vout}"),
+                            fee_contribution_sat: 50,
+                            created_at: 0,
+                        },
+                    },
+                )
+                .await
+                .expect("store send intent");
+        }
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+
+        assert_eq!(transactions.total, 3);
+        assert_eq!(
+            transactions.items[0].inputs,
+            vec![
+                WalletTransactionInput {
+                    txid: funding_txids[1].to_string(),
+                    vout: 0,
+                    amount_sat: Some(22_000),
+                    address: Some(funding_address.clone()),
+                },
+                WalletTransactionInput {
+                    txid: funding_txids[0].to_string(),
+                    vout: 0,
+                    amount_sat: Some(20_000),
+                    address: Some(funding_address),
+                },
+            ]
+        );
+        assert_eq!(
+            transactions.items[0].outputs,
+            vec![
+                WalletTransactionOutput {
+                    vout: 0,
+                    address: first_address.clone(),
+                    amount_sat: 20_000,
+                    quote_id: Some("quote-first".to_string()),
+                },
+                WalletTransactionOutput {
+                    vout: 1,
+                    address: second_address.clone(),
+                    amount_sat: 10_000,
+                    quote_id: Some("quote-second".to_string()),
+                },
+            ]
+        );
+        assert_eq!(transactions.items[0].sent_sat, 42_000);
+        assert_eq!(transactions.items[0].received_sat, 11_900);
+
+        for (intent_id, quote_id, _, amount_sat, vout) in &intents {
+            backend
+                .storage
+                .finalize_send_intent(
+                    intent_id,
+                    &FinalizedSendIntentRecord {
+                        intent_id: *intent_id,
+                        quote_id: quote_id.to_string(),
+                        total_spent_sat: *amount_sat + 50,
+                        outpoint: format!("{spending_txid}:{vout}"),
+                        finalized_at: 0,
+                    },
+                )
+                .await
+                .expect("finalize send intent");
+        }
+
+        let finalized_transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions after intent finalization");
+        assert_eq!(
+            finalized_transactions.items[0]
+                .outputs
+                .iter()
+                .map(|output| output.quote_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("quote-first"), Some("quote-second")]
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_info_reports_multiple_incoming_outputs_in_vout_order() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let output_script = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::External)
+            .address
+            .script_pubkey();
+        let funding_transaction = Transaction {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn {
@@ -854,16 +1663,58 @@ mod tests {
                 sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 witness: Witness::new(),
             }],
-            output: vec![TxOut {
-                value: bdk_wallet::bitcoin::Amount::from_sat(amount_sat),
-                script_pubkey: funding_script,
-            }],
+            output: vec![
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(21_000),
+                    script_pubkey: output_script.clone(),
+                },
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(21_000),
+                    script_pubkey: output_script,
+                },
+            ],
         };
-
         wallet_with_db
             .wallet
-            .apply_unconfirmed_txs([(funding_tx, 0)]);
-        wallet_with_db.persist().expect("persist funded wallet");
+            .apply_unconfirmed_txs([(funding_transaction, 0)]);
+        wallet_with_db
+            .persist()
+            .expect("persist funding transaction");
+        drop(wallet_with_db);
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+
+        assert_eq!(transactions.total, 1);
+        assert_eq!(transactions.items[0].outputs.len(), 2);
+        assert_eq!(transactions.items[0].outputs[0].vout, 0);
+        assert_eq!(transactions.items[0].outputs[0].amount_sat, 21_000);
+        assert_eq!(transactions.items[0].outputs[1].vout, 1);
+        assert_eq!(transactions.items[0].outputs[1].amount_sat, 21_000);
+    }
+
+    #[tokio::test]
+    async fn wallet_info_uses_txid_to_order_equal_chain_positions() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        let mut expected_txids =
+            fund_backend_wallet_transactions(&backend, &[21_000, 42_000]).await;
+        expected_txids.sort_by(|left, right| right.cmp(left));
+
+        let first_page = backend
+            .wallet_transactions(0, 1)
+            .await
+            .expect("list first transaction page");
+        let second_page = backend
+            .wallet_transactions(1, 1)
+            .await
+            .expect("list second transaction page");
+
+        assert_eq!(first_page.total, 2);
+        assert_eq!(second_page.total, 2);
+        assert_eq!(first_page.items[0].txid, expected_txids[0].to_string());
+        assert_eq!(second_page.items[0].txid, expected_txids[1].to_string());
     }
 
     #[tokio::test]
@@ -1131,6 +1982,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_make_payment_returns_failed_for_unknown_fee_index() {
+        let backend = build_test_instance(5).await;
+        let (quote_id, mut options) = onchain_options_for(10_000);
+        let OutgoingPaymentOptions::Onchain(onchain) = &mut options else {
+            panic!("expected onchain options");
+        };
+        onchain.fee_index = Some(99);
+
+        let response = backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect("definitive pre-dispatch rejection should return a payment response");
+
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
+        assert!(
+            backend
+                .storage
+                .get_send_intent_by_quote_id(&quote_id.to_string())
+                .await
+                .expect("lookup send intent by quote id")
+                .is_none(),
+            "unknown fee index rejection must not leave a pending send intent behind"
+        );
+    }
+
+    #[tokio::test]
     async fn test_make_payment_omitted_fee_index_defaults_to_immediate() {
         let batch_config = BatchConfig {
             fee_options: vec![PaymentTier::Immediate, PaymentTier::Economy],
@@ -1204,7 +2081,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rechecks_current_fee_against_max_fee() {
+    async fn test_make_payment_returns_failed_when_current_fee_exceeds_max_fee() {
         let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
         fund_backend_wallet(&backend, 100_000).await;
         let (quote_id, mut options) = onchain_options_for(10_000);
@@ -1213,18 +2090,12 @@ mod tests {
         };
         onchain.max_fee_amount = Some(Amount::new(1, CurrencyUnit::Sat));
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Sat, options)
             .await
-            .expect_err("payment should be rejected when current fee exceeds max");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-        match inner.downcast_ref::<Error>() {
-            Some(Error::EstimatedFeeTooHigh { max_fee, .. }) => assert_eq!(*max_fee, 1),
-            other => panic!("expected EstimatedFeeTooHigh, got {other:?}"),
-        }
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
 
         assert!(
             backend
@@ -1280,6 +2151,132 @@ mod tests {
         }))
     }
 
+    fn onchain_options_for_msat(
+        quote_id: QuoteId,
+        amount_msat: u64,
+        max_fee_msat: u64,
+    ) -> OutgoingPaymentOptions {
+        OutgoingPaymentOptions::Onchain(Box::new(OnchainOutgoingPaymentOptions {
+            address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            amount: Amount::new(amount_msat, CurrencyUnit::Msat),
+            max_fee_amount: Some(Amount::new(max_fee_msat, CurrencyUnit::Msat)),
+            quote_id,
+            fee_index: None,
+            metadata: None,
+        }))
+    }
+
+    fn assert_authoritative_failure_response(
+        response: MakePaymentResponse,
+        quote_id: QuoteId,
+        unit: CurrencyUnit,
+    ) {
+        assert_eq!(
+            response.payment_lookup_id,
+            PaymentIdentifier::QuoteId(quote_id)
+        );
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, unit));
+        assert!(response.payment_proof.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_converts_fee_options_to_msat() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let options = onchain_options_for_msat(quote_id, 10_000_000, 10_000_000);
+
+        let quote = backend
+            .get_payment_quote(&CurrencyUnit::Msat, options)
+            .await
+            .expect("msat quote should succeed");
+
+        assert_eq!(quote.amount, Amount::new(10_000_000, CurrencyUnit::Msat));
+        assert_eq!(quote.fee.unit(), &CurrencyUnit::Msat);
+        assert_eq!(quote.fee.value() % MSAT_IN_SAT, 0);
+
+        let fee_options = quote.fee_options.expect("fee options");
+        assert!(fee_options
+            .iter()
+            .all(|option| u64::from(option.fee_reserve) % MSAT_IN_SAT == 0));
+        assert_eq!(
+            quote.fee.value(),
+            fee_options
+                .iter()
+                .map(|option| u64::from(option.fee_reserve))
+                .min()
+                .expect("non-empty fee options")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_converts_msat_amount_and_fee_to_sat() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let options = onchain_options_for_msat(quote_id.clone(), 10_000_000, 10_000_000);
+
+        let response = backend
+            .make_payment(&CurrencyUnit::Msat, options)
+            .await
+            .expect("msat payment should enqueue a sat-native intent");
+
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+        let intent = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .expect("send intent should be persisted");
+        assert_eq!(intent.amount_sat, 10_000);
+        assert_eq!(intent.max_fee_amount_sat, 10_000);
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_returns_failed_for_fractional_satoshi_amount() {
+        let backend = build_test_instance(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let options = onchain_options_for_msat(quote_id.clone(), 10_000_001, 10_000_000);
+
+        let response = backend
+            .make_payment(&CurrencyUnit::Msat, options)
+            .await
+            .expect("definitive pre-dispatch rejection should return a payment response");
+
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Msat);
+        assert!(backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_returns_failed_for_mismatched_fee_unit() {
+        let backend = build_test_instance(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let mut options = onchain_options_for_msat(quote_id.clone(), 10_000_000, 10_000_000);
+        let OutgoingPaymentOptions::Onchain(onchain) = &mut options else {
+            panic!("expected onchain options");
+        };
+        onchain.max_fee_amount = Some(Amount::new(10_000, CurrencyUnit::Sat));
+
+        let response = backend
+            .make_payment(&CurrencyUnit::Msat, options)
+            .await
+            .expect("definitive pre-dispatch rejection should return a payment response");
+
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Msat);
+        assert!(backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .is_none());
+    }
+
     #[tokio::test]
     async fn test_make_payment_pending_total_spent_is_zero() {
         // make_payment queues the intent before a batch has been built, so
@@ -1328,23 +2325,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rejects_dust_output_without_persisting_intent() {
+    async fn test_make_payment_returns_failed_for_dust_without_persisting_intent() {
         let backend = build_test_instance(5).await;
         let (quote_id, options) = onchain_options_for(1);
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Sat, options)
             .await
-            .expect_err("dust output should be rejected before enqueue");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-
-        let backend_err = inner
-            .downcast_ref::<Error>()
-            .expect("expected cdk-bdk backend error");
-        assert!(matches!(backend_err, Error::DustOutput { .. }));
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
         assert!(
             backend
                 .storage
@@ -1383,29 +2373,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rejects_amount_below_minimum_send_without_persisting_intent() {
+    async fn test_make_payment_returns_failed_below_minimum_without_persisting_intent() {
         let backend = build_test_instance(5).await;
         let (quote_id, options) = onchain_options_for(545);
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Sat, options)
             .await
-            .expect_err("amount below configured minimum should be rejected before enqueue");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-
-        let backend_err = inner
-            .downcast_ref::<Error>()
-            .expect("expected cdk-bdk backend error");
-        assert!(matches!(
-            backend_err,
-            Error::AmountBelowMinimumSend {
-                amount: 545,
-                min: 546
-            }
-        ));
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
         assert!(
             backend
                 .storage
@@ -1812,6 +2789,32 @@ mod tests {
             assert!(
                 !bg.sync.is_finished(),
                 "sync task must not exit on transient Esplora errors"
+            );
+        }
+
+        backend.stop().await.expect("stop");
+    }
+
+    #[cfg(feature = "electrum")]
+    #[tokio::test]
+    async fn test_sync_wallet_survives_unreachable_electrum() {
+        let chain_source = ChainSource::Electrum(ElectrumConfig {
+            url: "tcp://127.0.0.1:1".to_string(),
+            batch_size: 5,
+        });
+        let (backend, _tmp) = build_test_instance_with_chain_source(5, None, 60, chain_source)
+            .await
+            .expect("build Electrum test instance");
+
+        backend.start().await.expect("start");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        {
+            let tasks = backend.tasks.lock().await;
+            let background = tasks.as_ref().expect("tasks running");
+            assert!(
+                !background.sync.is_finished(),
+                "sync task must not exit on transient Electrum errors"
             );
         }
 

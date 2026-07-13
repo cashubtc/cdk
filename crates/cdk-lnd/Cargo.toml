@@ -7,7 +7,7 @@ license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true # MSRV
-description = "CDK ln backend for lnd"
+description = "CDK payment backend for lnd"
 readme = "README.md"
 
 [dependencies]
@@ -19,7 +19,6 @@ tokio = { workspace = true, default-features = false, features = ["fs"] }
 tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-serde_json.workspace = true
 tonic-prost.workspace = true
 prost.workspace = true
 tonic = { workspace = true, features = ["codegen"] }

@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::nut01::Error as Nut01Error;
+use super::nut20::{legacy_mint_quote_msg_to_sign, mint_quote_msg_to_sign};
 use super::{PublicKey, SecretKey};
 use crate::{Amount, BlindedMessage};
 
@@ -77,29 +78,31 @@ where
 {
     /// Constructs the message to be signed according to NUT-20 for a quote.
     ///
-    /// The message is constructed by concatenating (as UTF-8 encoded bytes):
-    /// 1. The quote ID (as UTF-8)
-    /// 2. All blinded secrets (B_0 through B_n) converted to hex strings (as UTF-8)
-    ///
-    /// Format: `quote_id || B_0 || B_1 || ... || B_n`
-    /// where each component is encoded as UTF-8 bytes.
+    /// The message is domain-separated and length-prefixed, committing to the
+    /// quote ID, output amounts, and all batch outputs in request order.
     pub fn msg_to_sign(&self, quote: &Q) -> Vec<u8> {
         let quote_id = quote.to_string();
-        let capacity = quote_id.len() + (self.outputs.len() * 66);
-        let mut msg = Vec::with_capacity(capacity);
+        mint_quote_msg_to_sign(&quote_id, &self.outputs)
+    }
 
-        msg.extend_from_slice(quote_id.as_bytes());
-
-        for output in &self.outputs {
-            msg.extend_from_slice(output.blinded_secret.to_hex().as_bytes());
-        }
-
-        msg
+    fn legacy_msg_to_sign(&self, quote: &Q) -> Vec<u8> {
+        let quote_id = quote.to_string();
+        legacy_mint_quote_msg_to_sign(&quote_id, &self.outputs)
     }
 
     /// Sign one quote inside a batch mint request.
     pub fn sign_quote(&self, quote: &Q, secret_key: &SecretKey) -> Result<String, Error> {
         let msg = self.msg_to_sign(quote);
+        let signature: Signature = secret_key.sign(&msg)?;
+        Ok(signature.to_string())
+    }
+
+    /// Sign one quote using the legacy NUT-20 message format.
+    ///
+    /// This is only for wallet compatibility retries against mints that have
+    /// not yet upgraded to the domain-separated quote signature message.
+    pub fn sign_quote_legacy(&self, quote: &Q, secret_key: &SecretKey) -> Result<String, Error> {
+        let msg = self.legacy_msg_to_sign(quote);
         let signature: Signature = secret_key.sign(&msg)?;
         Ok(signature.to_string())
     }
@@ -114,11 +117,23 @@ where
         let signature = signature
             .parse::<Signature>()
             .map_err(|_| super::nut20::Error::InvalidSignature)?;
-        let msg = self.msg_to_sign(quote);
+        let quote_id = quote.to_string();
+        let msg = mint_quote_msg_to_sign(&quote_id, &self.outputs);
 
-        pubkey
-            .verify(&msg, &signature)
-            .map_err(|_| super::nut20::Error::InvalidSignature)?;
+        match pubkey.verify(&msg, &signature) {
+            Ok(()) => return Ok(()),
+            Err(_) => {
+                let legacy_msg = legacy_mint_quote_msg_to_sign(&quote_id, &self.outputs);
+                pubkey
+                    .verify(&legacy_msg, &signature)
+                    .map_err(|_| super::nut20::Error::InvalidSignature)?;
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    output_count = self.outputs.len(),
+                    "Accepted legacy batch mint quote signature format"
+                );
+            }
+        }
 
         Ok(())
     }
@@ -141,6 +156,79 @@ mod tests {
         }
     }
 
+    fn blinded_message(amount: u64, blinded_secret: &str) -> BlindedMessage {
+        BlindedMessage {
+            amount: Amount::from(amount),
+            keyset_id: Id::from_str("009a1f293253e41e").expect("valid keyset id"),
+            blinded_secret: PublicKey::from_hex(blinded_secret).expect("valid blinded secret"),
+            witness: None,
+        }
+    }
+
+    fn test_vector_outputs() -> Vec<BlindedMessage> {
+        vec![
+            blinded_message(
+                1,
+                "036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2",
+            ),
+            blinded_message(
+                1,
+                "021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59",
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_batch_msg_to_sign_matches_nut29_vector() {
+        let quote_id = "019e6d5a-2347-7000-8c81-a1e0dbf3299f".to_string();
+        let request = BatchMintRequest {
+            quotes: vec![quote_id.clone()],
+            quote_amounts: None,
+            outputs: test_vector_outputs(),
+            signatures: None,
+        };
+
+        let msg = request.msg_to_sign(&quote_id);
+
+        assert_eq!(
+            crate::util::hex::encode(&msg),
+            "43617368755f4d696e7451756f74655369675f76310000002430313965366435612d323334372d373030302d386338312d613165306462663332393966000000010100000021036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2000000010100000021021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59"
+        );
+
+        use bitcoin::hashes::sha256::Hash as Sha256Hash;
+        use bitcoin::hashes::Hash;
+
+        assert_eq!(
+            Sha256Hash::hash(&msg).to_string(),
+            "dad25acc587637206d73398894d337f983a0ca644746e8673727eaa0b29fa9b4"
+        );
+    }
+
+    #[test]
+    fn test_batch_signature_matches_nut29_vector() {
+        let quote_id = "019e6d5a-2347-7000-8c81-a1e0dbf3299f".to_string();
+        let pubkey = PublicKey::from_hex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .expect("valid pubkey");
+        let request = BatchMintRequest {
+            quotes: vec![quote_id.clone()],
+            quote_amounts: None,
+            outputs: test_vector_outputs(),
+            signatures: Some(vec![Some(
+                "0c39431338a0202568b9a1d4215c99f179cbb8ee5472ac5ae7133fbb8f99cafbb9e425ad33c60224c96b8f9f984f004379a18e9558468d129b6b03f0da6de162".to_string(),
+            )]),
+        };
+
+        request
+            .verify_quote_signature(
+                &quote_id,
+                "0c39431338a0202568b9a1d4215c99f179cbb8ee5472ac5ae7133fbb8f99cafbb9e425ad33c60224c96b8f9f984f004379a18e9558468d129b6b03f0da6de162",
+                &pubkey,
+            )
+            .expect("verification should succeed");
+    }
+
     #[test]
     fn test_sign_and_verify_batch_quote_roundtrip() {
         let secret_key = SecretKey::generate();
@@ -161,6 +249,28 @@ mod tests {
         request
             .verify_quote_signature(&quote_id, &signature, &pubkey)
             .expect("verification should succeed with correct key");
+    }
+
+    #[test]
+    fn test_sign_and_verify_batch_quote_legacy_roundtrip() {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let quote_id = "test-quote-id-legacy".to_string();
+        let outputs = vec![dummy_blinded_message(), dummy_blinded_message()];
+        let request = BatchMintRequest {
+            quotes: vec![quote_id.clone()],
+            quote_amounts: None,
+            outputs,
+            signatures: None,
+        };
+
+        let signature = request
+            .sign_quote_legacy(&quote_id, &secret_key)
+            .expect("legacy signing should succeed");
+
+        request
+            .verify_quote_signature(&quote_id, &signature, &pubkey)
+            .expect("verification should fall back to the legacy message format");
     }
 
     #[test]
@@ -293,27 +403,5 @@ mod tests {
         assert!(!Settings::new(Some(10), None).is_empty());
         assert!(!Settings::new(None, Some(vec!["bolt11".to_string()])).is_empty());
         assert!(!Settings::new(Some(10), Some(vec!["bolt11".to_string()])).is_empty());
-    }
-
-    #[test]
-    fn msg_to_sign_concatenates_quote_and_each_output_secret() {
-        let quote_id = "quote-id".to_string();
-        let output_1 = dummy_blinded_message();
-        let output_2 = dummy_blinded_message();
-        let expected = format!(
-            "{}{}{}",
-            quote_id,
-            output_1.blinded_secret.to_hex(),
-            output_2.blinded_secret.to_hex()
-        )
-        .into_bytes();
-        let request = BatchMintRequest {
-            quotes: vec![quote_id.clone()],
-            quote_amounts: None,
-            outputs: vec![output_1, output_2],
-            signatures: None,
-        };
-
-        assert_eq!(request.msg_to_sign(&quote_id), expected);
     }
 }

@@ -14,17 +14,21 @@ pub const ENV_CDK_MINTD_CACHE_REDIS_CLUSTER_NODES: &str = "CDK_MINTD_CACHE_REDIS
 pub const ENV_CDK_MINTD_CACHE_TTI: &str = "CDK_MINTD_CACHE_TTI";
 pub const ENV_CDK_MINTD_CACHE_TTL: &str = "CDK_MINTD_CACHE_TTL";
 
+/// HTTP cache storage backend selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "backend")]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
+    /// In-process memory cache (default).
     #[default]
     Memory,
+    /// Redis-backed cache.
     #[cfg(feature = "redis")]
     Redis(super::backend::RedisConfig),
 }
 
 impl Backend {
+    /// Parse a backend name from an environment variable value.
     pub fn from_env_str(backend_str: &str) -> Option<Self> {
         match backend_str.to_lowercase().as_str() {
             "memory" => Some(Self::Memory),

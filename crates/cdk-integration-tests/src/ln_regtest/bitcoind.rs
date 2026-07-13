@@ -1,11 +1,18 @@
 //! Bitcoind
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
+
+fn prefixed_path_arg(prefix: &str, path: &Path) -> OsString {
+    let mut argument = OsString::from(prefix);
+    argument.push(path);
+    argument
+}
 
 /// Bitcoind
 pub struct Bitcoind {
@@ -28,7 +35,7 @@ impl Bitcoind {
         zmq_raw_block: String,
         zmq_raw_tx: String,
     ) -> Self {
-        Bitcoind {
+        Self {
             rpc_user,
             rpc_password,
             _addr: addr,
@@ -43,13 +50,13 @@ impl Bitcoind {
     pub fn start_bitcoind(&mut self) -> Result<()> {
         println!("Starting bitcoind");
 
-        std::fs::create_dir_all(&self.data_dir).unwrap();
+        std::fs::create_dir_all(&self.data_dir)?;
         println!("created dir: {}", self.data_dir.display());
 
         let mut cmd = Command::new("bitcoind");
 
         cmd.arg("-regtest");
-        cmd.arg(format!("-datadir={}", self.data_dir.to_string_lossy()));
+        cmd.arg(prefixed_path_arg("-datadir=", &self.data_dir));
         cmd.arg("-fallbackfee=0.00001");
         cmd.arg("-rpcallowip=0.0.0.0/0");
         cmd.arg(format!("-rpcuser={}", self.rpc_user));
@@ -105,5 +112,23 @@ impl Drop for Bitcoind {
         if let Err(err) = self.stop_bitcoind() {
             tracing::error!("Could not stop bitcoind: {}", err);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    use super::*;
+
+    #[test]
+    fn datadir_argument_preserves_non_utf8_bytes() {
+        let path = PathBuf::from(OsString::from_vec(b"data-\xff".to_vec()));
+
+        assert_eq!(
+            prefixed_path_arg("-datadir=", &path).as_bytes(),
+            b"-datadir=data-\xff"
+        );
     }
 }

@@ -43,6 +43,18 @@ impl Settings {
     }
 }
 
+fn is_disallowed_path_character(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
 // Custom deserializer for Settings to expand patterns in protected endpoints
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -70,6 +82,12 @@ impl<'de> Deserialize<'de> for Settings {
         let mut protected_endpoints = HashSet::new();
 
         for raw_endpoint in raw.protected_endpoints {
+            if raw_endpoint.path.chars().any(is_disallowed_path_character) {
+                return Err(serde::de::Error::custom(
+                    "Invalid protected endpoint path: control and bidirectional formatting characters are not allowed",
+                ));
+            }
+
             let expanded_paths = matching_route_paths(&raw_endpoint.path).map_err(|e| {
                 serde::de::Error::custom(format!("Invalid pattern '{}': {}", raw_endpoint.path, e))
             })?;
@@ -818,6 +836,27 @@ mod tests {
 
         let result = serde_json::from_str::<Settings>(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_settings_deserialize_rejects_controls_with_safe_error() {
+        let path = "/invalid/\u{1b}]52;c;clipboard\u{07}\r\u{85}\u{202e}";
+        let value = serde_json::json!({
+            "openid_discovery": "https://example.com/.well-known/openid-configuration",
+            "client_id": "client123",
+            "protected_endpoints": [{
+                "method": "GET",
+                "path": path,
+            }],
+        });
+
+        let error = serde_json::from_value::<Settings>(value)
+            .expect_err("invalid path should fail")
+            .to_string();
+
+        assert!(!error.chars().any(is_disallowed_path_character));
+        assert!(error.contains("control and bidirectional formatting characters are not allowed"));
+        assert!(!error.contains("clipboard"));
     }
 
     #[test]

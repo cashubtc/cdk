@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::{InterceptedCdkMintClient, UpdateNameRequest};
+use crate::info::UpdateNameRequest;
+use crate::InterceptedMintInfoServiceClient;
 
 /// Command to update the mint's name
 ///
@@ -22,7 +23,7 @@ pub struct UpdateNameCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new name to set for the mint
 pub async fn update_name(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &UpdateNameCommand,
 ) -> Result<()> {
     let _response = client
