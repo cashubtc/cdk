@@ -2927,6 +2927,24 @@ same-quote probes make exactly one backend call, and a second quote reaches its
 backend while the first quote's backend call is deterministically blocked.
 Standalone melt retains its existing transition and payment behavior.
 
+## 46. Atomically rebind pending operations during session advance
+
+**Status:** Completed (2026-07-13)
+
+Every durable AlephBFT active-session write now validates all pending records,
+rejects future-session inconsistencies, and rebinds older rows to the effective
+monotonic active session in the same transaction. Startup performs this
+transaction before it loads pending rows, so crash residue with an advanced
+marker cannot hide older pending work from the recovered consensus queue.
+Pending inserts lock the same marker row, verify their operation ID, and reject
+stale sessions, closing the concurrent late-insert edge.
+
+Database regressions cover commit, rollback, stale/future session handling, and
+multi-row rebind. Consensus coverage rotates both queued and dispatched but
+unfinalized items. An Axum restart regression recovers two old-session rows,
+finalizes them in the active session, and removes them without wallet
+resubmission.
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry

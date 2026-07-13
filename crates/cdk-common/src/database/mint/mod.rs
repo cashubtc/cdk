@@ -737,7 +737,9 @@ pub trait FederationJournalTransaction {
         bytes: &[u8],
     ) -> Result<(), Self::Err>;
 
-    /// Persist the latest active AlephBFT session marker.
+    /// Persist the latest active AlephBFT session marker and atomically rebind
+    /// validated pending operations from older sessions to the effective
+    /// monotonic active session.
     async fn set_federation_aleph_bft_active_session(
         &mut self,
         session: u64,

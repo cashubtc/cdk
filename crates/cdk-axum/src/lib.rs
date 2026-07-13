@@ -2422,6 +2422,10 @@ async fn create_federation_runtime_state(
         }
     }
     let session_id = consensus.aleph_bft_status()?.session;
+    let mut tx = db.begin_transaction().await?;
+    tx.set_federation_aleph_bft_active_session(session_id)
+        .await?;
+    tx.commit().await?;
     for pending in db
         .get_federation_aleph_bft_pending_operations(session_id)
         .await?
@@ -2443,10 +2447,6 @@ async fn create_federation_runtime_state(
         }
         consensus.submit_aleph_bft_envelope(pending.envelope)?;
     }
-    let mut tx = db.begin_transaction().await?;
-    tx.set_federation_aleph_bft_active_session(session_id)
-        .await?;
-    tx.commit().await?;
     let entries = consensus.journal().entries().to_vec();
     let entries_to_apply = accepted_federation_journal_entries(&entries);
     let applied = mint

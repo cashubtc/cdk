@@ -383,12 +383,14 @@ fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
     let federation_id = federation_id(13);
     let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
 
+    let dispatched = mint_envelope(
+        federation_id,
+        "quote-requeued-session-zero",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let dispatched_operation_id = dispatched.operation_id().expect("dispatched operation id");
     runtime
-        .submit_aleph_bft_envelope(mint_envelope(
-            federation_id,
-            "quote-requeued-session-zero",
-            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-        ))
+        .submit_aleph_bft_envelope(dispatched)
         .expect("submit operation");
     let unit = runtime
         .next_aleph_bft_unit_payload()
@@ -402,6 +404,15 @@ fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
             .pending_finalization_item_count,
         1
     );
+    let queued = mint_envelope(
+        federation_id,
+        "quote-queued-session-zero",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f42",
+    );
+    let queued_operation_id = queued.operation_id().expect("queued operation id");
+    runtime
+        .submit_aleph_bft_envelope(queued)
+        .expect("submit queued operation");
 
     let requeued_items = runtime
         .begin_aleph_bft_session_requeue_pending_finalization(1)
@@ -409,7 +420,7 @@ fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
     assert_eq!(requeued_items, 1);
     let rotated = runtime.aleph_bft_status().expect("rotated status");
     assert_eq!(rotated.session, 1);
-    assert_eq!(rotated.queued_item_count, 1);
+    assert_eq!(rotated.queued_item_count, 2);
     assert_eq!(rotated.pending_finalization_item_count, 0);
 
     let requeued_unit = runtime
@@ -418,7 +429,16 @@ fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
         .expect("requeued unit present");
     assert_eq!(requeued_unit.session, 1);
     assert_eq!(requeued_unit.unit_index, 0);
-    assert_eq!(requeued_unit.operation_ids, unit.operation_ids);
+    assert_eq!(
+        requeued_unit
+            .operation_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [dispatched_operation_id, queued_operation_id]
+            .into_iter()
+            .collect()
+    );
 
     runtime
         .finalize_aleph_bft_unit(requeued_unit)
@@ -427,7 +447,7 @@ fn consensus_runtime_begin_aleph_bft_session_can_requeue_pending_finality() {
     assert_eq!(finalized.session, 1);
     assert_eq!(finalized.queued_item_count, 0);
     assert_eq!(finalized.pending_finalization_item_count, 0);
-    assert_eq!(finalized.next_item_index, 1);
+    assert_eq!(finalized.next_item_index, 2);
 }
 
 #[test]

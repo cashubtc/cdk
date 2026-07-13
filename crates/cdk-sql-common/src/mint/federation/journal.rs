@@ -337,6 +337,66 @@ where
         .execute(&self.inner)
         .await?;
 
+        let active_session_row = query(
+            r#"
+            SELECT active_session
+            FROM federation_aleph_bft_session_state
+            WHERE session_key = :session_key
+            FOR UPDATE
+            "#,
+        )?
+        .bind("session_key", FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY)
+        .fetch_one(&self.inner)
+        .await?
+        .ok_or_else(|| {
+            Error::Internal(
+                "Federation AlephBFT active session disappeared during update".to_string(),
+            )
+        })?;
+        let active_session_column = active_session_row.into_iter().next().ok_or_else(|| {
+            Error::Internal(
+                "Federation AlephBFT active session row had no value during update".to_string(),
+            )
+        })?;
+        let active_session: u64 = column_as_number!(active_session_column);
+
+        let pending_operations = query(
+            r#"
+            SELECT
+                operation_id,
+                session,
+                envelope_json
+            FROM federation_aleph_bft_pending_operations
+            ORDER BY operation_id ASC
+            FOR UPDATE
+            "#,
+        )?
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_aleph_bft_pending_operation)
+        .collect::<Result<Vec<_>, _>>()?;
+        if let Some(future) = pending_operations
+            .iter()
+            .find(|operation| operation.session_id > active_session)
+        {
+            return Err(Error::Internal(format!(
+                "Federation AlephBFT pending operation {} belongs to future session {} while active session is {}",
+                future.operation_id, future.session_id, active_session
+            )));
+        }
+
+        query(
+            r#"
+            UPDATE federation_aleph_bft_pending_operations
+            SET session = :active_session
+            WHERE session < :active_session
+            "#,
+        )?
+        .bind("active_session", active_session as i64)
+        .execute(&self.inner)
+        .await?;
+
         Ok(())
     }
 
@@ -344,6 +404,48 @@ where
         &mut self,
         operation: &FederationAlephBftPendingOperationRecord,
     ) -> Result<(), Self::Err> {
+        let computed_operation_id = operation.envelope.operation_id().map_err(|err| {
+            Error::Internal(format!(
+                "Invalid federation AlephBFT pending operation envelope: {err}"
+            ))
+        })?;
+        if computed_operation_id != operation.operation_id {
+            return Err(Error::Internal(format!(
+                "Federation AlephBFT pending operation ID mismatch: stored {}, envelope {}",
+                operation.operation_id, computed_operation_id
+            )));
+        }
+
+        let active_session_row = query(
+            r#"
+            SELECT active_session
+            FROM federation_aleph_bft_session_state
+            WHERE session_key = :session_key
+            FOR UPDATE
+            "#,
+        )?
+        .bind("session_key", FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY)
+        .fetch_one(&self.inner)
+        .await?;
+        let active_session = match active_session_row {
+            Some(row) => {
+                let column = row.into_iter().next().ok_or_else(|| {
+                    Error::Internal(
+                        "Federation AlephBFT active session row had no value during pending insert"
+                            .to_string(),
+                    )
+                })?;
+                Some(column_as_number!(column))
+            }
+            None => None,
+        };
+        if active_session.is_some_and(|active| operation.session_id < active) {
+            return Err(Error::Internal(format!(
+                "Federation AlephBFT pending operation {} belongs to stale session {}",
+                operation.operation_id, operation.session_id
+            )));
+        }
+
         query(
             r#"
             INSERT INTO federation_aleph_bft_pending_operations

@@ -9927,6 +9927,112 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
 }
 
 #[tokio::test]
+async fn aleph_bft_restart_finalizes_atomically_rebound_pending_operations() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let seed = mnemonic.to_seed_normalized("");
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    let first_quote = QuoteId::new();
+    let second_quote = QuoteId::new();
+    let first_envelope = mint_quote_envelope(&state, &first_quote);
+    let second_envelope = mint_quote_envelope(&state, &second_quote);
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    let second_operation_id = second_envelope.operation_id().expect("second operation id");
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin crash fixture tx");
+    tx.add_federation_aleph_bft_pending_operation(
+        &cdk::federation::FederationAlephBftPendingOperationRecord {
+            operation_id: first_operation_id,
+            session_id: 0,
+            envelope: first_envelope,
+        },
+    )
+    .await
+    .expect("persist first older-session operation");
+    tx.add_federation_aleph_bft_pending_operation(
+        &cdk::federation::FederationAlephBftPendingOperationRecord {
+            operation_id: second_operation_id,
+            session_id: 0,
+            envelope: second_envelope,
+        },
+    )
+    .await
+    .expect("persist second older-session operation");
+    tx.set_federation_aleph_bft_active_session(1)
+        .await
+        .expect("atomically advance and rebind pending operations");
+    tx.commit().await.expect("commit crash fixture");
+
+    let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("recover and rebind pending operations");
+    state.federation.consensus = consensus;
+    state.federation.sequences = sequences;
+    assert_eq!(
+        state
+            .federation_aleph_bft_status()
+            .await
+            .expect("recovered status")
+            .queued_item_count,
+        2
+    );
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(0)
+        .await
+        .expect("older pending rows")
+        .is_empty());
+    assert_eq!(
+        db.get_federation_aleph_bft_pending_operations(1)
+            .await
+            .expect("rebound pending rows")
+            .len(),
+        2
+    );
+
+    let unit = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("recovered consensus")
+        .lock()
+        .await
+        .next_aleph_bft_unit_payload()
+        .expect("next recovered unit")
+        .expect("recovered unit payload");
+    state
+        .federation
+        .apply_finalized_unit(unit)
+        .await
+        .expect("finalize recovered pending operations");
+
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(1)
+        .await
+        .expect("pending rows after finalization")
+        .is_empty());
+    for operation_id in [first_operation_id, second_operation_id] {
+        assert_eq!(
+            db.get_federation_journal_entry_by_operation_id(operation_id)
+                .await
+                .expect("journal lookup")
+                .expect("recovered journal entry")
+                .status(),
+            FederationOperationStatus::Applied
+        );
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_network_pump() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

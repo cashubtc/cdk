@@ -98,7 +98,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P4 | Retry starvation confirmed; restart-loss subclaim not proven | Medium | 82% | Add bounded retry fairness and observability; do not restore durable gossip rows without a failed convergence reproduction. |
 | P5 | Main explicit-rollback claim is resolved; staged melt lifecycle remains | Low residual | 90% | Close or narrow to replay/idempotence of the intentional multi-transaction melt saga. |
 | P6 | Waiter reservation now precedes durable and runtime admission | Resolved (was High) | 99% | Complete: waiter, pending row, and runtime queue are published in one failure-safe order. |
-| P7 | Confirmed pending rows are not rebound during session rotation | High | 98% | Release blocker: persist active-session advance and pending rebind atomically. |
+| P7 | Active-session advance now validates and atomically rebinds pending rows | Resolved (was High) | 99% | Complete: startup and rotation cannot advance past discoverable durable pending work. |
 | P8 | Confirmed duplicate recovery omits waiter/cache notification | Medium | 97% | Route normal and duplicate terminal outcomes through one publication helper. |
 | P9 | False-healthy outcome confirmed; original task-exit mechanism was misstated | High | 92% | Release blocker: an essential apply failure must halt/quarantine the session generation. |
 | P10 | Inconsistent Halted teardown confirmed; automatic-rotation scope overstated | Medium | 85% | Use one generation-scoped teardown path for every terminal Halted transition. |
@@ -112,7 +112,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
 | P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
 
-Production priority is therefore P7/P9. P1
+Production priority is therefore P9. P1
 remains a production-startup blocker if the product continues
 to claim one-member federation support even though its general security impact
 is Medium. P5 should not remain an open broad transaction-refactor request in
@@ -474,7 +474,7 @@ Verification:
 
 ### P7: Session Rotation Does Not Rebind Durable Pending Operations
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
 Automatic session rotation requeues unfinalized local operations into the next
 AlephBFT session in memory, but their durable pending records retain the old
@@ -483,28 +483,62 @@ crash before finalization causes startup to recover the new session while
 loading only pending rows already tagged with that session, so old-session
 operations can remain stranded until a wallet resubmits them.
 
+Resolution:
+
+- `set_federation_aleph_bft_active_session` now makes the marker and pending
+  rows one database invariant. In the same transaction it writes the monotonic
+  marker, reads back the effective active session, locks and fully decodes every
+  pending record, verifies each stored operation ID against its envelope, fails
+  closed on future-session rows, and rebinds every older row to the active
+  session.
+- Pending insertion locks that same marker row, verifies the operation ID before
+  writing, and rejects a row older than the active session. A concurrent insert
+  therefore either commits before advancement and is rebound, or observes the
+  advanced marker and fails; it cannot appear late under the old session.
+- Startup recovery performs that atomic advance/rebind before selecting pending
+  rows for the recovered consensus queue. A state left with an advanced marker
+  and older pending rows is repaired and loaded during the same boot, not one
+  restart later.
+- The same transaction method is used by natural startup, automatic rotation,
+  and catch-up session advancement, so no separate marker-only path can strand
+  pending work.
+- In-memory rotation retains both already queued items and items dispatched into
+  unfinalized units. The durable rows for both classes are session-rebound by
+  operation ID before the next live session is published.
+
 Relevant code:
 
-- `crates/cdk-common/src/federation/consensus.rs:1626`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1187`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1213`
-- `crates/cdk-axum/src/lib.rs:2527`
-- `crates/cdk-axum/src/lib.rs:2555`
-- `crates/cdk-sql-common/src/mint/federation.rs:1164`
+- `crates/cdk-common/src/database/mint/mod.rs`
+- `crates/cdk-common/src/federation/consensus.rs`
+- `crates/cdk-sql-common/src/mint/federation/journal.rs`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs`
+- `crates/cdk-axum/src/lib.rs`
 
 TODO:
 
-- [ ] Persist the new active session and rebind every requeued pending operation
+- [x] Persist the new active session and rebind every requeued pending operation
   in one transaction.
-- [ ] Validate each pending operation ID and envelope before rebinding it.
-- [ ] Do not start or publish the new session until the durable rotation
+- [x] Validate each pending operation ID and envelope before rebinding it.
+- [x] Do not start or publish the new session until the durable rotation
   transaction commits.
-- [ ] Define safe startup handling for pending rows belonging to older sessions.
-- [ ] Add crash-point tests before rotation persistence, after the active marker
+- [x] Define safe startup handling for pending rows belonging to older sessions.
+- [x] Add crash-point tests before rotation persistence, after the active marker
   commits, and before the requeued operation finalizes.
-- [ ] Add a restart test proving multiple requeued operations finalize and are
+- [x] Add a restart test proving multiple requeued operations finalize and are
   removed without wallet resubmission.
-- [ ] Cover both queued operations and dispatched-but-unfinalized units.
+- [x] Cover both queued operations and dispatched-but-unfinalized units.
+
+Verification:
+
+- The generic SQL database regression proves active marker and multi-row rebind
+  commit together, roll back together, reject stale insertion and a
+  future-session inconsistency, and advance cleanly once that future session
+  becomes active.
+- The consensus regression rotates with one queued operation and one operation
+  already dispatched into an unfinalized unit, then finalizes both in session 1.
+- The Axum restart regression seeds two session-0 pending rows, commits the
+  atomic advance/rebind to session 1, reconstructs the runtime, finalizes both,
+  and proves their durable pending rows are removed without another submission.
 
 Acceptance criteria:
 
@@ -1530,14 +1564,13 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P6/P16 are resolved. The reassessment retains two High findings (P7, P9), ten
+P6/P7/P16 are resolved. The reassessment retains one High finding (P9), ten
 Medium findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
 findings (P5, P19). P15 is complete under the accepted fresh-database policy;
 P17 is closed as superseded by P14's cut-through registry reset.
 
-P7 and P9 are the remaining production blockers
-because they affect admission atomicity, pending-operation restart recovery,
-and application of finalized state. P1
+P9 is the remaining High production blocker because it affects application of
+finalized state and essential-task health. P1
 must also be resolved before production if one-member configs remain accepted,
 even though its general security severity is Medium.
 

@@ -915,6 +915,122 @@ where
     let mut tx = db
         .begin_transaction()
         .await
+        .expect("begin pending rebind tx");
+    tx.set_federation_aleph_bft_active_session(5)
+        .await
+        .expect("advance session and rebind pending operations");
+    tx.commit().await.expect("commit pending rebind");
+
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(3)
+        .await
+        .expect("rebound session 3")
+        .is_empty());
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(4)
+        .await
+        .expect("rebound session 4")
+        .is_empty());
+    let rebound = db
+        .get_federation_aleph_bft_pending_operations(5)
+        .await
+        .expect("session 5 rebound operations");
+    assert_eq!(rebound.len(), 2);
+    assert!(rebound.iter().all(|operation| operation.session_id == 5));
+    assert_eq!(
+        rebound
+            .iter()
+            .map(|operation| operation.operation_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [pending.operation_id, other_session.operation_id]
+            .into_iter()
+            .collect()
+    );
+
+    let stale_envelope = mint_quote_envelope("pending-stale", 9);
+    let stale = FederationAlephBftPendingOperationRecord {
+        operation_id: stale_envelope.operation_id().expect("stale operation id"),
+        session_id: 4,
+        envelope: stale_envelope,
+    };
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin stale pending tx");
+    assert!(tx
+        .add_federation_aleph_bft_pending_operation(&stale)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback stale pending tx");
+
+    let future_envelope = mint_quote_envelope("pending-future", 9);
+    let future = FederationAlephBftPendingOperationRecord {
+        operation_id: future_envelope.operation_id().expect("future operation id"),
+        session_id: 6,
+        envelope: future_envelope,
+    };
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin future pending tx");
+    tx.add_federation_aleph_bft_pending_operation(&future)
+        .await
+        .expect("persist future pending operation");
+    tx.commit().await.expect("commit future pending operation");
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin future validation tx");
+    assert!(tx.set_federation_aleph_bft_active_session(5).await.is_err());
+    tx.rollback().await.expect("rollback future validation tx");
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin future session advance tx");
+    tx.set_federation_aleph_bft_active_session(6)
+        .await
+        .expect("advance to future session");
+    tx.commit().await.expect("commit future session advance");
+    assert_eq!(
+        db.get_federation_aleph_bft_pending_operations(6)
+            .await
+            .expect("session 6 pending operations")
+            .len(),
+        3
+    );
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin rolled-back session advance tx");
+    tx.set_federation_aleph_bft_active_session(7)
+        .await
+        .expect("stage session 7 rebind");
+    tx.rollback().await.expect("rollback session 7 rebind");
+    assert_eq!(
+        db.get_federation_aleph_bft_active_session()
+            .await
+            .expect("active session after rebind rollback"),
+        Some(6)
+    );
+    assert_eq!(
+        db.get_federation_aleph_bft_pending_operations(6)
+            .await
+            .expect("session 6 rows after rebind rollback")
+            .len(),
+        3
+    );
+    assert!(db
+        .get_federation_aleph_bft_pending_operations(7)
+        .await
+        .expect("session 7 rows after rebind rollback")
+        .is_empty());
+
+    let mut tx = db
+        .begin_transaction()
+        .await
         .expect("begin remove pending tx");
     tx.remove_federation_aleph_bft_pending_operation(pending.operation_id)
         .await
@@ -922,10 +1038,11 @@ where
     tx.commit().await.expect("commit remove pending tx");
 
     assert!(db
-        .get_federation_aleph_bft_pending_operations(3)
+        .get_federation_aleph_bft_pending_operations(6)
         .await
-        .expect("removed pending session")
-        .is_empty());
+        .expect("pending operations after remove")
+        .iter()
+        .all(|operation| operation.operation_id != pending.operation_id));
 }
 
 /// Assert public federation config snapshots are durable and conflict-checked.

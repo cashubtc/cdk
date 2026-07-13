@@ -4634,6 +4634,23 @@ Verified implementation result:
   a second quote reaches its backend while the first backend call remains
   blocked. The generic saga database claim regression also passes.
 
+## Post-review session-rotation pending recovery
+
+- [x] Make durable active-session advancement and older pending-row rebinding
+  one transaction. Fully decode every pending envelope, verify its stored
+  operation ID, and fail closed on a row from a future session.
+- [x] Serialize pending insertion against the same marker row, validate the
+  operation ID before insertion, and reject stale-session records.
+- [x] Run the atomic session advance before startup selects pending operations,
+  so an advanced marker plus old-session rows is repaired and queued in the
+  same boot.
+- [x] Keep queued and dispatched-but-unfinalized consensus items across natural
+  rotation, and do not publish the next live session before durable session
+  advancement commits.
+- [x] Prove transaction rollback preserves the old marker and row bindings;
+  prove an advanced-marker crash fixture rebinds, finalizes, and removes two
+  pending operations without wallet resubmission.
+
 ## Final completion audit
 
 Status: complete for the implementation plan's fakewallet federation scope.
