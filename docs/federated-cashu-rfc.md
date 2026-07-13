@@ -46,7 +46,7 @@ Test-only deterministic helpers must never be presented or admitted as productio
 - A quote can issue only its consensus-authorized mintable amount. Proofs transition to spent at most once, and blinded outputs are signed only for their accepted operation, amount, and keyset.
 - Signature shares are bound to member, operation ID, output index, blinded secret, amount, and keyset, and are durably recorded before being served.
 - Member-local payment or database state is not quorum evidence. Payment results mutate federated state only through accepted observation operations and the configured policy.
-- Conflicting member views or insufficient agreement are ambiguous. They must not produce spendable proofs or definitive success.
+- Insufficient agreement is ambiguous. Minority disagreement does not veto a valid payment threshold, but two incompatible threshold-supported payment results leave the quote unresolved and must not produce spendable proofs or definitive success.
 - Startup, DKG, catch-up, rotation, configuration, roster, transcript, keyset, and materialized-state mismatches fail closed.
 - Local time, randomness, unordered data, network I/O, and backend calls must not affect deterministic application unless the relevant value was committed through consensus.
 
@@ -92,7 +92,6 @@ The canonical operation set includes:
 - mint quote creation and mint payment observation;
 - mint issuance;
 - melt quote creation and melt payment observation;
-- payment-observation quarantine;
 - melt execution and optional change signing;
 - swap execution; and
 - federated keyset rotation.
@@ -108,7 +107,7 @@ Payment observation policy is explicit and independently configured for mint and
 - `member_quorum` requires the configured number of matching member observations and must be at least the consensus threshold.
 - `development_single_observation` is restricted to local development or regtest and requires an explicit mintd startup opt-in.
 
-Backend status is probed outside deterministic apply. Observations include their member, quote, method, state, amounts, and available payment identity or proof, then enter consensus as canonical operations. Conflicting terminal evidence is quarantined and cannot authorize issuance or settlement. Evidence must be accepted at or before the value operation it authorizes; later observations cannot retroactively authorize an earlier operation.
+Backend status is probed outside deterministic apply. Observations include their member, quote, method, state, amounts, and available payment identity or proof, then enter consensus as canonical operations. The payment policy applies one minimal conflict rule: minority disagreement is reported but cannot block a matching threshold, while two incompatible observation groups that both reach threshold leave the quote unresolved. There is no quarantine operation or operator-controlled quote freeze. Evidence must be accepted at or before the value operation it authorizes; later observations cannot retroactively authorize an earlier operation.
 
 For melts, the accepted operation deterministically elects one member to attempt the outgoing payment. A durable saga compare-and-set claims `SetupComplete -> PaymentAttempted` before the backend call, a quote-scoped guard prevents concurrent local attempts, and restart recovery checks ambiguous payment state rather than paying again. Other members observe the result, and accepted policy-satisfying observations determine final quote, proof, change, and saga state.
 

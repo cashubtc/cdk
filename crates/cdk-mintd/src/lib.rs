@@ -95,8 +95,6 @@ mod federation_files;
 mod federation_inspect;
 #[cfg(feature = "federation")]
 mod federation_payment_observations;
-#[cfg(feature = "federation")]
-mod federation_quarantine;
 #[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
 mod federation_setup;
 #[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
@@ -171,12 +169,6 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                     federation_payment_observations::run_payment_observations_command(
                         args,
                         observations,
-                    )
-                    .await?;
-                }
-                cli::FederationCommand::QuarantinePaymentObservation(quarantine) => {
-                    federation_quarantine::run_quarantine_payment_observation_command(
-                        args, quarantine,
                     )
                     .await?;
                 }

@@ -8,13 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error as DatabaseError, WalletDatabase};
-use cdk::mint::{FederationRuntimeConfig, MintQuoteRequest, MintQuoteResponse};
+use cdk::mint::FederationRuntimeConfig;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
-use cdk::nuts::{
-    CurrencyUnit, Id, MeltQuoteState, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteState, PaymentMethod, State,
-};
+use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::{CurrencyUnit, Id, MeltQuoteState, MintQuoteState, PaymentMethod, State};
 use cdk::wallet::{
     FederatedMintConnector, FederatedMintConnectorConfig, HttpClient, MeltOutcome, MintConnector,
     NUT13Options, Wallet, WalletBuilder,
@@ -22,15 +19,13 @@ use cdk::wallet::{
 use cdk::{Amount, Error};
 use cdk_common::federation::{
     FederationConfig, FederationJournalAppendOutcome, FederationKeysetRotationOperation,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationPaymentObservationContext, FederationPaymentObservationQuarantineReason,
-    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FederationOperation, FederationOperationEnvelope, FederationRestMessageKind,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    MemberConfigPrivate, MemberConfigPublic, MemberId,
 };
 use cdk_common::wallet::{
     MeltQuote as WalletMeltQuote, MeltSagaState, WalletSaga, WalletSagaState,
 };
-use cdk_common::QuoteId;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_http_client::{Async, Transport};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -183,35 +178,6 @@ pub(crate) async fn run_smoke_operations_command(
                     )
                     .await
                 }
-                FederationSmokeScenario::QuarantineMintConflict => {
-                    let private_config_path = args
-                        .private_config
-                        .as_deref()
-                        .context("--private-config is required for quarantine-mint-conflict")?;
-                    let private_config: MemberConfigPrivate = crate::read_federation_json(
-                        private_config_path,
-                        "private federation config",
-                    )?;
-                    let conflicting_private_config_path = args
-                        .conflicting_private_config
-                        .as_deref()
-                        .context(
-                            "--conflicting-private-config is required for quarantine-mint-conflict",
-                        )?;
-                    let conflicting_private_config: MemberConfigPrivate =
-                        crate::read_federation_json(
-                            conflicting_private_config_path,
-                            "conflicting private federation config",
-                        )?;
-                    run_quarantine_mint_conflict(
-                        args,
-                        &public_config,
-                        unit.clone(),
-                        &private_config,
-                        &conflicting_private_config,
-                    )
-                    .await
-                }
                 FederationSmokeScenario::KeysetRotation => {
                     let private_config_path = args
                         .private_config
@@ -317,15 +283,6 @@ fn validate_smoke_operation_args(args: &FederationSmokeOperationsArgs) -> Result
             smoke_scenario_name(args.scenario)
         );
     }
-    if args.scenario == FederationSmokeScenario::QuarantineMintConflict
-        && args.conflicting_private_config.is_none()
-    {
-        bail!(
-            "--conflicting-private-config is required for federation smoke scenario {}",
-            smoke_scenario_name(args.scenario)
-        );
-    }
-
     Ok(())
 }
 
@@ -359,8 +316,7 @@ fn scenario_requires_wallet_db(scenario: FederationSmokeScenario) -> bool {
 fn scenario_requires_private_config(scenario: FederationSmokeScenario) -> bool {
     matches!(
         scenario,
-        FederationSmokeScenario::QuarantineMintConflict
-            | FederationSmokeScenario::KeysetRotation
+        FederationSmokeScenario::KeysetRotation
             | FederationSmokeScenario::OfflineMemberKeysetRotation
     )
 }
@@ -373,7 +329,6 @@ fn smoke_scenario_name(scenario: FederationSmokeScenario) -> &'static str {
         FederationSmokeScenario::PendingMeltFinish => "pending-melt-finish",
         FederationSmokeScenario::PendingMeltFailStart => "pending-melt-fail-start",
         FederationSmokeScenario::PendingMeltFailFinish => "pending-melt-fail-finish",
-        FederationSmokeScenario::QuarantineMintConflict => "quarantine-mint-conflict",
         FederationSmokeScenario::KeysetRotation => "keyset-rotation",
         FederationSmokeScenario::OfflineMemberKeysetRotation => "offline-member-keyset-rotation",
     }
@@ -1187,121 +1142,6 @@ fn status_ready_for_smoke(status: &FederationLocalStatusResponse) -> bool {
     status.sync_ready
 }
 
-async fn run_quarantine_mint_conflict(
-    args: &FederationSmokeOperationsArgs,
-    public_config: &FederationConfig,
-    unit: CurrencyUnit,
-    private_config: &MemberConfigPrivate,
-    conflicting_private_config: &MemberConfigPrivate,
-) -> Result<()> {
-    let runtime_config =
-        FederationRuntimeConfig::new(public_config.clone(), private_config.clone())
-            .context("private federation config does not match public federation config")?;
-    let target_member = public_config
-        .member(private_config.member_id)
-        .context("private federation member is missing from the public federation config")?;
-    let conflicting_runtime_config =
-        FederationRuntimeConfig::new(public_config.clone(), conflicting_private_config.clone())
-            .context("conflicting private config does not match public federation config")?;
-    let conflicting_observer = conflicting_runtime_config.member_id();
-    if conflicting_observer == private_config.member_id {
-        bail!("quarantine mint conflict smoke requires two distinct member private configs");
-    }
-    let quote = QuoteId::new();
-    let amount = Amount::from(args.mint_amount);
-    let conflicting_amount = Amount::from(args.mint_amount.saturating_add(1));
-    let quote_envelope = runtime_config.mint_quote_operation(
-        quote.clone(),
-        MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
-            amount,
-            unit: unit.clone(),
-            description: Some("federation quarantine smoke".to_string()),
-            pubkey: None,
-        }),
-        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
-            quote: quote.to_string(),
-            request: format!("federation-smoke-quarantine-{quote}"),
-            amount: Some(amount),
-            unit: Some(unit),
-            method: PaymentMethod::Known(KnownMethod::Bolt11),
-            amount_paid: Amount::ZERO,
-            amount_issued: Amount::ZERO,
-            updated_at: 0,
-            state: MintQuoteState::Unpaid,
-            expiry: Some(10_000),
-            pubkey: None,
-        }),
-    );
-    let first_observation = runtime_config.mint_quote_payment_observation(
-        quote.clone(),
-        PaymentMethod::Known(KnownMethod::Bolt11),
-        MintQuoteState::Paid,
-        amount,
-        Amount::ZERO,
-        Some(format!("settled-{quote}")),
-    );
-    let conflicting_observation = conflicting_runtime_config.operation_envelope(
-        FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
-            quote: quote.to_string(),
-            observer: conflicting_observer,
-            method: PaymentMethod::Known(KnownMethod::Bolt11),
-            state: MintQuoteState::Paid,
-            amount_paid: conflicting_amount,
-            amount_issued: Amount::ZERO,
-            payment_id: None,
-            payment_proof: Some(format!("conflicting-{quote}")),
-        }),
-    );
-    let first_observation_id = first_observation
-        .operation_id()
-        .context("compute first payment observation operation id")?;
-    let conflicting_observation_id = conflicting_observation
-        .operation_id()
-        .context("compute conflicting payment observation operation id")?;
-    let quarantine = runtime_config.payment_observation_quarantine(
-        FederationPaymentObservationContext::MintQuote,
-        quote.clone(),
-        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-        vec![first_observation_id, conflicting_observation_id],
-    );
-    let quarantine_id = quarantine
-        .operation_id()
-        .context("compute quarantine operation id")?;
-    let transport = Async::default();
-    let mut sequence = initial_smoke_sequence();
-
-    for envelope in [
-        quote_envelope,
-        first_observation,
-        conflicting_observation,
-        quarantine,
-    ] {
-        sequence = sequence.saturating_add(1);
-        submit_smoke_operation(
-            &transport,
-            public_config,
-            private_config,
-            target_member,
-            sequence,
-            envelope,
-        )
-        .await?;
-    }
-
-    println!(
-        "federation quarantine smoke submitted: quote={} observer={} conflicting_observer={} first_observation={} conflicting_observation={} quarantine={} target_member={}",
-        quote,
-        private_config.member_id,
-        conflicting_observer,
-        first_observation_id,
-        conflicting_observation_id,
-        quarantine_id,
-        target_member.member_id
-    );
-
-    Ok(())
-}
-
 async fn submit_smoke_operation<T>(
     transport: &T,
     public_config: &FederationConfig,
@@ -1346,7 +1186,7 @@ where
         %operation_id,
         outcome,
         index,
-        "federation quarantine smoke operation submitted"
+        "federation smoke operation submitted"
     );
 
     Ok(response)

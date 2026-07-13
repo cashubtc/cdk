@@ -4,9 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk::cdk_payment::Event;
 use cdk::federation::{
-    FederationPaymentObservation, FederationPaymentObservationQuarantineRecord,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportSummary,
+    FederationPaymentObservation, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
@@ -250,16 +249,7 @@ pub(super) async fn payment_observation_report_summaries(
                 record.observation.quote().to_string(),
             ));
         }
-        if let Some(record) =
-            FederationPaymentObservationQuarantineRecord::from_journal_entry(entry)
-        {
-            report_keys.insert((record.quarantine.context, record.quarantine.quote.clone()));
-        }
     }
-    let quarantines = entries
-        .iter()
-        .filter_map(FederationPaymentObservationQuarantineRecord::from_journal_entry)
-        .collect::<Vec<_>>();
 
     let mut reports = Vec::with_capacity(report_keys.len());
     let now = current_unix_time();
@@ -271,12 +261,11 @@ pub(super) async fn payment_observation_report_summaries(
         let observations = db
             .get_federation_payment_observations(context, &quote)
             .await?;
-        let report = FederationPaymentObservationReport::from_records_with_quarantines(
+        let report = FederationPaymentObservationReport::from_records(
             context,
             &quote,
             required,
             &observations,
-            &quarantines,
         );
         let quote_age_secs =
             payment_observation_quote_age_secs(state, context, &quote, now).await?;

@@ -149,32 +149,6 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
         runtime_config.validate_federated_melt_payment_observation_submission(&invalid_melt_method),
         Err(Error::InvalidPaymentMethod)
     ));
-
-    let quarantine = runtime_config.payment_observation_quarantine(
-        FederationPaymentObservationContext::MintQuote,
-        quote.clone(),
-        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-        vec![operation_id_with_selector(1)],
-    );
-    match &quarantine.operation {
-        FederationOperation::PaymentObservationQuarantine(operation) => runtime_config
-            .validate_federated_payment_observation_quarantine_submission(operation)
-            .expect("valid quarantine submission"),
-        operation => panic!("unexpected operation: {operation:?}"),
-    }
-
-    let empty_evidence = runtime_config.payment_observation_quarantine(
-        FederationPaymentObservationContext::MintQuote,
-        quote,
-        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-        Vec::new(),
-    );
-    match &empty_evidence.operation {
-        FederationOperation::PaymentObservationQuarantine(operation) => assert!(runtime_config
-            .validate_federated_payment_observation_quarantine_submission(operation)
-            .is_err()),
-        operation => panic!("unexpected operation: {operation:?}"),
-    }
 }
 
 #[test]

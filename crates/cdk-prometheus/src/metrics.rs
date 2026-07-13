@@ -971,17 +971,12 @@ mod tests {
     fn federation_payment_report_metrics_are_labeled_by_status_and_action() {
         let metrics = CdkMetrics::new().expect("metrics should be created");
 
-        metrics.set_federation_payment_observation_report_count(
-            "2",
-            "conflicting",
-            "quarantine",
-            3,
-        );
+        metrics.set_federation_payment_observation_report_count("2", "conflicting", "inspect", 3);
 
         assert_eq!(
             metrics
                 .federation_payment_observation_reports
-                .with_label_values(&["2", "conflicting", "quarantine"])
+                .with_label_values(&["2", "conflicting", "inspect"])
                 .get(),
             3
         );

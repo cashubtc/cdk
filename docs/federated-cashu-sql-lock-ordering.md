@@ -58,7 +58,6 @@ The authoritative source is `FederationOperation::conflict_keys()` in
 | `Mint` | One `Mint { quote }` key for each quote ID in the mint request. Batch minting can produce multiple keys. |
 | `MeltQuote` | One `MeltQuote { quote }` key. |
 | `MeltQuotePayment` | One `MeltQuotePayment { quote, state, observer }` key. |
-| `PaymentObservationQuarantine` | One `PaymentObservationQuarantine { context, quote }` key. |
 | `Melt` | One `Melt { quote }` key. |
 | `KeysetRotation` | One `KeysetRotation { keyset_id }` key. |
 | `Swap` | No journal conflict key. Spend conflicts are enforced by deterministic apply against proof state. |
@@ -98,8 +97,7 @@ lock to avoid circular waits.
 - Melt: lock the `Melt { quote }` conflict key, the melt quote row, then proof
   rows and change-output rows in sorted order.
 - Payment observations: lock the member-scoped observation conflict key before
-  writing observation evidence. Quarantine operations lock their quarantine key
-  before mutating quote finalization state.
+  writing observation evidence.
 - Keyset rotation: lock the `KeysetRotation { keyset_id }` conflict key before
   writing keyset rows or changing active flags.
 - Catch-up and startup replay: replay entries in journal index order. For each

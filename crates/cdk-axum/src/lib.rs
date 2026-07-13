@@ -1532,7 +1532,9 @@ impl MintState {
         let operation_id = envelope.operation_id()?;
         self.ensure_federation_ready_for_public_submit().await?;
 
-        let response = self.submit_federation_envelope_to_consensus(envelope).await?;
+        let response = self
+            .submit_federation_envelope_to_consensus(envelope)
+            .await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
@@ -1570,7 +1572,9 @@ impl MintState {
             }
         }
         let operation_id = envelope.operation_id()?;
-        let response = self.submit_federation_envelope_to_consensus(envelope).await?;
+        let response = self
+            .submit_federation_envelope_to_consensus(envelope)
+            .await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
@@ -1780,7 +1784,9 @@ impl MintState {
         sender: MemberId,
         sequence: u64,
     ) {
-        self.federation.record_sequence(kind, sender, sequence).await;
+        self.federation
+            .record_sequence(kind, sender, sequence)
+            .await;
     }
 
     pub(crate) async fn restore_federation_startup_readiness(&self) {

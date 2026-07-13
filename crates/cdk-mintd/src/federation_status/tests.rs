@@ -203,7 +203,6 @@ fn payment_report_summary(
     status: FederationPaymentObservationReportStatus,
     recommended_action: FederationPaymentObservationReportAction,
     stale: bool,
-    quarantined: bool,
 ) -> FederationPaymentObservationReportSummary {
     FederationPaymentObservationReportSummary {
         context: FederationPaymentObservationContext::MintQuote,
@@ -217,10 +216,6 @@ fn payment_report_summary(
         quote_age_secs: Some(60),
         stale,
         recommended_action,
-        quarantined,
-        quarantine_operation_ids: Vec::new(),
-        quarantine_operation_indices: Vec::new(),
-        quarantine_reasons: Vec::new(),
     }
 }
 
@@ -499,7 +494,6 @@ fn status_lines_include_payment_observation_report_counts() {
     let first_observation_id = cdk_common::federation::FederationOperationId::from_bytes([1; 32]);
     let second_observation_id = cdk_common::federation::FederationOperationId::from_bytes([2; 32]);
     let third_observation_id = cdk_common::federation::FederationOperationId::from_bytes([3; 32]);
-    let quarantine_id = cdk_common::federation::FederationOperationId::from_bytes([4; 32]);
     status.payment_observation_reports = vec![FederationPaymentObservationReportSummary {
         context: FederationPaymentObservationContext::MintQuote,
         quote: "quote-1".to_string(),
@@ -542,11 +536,7 @@ fn status_lines_include_payment_observation_report_counts() {
         status: FederationPaymentObservationReportStatus::Conflicting,
         quote_age_secs: Some(7_200),
         stale: true,
-        recommended_action: FederationPaymentObservationReportAction::Quarantine,
-        quarantined: true,
-        quarantine_operation_ids: vec![quarantine_id],
-        quarantine_operation_indices: vec![4],
-        quarantine_reasons: Vec::new(),
+        recommended_action: FederationPaymentObservationReportAction::Inspect,
     }];
 
     let member_line = member_status_line(&status);
@@ -557,9 +547,8 @@ fn status_lines_include_payment_observation_report_counts() {
     assert!(member_line.contains("catch_up_certificate_quorum_signers=none"));
     assert!(member_line.contains("payment_reports=1"));
     assert!(member_line.contains("payment_conflicts=1"));
-    assert!(member_line.contains("payment_unresolved=1"));
+    assert!(member_line.contains("payment_unresolved=0"));
     assert!(member_line.contains("payment_stale=1"));
-    assert!(member_line.contains("payment_quarantine=1"));
 
     let report_line = payment_observation_report_line(&status.payment_observation_reports[0]);
     assert!(report_line.contains("context=mint_quote"));
@@ -568,13 +557,7 @@ fn status_lines_include_payment_observation_report_counts() {
     assert!(report_line.contains("observations=3"));
     assert!(report_line.contains("quote_age_secs=7200"));
     assert!(report_line.contains("stale=true"));
-    assert!(report_line.contains("action=quarantine"));
-    assert!(report_line.contains("quarantined=true"));
-    assert!(report_line.contains("quarantine_ops=1"));
-    assert!(report_line.contains(
-        "quarantine_ids=0404040404040404040404040404040404040404040404040404040404040404"
-    ));
-    assert!(report_line.contains("quarantine_indices=4"));
+    assert!(report_line.contains("action=inspect"));
 
     let group_line =
         payment_observation_group_line(&status.payment_observation_reports[0].groups[0]);
@@ -595,12 +578,10 @@ fn status_payment_observation_alert_guard_accepts_normal_reports() {
             FederationPaymentObservationReportStatus::QuorumReached,
             FederationPaymentObservationReportAction::None,
             false,
-            false,
         ),
         payment_report_summary(
             FederationPaymentObservationReportStatus::AwaitingQuorum,
             FederationPaymentObservationReportAction::None,
-            false,
             false,
         ),
     ];
@@ -617,7 +598,6 @@ fn status_payment_observation_alert_guard_rejects_inspect_action() {
         FederationPaymentObservationReportStatus::AwaitingQuorum,
         FederationPaymentObservationReportAction::Inspect,
         true,
-        false,
     )];
 
     let err = ensure_statuses_no_payment_observation_alerts(&[status])
@@ -635,7 +615,6 @@ fn status_payment_observation_alert_guard_rejects_conflict_status() {
         FederationPaymentObservationReportStatus::Conflicting,
         FederationPaymentObservationReportAction::None,
         false,
-        false,
     );
     report.conflicting_observers = vec![MemberId::new(2).expect("member two")];
     status.payment_observation_reports = vec![report];
@@ -645,24 +624,6 @@ fn status_payment_observation_alert_guard_rejects_conflict_status() {
 
     assert!(err.to_string().contains("status=conflicting"));
     assert!(err.to_string().contains("conflicts=1"));
-}
-
-#[test]
-fn status_payment_observation_alert_guard_rejects_quarantine() {
-    let (public_config, _) = status_fixture();
-    let mut status = local_status(&public_config, 1, 2);
-    status.payment_observation_reports = vec![payment_report_summary(
-        FederationPaymentObservationReportStatus::QuorumReached,
-        FederationPaymentObservationReportAction::Quarantine,
-        false,
-        true,
-    )];
-
-    let err = ensure_statuses_no_payment_observation_alerts(&[status])
-        .expect_err("quarantined report should fail");
-
-    assert!(err.to_string().contains("action=quarantine"));
-    assert!(err.to_string().contains("quarantined=true"));
 }
 
 #[test]

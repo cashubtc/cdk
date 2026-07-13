@@ -79,12 +79,10 @@ pub use self::operation::{
     FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
     FederationOperationKind, FederationOperationSignature, FederationPaymentObservation,
     FederationPaymentObservationEvidenceGroup, FederationPaymentObservationEvidenceGroupSummary,
-    FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationQuorum,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationSwapOperation,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
+    FederationPaymentObservationQuorum, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportAction,
+    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
+    FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
@@ -401,18 +399,6 @@ pub enum FederationError {
         required: u16,
         /// Matching observations currently available.
         found: u16,
-    },
-    /// Payment observations contain conflicting evidence that must be resolved first.
-    #[error(
-        "Federation payment observation conflict for {context}: matching={matching}, conflicting={conflicting}"
-    )]
-    PaymentObservationConflict {
-        /// Payment observation context being checked.
-        context: FederationPaymentObservationContext,
-        /// Matching observation count.
-        matching: u16,
-        /// Conflicting observation count.
-        conflicting: u16,
     },
     /// A consensus step requires more reachable members than are currently online.
     #[error("Federation consensus quorum unavailable: reachable={reachable}, required={required}")]
@@ -3088,14 +3074,8 @@ mod tests {
             conflicting_observers: vec![member_id(3)],
             ..single
         };
-        assert!(matches!(
-            real.evaluate_quorum(&conflicting),
-            Err(FederationError::PaymentObservationConflict {
-                context: FederationPaymentObservationContext::MintQuote,
-                matching: 2,
-                conflicting: 1,
-            })
-        ));
+        real.evaluate_quorum(&conflicting)
+            .expect("minority disagreement does not veto a matching quorum");
     }
 
     #[test]

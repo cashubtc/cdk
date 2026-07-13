@@ -649,12 +649,13 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
 }
 
 async fn local_peer_order_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
-    let runtime_config = state
-        .mint
-        .federation_config()
-        .ok_or(FederationError::RuntimeUnavailable {
-            component: "mint configuration",
-        })?;
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
     let tip = state.mint.localstore().get_federation_journal_tip().await?;
     let mut status = match tip {
         Some(tip) => {
@@ -699,12 +700,13 @@ async fn local_peer_status_with_materialized_rows(
 async fn local_peer_status_and_entries(
     state: &MintState,
 ) -> anyhow::Result<(FederationPeerStatus, Vec<FederationJournalEntry>)> {
-    let runtime_config = state
-        .mint
-        .federation_config()
-        .ok_or(FederationError::RuntimeUnavailable {
-            component: "mint configuration",
-        })?;
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
     let journal = durable_federation_journal(state).await?;
     let mut status = FederationPeerStatus::from_journal(
         runtime_config.federation_id(),

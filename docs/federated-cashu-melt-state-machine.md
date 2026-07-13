@@ -20,8 +20,9 @@ Keep the current operation shape for federation operation version 1:
   roll back the pending state. Pending or unresolved observations keep inputs
   pending until a later accepted observation or operator policy resolves the
   quote.
-- `FederationOperation::PaymentObservationQuarantine` prevents finalization when
-  accepted evidence is conflicting or operator policy halts the quote.
+- Minority disagreement is retained for diagnostics without vetoing a matching
+  threshold. If incompatible payment results both reach threshold, the quote
+  remains unresolved.
 
 Do not rename `FederationOperation::Melt` to `MeltReserve` for operation version
 1. Do not add explicit `FinalizeMelt` or `RollbackMelt` variants for operation
@@ -38,8 +39,8 @@ locally finalizing or rolling back based on a private backend read.
 
 Keeping finalization and rollback as deterministic consequences of accepted
 `MeltQuotePayment` observations also avoids duplicating payment evidence across
-separate finalize/rollback payloads. Operators can inspect the observation rows,
-quarantine conflicts, and replay the same journal after restart.
+separate finalize/rollback payloads. Operators can inspect conflicting
+observation rows, and replay the same journal after restart.
 
 The name `Melt` is less descriptive than `MeltReserve`, but changing it now
 would churn operation version 1 without changing the safety invariant. The

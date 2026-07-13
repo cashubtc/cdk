@@ -478,14 +478,6 @@ impl FederationPaymentVerificationPolicy {
 
     /// Validate an accumulated observation quorum against this policy.
     pub fn evaluate_quorum(self, quorum: &FederationPaymentObservationQuorum) -> Result<()> {
-        if quorum.has_conflicts() {
-            return Err(FederationError::PaymentObservationConflict {
-                context: quorum.context,
-                matching: quorum.matching_count(),
-                conflicting: quorum.conflicting_count(),
-            });
-        }
-
         let required = self.required_matching_observations();
         if quorum.matching_count() < required {
             return Err(FederationError::PaymentObservationQuorumNotSatisfied {

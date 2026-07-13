@@ -32,7 +32,6 @@ impl Mint {
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut payment_observation_quotes = BTreeSet::new();
-        let mut payment_quarantines = BTreeSet::new();
         let mut completed_operations = BTreeSet::new();
         let mut proof_ys = BTreeSet::new();
         let mut blinded_messages = BTreeSet::new();
@@ -94,18 +93,6 @@ impl Mint {
                         FederationPaymentObservationContext::MeltQuote,
                         observation.quote.clone(),
                     ));
-                }
-                FederationOperation::PaymentObservationQuarantine(operation) => {
-                    payment_observation_quotes.insert((operation.context, operation.quote.clone()));
-                    payment_quarantines.insert((operation.context, operation.quote.clone()));
-                    match operation.context {
-                        FederationPaymentObservationContext::MintQuote => {
-                            mint_quotes.insert(operation.quote.clone());
-                        }
-                        FederationPaymentObservationContext::MeltQuote => {
-                            melt_quotes.insert(operation.quote.clone());
-                        }
-                    }
                 }
                 FederationOperation::Melt(operation) => {
                     completed_operations.insert(entry.operation_id);
@@ -241,17 +228,6 @@ impl Mint {
                         .with_field("missing", "true"),
                 ),
             }
-        }
-
-        for (context, quote) in payment_quarantines {
-            snapshot.push(
-                FederationMaterializedStateRow::new(
-                    "payment_observation_quarantines",
-                    format!("{context}:{quote}"),
-                )
-                .with_field("context", context.to_string())
-                .with_field("quote", quote),
-            );
         }
 
         let mut observations_by_quote = BTreeMap::new();

@@ -110,7 +110,6 @@ fn is_actionable_payment_report(report: &FederationPaymentObservationReportSumma
         FederationPaymentObservationReportStatus::AwaitingQuorum
             | FederationPaymentObservationReportStatus::Conflicting
     ) || report.stale
-        || report.quarantined
 }
 
 fn context_from_arg(

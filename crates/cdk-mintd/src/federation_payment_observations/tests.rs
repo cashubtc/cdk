@@ -19,10 +19,6 @@ fn report(
         quote_age_secs: None,
         stale: false,
         recommended_action: FederationPaymentObservationReportAction::None,
-        quarantined: false,
-        quarantine_operation_ids: Vec::new(),
-        quarantine_operation_indices: Vec::new(),
-        quarantine_reasons: Vec::new(),
     }
 }
 
@@ -34,12 +30,6 @@ fn payment_observations_default_to_actionable_reports() {
         FederationPaymentObservationReportStatus::QuorumReached,
     );
     stale_quorum.stale = true;
-    let mut quarantined_quorum = report(
-        FederationPaymentObservationContext::MintQuote,
-        "quote-5",
-        FederationPaymentObservationReportStatus::QuorumReached,
-    );
-    quarantined_quorum.quarantined = true;
     let reports = vec![
         report(
             FederationPaymentObservationContext::MintQuote,
@@ -57,16 +47,14 @@ fn payment_observations_default_to_actionable_reports() {
             FederationPaymentObservationReportStatus::QuorumReached,
         ),
         stale_quorum,
-        quarantined_quorum,
     ];
 
     let matches = matching_reports(&reports, None, None, false);
 
-    assert_eq!(matches.len(), 4);
+    assert_eq!(matches.len(), 3);
     assert_eq!(matches[0].quote, "quote-1");
     assert_eq!(matches[1].quote, "quote-2");
     assert_eq!(matches[2].quote, "quote-4");
-    assert_eq!(matches[3].quote, "quote-5");
 }
 
 #[test]

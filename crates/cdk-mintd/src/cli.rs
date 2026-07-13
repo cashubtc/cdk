@@ -353,8 +353,6 @@ pub enum FederationCommand {
     FakeInvoice(FederationFakeInvoiceArgs),
     /// List redacted payment-observation reports from signed member status.
     PaymentObservations(FederationPaymentObservationsArgs),
-    /// Propose a payment-observation quarantine operation over signed private REST.
-    QuarantinePaymentObservation(FederationQuarantinePaymentObservationArgs),
     /// Run a local fake-wallet operation smoke through the federation wallet connector.
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
     SmokeOperations(FederationSmokeOperationsArgs),
@@ -531,32 +529,6 @@ pub struct FederationPaymentObservationsArgs {
     pub include_resolved: bool,
 }
 
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Args)]
-pub struct FederationQuarantinePaymentObservationArgs {
-    /// Shared public federation config JSON path.
-    #[arg(long)]
-    pub public_config: Option<PathBuf>,
-    /// Private member config JSON path used to sign operation submit requests.
-    #[arg(long)]
-    pub private_config: Option<PathBuf>,
-    /// Payment-observation context to quarantine.
-    #[arg(long, value_enum)]
-    pub context: FederationPaymentObservationContextArg,
-    /// Quote ID whose payment observations should be quarantined.
-    #[arg(long)]
-    pub quote: String,
-    /// Machine-readable reason for the quarantine.
-    #[arg(long, value_enum, default_value_t = FederationPaymentObservationQuarantineReasonArg::ConflictingEvidence)]
-    pub reason: FederationPaymentObservationQuarantineReasonArg,
-    /// Accepted payment-observation operation ID that motivated the quarantine. Repeatable.
-    #[arg(long = "evidence-operation-id")]
-    pub evidence_operation_ids: Vec<String>,
-    /// Member ID to submit to. Repeat to submit to multiple members. Defaults to every member.
-    #[arg(long = "member")]
-    pub members: Vec<u16>,
-}
-
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 #[derive(Debug, Clone, Args)]
 pub struct FederationFakeInvoiceArgs {
@@ -599,17 +571,6 @@ pub enum FederationPaymentObservationContextArg {
     MintQuote,
     /// Outgoing payment observation for a melt quote.
     MeltQuote,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum FederationPaymentObservationQuarantineReasonArg {
-    /// Matching observers submitted different payment evidence.
-    ConflictingEvidence,
-    /// Multiple terminal states were observed for the same quote.
-    CompetingTerminalStates,
-    /// Manual operator halt while evidence is inspected.
-    OperatorHalt,
 }
 
 #[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
@@ -684,9 +645,6 @@ pub struct FederationSmokeOperationsArgs {
     /// Private member config JSON path for scenarios that submit private federation operations.
     #[arg(long)]
     pub private_config: Option<PathBuf>,
-    /// Second member config used to author independent conflicting payment evidence.
-    #[arg(long)]
-    pub conflicting_private_config: Option<PathBuf>,
     /// Currency unit to use for the operation smoke.
     #[arg(long, default_value = "sat")]
     pub unit: String,
@@ -731,8 +689,6 @@ pub enum FederationSmokeScenario {
     PendingMeltFailStart,
     /// Resume and compensate the failed pending melt stored in the wallet database.
     PendingMeltFailFinish,
-    /// Submit a conflicting mint payment observation and quarantine it through private REST.
-    QuarantineMintConflict,
     /// Rotate to the inactive aggregate keyset and run wallet operations against the rotated view.
     KeysetRotation,
     /// Rotate to the inactive aggregate keyset while one non-primary member is offline.
@@ -766,7 +722,7 @@ pub struct FederationStatusArgs {
     /// Fail if queried members report or reveal equal-height digest mismatches.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_digest_alerts: bool,
-    /// Fail if queried members report stale, conflicting, or quarantined payment observations.
+    /// Fail if queried members report stale or conflicting payment observations.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_payment_observation_alerts: bool,
     /// Fail if queried members report invalid-operation alert buckets.
@@ -1155,59 +1111,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_federation_quarantine_payment_observation_subcommand() {
-        let args = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "federation",
-            "quarantine-payment-observation",
-            "--public-config",
-            "federation-public.json",
-            "--private-config",
-            "member-1/federation-private.json",
-            "--context",
-            "mint-quote",
-            "--quote",
-            "quote-1",
-            "--reason",
-            "competing-terminal-states",
-            "--evidence-operation-id",
-            "0000000000000000000000000000000000000000000000000000000000000001",
-            "--member",
-            "2",
-        ])
-        .expect("quarantine command parses");
-
-        let Some(Commands::Federation(federation)) = args.command else {
-            panic!("expected federation command");
-        };
-        let FederationCommand::QuarantinePaymentObservation(quarantine) = federation.command else {
-            panic!("expected federation quarantine command");
-        };
-        assert_eq!(
-            quarantine.public_config,
-            Some(PathBuf::from("federation-public.json"))
-        );
-        assert_eq!(
-            quarantine.private_config,
-            Some(PathBuf::from("member-1/federation-private.json"))
-        );
-        assert_eq!(
-            quarantine.context,
-            FederationPaymentObservationContextArg::MintQuote
-        );
-        assert_eq!(quarantine.quote, "quote-1");
-        assert_eq!(
-            quarantine.reason,
-            FederationPaymentObservationQuarantineReasonArg::CompetingTerminalStates
-        );
-        assert_eq!(
-            quarantine.evidence_operation_ids,
-            vec!["0000000000000000000000000000000000000000000000000000000000000001".to_string()]
-        );
-        assert_eq!(quarantine.members, vec![2]);
-    }
-
-    #[test]
     fn parses_federation_compare_digests_subcommand() {
         let args = CLIArgs::try_parse_from([
             "cdk-mintd",
@@ -1323,45 +1226,6 @@ mod tests {
         assert_eq!(smoke.wallet_db, Some(PathBuf::from("wallet.sqlite")));
         assert_eq!(smoke.private_config, None);
         assert_eq!(smoke.operation_timeout_seconds, Some(42));
-    }
-
-    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
-    #[test]
-    fn parses_federation_quarantine_smoke_operations_subcommand() {
-        let args = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "federation",
-            "smoke-operations",
-            "--public-config",
-            "federation-public.json",
-            "--private-config",
-            "member-1/federation-private.json",
-            "--conflicting-private-config",
-            "member-2/federation-private.json",
-            "--scenario",
-            "quarantine-mint-conflict",
-        ])
-        .expect("quarantine smoke operations command parses");
-
-        let Some(Commands::Federation(federation)) = args.command else {
-            panic!("expected federation command");
-        };
-        let FederationCommand::SmokeOperations(smoke) = federation.command else {
-            panic!("expected federation smoke-operations command");
-        };
-        assert_eq!(smoke.public_config, PathBuf::from("federation-public.json"));
-        assert_eq!(
-            smoke.private_config,
-            Some(PathBuf::from("member-1/federation-private.json"))
-        );
-        assert_eq!(
-            smoke.conflicting_private_config,
-            Some(PathBuf::from("member-2/federation-private.json"))
-        );
-        assert_eq!(
-            smoke.scenario,
-            FederationSmokeScenario::QuarantineMintConflict
-        );
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]

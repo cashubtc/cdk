@@ -58,7 +58,7 @@ fn runtime_config_builds_mint_payment_observation_operations() {
 }
 
 #[tokio::test]
-async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
+async fn real_policy_allows_quorum_despite_minority_disagreement() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
@@ -101,6 +101,21 @@ async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
         .expect("single observation rows");
     assert_eq!(observations_after_single.len(), 1);
 
+    let conflicting_third = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 3, 11, "different-settlement"),
+    );
+    persist_and_apply_entry(&mint, &conflicting_third).await;
+    let quote_after_minority_disagreement = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(
+        quote_after_minority_disagreement.state(),
+        MintQuoteState::Unpaid
+    );
+
     let matching_second = appended_entry(
         &mut journal,
         mint_payment_observation_envelope(&runtime_config, &quote, 2, 10, "settled"),
@@ -117,21 +132,6 @@ async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
         Amount::new(10, CurrencyUnit::Sat)
     );
 
-    let conflicting_third = appended_entry(
-        &mut journal,
-        mint_payment_observation_envelope(&runtime_config, &quote, 3, 11, "different-settlement"),
-    );
-    persist_and_apply_entry(&mint, &conflicting_third).await;
-    let quote_after_conflict = localstore
-        .get_mint_quote(&quote)
-        .await
-        .expect("quote lookup")
-        .expect("quote");
-    assert_eq!(
-        quote_after_conflict.amount_paid(),
-        Amount::new(10, CurrencyUnit::Sat)
-    );
-
     let observations_after_conflict = localstore
         .get_federation_payment_observations(
             FederationPaymentObservationContext::MintQuote,
@@ -141,7 +141,7 @@ async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
         .expect("conflicting observation rows");
     assert_eq!(observations_after_conflict.len(), 3);
     assert_eq!(
-        observations_after_conflict[2].observation.observer(),
+        observations_after_conflict[1].observation.observer(),
         MemberId::new(3).expect("member three")
     );
 }
@@ -340,176 +340,4 @@ async fn mint_payment_observation_uses_payment_id_and_consensus_logical_time() {
         "custom:metadata-payment"
     );
     assert_eq!(stored_quote.payments[0].time, 3);
-}
-
-#[tokio::test]
-async fn payment_quarantine_blocks_mint_signing() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(2);
-    let runtime_config = runtime_config_with_payment_policy(policy);
-    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
-    let mut journal = InMemoryFederationJournal::new();
-    let quote = QuoteId::new();
-
-    let quote_entry = appended_entry(
-        &mut journal,
-        runtime_config.mint_quote_operation(
-            quote.clone(),
-            bolt11_quote_request(1),
-            bolt11_quote_response(&quote, 1),
-        ),
-    );
-    persist_and_apply_entry(&mint, &quote_entry).await;
-    let first_observation = appended_entry(
-        &mut journal,
-        mint_payment_observation_envelope(&runtime_config, &quote, 1, 1, "settled"),
-    );
-    persist_and_apply_entry(&mint, &first_observation).await;
-    let matching_second = appended_entry(
-        &mut journal,
-        mint_payment_observation_envelope(&runtime_config, &quote, 2, 1, "settled"),
-    );
-    persist_and_apply_entry(&mint, &matching_second).await;
-    let quote_after_quorum = localstore
-        .get_mint_quote(&quote)
-        .await
-        .expect("quote lookup")
-        .expect("quote");
-    assert_eq!(quote_after_quorum.state(), MintQuoteState::Paid);
-
-    let quarantine_entry = appended_entry(
-        &mut journal,
-        runtime_config.payment_observation_quarantine(
-            FederationPaymentObservationContext::MintQuote,
-            quote.clone(),
-            FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-            vec![first_observation.operation_id, matching_second.operation_id],
-        ),
-    );
-    persist_and_apply_entry(&mint, &quarantine_entry).await;
-
-    let output = output_for_runtime(&runtime_config, b"quarantined mint output");
-    let input = MintInput::Single(MintRequest {
-        quote: quote.clone(),
-        outputs: vec![output.clone()],
-        signature: None,
-    });
-    let mint_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .mint_operation(input)
-            .expect("mint operation"),
-    );
-    let mut tx = localstore.begin_transaction().await.expect("begin");
-    tx.add_federation_journal_entry(&mint_entry)
-        .await
-        .expect("persist mint entry");
-    tx.commit().await.expect("commit mint entry");
-    let err = mint
-        .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
-        .await
-        .expect_err("quarantined quote must not mint");
-    assert!(
-        err.to_string().contains("quarantined"),
-        "unexpected error: {err}"
-    );
-
-    let signatures = localstore
-        .get_blind_signatures(&[output.blinded_secret])
-        .await
-        .expect("signature lookup");
-    assert!(signatures[0].is_none());
-}
-
-#[tokio::test]
-async fn future_quarantine_does_not_suppress_prior_mint_payment_replay() {
-    let runtime_config = runtime_config_with_payment_policy(
-        FederationPaymentObservationPolicy::development_single_observation_for_testing(),
-    );
-    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
-    let mut journal = InMemoryFederationJournal::new();
-    let quote = QuoteId::new();
-
-    let quote_entry = appended_entry(
-        &mut journal,
-        runtime_config.mint_quote_operation(
-            quote.clone(),
-            bolt11_quote_request(1),
-            bolt11_quote_response(&quote, 1),
-        ),
-    );
-    let first_observation = appended_entry(
-        &mut journal,
-        mint_payment_observation_envelope(&runtime_config, &quote, 1, 1, "settled"),
-    );
-    let conflicting_observation = appended_entry(
-        &mut journal,
-        mint_payment_observation_envelope(&runtime_config, &quote, 2, 2, "conflicting"),
-    );
-    let quarantine_entry = appended_entry(
-        &mut journal,
-        runtime_config.payment_observation_quarantine(
-            FederationPaymentObservationContext::MintQuote,
-            quote.clone(),
-            FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-            vec![
-                first_observation.operation_id,
-                conflicting_observation.operation_id,
-            ],
-        ),
-    );
-    let entries = vec![
-        quote_entry,
-        first_observation,
-        conflicting_observation,
-        quarantine_entry,
-    ];
-
-    let mut tx = localstore.begin_transaction().await.expect("begin");
-    for entry in &entries {
-        tx.add_federation_journal_entry(entry)
-            .await
-            .expect("persist journal entry");
-    }
-    tx.commit().await.expect("commit journal entries");
-
-    for entry in &entries {
-        mint.apply_federation_journal_entries(std::slice::from_ref(entry))
-            .await
-            .expect("apply journal entry");
-    }
-
-    let quote_after_replay = localstore
-        .get_mint_quote(&quote)
-        .await
-        .expect("quote lookup")
-        .expect("quote");
-    assert_eq!(quote_after_replay.amount_paid().value(), 1);
-    assert_eq!(quote_after_replay.state(), MintQuoteState::Paid);
-
-    let output = output_for_runtime(&runtime_config, b"future quarantine mint output");
-    let input = MintInput::Single(MintRequest {
-        quote: quote.clone(),
-        outputs: vec![output],
-        signature: None,
-    });
-    let mint_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .mint_operation(input)
-            .expect("mint operation"),
-    );
-    let mut tx = localstore.begin_transaction().await.expect("begin");
-    tx.add_federation_journal_entry(&mint_entry)
-        .await
-        .expect("persist mint entry");
-    tx.commit().await.expect("commit mint entry");
-
-    let err = mint
-        .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
-        .await
-        .expect_err("quarantined quote must not mint after replay");
-    assert!(
-        err.to_string().contains("quarantined"),
-        "unexpected error: {err}"
-    );
 }

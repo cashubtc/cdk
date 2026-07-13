@@ -264,7 +264,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let sync_local_operation_count = option_u64(status.sync_local_operation_count);
     let sync_peer_operation_count = option_u64(status.sync_peer_operation_count);
     let sync_operation_count = option_u64(status.sync_operation_count);
-    let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
+    let (payment_reports, payment_conflicts, payment_unresolved, payment_stale) =
         payment_report_counts(status);
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
@@ -273,7 +273,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .map(|digest| digest.to_string())
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} materialized_state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} catch_up_certificate_quorum_operations={} catch_up_certificate_quorum_from={} catch_up_certificate_quorum_latest={} catch_up_certificate_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
+        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} materialized_state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} catch_up_certificate_quorum_operations={} catch_up_certificate_quorum_from={} catch_up_certificate_quorum_latest={} catch_up_certificate_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -302,7 +302,6 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_conflicts,
         payment_unresolved,
         payment_stale,
-        payment_quarantine,
         invalid_operation_alerts,
         status.aleph_bft_live_session_active,
         status.aleph_bft_network_inbound_active,
@@ -367,9 +366,7 @@ fn ensure_statuses_no_invalid_operation_alerts(
     Ok(())
 }
 
-fn payment_report_counts(
-    status: &FederationLocalStatusResponse,
-) -> (usize, usize, usize, usize, usize) {
+fn payment_report_counts(status: &FederationLocalStatusResponse) -> (usize, usize, usize, usize) {
     let payment_reports = status.payment_observation_reports.len();
     let payment_conflicts = status
         .payment_observation_reports
@@ -380,11 +377,13 @@ fn payment_report_counts(
         .payment_observation_reports
         .iter()
         .filter(|report| {
-            matches!(
-                report.status,
-                FederationPaymentObservationReportStatus::AwaitingQuorum
-                    | FederationPaymentObservationReportStatus::Conflicting
-            )
+            report
+                .groups
+                .iter()
+                .filter(|group| group.quorum_reached)
+                .take(2)
+                .count()
+                != 1
         })
         .count();
     let payment_stale = status
@@ -392,20 +391,11 @@ fn payment_report_counts(
         .iter()
         .filter(|report| report.stale)
         .count();
-    let payment_quarantine = status
-        .payment_observation_reports
-        .iter()
-        .filter(|report| {
-            report.recommended_action == FederationPaymentObservationReportAction::Quarantine
-        })
-        .count();
-
     (
         payment_reports,
         payment_conflicts,
         payment_unresolved,
         payment_stale,
-        payment_quarantine,
     )
 }
 
@@ -424,7 +414,7 @@ pub(crate) fn payment_observation_report_line(
         .map(|age| age.to_string())
         .unwrap_or_else(|| "unknown".to_string());
     format!(
-        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={} quarantined={} quarantine_ops={} quarantine_ids={} quarantine_indices={}",
+        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={}",
         report.context,
         report.quote,
         report.status,
@@ -435,11 +425,7 @@ pub(crate) fn payment_observation_report_line(
         report.competing_terminal_state_observers.len(),
         quote_age_secs,
         report.stale,
-        report.recommended_action,
-        report.quarantined,
-        report.quarantine_operation_ids.len(),
-        display_list(&report.quarantine_operation_ids),
-        display_list(&report.quarantine_operation_indices)
+        report.recommended_action
     )
 }
 
@@ -671,14 +657,13 @@ fn ensure_statuses_no_payment_observation_alerts(
         for report in &status.payment_observation_reports {
             if payment_observation_report_is_alert(report) {
                 bail!(
-                    "federation member {} reports payment observation alert: context={} quote={} status={} action={} stale={} quarantined={} conflicts={} terminal_conflicts={}",
+                    "federation member {} reports payment observation alert: context={} quote={} status={} action={} stale={} conflicts={} terminal_conflicts={}",
                     status.peer_status.member_id,
                     report.context,
                     report.quote,
                     report.status,
                     report.recommended_action,
                     report.stale,
-                    report.quarantined,
                     report.conflicting_observers.len(),
                     report.competing_terminal_state_observers.len()
                 );
@@ -693,7 +678,6 @@ fn payment_observation_report_is_alert(report: &FederationPaymentObservationRepo
     report.recommended_action != FederationPaymentObservationReportAction::None
         || report.status == FederationPaymentObservationReportStatus::Conflicting
         || report.stale
-        || report.quarantined
         || !report.conflicting_observers.is_empty()
         || !report.competing_terminal_state_observers.is_empty()
 }

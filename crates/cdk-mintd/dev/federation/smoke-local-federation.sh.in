@@ -10,7 +10,6 @@ RESET_POSTGRES_SCHEMAS="${RESET_POSTGRES_SCHEMAS:-0}"
 MEMBERS=(@@MEMBERS@@)
 PRIMARY_MEMBER="${PRIMARY_MEMBER:-@@PRIMARY_MEMBER@@}"
 RESTART_MEMBER="${RESTART_MEMBER:-@@RESTART_MEMBER@@}"
-QUARANTINE_OFFLINE_MEMBER="${QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}"
 CRASH_WINDOW_MEMBER="${CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}"
 LONG_PARTITION_MEMBER="${LONG_PARTITION_MEMBER:-$RESTART_MEMBER}"
 EXERCISE_CRASH_WINDOW="${EXERCISE_CRASH_WINDOW:-1}"
@@ -651,22 +650,6 @@ wait_for_catch_up_certificate_quorum() {
   return 1
 }
 
-wait_for_quarantine_report() {
-  local member="$1"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if member_payment_report_lines "$member" | grep -q 'quarantined=true'; then
-      return 0
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'member %s did not report an accepted payment observation quarantine\n' "$member" >&2
-  local private_config
-  private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation payment-observations --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --context mint-quote >&2 || true
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready >&2 || true
-  return 1
-}
-
 validate_smoke_members() {
   member_config "$PRIMARY_MEMBER" >/dev/null || {
     printf 'unknown PRIMARY_MEMBER %s\n' "$PRIMARY_MEMBER" >&2
@@ -678,14 +661,6 @@ validate_smoke_members() {
   }
   if [[ "$PRIMARY_MEMBER" == "$RESTART_MEMBER" ]]; then
     printf 'RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke\n' >&2
-    return 1
-  fi
-  member_config "$QUARANTINE_OFFLINE_MEMBER" >/dev/null || {
-    printf 'unknown QUARANTINE_OFFLINE_MEMBER %s\n' "$QUARANTINE_OFFLINE_MEMBER" >&2
-    return 1
-  }
-  if [[ "$PRIMARY_MEMBER" == "$QUARANTINE_OFFLINE_MEMBER" ]]; then
-    printf 'QUARANTINE_OFFLINE_MEMBER must differ from PRIMARY_MEMBER for offline catch-up smoke\n' >&2
     return 1
   fi
   member_config "$CRASH_WINDOW_MEMBER" >/dev/null || {
@@ -890,20 +865,6 @@ start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 wait_for_converged
 wait_for_catch_up_certificate_quorum "$RESTART_MEMBER"
-
-stop_member "$QUARANTINE_OFFLINE_MEMBER"
-run_smoke_operations \
-  --private-config "$(member_private_config "$PRIMARY_MEMBER")" \
-  --conflicting-private-config "$(member_private_config "$RESTART_MEMBER")" \
-  --scenario quarantine-mint-conflict
-wait_for_quarantine_report "$PRIMARY_MEMBER"
-
-start_member "$QUARANTINE_OFFLINE_MEMBER"
-wait_for_status "$QUARANTINE_OFFLINE_MEMBER"
-
-wait_for_converged
-wait_for_catch_up_certificate_quorum "$QUARANTINE_OFFLINE_MEMBER"
-wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
 
 stop_member "$RESTART_MEMBER"
 run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario offline-member-keyset-rotation

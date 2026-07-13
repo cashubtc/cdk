@@ -71,8 +71,9 @@ For quorum policies:
 - A single paid observation is not enough to mutate `amount_paid`.
 - Matching observations must agree on quote ID, method, state, amount paid,
   issued amount, and backend proof material.
-- Conflicting amount or proof observations can now be quarantined by consensus
-  before any later mint signatures are produced.
+- Minority disagreement is retained for diagnostics without vetoing a matching
+  threshold. Two incompatible threshold-supported results leave the quote
+  unresolved.
 
 The storage layer now persists per-member observations with quote, observer,
 state, context, and typed JSON evidence. The mint state machine evaluates those
@@ -87,18 +88,11 @@ reports treat unpaid observations as unresolved progress, while paid or issued
 evidence can conflict with other terminal evidence. Signed private REST
 `local-status` responses and `cdk-mintd federation status` now expose redacted
 report summaries with context, quote ID, status, observer counts, conflicting
-members, quorum flags, accepted quarantine operation IDs, and redacted
-quarantine reasons without returning backend proof material. The mint state
-machine applies accepted `PaymentObservationQuarantine` operations idempotently,
-skips later payment finalization for quarantined quotes, and rejects mint or
-melt operations that would spend a quarantined quote before writing signature
-shares or mutating proof state. Operators can now propose the same quarantine
-operation with `cdk-mintd federation quarantine-payment-observation`; the
-command signs a normal private REST operation submit request with the local
-member identity key and posts it to configured federation members. Private REST
-catch-up replays accepted quarantine operations into the same report surface, so
-a lagging member that learns conflicting evidence plus quarantine from a peer
-still reports the quote as quarantined after catch-up.
+members, and quorum flags without returning backend proof material. Minority
+disagreement is diagnostic and does not veto a matching threshold. If two
+incompatible evidence groups both reach threshold, deterministic apply leaves
+the quote unresolved. Private REST catch-up replays the accepted observations
+into the same report and policy path.
 
 ## Melt Quote Observations
 
@@ -141,15 +135,10 @@ The status surface exposes unresolved and conflicting observations by quote ID,
 member ID, state, report status, quote age, stale classification, and a redacted
 operator action recommendation. `local-status` and
 `cdk-mintd federation status` mark old unresolved evidence as `stale=true` with
-`action=inspect`, and conflicting evidence as `action=quarantine`, without
-logging secrets, invoices, local paths, private keys, or proof secrets.
-Operators can copy a conflicting report's context, quote ID, and evidence
-operation IDs into the quarantine command without exposing payment proof
-material on the command line.
+`action=inspect`, including conflicting evidence, without logging secrets,
+invoices, local paths, private keys, or proof secrets.
 
 ## Required Follow-Up
 
-- Add indexed storage for quarantine records if journal scans become expensive
-  in large federations.
 - Add tests proving stale pending quotes remain visible without blocking
   consensus across live process restart and catch-up scenarios.

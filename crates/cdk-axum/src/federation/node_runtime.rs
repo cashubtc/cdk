@@ -754,8 +754,7 @@ impl FederationNodeRuntime {
                 let wait_registration = notifications
                     .register_waiter(operation_id, sync_config.response_waiter_limit)?;
                 drop(consensus);
-                self.mark_consensus_activity(operation_id, true)
-                    .await;
+                self.mark_consensus_activity(operation_id, true).await;
                 let response = Self::wait_for_operation_acceptance(
                     operation_id,
                     sync_config,
@@ -1074,7 +1073,8 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
         tx.commit().await?;
         self.record_sequence(FederationRestMessageKind::DkgCommitment, sender, sequence)
             .await;
@@ -1104,7 +1104,8 @@ impl FederationNodeRuntime {
 
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_commitment(commitment).await?;
-        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
         tx.commit().await?;
         self.record_sequence(FederationRestMessageKind::DkgCommitment, sender, sequence)
             .await;
@@ -1144,7 +1145,8 @@ impl FederationNodeRuntime {
 
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_reveal(reveal).await?;
-        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
         tx.commit().await?;
         self.record_sequence(FederationRestMessageKind::DkgReveal, sender, sequence)
             .await;
@@ -1234,7 +1236,8 @@ impl FederationNodeRuntime {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_secret_share_contribution(contribution)
             .await?;
-        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
         tx.commit().await?;
         self.record_sequence(FederationRestMessageKind::DkgSecretShare, sender, sequence)
             .await;
@@ -1287,7 +1290,8 @@ impl FederationNodeRuntime {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_transcript_signature(signature)
             .await?;
-        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
         tx.commit().await?;
         self.record_sequence(
             FederationRestMessageKind::DkgTranscriptSignature,
@@ -1331,7 +1335,8 @@ impl FederationNodeRuntime {
 
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_activation(activation).await?;
-        tx.set_federation_dkg_member_sequence(sender, sequence).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
         tx.commit().await?;
         self.record_sequence(FederationRestMessageKind::DkgActivation, sender, sequence)
             .await;
@@ -1563,7 +1568,8 @@ impl FederationNodeRuntime {
             })
             .collect::<Vec<_>>();
         let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
-        self.persist_finalization(&finalized_items, &entries).await?;
+        self.persist_finalization(&finalized_items, &entries)
+            .await?;
         *consensus = next_consensus;
         drop(consensus);
 
@@ -1587,13 +1593,12 @@ impl FederationNodeRuntime {
                     if matches!(
                         persisted.status(),
                         FederationOperationStatus::Applied | FederationOperationStatus::Rejected
-                    ) => persisted,
+                    ) =>
+                {
+                    persisted
+                }
                 _ => {
-                    if self
-                        .apply_journal_entry_for_replay(entry)
-                        .await?
-                        .is_some()
-                    {
+                    if self.apply_journal_entry_for_replay(entry).await?.is_some() {
                         applied.push(entry.operation_id);
                     }
                     db.get_federation_journal_entry_by_operation_id(entry.operation_id)

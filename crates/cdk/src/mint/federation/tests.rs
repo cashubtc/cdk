@@ -22,9 +22,8 @@ use cdk_common::federation::{
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationSwapOperation, InMemoryFederationJournal, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentObservationPolicy, FederationSwapOperation, InMemoryFederationJournal,
+    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;

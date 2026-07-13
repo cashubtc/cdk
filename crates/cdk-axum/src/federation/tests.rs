@@ -29,11 +29,10 @@ use cdk::federation::{
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationRecord, FederationPaymentObservationReportAction,
-    FederationPaymentVerificationPolicy, FederationRestMessageKind, FederationSignedRequest,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
+    FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
+    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -3283,14 +3282,16 @@ fn test_operation_envelope(
     let quote = QuoteId::from(uuid::Uuid::from_bytes(quote_bytes)).to_string();
     FederationOperationEnvelope::new(
         federation_id,
-        FederationOperation::PaymentObservationQuarantine(
-            cdk::federation::FederationPaymentObservationQuarantine {
-                context: cdk::federation::FederationPaymentObservationContext::MintQuote,
-                quote,
-                reason: cdk::federation::FederationPaymentObservationQuarantineReason::OperatorHalt,
-                evidence_operation_ids: Vec::new(),
-            },
-        ),
+        FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+            quote,
+            observer: member_id(1),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(1),
+            amount_issued: Amount::ZERO,
+            payment_id: None,
+            payment_proof: Some(label.to_string()),
+        }),
     )
     .authorize(&private_member(1))
     .expect("authorize test operation")
@@ -5323,21 +5324,17 @@ async fn catch_up_applies_mint_quote_operation_to_local_store() {
 }
 
 #[tokio::test]
-async fn catch_up_applies_payment_quarantine_and_local_status_reports_it() {
+async fn catch_up_reports_conflicting_payment_observations() {
     let (state, public_config, peer_private) = federation_route_state().await;
-    let config = state
+    let local_member = state
         .mint
         .federation_config()
         .expect("federation config")
-        .clone();
-    let local_member = config.member_id();
+        .member_id();
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let quote_id = QuoteId::new();
     let first_observation =
         mint_payment_observation_envelope_for_member(&state, &quote_id, 1, 1, "settled");
-    let first_operation_id = first_observation
-        .operation_id()
-        .expect("first operation id");
     let conflicting_observation = mint_payment_observation_envelope_for_member(
         &state,
         &quote_id,
@@ -5345,23 +5342,12 @@ async fn catch_up_applies_payment_quarantine_and_local_status_reports_it() {
         2,
         "different-settlement",
     );
-    let conflicting_operation_id = conflicting_observation
-        .operation_id()
-        .expect("conflicting operation id");
-    let quarantine = config.payment_observation_quarantine(
-        cdk::federation::FederationPaymentObservationContext::MintQuote,
-        quote_id.clone(),
-        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-        vec![first_operation_id, conflicting_operation_id],
-    );
-    let quarantine_operation_id = quarantine.operation_id().expect("quarantine operation id");
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     for envelope in [
         mint_quote_envelope(&state, &quote_id),
         first_observation,
         conflicting_observation,
-        quarantine,
     ] {
         finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted operation");
     }
@@ -5377,14 +5363,14 @@ async fn catch_up_applies_payment_quarantine_and_local_status_reports_it() {
         .await
         .expect("apply catch-up");
 
-    assert_eq!(applied.len(), 4);
+    assert_eq!(applied.len(), 3);
     let persisted = state
         .mint
         .localstore()
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted.len(), 4);
+    assert_eq!(persisted.len(), 3);
     assert!(persisted
         .iter()
         .all(|entry| entry.status() == FederationOperationStatus::Applied));
@@ -5407,19 +5393,9 @@ async fn catch_up_applies_payment_quarantine_and_local_status_reports_it() {
         report.status,
         cdk::federation::FederationPaymentObservationReportStatus::Conflicting
     );
-    assert!(report.quarantined);
     assert_eq!(
         report.recommended_action,
-        FederationPaymentObservationReportAction::Quarantine
-    );
-    assert_eq!(
-        report.quarantine_operation_ids,
-        vec![quarantine_operation_id]
-    );
-    assert_eq!(report.quarantine_operation_indices, vec![3]);
-    assert_eq!(
-        report.quarantine_reasons,
-        vec![FederationPaymentObservationQuarantineReason::ConflictingEvidence]
+        FederationPaymentObservationReportAction::Inspect
     );
 
     let status_json = serde_json::to_string(&response).expect("status json");
@@ -19832,66 +19808,6 @@ async fn materialized_state_digest_tracks_unfinalized_payment_observation_rows()
 }
 
 #[tokio::test]
-async fn materialized_state_digest_tracks_payment_observation_quarantine_rows() {
-    let (state, _, _) = federation_route_state().await;
-    let config = state
-        .mint
-        .federation_config()
-        .expect("federation config")
-        .clone();
-    let quote_id = QuoteId::new();
-    state
-        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
-        .await
-        .expect("submit mint quote");
-    let first_response = state
-        .submit_federation_envelope(mint_payment_observation_envelope_for_member(
-            &state, &quote_id, 1, 1, "settled",
-        ))
-        .await
-        .expect("submit first observation");
-    let conflicting_response = state
-        .submit_federation_envelope(mint_payment_observation_envelope_for_member(
-            &state,
-            &quote_id,
-            2,
-            2,
-            "different-settlement",
-        ))
-        .await
-        .expect("submit conflicting observation");
-
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
-    let before_entries = consensus.lock().await.journal().entries().to_vec();
-    let before_digest = materialized_state_digest(&state, &before_entries)
-        .await
-        .expect("digest before quarantine");
-
-    state
-        .submit_federation_envelope(config.payment_observation_quarantine(
-            cdk::federation::FederationPaymentObservationContext::MintQuote,
-            quote_id.clone(),
-            FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-            vec![
-                first_response.operation_id,
-                conflicting_response.operation_id,
-            ],
-        ))
-        .await
-        .expect("submit quarantine");
-    let after_entries = consensus.lock().await.journal().entries().to_vec();
-    let after_digest = materialized_state_digest(&state, &after_entries)
-        .await
-        .expect("digest after quarantine");
-
-    assert_ne!(
-        before_digest, after_digest,
-        "accepted payment-observation quarantine rows must affect the materialized digest"
-    );
-    assert_ne!(after_digest, FederationMaterializedStateDigest::genesis());
-}
-
-#[tokio::test]
 async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
     let (state, public_config, _) = federation_route_state().await;
     let config = state
@@ -20490,7 +20406,6 @@ async fn catch_up_replay_materializes_unresolved_payment_observation_rows() {
     );
     assert_eq!(report.required, 2);
     assert_eq!(report.total_observations, 1);
-    assert!(!report.quarantined);
     assert!(!report.groups[0].quorum_reached);
     assert!(report.stale);
     assert_eq!(
@@ -20499,87 +20414,6 @@ async fn catch_up_replay_materializes_unresolved_payment_observation_rows() {
     );
     let status_json = serde_json::to_string(&status).expect("status json");
     assert!(!status_json.contains("settled"));
-}
-
-#[tokio::test]
-async fn catch_up_replay_materializes_payment_observation_quarantine_rows() {
-    let (state, public_config, peer_private) = federation_route_state().await;
-    let config = state
-        .mint
-        .federation_config()
-        .expect("federation config")
-        .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let quote_id = QuoteId::new();
-    let first_observation =
-        mint_payment_observation_envelope_for_member(&state, &quote_id, 1, 1, "settled");
-    let second_observation = mint_payment_observation_envelope_for_member(
-        &state,
-        &quote_id,
-        2,
-        2,
-        "different-settlement",
-    );
-    let first_observation_id = first_observation
-        .operation_id()
-        .expect("first observation operation id");
-    let second_observation_id = second_observation
-        .operation_id()
-        .expect("second observation operation id");
-    let quarantine = config.payment_observation_quarantine(
-        cdk::federation::FederationPaymentObservationContext::MintQuote,
-        quote_id.clone(),
-        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-        vec![first_observation_id, second_observation_id],
-    );
-    let quarantine_id = quarantine.operation_id().expect("quarantine operation id");
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
-    finalize_test_operation(&mut peer_consensus, mint_quote_envelope(&state, &quote_id))
-        .expect("peer accepted mint quote");
-    finalize_test_operation(&mut peer_consensus, first_observation)
-        .expect("peer accepted first payment observation");
-    finalize_test_operation(&mut peer_consensus, second_observation)
-        .expect("peer accepted conflicting payment observation");
-    finalize_test_operation(&mut peer_consensus, quarantine).expect("peer accepted quarantine");
-    let catch_up_request = state
-        .federation
-        .consensus
-        .as_ref()
-        .expect("local consensus")
-        .lock()
-        .await
-        .catch_up_request();
-    let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
-        .expect("catch-up response");
-
-    let applied = state
-        .apply_federation_catch_up_response(&catch_up_response)
-        .await
-        .expect("apply catch-up response");
-    assert_eq!(applied.len(), 4);
-
-    let status_request = signed_status_request(
-        &public_config,
-        &peer_private,
-        state
-            .mint
-            .federation_config()
-            .expect("federation config")
-            .member_id(),
-        1,
-    );
-    let status = post_local_status(State(state), Json(status_request))
-        .await
-        .expect("local status response")
-        .0;
-    assert_eq!(status.payment_observation_reports.len(), 1);
-    let report = status
-        .payment_observation_reports
-        .first()
-        .expect("payment observation report");
-    assert!(report.quarantined);
-    assert_eq!(report.quarantine_operation_ids, vec![quarantine_id]);
 }
 
 #[cfg(feature = "prometheus")]
@@ -21289,23 +21123,18 @@ async fn private_local_status_route_reports_payment_observation_conflicts() {
         .federation_config()
         .expect("federation config")
         .member_id();
-    let config = state
-        .mint
-        .federation_config()
-        .expect("federation config")
-        .clone();
     let quote_id = QuoteId::new();
     state
         .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
         .await
         .expect("submit mint quote");
-    let first_response = state
+    state
         .submit_federation_envelope(mint_payment_observation_envelope_for_member(
             &state, &quote_id, 1, 1, "settled",
         ))
         .await
         .expect("submit first payment observation");
-    let conflicting_response = state
+    state
         .submit_federation_envelope(mint_payment_observation_envelope_for_member(
             &state,
             &quote_id,
@@ -21315,19 +21144,6 @@ async fn private_local_status_route_reports_payment_observation_conflicts() {
         ))
         .await
         .expect("submit conflicting second payment observation");
-    let quarantine_response = state
-        .submit_federation_envelope(config.payment_observation_quarantine(
-            cdk::federation::FederationPaymentObservationContext::MintQuote,
-            quote_id.clone(),
-            FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-            vec![
-                first_response.operation_id,
-                conflicting_response.operation_id,
-            ],
-        ))
-        .await
-        .expect("submit quarantine");
-
     let request = signed_status_request(&public_config, &peer_private, local_member, 1);
     let response = post_local_status(State(state), Json(request))
         .await
@@ -21356,19 +21172,9 @@ async fn private_local_status_route_reports_payment_observation_conflicts() {
         report.conflicting_observers,
         vec![member_id(1), member_id(2)]
     );
-    assert!(report.quarantined);
     assert_eq!(
         report.recommended_action,
-        FederationPaymentObservationReportAction::Quarantine
-    );
-    assert_eq!(
-        report.quarantine_operation_ids,
-        vec![quarantine_response.operation_id]
-    );
-    assert_eq!(report.quarantine_operation_indices, vec![3]);
-    assert_eq!(
-        report.quarantine_reasons,
-        vec![FederationPaymentObservationQuarantineReason::ConflictingEvidence]
+        FederationPaymentObservationReportAction::Inspect
     );
 
     let status_json = serde_json::to_string(&response).expect("status json");

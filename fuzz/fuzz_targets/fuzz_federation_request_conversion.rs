@@ -5,11 +5,9 @@ use cdk_common::federation::{
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
-    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationRestoreOperation, FederationSwapOperation,
-    MemberId,
+    FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationRestoreOperation, FederationSwapOperation, MemberId,
 };
 use cdk_common::nuts::nut00::KnownMethod;
 use cdk_common::nuts::nut23::QuoteState;
@@ -74,7 +72,6 @@ fn exercise_conversion_surfaces(envelope: &FederationOperationEnvelope) {
         status: FederationOperationStatus::Accepted,
     };
     let observation = FederationPaymentObservationRecord::from_journal_entry(&entry);
-    let quarantine = FederationPaymentObservationQuarantineRecord::from_journal_entry(&entry);
 
     if let Some(record) = observation.as_ref() {
         let _ = record.observation.context();
@@ -95,22 +92,12 @@ fn exercise_conversion_surfaces(envelope: &FederationOperationEnvelope) {
         let _ = report.summary();
     }
 
-    if let Some(record) = quarantine.as_ref() {
-        let report = FederationPaymentObservationReport::from_records_with_quarantines(
-            record.quarantine.context,
-            &record.quarantine.quote,
-            1,
-            &[],
-            std::slice::from_ref(record),
-        );
-        let _ = report.summary();
-    }
 }
 
 fn arbitrary_operation(
     u: &mut Unstructured<'_>,
 ) -> libfuzzer_sys::arbitrary::Result<FederationOperation> {
-    Ok(match u.int_in_range(0..=8)? {
+    Ok(match u.int_in_range(0..=7)? {
         0 => FederationOperation::MintQuote(FederationMintQuoteOperation {
             quote: bounded_string(u, 24)?,
             request_lookup_id: PaymentIdentifier::CustomId(bounded_string(u, 24)?),
@@ -146,22 +133,14 @@ fn arbitrary_operation(
             payment_proof: optional_bounded_string(u, 24)?,
             observed_time: None,
         }),
-        5 => FederationOperation::PaymentObservationQuarantine(
-            FederationPaymentObservationQuarantine {
-                context: payment_observation_context(u)?,
-                quote: bounded_string(u, 24)?,
-                reason: payment_observation_quarantine_reason(u)?,
-                evidence_operation_ids: operation_ids(u, 4)?,
-            },
-        ),
-        6 => FederationOperation::Melt(FederationMeltOperation {
+        5 => FederationOperation::Melt(FederationMeltOperation {
             request: MeltRequest::new(
                 bounded_string(u, 24)?,
                 proofs(u, 3)?,
                 optional_outputs(u, 3)?,
             ),
         }),
-        7 => FederationOperation::Swap(FederationSwapOperation {
+        6 => FederationOperation::Swap(FederationSwapOperation {
             request: SwapRequest::new(proofs(u, 3)?, outputs(u, 3)?),
         }),
         _ => FederationOperation::Restore(FederationRestoreOperation {
@@ -303,18 +282,6 @@ fn proofs(u: &mut Unstructured<'_>, max: usize) -> libfuzzer_sys::arbitrary::Res
     Ok(proofs)
 }
 
-fn operation_ids(
-    u: &mut Unstructured<'_>,
-    max: usize,
-) -> libfuzzer_sys::arbitrary::Result<Vec<FederationOperationId>> {
-    let count = u.int_in_range(0..=max)?;
-    let mut ids = Vec::with_capacity(count);
-    for _ in 0..count {
-        ids.push(FederationOperationId::from_bytes(<[u8; 32]>::arbitrary(u)?));
-    }
-    Ok(ids)
-}
-
 fn arbitrary_federation_id(
     u: &mut Unstructured<'_>,
 ) -> libfuzzer_sys::arbitrary::Result<FederationId> {
@@ -336,26 +303,6 @@ fn payment_method(u: &mut Unstructured<'_>) -> libfuzzer_sys::arbitrary::Result<
         1 => PaymentMethod::Known(KnownMethod::Bolt12),
         2 => PaymentMethod::Known(KnownMethod::Onchain),
         _ => PaymentMethod::Custom(bounded_method_name(u)?),
-    })
-}
-
-fn payment_observation_context(
-    u: &mut Unstructured<'_>,
-) -> libfuzzer_sys::arbitrary::Result<FederationPaymentObservationContext> {
-    if u.ratio(1, 2)? {
-        Ok(FederationPaymentObservationContext::MintQuote)
-    } else {
-        Ok(FederationPaymentObservationContext::MeltQuote)
-    }
-}
-
-fn payment_observation_quarantine_reason(
-    u: &mut Unstructured<'_>,
-) -> libfuzzer_sys::arbitrary::Result<FederationPaymentObservationQuarantineReason> {
-    Ok(match u.int_in_range(0..=2)? {
-        0 => FederationPaymentObservationQuarantineReason::ConflictingEvidence,
-        1 => FederationPaymentObservationQuarantineReason::CompetingTerminalStates,
-        _ => FederationPaymentObservationQuarantineReason::OperatorHalt,
     })
 }
 

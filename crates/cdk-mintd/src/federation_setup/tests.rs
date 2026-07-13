@@ -331,7 +331,6 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("rm -rf \"$work_dir\""));
     assert!(smoke_script.contains("PRIMARY_MEMBER"));
     assert!(smoke_script.contains("RESTART_MEMBER"));
-    assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
     assert!(smoke_script.contains("CRASH_WINDOW_MEMBER"));
     assert!(smoke_script.contains("LONG_PARTITION_MEMBER"));
     assert!(smoke_script.contains("EXERCISE_CRASH_WINDOW"));
@@ -466,7 +465,6 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
     assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
     assert!(smoke_script.contains("\"${timeout_args[@]}\""));
-    assert!(smoke_script.contains("wait_for_quarantine_report()"));
     assert!(smoke_script.contains("validate_smoke_members()"));
     assert!(smoke_script.contains("--scenario standard"));
     assert!(smoke_script.contains("--operation-batches \"$STANDARD_OPERATION_BATCHES\""));
@@ -491,7 +489,6 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
-    assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
     assert!(smoke_script.contains("--scenario offline-member-keyset-rotation"));
     assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
     assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
@@ -510,16 +507,10 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(
         smoke_script.contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\"")
     );
-    assert!(smoke_script.contains("wait_for_quarantine_report \"$PRIMARY_MEMBER\""));
     assert!(smoke_script.contains(
             "federation payment-observations --public-config \"$PUBLIC_CONFIG\" --private-config \"$private_config\" --member \"$member\" --context mint-quote"
         ));
-    assert!(smoke_script.contains("stop_member \"$QUARANTINE_OFFLINE_MEMBER\""));
-    assert!(smoke_script.contains("start_member \"$QUARANTINE_OFFLINE_MEMBER\""));
-    assert!(smoke_script.contains("wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\""));
     assert!(smoke_script.contains("wait_for_catch_up_certificate_quorum \"$RESTART_MEMBER\""));
-    assert!(smoke_script
-        .contains("wait_for_catch_up_certificate_quorum \"$QUARANTINE_OFFLINE_MEMBER\""));
     assert!(smoke_script.contains(
             "run_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
         ));
@@ -529,10 +520,6 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains(
             "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_catch_up_certificate_quorum \"$RESTART_MEMBER\""
         ));
-    assert!(smoke_script.contains(
-            "wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\"\n\nwait_for_converged\nwait_for_catch_up_certificate_quorum \"$QUARANTINE_OFFLINE_MEMBER\""
-        ));
-    assert!(smoke_script.contains("wait_for_quarantine_report \"$QUARANTINE_OFFLINE_MEMBER\""));
     assert!(smoke_script.contains("local federation smoke test passed"));
     assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
     assert!(smoke_script.contains(
@@ -1107,7 +1094,6 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
-    assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
     assert!(smoke_script.contains("--scenario offline-member-keyset-rotation"));
     assert!(smoke_script.contains("federation payment-observations"));
     assert!(smoke_script.contains("wait_for_prometheus_metrics"));
@@ -1172,8 +1158,6 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("MEMBERS=(1 2 3 4 5)"));
     assert!(smoke_script.contains("PRIMARY_MEMBER=\"${PRIMARY_MEMBER:-1}\""));
     assert!(smoke_script.contains("RESTART_MEMBER=\"${RESTART_MEMBER:-2}\""));
-    assert!(smoke_script
-        .contains("QUARANTINE_OFFLINE_MEMBER=\"${QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}\""));
     assert!(
         smoke_script.contains("CRASH_WINDOW_MEMBER=\"${CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}\"")
     );
@@ -1222,7 +1206,6 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("--seed-offset \"$STANDARD_SEED_OFFSET\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
-    assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
     assert!(smoke_script.contains("federation payment-observations"));
 
     for (member_id, member_artifacts) in &artifacts.member_artifacts {

@@ -194,7 +194,7 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
     ];
     const PAYMENT_REPORT_STATUSES: &[&str] =
         &["empty", "awaiting_quorum", "quorum_reached", "conflicting"];
-    const PAYMENT_REPORT_ACTIONS: &[&str] = &["none", "inspect", "quarantine"];
+    const PAYMENT_REPORT_ACTIONS: &[&str] = &["none", "inspect"];
 
     let member = response.peer_status.member_id.to_string();
     cdk_prometheus::METRICS.set_federation_consensus_operation_count(

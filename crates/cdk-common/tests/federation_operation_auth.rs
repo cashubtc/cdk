@@ -8,7 +8,9 @@ use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftUnitPayload, FederationConsensusItem, FederationConsensusRuntime,
     FederationError, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+    FederationOperationEnvelope, FederationOperationId, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, MemberId, ThresholdParams, TrustedDealerConfigBundle,
     TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
@@ -51,6 +53,30 @@ fn payment_observation(observer: MemberId) -> FederationOperation {
         payment_id: Some(PaymentIdentifier::CustomId("payment-auth".to_string())),
         payment_proof: Some("settled".to_string()),
     })
+}
+
+fn payment_record(
+    index: u64,
+    observer: MemberId,
+    state: MintQuoteState,
+    proof: &str,
+) -> FederationPaymentObservationRecord {
+    FederationPaymentObservationRecord {
+        operation_id: FederationOperationId::from_bytes([index as u8 + 1; 32]),
+        operation_index: index,
+        observation: FederationPaymentObservation::MintQuote(
+            FederationMintQuotePaymentObservation {
+                quote: "quote-policy".to_string(),
+                observer,
+                method: PaymentMethod::BOLT11,
+                state,
+                amount_paid: Amount::from(2),
+                amount_issued: Amount::ZERO,
+                payment_id: None,
+                payment_proof: Some(proof.to_string()),
+            },
+        ),
+    }
 }
 
 #[test]
@@ -185,4 +211,41 @@ fn authenticated_consensus_rejects_observer_impersonation_without_poisoning_the_
         runtime.finalized_items()[1].status,
         FederationAlephBftFinalizedItemStatus::Accepted
     );
+}
+
+#[test]
+fn minority_disagreement_does_not_veto_a_payment_threshold() {
+    let records = vec![
+        payment_record(0, member_id(1), MintQuoteState::Paid, "settled"),
+        payment_record(1, member_id(3), MintQuoteState::Paid, "different"),
+        payment_record(2, member_id(2), MintQuoteState::Paid, "settled"),
+    ];
+    let report = FederationPaymentObservationReport::from_records(
+        FederationPaymentObservationContext::MintQuote,
+        "quote-policy",
+        2,
+        &records,
+    );
+
+    assert!(!report.has_competing_quorums());
+    assert!(!report.is_unresolved());
+}
+
+#[test]
+fn incompatible_payment_thresholds_leave_the_quote_unresolved() {
+    let records = vec![
+        payment_record(0, member_id(1), MintQuoteState::Paid, "settled"),
+        payment_record(1, member_id(2), MintQuoteState::Paid, "settled"),
+        payment_record(2, member_id(2), MintQuoteState::Issued, "issued"),
+        payment_record(3, member_id(3), MintQuoteState::Issued, "issued"),
+    ];
+    let report = FederationPaymentObservationReport::from_records(
+        FederationPaymentObservationContext::MintQuote,
+        "quote-policy",
+        2,
+        &records,
+    );
+
+    assert!(report.has_competing_quorums());
+    assert!(report.is_unresolved());
 }

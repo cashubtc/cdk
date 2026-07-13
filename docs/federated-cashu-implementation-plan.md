@@ -63,7 +63,7 @@ Private signed REST is the mint-to-mint transport. Operators may provide stable 
 - Consensus must precede signature-share creation and externally visible safety-critical state changes. No member may independently authorize issuance, swaps, or melts.
 - Operations must have canonical encodings and stable IDs, apply deterministically and idempotently, and reproduce the same materialized state on replay.
 - Payment side effects must use the designated replay-safe flow. A member-local payment result or database state is not quorum evidence.
-- Threshold results require matching member views and valid shares. Conflicting views are ambiguous and must never produce spendable proofs or definitive success.
+- Threshold results require matching member views and valid shares. Minority disagreement is diagnostic and does not veto a valid threshold; if two incompatible payment-observation groups both reach threshold, the quote remains unresolved and must not produce spendable proofs or definitive success.
 - Startup, catch-up, DKG, rotation, roster, keyset, transcript, and configuration mismatches must fail closed rather than defaulting, repairing, or falling back to standalone behavior.
 - Local time, randomness, unordered data, network I/O, and member-local backend results must not influence deterministic application unless the relevant value was committed through consensus.
 
