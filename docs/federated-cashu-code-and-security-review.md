@@ -93,7 +93,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | Finding | Assessment | Severity | Confidence | Recommended disposition |
 | --- | --- | --- | ---: | --- |
 | P1 | One-member federation configs are rejected by the shared threshold invariant | Resolved (was Medium) | 98% | Complete: one-node deployments must use standalone mode. |
-| P2 | Confirmed task-publication and generation race | Medium | 95% | Fix before production with ordered activation and generation-scoped cleanup. |
+| P2 | Session tasks now activate only after generation-scoped supervisor publication | Resolved (was Medium) | 95% | Complete: construction, publication, activation, and teardown are ordered. |
 | P3 | Confirmed unbounded projection work relative to total mint history | Medium | 99% | Add keyed/batched reads; defer only with explicit realistic history bounds and benchmarks. |
 | P4 | Retry starvation confirmed; restart-loss subclaim not proven | Medium | 82% | Add bounded retry fairness and observability; do not restore durable gossip rows without a failed convergence reproduction. |
 | P5 | Main explicit-rollback claim is resolved; staged melt lifecycle remains | Low residual | 90% | Close or narrow to replay/idempotence of the intentional multi-transaction melt saga. |
@@ -179,16 +179,6 @@ Acceptance criteria:
 
 **Status:** Resolved (2026-07-13)
 
-**Resolution:** New admission now reserves the bounded response waiter after
-deterministic consensus/mempool validation but before durable pending
-persistence. The existing RAII waiter registration releases itself on any
-persistence error or cancellation. Only after persistence commits does the
-method publish the prepared consensus clone, with no fallible await between
-the durable commit and in-memory publication. Waiter exhaustion therefore
-leaves the operation in neither store nor queue; persistence failure leaves no
-waiter, row, or queued item; and exact pending duplicates retain their existing
-join behavior without consuming another mempool slot.
-
 AlephBFT session, network, apply, and completion-watcher tasks are spawned before
 the new supervisor and inbound network handle are published in shared runtime
 state. On a multithreaded runtime, a root-session panic or very fast completion
@@ -202,38 +192,45 @@ active. The dead resources can also prevent clean restart or rotation within
 the process. The existing panic test does not force this publication ordering,
 so it can pass without covering the race.
 
+**Resolution:** Every newly spawned session task now waits on a shared
+activation gate. The supervisor begins in `Constructing`; startup acquires the
+live-session and inbound-queue publication locks, rechecks the halt epoch and
+concurrent-publication invariant, transitions the supervisor to `Running`,
+installs both handles, releases the locks, arms the completion watcher, and only
+then opens the task gate. There is no await or cancellation point between
+publication and activation. A root, network, apply, or activity task therefore
+cannot finish, panic, mutate consensus, or emit traffic while its supervisor is
+unpublished.
+
+Construction-time halt or concurrent-publication failure shuts down a
+`Constructing` supervisor, aborts and joins every owned task, and returns an
+error without installing either handle. Completion cleanup remains scoped to a
+process-unique generation, so an old watcher cannot clear a newer rotated
+session. The lifecycle is monotonic: `Constructing -> Running -> Stopping ->
+Stopped`.
+
 Relevant code:
 
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:589`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:693`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:701`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:715`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:965`
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs:1031`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:338`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:516`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:716`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:907`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:917`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs:938`
 
-TODO:
+Verification:
 
-- [ ] Make supervisor publication and task activation an ordered, atomic
-  lifecycle transition.
-- [ ] Prefer constructing and publishing a generation-bound supervisor before
-  the root task and completion watcher can finish, using a startup barrier if
-  necessary.
-- [ ] Ensure a completion watcher only clears the supervisor and inbound queue
-  belonging to its own session generation; it must not clear a newer rotated
-  session.
-- [ ] Ensure startup returns an error instead of publishing resources when the
-  root session fails before activation completes.
-- [ ] Ensure all spawned tasks are aborted and joined on every partial-startup
-  failure path.
-- [ ] Add a deterministic test that blocks publication, forces the root task to
-  panic or complete, then releases publication and proves no dead handle is
-  installed.
-- [ ] Add a concurrent rotation test proving an old completion watcher cannot
-  remove the new session's supervisor or inbound queue.
-- [ ] Add assertions that `Halted` status never coexists with a dead supervisor
-  reported as active.
-- [ ] Re-run the existing supervisor shutdown, root-panic, natural-rotation,
-  restart, and pending-operation recovery tests.
+- `aleph_bft_session_tasks_wait_for_supervisor_publication_before_activation`
+  pauses startup after every task is spawned, proves an injected panicking root
+  has not activated and no handle is visible, releases publication, and then
+  proves the exact generation becomes Halted with both handles removed.
+- `aleph_bft_session_halt_during_construction_aborts_without_publication`
+  advances the halt epoch at the same deterministic boundary and proves startup
+  returns an error, no task activates, and no resource is published.
+- Existing supervisor shutdown, partial-startup failure, root/network panic,
+  non-retryable apply failure, automatic-rotation failure, normal rotation,
+  stale-generation, restart, and pending-recovery regressions continue to use
+  the shared lifecycle path.
 
 Acceptance criteria:
 
@@ -1628,8 +1625,8 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P1/P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or High
-findings, eight Medium findings (P2, P3, P4, P8, P11, P13, P14, P18), and two
+P1/P2/P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or
+High findings, seven Medium findings (P3, P4, P8, P11, P13, P14, P18), and two
 Low findings (P5, P19). P15 is complete under the accepted fresh-database
 policy; P17 is closed as superseded by P14's cut-through registry reset.
 

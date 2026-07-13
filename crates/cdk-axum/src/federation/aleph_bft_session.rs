@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,7 +18,9 @@ use cdk_http_client::{Async, Transport};
 use futures::channel::oneshot;
 use futures::future::join_all;
 use futures::FutureExt;
-use tokio::sync::mpsc;
+#[cfg(test)]
+use tokio::sync::Notify;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::MintState;
@@ -73,6 +77,10 @@ pub(crate) struct FederationAlephBftLiveSessionOptions {
     panic_network_pump_task: bool,
     #[cfg(test)]
     fail_automatic_rotation_start: bool,
+    #[cfg(test)]
+    publication_pause: Option<(Arc<Notify>, Arc<Notify>)>,
+    #[cfg(test)]
+    root_task_activation_observer: Option<Arc<AtomicBool>>,
 }
 
 impl FederationAlephBftLiveSessionOptions {
@@ -132,6 +140,22 @@ impl FederationAlephBftLiveSessionOptions {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_publication_pause(
+        mut self,
+        reached: Arc<Notify>,
+        release: Arc<Notify>,
+    ) -> Self {
+        self.publication_pause = Some((reached, release));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_root_task_activation_observer(mut self, observer: Arc<AtomicBool>) -> Self {
+        self.root_task_activation_observer = Some(observer);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_pre_spawn_failure(mut self) -> Self {
         self.fail_before_task_spawn = true;
         self
@@ -165,6 +189,8 @@ impl FederationAlephBftLiveSessionOptions {
         {
             next.fail_before_task_spawn = next.fail_automatic_rotation_start;
             next.fail_automatic_rotation_start = false;
+            next.publication_pause = None;
+            next.root_task_activation_observer = None;
         }
         if let Some(limit) = next.automatic_rotation_limit {
             let remaining = limit.saturating_sub(1);
@@ -203,6 +229,10 @@ impl Default for FederationAlephBftLiveSessionOptions {
             panic_network_pump_task: false,
             #[cfg(test)]
             fail_automatic_rotation_start: false,
+            #[cfg(test)]
+            publication_pause: None,
+            #[cfg(test)]
+            root_task_activation_observer: None,
         }
     }
 }
@@ -317,6 +347,7 @@ pub(crate) struct AlephBftSessionSupervisor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AlephBftSessionSupervisorState {
+    Constructing,
     Running,
     Stopping,
     Stopped,
@@ -362,6 +393,19 @@ impl std::fmt::Debug for AlephBftSessionSupervisor {
 impl AlephBftSessionSupervisor {
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    fn activate(&self) -> Result<(), cdk::Error> {
+        let mut state = self.state.lock().map_err(|_| {
+            cdk::Error::Custom("AlephBFT session supervisor state lock poisoned".to_string())
+        })?;
+        if *state != AlephBftSessionSupervisorState::Constructing {
+            return Err(cdk::Error::Custom(
+                "AlephBFT session supervisor was not constructing during activation".to_string(),
+            ));
+        }
+        *state = AlephBftSessionSupervisorState::Running;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -410,7 +454,13 @@ impl AlephBftSessionSupervisor {
 
     async fn shutdown_inner(&self, stop_completion_watcher: bool) {
         let should_stop = match self.state.lock() {
-            Ok(mut state) if *state == AlephBftSessionSupervisorState::Running => {
+            Ok(mut state)
+                if matches!(
+                    *state,
+                    AlephBftSessionSupervisorState::Constructing
+                        | AlephBftSessionSupervisorState::Running
+                ) =>
+            {
                 *state = AlephBftSessionSupervisorState::Stopping;
                 true
             }
@@ -457,6 +507,17 @@ impl AlephBftSessionSupervisor {
 impl Drop for AlephBftSessionSupervisor {
     fn drop(&mut self) {
         self.abort();
+    }
+}
+
+async fn await_aleph_bft_session_activation(mut activation: watch::Receiver<bool>) -> bool {
+    loop {
+        if *activation.borrow_and_update() {
+            return true;
+        }
+        if activation.changed().await.is_err() {
+            return false;
+        }
     }
 }
 
@@ -655,13 +716,24 @@ where
     let generation = next_aleph_bft_session_generation()?;
     let (essential_event_sender, essential_event_receiver) = mpsc::unbounded_channel();
     let (published_sender, published_receiver) = oneshot::channel();
+    let (activation_sender, activation_receiver) = watch::channel(false);
 
     let session_keychain = keychain.clone();
     let session_spawn_handle = spawn_handle.clone();
     let root_event_sender = essential_event_sender.clone();
+    let session_activation = activation_receiver.clone();
     #[cfg(test)]
     let panic_session_task = options.panic_session_task;
+    #[cfg(test)]
+    let root_task_activation_observer = options.root_task_activation_observer.clone();
     let session_task = tokio::spawn(async move {
+        if !await_aleph_bft_session_activation(session_activation).await {
+            return;
+        }
+        #[cfg(test)]
+        if let Some(observer) = root_task_activation_observer {
+            observer.store(true, Ordering::SeqCst);
+        }
         let session = async move {
             #[cfg(test)]
             if panic_session_task {
@@ -684,20 +756,34 @@ where
         let _ = root_event_sender.send(AlephBftEssentialTaskEvent::Root(completion));
     });
     let (activity_sender, activity_receiver) = mpsc::unbounded_channel();
-    let activity_broadcast_task = tokio::spawn(run_aleph_bft_activity_broadcast_loop(
-        client.clone(),
-        activity_peers,
-        session_id,
-        Arc::clone(&db),
-        activity_hint.clone(),
-        pending_activity_operation_ids,
-        activity_receiver,
-    ));
+    let activity_activation = activation_receiver.clone();
+    let activity_client = client.clone();
+    let activity_db = Arc::clone(&db);
+    let activity_broadcast_hint = activity_hint.clone();
+    let activity_broadcast_task = tokio::spawn(async move {
+        if !await_aleph_bft_session_activation(activity_activation).await {
+            return;
+        }
+        run_aleph_bft_activity_broadcast_loop(
+            activity_client,
+            activity_peers,
+            session_id,
+            activity_db,
+            activity_broadcast_hint,
+            pending_activity_operation_ids,
+            activity_receiver,
+        )
+        .await;
+    });
     let pump_keychain = keychain.clone();
     let network_event_sender = essential_event_sender.clone();
+    let network_activation = activation_receiver.clone();
     #[cfg(test)]
     let panic_network_pump_task = options.panic_network_pump_task;
     let network_pump_task = tokio::spawn(async move {
+        if !await_aleph_bft_session_activation(network_activation).await {
+            return;
+        }
         let pump = async move {
             #[cfg(test)]
             if panic_network_pump_task {
@@ -780,11 +866,15 @@ where
 
     let apply_state = state.clone();
     let apply_event_sender = essential_event_sender;
+    let apply_activation = activation_receiver;
     #[cfg(test)]
     let fail_next_finalized_payload_apply = options.fail_next_finalized_payload_apply;
     #[cfg(not(test))]
     let fail_next_finalized_payload_apply = false;
     let apply_task = tokio::spawn(async move {
+        if !await_aleph_bft_session_activation(apply_activation).await {
+            return;
+        }
         let apply_loop = run_federation_aleph_bft_finalized_unit_apply_loop(
             apply_state,
             finalized_units,
@@ -809,6 +899,8 @@ where
             }
         }
     });
+    #[cfg(test)]
+    let publication_pause = options.publication_pause.clone();
     let completion_watcher_task = spawn_federation_aleph_bft_session_completion_watcher(
         state.clone(),
         sync_config,
@@ -822,7 +914,7 @@ where
     let handle = Arc::new(AlephBftSessionSupervisor {
         session_id,
         generation,
-        state: Mutex::new(AlephBftSessionSupervisorState::Running),
+        state: Mutex::new(AlephBftSessionSupervisorState::Constructing),
         exit: Mutex::new(Some(exit_sender)),
         activity_hint,
         spawn_handle,
@@ -835,6 +927,11 @@ where
             completion_watcher_task,
         })),
     });
+    #[cfg(test)]
+    if let Some((reached, release)) = publication_pause {
+        reached.notify_one();
+        release.notified().await;
+    }
     let mut live_session = state.federation.aleph_bft_live_session.write().await;
     if state.federation.aleph_bft_halt_epoch.load(Ordering::SeqCst) != halt_epoch {
         drop(live_session);
@@ -850,12 +947,18 @@ where
             "AlephBFT live session was concurrently published".to_string(),
         ));
     }
+    if let Err(err) = handle.activate() {
+        drop(live_session);
+        handle.shutdown().await;
+        return Err(err);
+    }
     let mut network_inbound = state.federation.aleph_bft_network_inbound.write().await;
     *network_inbound = Some(inbound);
     *live_session = Some(Arc::clone(&handle));
     drop(network_inbound);
     drop(live_session);
     let _ = published_sender.send(());
+    activation_sender.send_replace(true);
 
     Ok(Some(handle))
 }

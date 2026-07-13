@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aleph_bft::{default_delay_config, Network, NodeIndex, Recipient};
@@ -9851,6 +9851,155 @@ async fn aleph_bft_session_supervisor_halts_and_cleans_up_after_root_task_panic(
     .expect("panicking session cleanup");
 
     assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
+}
+
+#[tokio::test]
+async fn aleph_bft_session_tasks_wait_for_supervisor_publication_before_activation() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let publication_reached = Arc::new(tokio::sync::Notify::new());
+    let publication_release = Arc::new(tokio::sync::Notify::new());
+    let root_task_activated = Arc::new(AtomicBool::new(false));
+    let options =
+        FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
+            .with_panicking_session_task()
+            .with_publication_pause(
+                Arc::clone(&publication_reached),
+                Arc::clone(&publication_release),
+            )
+            .with_root_task_activation_observer(Arc::clone(&root_task_activated));
+    let observed_state = state.clone();
+    let mut start_state = state;
+    let start_task = tokio::spawn(async move {
+        start_federation_aleph_bft_live_session_with_options_and_transport(
+            &mut start_state,
+            FederationPeerSyncConfig::default(),
+            options,
+            RouterFederationTransportRegistry::default(),
+        )
+        .await
+    });
+
+    time::timeout(Duration::from_secs(5), publication_reached.notified())
+        .await
+        .expect("startup reached the pre-publication barrier");
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !root_task_activated.load(Ordering::SeqCst),
+        "the root task must remain gated while its supervisor is constructing"
+    );
+    assert!(!start_task.is_finished());
+    assert!(
+        !observed_state
+            .federation_aleph_bft_live_session_active()
+            .await
+    );
+    assert!(
+        !observed_state
+            .federation_aleph_bft_network_inbound_active()
+            .await
+    );
+
+    publication_release.notify_one();
+    let supervisor = time::timeout(Duration::from_secs(5), start_task)
+        .await
+        .expect("startup completed after publication was released")
+        .expect("startup task")
+        .expect("published session")
+        .expect("live session supervisor");
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            if root_task_activated.load(Ordering::SeqCst)
+                && matches!(
+                    observed_state.federation_sync_status().await,
+                    Some(crate::FederationSyncStatus::Halted { .. })
+                )
+                && !observed_state
+                    .federation_aleph_bft_live_session_active()
+                    .await
+                && !observed_state
+                    .federation_aleph_bft_network_inbound_active()
+                    .await
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("post-publication root panic cleanup");
+
+    assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
+}
+
+#[tokio::test]
+async fn aleph_bft_session_halt_during_construction_aborts_without_publication() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let publication_reached = Arc::new(tokio::sync::Notify::new());
+    let publication_release = Arc::new(tokio::sync::Notify::new());
+    let root_task_activated = Arc::new(AtomicBool::new(false));
+    let options =
+        FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
+            .with_publication_pause(
+                Arc::clone(&publication_reached),
+                Arc::clone(&publication_release),
+            )
+            .with_root_task_activation_observer(Arc::clone(&root_task_activated));
+    let observed_state = state.clone();
+    let mut start_state = state;
+    let start_task = tokio::spawn(async move {
+        start_federation_aleph_bft_live_session_with_options_and_transport(
+            &mut start_state,
+            FederationPeerSyncConfig::default(),
+            options,
+            RouterFederationTransportRegistry::default(),
+        )
+        .await
+    });
+
+    time::timeout(Duration::from_secs(5), publication_reached.notified())
+        .await
+        .expect("startup reached the pre-publication barrier");
+    halt_current_federation_aleph_bft_session(&observed_state, "test construction halt").await;
+    publication_release.notify_one();
+
+    let err = time::timeout(Duration::from_secs(5), start_task)
+        .await
+        .expect("halted startup completed")
+        .expect("startup task")
+        .expect_err("halt epoch change must reject constructing supervisor publication");
+    assert!(err.to_string().contains("halted before publication"));
+    assert!(!root_task_activated.load(Ordering::SeqCst));
+    assert!(
+        !observed_state
+            .federation_aleph_bft_live_session_active()
+            .await
+    );
+    assert!(
+        !observed_state
+            .federation_aleph_bft_network_inbound_active()
+            .await
+    );
 }
 
 #[tokio::test]
