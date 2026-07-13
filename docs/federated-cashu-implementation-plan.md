@@ -4608,6 +4608,18 @@ Verified implementation result:
   Axum startup tests, five Axum quorum tests, all 28 standalone Axum tests, and
   the no-default-features `cdk-common` check pass.
 
+## Post-review pending-admission atomicity
+
+- [x] Reserve the bounded response waiter after deterministic admission but
+  before durable pending persistence. Reuse the existing RAII waiter so
+  persistence failure or cancellation releases the reservation automatically.
+- [x] Publish the prepared consensus clone only after the pending row commits,
+  with no fallible await between durable commit and runtime publication.
+- [x] Prove waiter exhaustion and injected persistence failure leave neither a
+  durable row nor queued operation, exact retry succeeds once, and the existing
+  pre-backup restart path recovers durable pending work without resubmission.
+  All seven focused submission tests and all 28 standalone Axum tests pass.
+
 ## Final completion audit
 
 Status: complete for the implementation plan's fakewallet federation scope.

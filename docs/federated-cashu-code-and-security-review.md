@@ -97,7 +97,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P3 | Confirmed unbounded projection work relative to total mint history | Medium | 99% | Add keyed/batched reads; defer only with explicit realistic history bounds and benchmarks. |
 | P4 | Retry starvation confirmed; restart-loss subclaim not proven | Medium | 82% | Add bounded retry fairness and observability; do not restore durable gossip rows without a failed convergence reproduction. |
 | P5 | Main explicit-rollback claim is resolved; staged melt lifecycle remains | Low residual | 90% | Close or narrow to replay/idempotence of the intentional multi-transaction melt saga. |
-| P6 | Confirmed durable admission before waiter/runtime publication | High | 99% | Release blocker: reserve, persist, and publish as one failure-safe transition. |
+| P6 | Waiter reservation now precedes durable and runtime admission | Resolved (was High) | 99% | Complete: waiter, pending row, and runtime queue are published in one failure-safe order. |
 | P7 | Confirmed pending rows are not rebound during session rotation | High | 98% | Release blocker: persist active-session advance and pending rebind atomically. |
 | P8 | Confirmed duplicate recovery omits waiter/cache notification | Medium | 97% | Route normal and duplicate terminal outcomes through one publication helper. |
 | P9 | False-healthy outcome confirmed; original task-exit mechanism was misstated | High | 92% | Release blocker: an essential apply failure must halt/quarantine the session generation. |
@@ -112,7 +112,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
 | P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
 
-Production priority is therefore P6/P7/P9/P16. P1
+Production priority is therefore P7/P9/P16. P1
 remains a production-startup blocker if the product continues
 to claim one-member federation support even though its general security impact
 is Medium. P5 should not remain an open broad transaction-refactor request in
@@ -172,7 +172,17 @@ Acceptance criteria:
 
 ### P2: Session Failure Cleanup Can Race with Supervisor Publication
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
+
+**Resolution:** New admission now reserves the bounded response waiter after
+deterministic consensus/mempool validation but before durable pending
+persistence. The existing RAII waiter registration releases itself on any
+persistence error or cancellation. Only after persistence commits does the
+method publish the prepared consensus clone, with no fallible await between
+the durable commit and in-memory publication. Waiter exhaustion therefore
+leaves the operation in neither store nor queue; persistence failure leaves no
+waiter, row, or queued item; and exact pending duplicates retain their existing
+join behavior without consuming another mempool slot.
 
 AlephBFT session, network, apply, and completion-watcher tasks are spawned before
 the new supervisor and inbound network handle are published in shared runtime
@@ -431,24 +441,36 @@ Relevant code:
 
 TODO:
 
-- [ ] Make waiter admission, durable pending persistence, and runtime queue
+- [x] Make waiter admission, durable pending persistence, and runtime queue
   publication one failure-safe transition.
-- [ ] Prefer reserving the waiter first with an RAII registration that is
+- [x] Prefer reserving the waiter first with an RAII registration that is
   automatically removed if persistence fails.
-- [ ] Otherwise, deterministically remove the pending row if waiter admission
-  fails before runtime publication.
-- [ ] Preserve duplicate-submission joining without consuming another mempool
+- [x] Avoid a compensating delete by ensuring waiter failure occurs before the
+  pending insert and runtime publication.
+- [x] Preserve duplicate-submission joining without consuming another mempool
   slot.
-- [ ] Add a waiter-limit test proving a rejected distinct operation exists in
+- [x] Add a waiter-limit test proving a rejected distinct operation exists in
   neither the database nor the live consensus queue.
-- [ ] Add a database-failure test proving no waiter or pending row leaks.
-- [ ] Add a restart invariant test proving every persisted pending row is
+- [x] Add a database-failure test proving no waiter or pending row leaks.
+- [x] Add a restart invariant test proving every persisted pending row is
   represented in the recovered consensus queue.
 
 Acceptance criteria:
 
 - Every submission return path leaves a new operation represented in both
   durable pending state and the live queue, or in neither.
+
+Verification:
+
+- all seven focused AlephBFT submission tests pass across success, timeout,
+  duplicate, mempool-full, and waiter-full paths;
+- the waiter-capacity regression proves a rejected distinct operation is
+  absent from both the current consensus queue and durable pending rows;
+- deterministic one-shot pending-persistence failure proves the RAII waiter is
+  released, no state is published, and an exact retry is admitted once;
+- the existing pre-backup restart regression proves a durable pending
+  operation is recovered, finalized, and removed without wallet resubmission;
+- all 28 standalone Axum tests pass with federation disabled.
 
 ### P7: Session Rotation Does Not Rebind Durable Pending Operations
 
@@ -1477,13 +1499,13 @@ through branch:
 
 ## Review Verdict
 
-The cleanup branch is not production ready. P12, the sole Critical finding, is
-resolved. The reassessment retains four High findings (P6, P7, P9, P16), ten
+The cleanup branch is not production ready. P12, the sole Critical finding, and
+P6 are resolved. The reassessment retains three High findings (P7, P9, P16), ten
 Medium findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
 findings (P5, P19). P15 is complete under the accepted fresh-database policy;
 P17 is closed as superseded by P14's cut-through registry reset.
 
-P6, P7, P9, and P16 are the remaining production blockers
+P7, P9, and P16 are the remaining production blockers
 because they affect admission atomicity, pending-operation restart recovery,
 application of finalized state, and federation-wide melt-observer liveness. P1
 must also be resolved before production if one-member configs remain accepted,

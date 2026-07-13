@@ -2894,6 +2894,23 @@ inconsistent about whether the first operation encoding is v1 or v2.
   aliases/defaults/DTOs/version branches, compatibility wording, and unlisted
   federation version constants before marking this item complete.
 
+## 44. Reserve response waiters before durable pending admission
+
+**Status:** Completed (2026-07-13)
+
+New federation submissions now reserve their bounded response waiter after
+consensus and mempool validation but before inserting the durable pending row.
+The existing RAII registration releases on persistence failure or cancellation;
+the prepared consensus clone is published only after the insert commits. This
+removes the state where waiter exhaustion leaves a durable operation absent
+from the live queue without adding a compensating delete or durable waiter
+model.
+
+Focused tests prove waiter exhaustion leaves the rejected operation in neither
+the database nor consensus, deterministic pending-write failure leaks no waiter
+or row and permits one clean retry, and pre-backup restart recovers durable
+pending work without wallet resubmission. All 28 standalone Axum tests pass.
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry

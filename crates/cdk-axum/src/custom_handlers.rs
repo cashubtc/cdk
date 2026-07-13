@@ -1976,6 +1976,10 @@ mod tests {
                     crate::FederationInvalidOperationAlertTracker::default(),
                 ))),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
+                #[cfg(test)]
+                fail_next_pending_operation_persistence: Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 local_finality_test,
@@ -2783,6 +2787,10 @@ mod tests {
                     ))
                 }),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
+                #[cfg(test)]
+                fail_next_pending_operation_persistence: Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 local_finality_test: is_federated,

@@ -2212,6 +2212,10 @@ async fn create_mint_router_with_custom_cache_inner(
                 ))
             }),
             payment_observer: federation::FederationPaymentObserver::default(),
+            #[cfg(test)]
+            fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(test)]

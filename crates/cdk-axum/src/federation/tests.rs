@@ -2128,6 +2128,9 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
+            fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             local_finality_test,
@@ -17728,13 +17731,12 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
         response_waiter_limit: 1,
         ..FederationPeerSyncConfig::default()
     });
+    let first_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let first_state = state.clone();
     let first_submit = tokio::spawn(async move {
         first_state
-            .submit_federation_envelope_to_consensus(mint_quote_envelope(
-                &first_state,
-                &QuoteId::new(),
-            ))
+            .submit_federation_envelope_to_consensus(first_envelope)
             .await
     });
     state
@@ -17742,8 +17744,12 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
         .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
 
+    let rejected_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let rejected_operation_id = rejected_envelope
+        .operation_id()
+        .expect("rejected operation id");
     let err = state
-        .submit_federation_envelope_to_consensus(mint_quote_envelope(&state, &QuoteId::new()))
+        .submit_federation_envelope_to_consensus(rejected_envelope)
         .await
         .expect_err("full response waiter set should reject");
     assert!(matches!(
@@ -17754,7 +17760,22 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
+    let session = consensus
+        .aleph_bft_status()
+        .expect("consensus status")
+        .session;
     drop(consensus);
+    let pending = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(session)
+        .await
+        .expect("pending operations after waiter rejection");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation_id, first_operation_id);
+    assert!(pending
+        .iter()
+        .all(|operation| operation.operation_id != rejected_operation_id));
 
     first_submit.abort();
     let _ = first_submit.await;
@@ -17762,6 +17783,72 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
         .wait_for_federation_pending_response_waiter_count(0)
         .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
+}
+
+#[tokio::test]
+async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        response_waiter_limit: 1,
+        ..FederationPeerSyncConfig::default()
+    });
+    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let operation_id = envelope.operation_id().expect("operation id");
+    state
+        .federation
+        .fail_next_pending_operation_persistence
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    state
+        .submit_federation_envelope_to_consensus(envelope.clone())
+        .await
+        .expect_err("injected pending persistence failure");
+
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    let session = consensus
+        .aleph_bft_status()
+        .expect("consensus status")
+        .session;
+    assert_eq!(consensus.queued_len(), 0);
+    drop(consensus);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(session)
+        .await
+        .expect("pending operations after persistence failure")
+        .is_empty());
+
+    let retry_error = state
+        .submit_federation_envelope_to_consensus(envelope)
+        .await
+        .expect_err("unfinalized retry should time out after successful admission");
+    assert_pending_finalization_error(&retry_error, operation_id, 10);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    drop(consensus);
+    let pending = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_pending_operations(session)
+        .await
+        .expect("pending operations after retry");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation_id, operation_id);
 }
 
 #[tokio::test]

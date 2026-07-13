@@ -1,5 +1,7 @@
 //! Federation node runtime ownership.
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::{FederationDkgAutoStartConfig, FederationPeerSyncConfig};
@@ -41,6 +43,8 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
+    #[cfg(test)]
+    pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
     #[cfg(test)]
@@ -121,6 +125,7 @@ impl FederationNodeRuntime {
             dkg_member_admission: None,
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
+            fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(test)]
@@ -745,14 +750,6 @@ impl FederationNodeRuntime {
                 self.record_rejected_operation_metric(&operation_label, "mempool_full");
                 return Err(cdk::Error::from(err));
             }
-
-            let session_id = next_consensus.aleph_bft_status()?.session;
-            self.persist_pending_operation(FederationAlephBftPendingOperationRecord {
-                operation_id,
-                session_id,
-                envelope,
-            })
-            .await?;
         }
         if matches!(
             admission,
@@ -766,6 +763,15 @@ impl FederationNodeRuntime {
         }
         let wait_registration =
             notifications.register_waiter(operation_id, sync_config.response_waiter_limit)?;
+        if accepted_admission {
+            let session_id = next_consensus.aleph_bft_status()?.session;
+            self.persist_pending_operation(FederationAlephBftPendingOperationRecord {
+                operation_id,
+                session_id,
+                envelope,
+            })
+            .await?;
+        }
 
         *consensus = next_consensus;
         drop(consensus);
@@ -1400,6 +1406,15 @@ impl FederationNodeRuntime {
         &self,
         operation: FederationAlephBftPendingOperationRecord,
     ) -> Result<(), cdk::Error> {
+        #[cfg(test)]
+        if self
+            .fail_next_pending_operation_persistence
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(cdk::Error::Custom(
+                "injected pending-operation persistence failure".to_string(),
+            ));
+        }
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_aleph_bft_pending_operation(&operation)
