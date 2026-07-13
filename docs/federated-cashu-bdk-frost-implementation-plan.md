@@ -78,6 +78,17 @@ federation partially ready.
   signature verifier. The watch-only engine verifies the sighash, tweaked key,
   spent script, and Schnorr signature before finalization; preserve the missing,
   malformed, wrong-key, and wrong-sighash tests.
+- Milestone 4 found pre-existing test/API drift after payment quote fields and
+  HTTP transport methods changed. Fixtures, mock methods, and affected golden
+  hashes were updated mechanically; no mint business flow was redesigned.
+- Milestone 4 partition testing found that inbound completeness alone could let
+  a FROST member advance while peers lacked its outbound package. Require a
+  fully acknowledged outbound batch before each phase transition and preserve
+  the partition/response-loss regression tests.
+- Milestone 4 security review found confidential FROST round-two retry payloads
+  in plaintext persistence. Network requests remain transient, while durable
+  sender and receiver records are now sealed and context-bound; preserve the
+  ciphertext-envelope and idempotent-retry tests.
 
 ## 1. Problem and setting
 
@@ -685,60 +696,72 @@ FROST, and derived application products independent.
 
 **Work:**
 
-- [ ] Add FROST root-key ceremony identifiers and explicit root-key-epoch
+- [x] Add FROST root-key ceremony identifiers and explicit root-key-epoch
   metadata.
-- [ ] Extend or compose the existing DKG phase driver with FROST-specific round
+- [x] Extend or compose the existing DKG phase driver with FROST-specific round
   messages rather than overloading BLS payloads.
-- [ ] Bind every DKG message to federation ID, roster, threshold, member ID,
+- [x] Bind every DKG message to federation ID, roster, threshold, member ID,
   ceremony ID, root key epoch, DKG protocol/version, and ciphersuite.
-- [ ] Reuse signed private REST sender/receiver authentication and replay
+- [x] Reuse signed private REST sender/receiver authentication and replay
   protection.
-- [ ] Persist local secret packages before acknowledging receipt or advancing a
+- [x] Persist local secret packages before acknowledging receipt or advancing a
   phase.
-- [ ] Verify all proofs, commitments, participant sets, and resulting public
+- [x] Verify all proofs, commitments, participant sets, and resulting public
   packages independently at every member.
-- [ ] Require transcript equality and threshold/member activation confirmation.
-- [ ] Produce and persist the canonical untweaked root public package and one
+- [x] Require transcript equality and threshold/member activation confirmation.
+- [x] Produce and persist the canonical untweaked root public package and one
   canonical local root share per member before constructing any CDK, BDK,
   BIP32, BIP341, or other application-specific package.
-- [ ] Do not treat a ciphersuite `post_dkg` result or opaque library serialization
+- [x] Do not treat a ciphersuite `post_dkg` result or opaque library serialization
   as the root DKG result. Use only reviewed conversion code to construct such
   application packages from the canonical root package.
-- [ ] Store the root share in the participant-local federation FROST key manager,
+- [x] Store the root share in the participant-local federation FROST key manager,
   not in `cdk-bdk` or a payment-backend-specific configuration.
-- [ ] Add startup validation matching private share, public verification share,
+- [x] Add startup validation matching private share, public verification share,
   untweaked group key, threshold, roster, transcript, DKG/ciphersuite version,
   and root epoch.
-- [ ] Keep BLS DKG behavior and Cashu keysets unchanged.
+- [x] Keep BLS DKG behavior and Cashu keysets unchanged.
 
 **Success criteria:**
 
-- [ ] Fresh 3-of-5, 8-of-11, and 14-of-20 ceremonies converge on identical
+- [x] Fresh 3-of-5, 8-of-11, and 14-of-20 ceremonies converge on identical
   canonical public root configuration.
-- [ ] Every member receives a distinct valid local share and no other member's
+- [x] Every member receives a distinct valid local share and no other member's
   share.
-- [ ] Restart at every persisted phase resumes without regenerating or changing
+- [x] Restart at every persisted phase resumes without regenerating or changing
   the final key.
-- [ ] One invalid or equivocated package prevents activation and identifies the
+- [x] One invalid or equivocated package prevents activation and identifies the
   faulty sender.
-- [ ] BLS and FROST transcript domains cannot be confused.
-- [ ] The same activated root epoch can initialize the CDK on-chain adapter and
+- [x] BLS and FROST transcript domains cannot be confused.
+- [x] The same activated root epoch can initialize the CDK on-chain adapter and
   a second test adapter without mutating the root package or creating an
   application-owned durable copy of the canonical root share.
 
 **Required tests:**
 
-- [ ] Happy-path DKG at quick and production-size profiles.
-- [ ] Offline member before threshold completion.
-- [ ] Duplicate, reordered, delayed, replayed, and wrong-recipient messages.
-- [ ] Wrong federation, ceremony, epoch, roster, threshold, and ciphersuite.
-- [ ] Invalid proof/commitment/share and sender equivocation.
-- [ ] Crash/restart after every DKG round and before/after activation.
-- [ ] Transcript mismatch and activation mismatch fail closed.
-- [ ] Pre/post-processing regression test proving that even-Y normalization,
+- [x] Happy-path DKG at quick and production-size profiles.
+- [x] Offline member before threshold completion.
+- [x] Duplicate, reordered, delayed, replayed, and wrong-recipient messages.
+- [x] Wrong federation, ceremony, epoch, roster, threshold, and ciphersuite.
+- [x] Invalid proof/commitment/share and sender equivocation.
+- [x] Crash/restart after every DKG round and before/after activation.
+- [x] Transcript mismatch and activation mismatch fail closed.
+- [x] Pre/post-processing regression test proving that even-Y normalization,
   Taproot tweaks, and application derivation do not mutate the stored root
   package.
-- [ ] Existing BLS DKG regression suite remains unchanged.
+- [x] Existing BLS DKG regression suite remains unchanged.
+
+**Milestone record:** completed on 2026-07-13. `cdk-frost` now owns the
+dealer-free secp256k1 root ceremony, canonical conversion, and encryption-only
+restart boundary. Federation code composes distinct signed FROST round-one,
+round-two, and all-member root-confirmation messages with the existing BLS DKG,
+using the exact BLS `signature_threshold`; the terminal ceremony transition
+reopens the local sealed share and requires both independently valid results.
+Confidential round-two retry contributions are sealed at rest, and
+SQLite/PostgreSQL share one equivocation-safe record model. Focused design,
+test evidence, and residual risks are recorded in
+`docs/federated-cashu-frost-dkg.md`; this is not an external audit, and later
+security gates remain open.
 
 ### Milestone 5: define root and CDK application configuration and persistence
 

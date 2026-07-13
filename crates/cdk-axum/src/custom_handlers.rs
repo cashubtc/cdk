@@ -1629,7 +1629,10 @@ mod tests {
                     .amount
                     .clone()
                     .unwrap_or_else(|| Amount::new(0, CurrencyUnit::Sat)),
-                IncomingPaymentOptions::Custom(options) => options.amount.clone(),
+                IncomingPaymentOptions::Custom(options) => options
+                    .amount
+                    .clone()
+                    .unwrap_or_else(|| Amount::new(0, CurrencyUnit::Sat)),
                 IncomingPaymentOptions::Onchain(_) => Amount::new(1, CurrencyUnit::Sat),
             }
         }
@@ -3291,6 +3294,7 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Bolt11),
+            created_time,
             created_time,
             Vec::new(),
             Vec::new(),
@@ -5751,6 +5755,10 @@ mod tests {
             request: format!("invoice-{quote_id}"),
             amount: Some(Amount::from(2)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,

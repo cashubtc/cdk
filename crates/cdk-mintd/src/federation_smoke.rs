@@ -192,10 +192,8 @@ pub(crate) async fn run_smoke_operations_command(
                         private_config_path,
                         "private federation config",
                     )?;
-                    let conflicting_private_config_path = args
-                        .conflicting_private_config
-                        .as_deref()
-                        .context(
+                    let conflicting_private_config_path =
+                        args.conflicting_private_config.as_deref().context(
                             "--conflicting-private-config is required for quarantine-mint-conflict",
                         )?;
                     let conflicting_private_config: MemberConfigPrivate =

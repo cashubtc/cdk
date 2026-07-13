@@ -15,16 +15,18 @@ use crate::federation::{
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
     FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
+    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostRootRecord, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
@@ -2003,6 +2005,129 @@ where
             .expect("activations after conflict"),
         vec![first_activation, second_activation]
     );
+}
+
+/// Assert every FROST DKG phase is durable, replay-idempotent, and equivocation-safe.
+pub async fn federation_frost_dkg_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let config = dkg_public_config();
+    let context =
+        FederationFrostDkgContext::new(&config, dkg_ceremony_id(), 1).expect("FROST DKG context");
+    let first = member_id(1);
+    let second = member_id(2);
+    let round1 = FederationFrostDkgRound1Request {
+        context: context.clone(),
+        sender: first,
+        package: vec![1, 2, 3],
+    };
+    let mut conflicting_round1 = round1.clone();
+    conflicting_round1.package.push(4);
+    let round2 = FederationFrostDkgRound2Record {
+        context: context.clone(),
+        sender: first,
+        receiver: second,
+        encrypted_package: vec![5, 6, 7],
+    };
+    let mut conflicting_round2 = round2.clone();
+    conflicting_round2.encrypted_package.push(8);
+    let local_round1 = FederationFrostDkgLocalState {
+        context: context.clone(),
+        member_id: first,
+        phase: FederationFrostDkgLocalPhase::Round1,
+        encrypted_state: vec![9, 10],
+    };
+    let local_round2 = FederationFrostDkgLocalState {
+        context: context.clone(),
+        member_id: first,
+        phase: FederationFrostDkgLocalPhase::Round2,
+        encrypted_state: vec![11, 12],
+    };
+    let root = FederationFrostRootRecord {
+        context: context.clone(),
+        member_id: first,
+        public_package: vec![13, 14],
+        encrypted_root_share: vec![15, 16],
+    };
+    let confirmation = FederationFrostDkgConfirmationRequest {
+        context,
+        member_id: first,
+        public_package: vec![13, 14],
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_frost_dkg_round1(&round1)
+        .await
+        .expect("persist round one");
+    tx.add_federation_frost_dkg_round1(&round1)
+        .await
+        .expect("idempotent round-one replay");
+    tx.add_federation_frost_dkg_round2(&round2)
+        .await
+        .expect("persist round two");
+    tx.set_federation_frost_dkg_local_state(&local_round1)
+        .await
+        .expect("persist sealed round-one state");
+    tx.set_federation_frost_dkg_local_state(&local_round2)
+        .await
+        .expect("persist sealed round-two state");
+    tx.add_federation_frost_root_record(&root)
+        .await
+        .expect("persist sealed root");
+    tx.add_federation_frost_dkg_confirmation(&confirmation)
+        .await
+        .expect("persist root confirmation");
+    tx.commit().await.expect("commit FROST DKG records");
+
+    assert_eq!(
+        db.get_federation_frost_dkg_round1()
+            .await
+            .expect("round-one records"),
+        vec![round1.clone()]
+    );
+    assert_eq!(
+        db.get_federation_frost_dkg_round2()
+            .await
+            .expect("round-two records"),
+        vec![round2.clone()]
+    );
+    assert_eq!(
+        db.get_federation_frost_dkg_local_states()
+            .await
+            .expect("sealed local states"),
+        vec![local_round1, local_round2]
+    );
+    assert_eq!(
+        db.get_federation_frost_root_records()
+            .await
+            .expect("root records"),
+        vec![root]
+    );
+    assert_eq!(
+        db.get_federation_frost_dkg_confirmations()
+            .await
+            .expect("confirmations"),
+        vec![confirmation]
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting FROST records");
+    assert!(tx
+        .add_federation_frost_dkg_round1(&conflicting_round1)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback round-one conflict");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin round-two conflict");
+    assert!(tx
+        .add_federation_frost_dkg_round2(&conflicting_round2)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback round-two conflict");
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.

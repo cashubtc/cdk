@@ -54,7 +54,7 @@ use cdk_common::database::mint::{CompletedOperationsDatabase, FederationApplicat
 use cdk_common::database::MintFederationJournalDatabase;
 use cdk_common::mint::Operation;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
-use cdk_http_client::HttpError;
+use cdk_http_client::{HttpError, RawResponse};
 use futures::Stream;
 use parity_scale_codec::{Decode, Encode};
 use serde::de::DeserializeOwned;
@@ -1066,6 +1066,15 @@ impl Transport for DelayTransport {
         Err(HttpError::Other("delayed GET completed".to_string()))
     }
 
+    async fn http_get_raw(
+        &self,
+        _url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        time::sleep(self.delay).await;
+        Err(HttpError::Other("delayed raw GET completed".to_string()))
+    }
+
     async fn http_post<P, R>(
         &self,
         _url: url::Url,
@@ -1078,6 +1087,21 @@ impl Transport for DelayTransport {
     {
         time::sleep(self.delay).await;
         Err(HttpError::Other("delayed POST completed".to_string()))
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        _url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        time::sleep(self.delay).await;
+        Err(HttpError::Other(
+            "delayed raw form POST completed".to_string(),
+        ))
     }
 }
 
@@ -1102,6 +1126,17 @@ impl Transport for MockFederationTransport {
     {
         Err(HttpError::Other(format!(
             "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(format!(
+            "unexpected raw GET path {}",
             url.path()
         )))
     }
@@ -1227,6 +1262,21 @@ impl Transport for MockFederationTransport {
             path => Err(HttpError::Other(format!("unexpected POST path {path}"))),
         }
     }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected raw form POST path {}",
+            url.path()
+        )))
+    }
 }
 
 #[async_trait]
@@ -1250,6 +1300,17 @@ impl Transport for RouterFederationTransport {
     {
         Err(HttpError::Other(format!(
             "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(format!(
+            "unexpected raw GET path {}",
             url.path()
         )))
     }
@@ -1290,6 +1351,21 @@ impl Transport for RouterFederationTransport {
         }
         Ok(serde_json::from_slice(&body)?)
     }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected raw form POST path {}",
+            url.path()
+        )))
+    }
 }
 
 #[async_trait]
@@ -1313,6 +1389,17 @@ impl Transport for RouterFederationTransportRegistry {
     {
         Err(HttpError::Other(format!(
             "unexpected GET path {}",
+            url.path()
+        )))
+    }
+
+    async fn http_get_raw(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other(format!(
+            "unexpected raw GET path {}",
             url.path()
         )))
     }
@@ -1474,6 +1561,21 @@ impl Transport for RouterFederationTransportRegistry {
         }
 
         Ok(serde_json::from_slice(&response_body)?)
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        url: url::Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(format!(
+            "unexpected raw form POST path {}",
+            url.path()
+        )))
     }
 }
 
@@ -2095,6 +2197,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             peer_sync_config: Some(FederationPeerSyncConfig::default()),
             dkg_auto_start_config: Some(Arc::new(FederationDkgAutoStartConfig {
                 ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
+                root_key_epoch: 1,
                 keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
                     CurrencyUnit::Sat,
                     true,
@@ -2939,6 +3042,10 @@ fn mint_quote_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOpera
             request: format!("invoice-{quote_id}"),
             amount: Some(Amount::from(1)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -3162,6 +3269,7 @@ fn test_melt_quote_operation(
         change: None,
         request: Some(bolt11.request.to_string()),
         unit: Some(bolt11.unit.clone()),
+        method: PaymentMethod::BOLT11,
     });
     config.melt_quote_operation(
         quote,
@@ -13837,6 +13945,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             request: format!("invoice-{mint_quote_id}"),
             amount: Some(Amount::from(4)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -14592,6 +14704,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             request: format!("invoice-{mint_quote_id}"),
             amount: Some(Amount::from(4)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: Some(10_000),
             pubkey: None,
@@ -21068,6 +21184,7 @@ async fn benchmark_materialized_state_snapshot_growth() {
                 Amount::ZERO.with_unit(CurrencyUnit::Sat),
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 1,
+                1,
                 Vec::new(),
                 Vec::new(),
                 None,
@@ -21395,6 +21512,7 @@ async fn private_local_status_route_reports_stale_payment_observations() {
         Amount::ZERO.with_unit(CurrencyUnit::Sat),
         Amount::ZERO.with_unit(CurrencyUnit::Sat),
         PaymentMethod::Known(KnownMethod::Bolt11),
+        1,
         1,
         Vec::new(),
         Vec::new(),

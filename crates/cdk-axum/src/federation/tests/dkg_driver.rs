@@ -69,6 +69,7 @@ impl DkgDriverTestFederation {
             .await;
             state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
                 ceremony_id,
+                root_key_epoch: 1,
                 keyset_spec: keyset_spec.clone(),
                 driver: FederationDkgDriverRunConfig::default(),
             }));
@@ -167,6 +168,7 @@ impl DkgDriverTestFederation {
         .await;
         state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
             ceremony_id: self.ceremony_id,
+            root_key_epoch: 1,
             keyset_spec: self.keyset_spec.clone(),
             driver: FederationDkgDriverRunConfig::default(),
         }));
@@ -206,6 +208,8 @@ impl DkgDriverTestFederation {
 
     async fn assert_complete_and_consistent(&self) {
         let mut finalized_public_config = None;
+        let mut frost_public_package = None;
+        let mut encrypted_root_shares = HashSet::new();
         for member in &self.members {
             let db = member.state.mint.localstore();
             assert_eq!(
@@ -259,6 +263,51 @@ impl DkgDriverTestFederation {
                 .await
                 .expect("DKG activations");
             assert_eq!(activations.len(), 3);
+            assert_eq!(
+                db.get_federation_frost_dkg_round1()
+                    .await
+                    .expect("FROST round-one records")
+                    .len(),
+                3
+            );
+            let round2 = db
+                .get_federation_frost_dkg_round2()
+                .await
+                .expect("sealed FROST round-two records");
+            assert_eq!(round2.len(), 4);
+            for record in round2 {
+                record
+                    .encrypted(&self.public_config)
+                    .expect("authenticated ciphertext envelope");
+                assert!(format!("{record:?}").contains("<redacted>"));
+            }
+            assert_eq!(
+                db.get_federation_frost_dkg_local_states()
+                    .await
+                    .expect("sealed FROST phase states")
+                    .len(),
+                2
+            );
+            let roots = db
+                .get_federation_frost_root_records()
+                .await
+                .expect("sealed FROST roots");
+            assert_eq!(roots.len(), 1);
+            roots[0]
+                .validate(&self.public_config)
+                .expect("valid canonical FROST root");
+            assert!(encrypted_root_shares.insert(roots[0].encrypted_root_share.clone()));
+            match frost_public_package.as_ref() {
+                Some(expected) => assert_eq!(expected, &roots[0].public_package),
+                None => frost_public_package = Some(roots[0].public_package.clone()),
+            }
+            assert_eq!(
+                db.get_federation_frost_dkg_confirmations()
+                    .await
+                    .expect("FROST root confirmations")
+                    .len(),
+                3
+            );
             let finalized = FederationDkgFinalizedMemberConfig::from_records(
                 &self.public_config,
                 &member.private_config,
@@ -276,6 +325,7 @@ impl DkgDriverTestFederation {
                 None => finalized_public_config = Some(finalized.public_config),
             }
         }
+        assert_eq!(encrypted_root_shares.len(), self.members.len());
     }
 }
 
@@ -284,7 +334,7 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
     let federation = DkgDriverTestFederation::new().await;
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 48);
+    assert_eq!(attempted_deliveries, 97);
     federation.assert_complete_and_consistent().await;
 }
 
@@ -343,7 +393,7 @@ async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
     }
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 48);
+    assert_eq!(attempted_deliveries, 97);
     federation.assert_complete_and_consistent().await;
     for member in &federation.members {
         assert_eq!(
@@ -366,7 +416,7 @@ async fn dkg_driver_retries_response_lost_after_durable_persistence() {
         .fail_post_responses_after_delivery("/federation/v1/dkg/commitments", 1);
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 49);
+    assert_eq!(attempted_deliveries, 98);
     federation.assert_complete_and_consistent().await;
     for member in &federation.members {
         let commitments = member
@@ -396,10 +446,13 @@ async fn dkg_driver_restarts_safely_at_every_durable_phase() {
         FederationDkgDriverPhase::Activation,
     ];
     let mut restarted = HashSet::from([FederationDkgDriverPhase::Commitment]);
+    let mut frost_round1_restarted = false;
+    let mut frost_round2_restarted = false;
+    let mut frost_root_restarted = false;
     federation.restart_member(0).await;
 
     let mut completed = false;
-    for _ in 0..24 {
+    for _ in 0..36 {
         let mut outcomes = Vec::with_capacity(federation.members.len());
         for index in 0..federation.members.len() {
             let outcome = {
@@ -426,6 +479,40 @@ async fn dkg_driver_restarts_safely_at_every_durable_phase() {
                     restarted.insert(restart_phase);
                     federation.restart_member(0).await;
                 }
+                let frost_states = federation.members[0]
+                    .db
+                    .get_federation_frost_dkg_local_states()
+                    .await
+                    .expect("restartable FROST states");
+                let restart_frost = if !frost_round1_restarted
+                    && frost_states.iter().any(|state| {
+                        state.phase == cdk::federation::FederationFrostDkgLocalPhase::Round1
+                    }) {
+                    frost_round1_restarted = true;
+                    true
+                } else if !frost_round2_restarted
+                    && frost_states.iter().any(|state| {
+                        state.phase == cdk::federation::FederationFrostDkgLocalPhase::Round2
+                    })
+                {
+                    frost_round2_restarted = true;
+                    true
+                } else if !frost_root_restarted
+                    && !federation.members[0]
+                        .db
+                        .get_federation_frost_root_records()
+                        .await
+                        .expect("restartable FROST root")
+                        .is_empty()
+                {
+                    frost_root_restarted = true;
+                    true
+                } else {
+                    false
+                };
+                if restart_frost {
+                    federation.restart_member(0).await;
+                }
             }
         }
         if outcomes
@@ -444,6 +531,9 @@ async fn dkg_driver_restarts_safely_at_every_durable_phase() {
     assert!(restarted.contains(&FederationDkgDriverPhase::LocalKeysetShare));
     assert!(restarted.contains(&FederationDkgDriverPhase::TranscriptSignature));
     assert!(restarted.contains(&FederationDkgDriverPhase::Activation));
+    assert!(frost_round1_restarted);
+    assert!(frost_round2_restarted);
+    assert!(frost_root_restarted);
     federation.assert_complete_and_consistent().await;
 }
 
@@ -469,7 +559,7 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
         tx.commit().await.expect("commit ceremony registration");
     }
 
-    let _ = federation.drive_until_complete(12).await;
+    let _ = federation.drive_until_complete(24).await;
     for member in &federation.members {
         complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
             .await
@@ -542,6 +632,78 @@ async fn dkg_activation_mismatch_fails_before_sequence_or_record_mutation() {
             .await
             .expect("sequences after mismatch"),
         before_sequences
+    );
+}
+
+#[tokio::test]
+async fn frost_confirmation_mismatch_fails_before_sequence_or_record_mutation() {
+    let federation = DkgDriverTestFederation::new().await;
+    let _ = federation.drive_until_complete(12).await;
+    let receiver = &federation.members[0];
+    let sender = &federation.members[1];
+    let before_confirmations = receiver
+        .db
+        .get_federation_frost_dkg_confirmations()
+        .await
+        .expect("confirmations before mismatch");
+    let before_sequences = receiver
+        .db
+        .get_federation_dkg_member_sequences()
+        .await
+        .expect("sequences before FROST mismatch");
+    let mut tampered = before_confirmations
+        .iter()
+        .find(|confirmation| confirmation.member_id == sender.private_config.member_id)
+        .expect("sender confirmation")
+        .clone();
+    *tampered
+        .public_package
+        .last_mut()
+        .expect("canonical public root byte") ^= 1;
+    let sequence = before_sequences
+        .get(&sender.private_config.member_id)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(1);
+    let request = FederationSignedRequest::new_signed(
+        federation.public_config.federation_id,
+        receiver.private_config.member_id,
+        sequence,
+        FederationRestMessageKind::FrostDkgConfirmation,
+        tampered,
+        &sender.private_config,
+    )
+    .expect("signed tampered FROST confirmation");
+
+    let response = post_frost_dkg_confirmation(State(receiver.state.clone()), Json(request))
+        .await
+        .expect_err("tampered FROST confirmation must fail");
+    assert!(response.status().is_client_error());
+    assert_eq!(
+        receiver
+            .db
+            .get_federation_frost_dkg_confirmations()
+            .await
+            .expect("confirmations after mismatch"),
+        before_confirmations
+    );
+    assert_eq!(
+        receiver
+            .db
+            .get_federation_dkg_member_sequences()
+            .await
+            .expect("sequences after FROST mismatch"),
+        before_sequences
+    );
+}
+
+#[tokio::test]
+async fn dkg_completion_fails_closed_without_frost_result() {
+    let federation = DkgDriverTestFederation::new().await;
+    assert!(
+        complete_federation_dkg_ceremony(&federation.members[0].state, federation.ceremony_id,)
+            .await
+            .is_err()
     );
 }
 
@@ -694,7 +856,7 @@ async fn dkg_driver_times_out_one_slow_member_without_blocking_fast_members() {
         federation.members[0].private_config.clone(),
     )
     .expect("recovered DKG client");
-    let _ = federation.drive_until_complete(12).await;
+    let _ = federation.drive_until_complete(24).await;
     federation.assert_complete_and_consistent().await;
 }
 
@@ -759,7 +921,7 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
         first_member,
         false,
     );
-    let _ = federation.drive_until_complete(12).await;
+    let _ = federation.drive_until_complete(24).await;
     federation.assert_complete_and_consistent().await;
 }
 

@@ -74,7 +74,8 @@ pub use self::dkg_driver::{
 };
 use self::dkg_routes::{
     post_dkg_activation, post_dkg_commitment, post_dkg_readiness, post_dkg_reveal,
-    post_dkg_secret_share, post_dkg_transcript_signature,
+    post_dkg_secret_share, post_dkg_transcript_signature, post_frost_dkg_confirmation,
+    post_frost_dkg_round1, post_frost_dkg_round2,
 };
 pub(crate) use self::node_runtime::FederationNodeRuntime;
 use self::payment_observation::payment_observation_report_summaries;
@@ -118,6 +119,12 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
         .route("/dkg/secret-shares", post(post_dkg_secret_share))
+        .route("/dkg/frost/round1", post(post_frost_dkg_round1))
+        .route("/dkg/frost/round2", post(post_frost_dkg_round2))
+        .route(
+            "/dkg/frost/confirmations",
+            post(post_frost_dkg_confirmation),
+        )
         .route(
             "/dkg/transcript-signatures",
             post(post_dkg_transcript_signature),
@@ -649,12 +656,13 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
 }
 
 async fn local_peer_order_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
-    let runtime_config = state
-        .mint
-        .federation_config()
-        .ok_or(FederationError::RuntimeUnavailable {
-            component: "mint configuration",
-        })?;
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
     let tip = state.mint.localstore().get_federation_journal_tip().await?;
     let mut status = match tip {
         Some(tip) => {
@@ -699,12 +707,13 @@ async fn local_peer_status_with_materialized_rows(
 async fn local_peer_status_and_entries(
     state: &MintState,
 ) -> anyhow::Result<(FederationPeerStatus, Vec<FederationJournalEntry>)> {
-    let runtime_config = state
-        .mint
-        .federation_config()
-        .ok_or(FederationError::RuntimeUnavailable {
-            component: "mint configuration",
-        })?;
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
     let journal = durable_federation_journal(state).await?;
     let mut status = FederationPeerStatus::from_journal(
         runtime_config.federation_id(),

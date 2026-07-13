@@ -1528,6 +1528,7 @@ fn federation_dkg_auto_start_config(
 
     Ok(Some(cdk_axum::FederationDkgAutoStartConfig {
         ceremony_id,
+        root_key_epoch: 1,
         keyset_spec,
         driver: cdk_axum::FederationDkgDriverRunConfig {
             max_ticks: federation.dkg.max_ticks,

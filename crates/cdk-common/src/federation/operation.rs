@@ -521,12 +521,14 @@ pub(crate) fn test_melt_quote_operation(
                 change: None,
                 request: Some(request.request.to_string()),
                 unit: Some(request.unit.clone()),
+                method: PaymentMethod::BOLT11,
             })
         }
         MeltQuoteRequest::Custom(request) => MeltQuoteCreateResponse::Custom((
             PaymentMethod::from(request.method.as_str()),
             crate::MeltQuoteCustomResponse {
                 quote: quote.to_string(),
+                method: PaymentMethod::from(request.method.as_str()),
                 amount: Amount::from(1),
                 fee_reserve: Some(Amount::from(1)),
                 state: MeltQuoteState::Unpaid,
@@ -1961,6 +1963,7 @@ mod tests {
                 change: None,
                 request: Some(offer.to_string()),
                 unit: Some(CurrencyUnit::Sat),
+                method: PaymentMethod::BOLT12,
             }),
             metadata: FederationMeltQuoteMetadata::default(),
         };
@@ -1987,6 +1990,7 @@ mod tests {
                 quote: onchain_quote_id.to_string(),
                 amount: Amount::from(100),
                 unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Custom("onchain".to_string()),
                 state: MeltQuoteState::Unpaid,
                 expiry: 4_000_000_000,
                 request: "bcrt1qexample".to_string(),
@@ -2141,6 +2145,10 @@ mod tests {
             request: format!("invoice-{quote}"),
             amount: Some(Amount::from(amount)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: None,
             pubkey: None,
@@ -2591,7 +2599,7 @@ mod tests {
         let request_one = MintQuoteRequest::Custom {
             method: PaymentMethod::Custom("custom".to_string()),
             request: crate::MintQuoteCustomRequest {
-                amount: Amount::from(21),
+                amount: Some(Amount::from(21)),
                 unit: CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
@@ -2601,7 +2609,7 @@ mod tests {
         let request_two = MintQuoteRequest::Custom {
             method: PaymentMethod::Custom("custom".to_string()),
             request: crate::MintQuoteCustomRequest {
-                amount: Amount::from(21),
+                amount: Some(Amount::from(21)),
                 unit: CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
@@ -2618,9 +2626,11 @@ mod tests {
                     response: MintQuoteCustomResponse {
                         quote: "quote-custom".to_string(),
                         request: "custom-payment-request".to_string(),
+                        method: PaymentMethod::Custom("custom".to_string()),
                         amount: Some(Amount::from(21)),
                         amount_paid: Amount::ZERO,
                         amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         unit: Some(CurrencyUnit::Sat),
                         expiry: None,
                         pubkey: None,
@@ -2639,9 +2649,11 @@ mod tests {
                     response: MintQuoteCustomResponse {
                         quote: "quote-custom".to_string(),
                         request: "custom-payment-request".to_string(),
+                        method: PaymentMethod::Custom("custom".to_string()),
                         amount: Some(Amount::from(21)),
                         amount_paid: Amount::ZERO,
                         amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         unit: Some(CurrencyUnit::Sat),
                         expiry: None,
                         pubkey: None,
@@ -3337,6 +3349,7 @@ mod tests {
             method: "custom".to_string(),
             request: "payreq".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: json!({"route": "fake"}),
         });
         let melt_quote =

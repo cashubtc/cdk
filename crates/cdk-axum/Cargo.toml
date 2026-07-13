@@ -16,6 +16,7 @@ federation = [
     "cdk-http-client/reqwest",
     "dep:aleph-bft",
     "dep:parity-scale-codec",
+    "dep:cdk-frost",
 ]
 redis = ["dep:redis"]
 integration-tests = []
@@ -31,6 +32,7 @@ cdk = { workspace = true, features = [
     "mint",
 ]}
 cdk-common.workspace = true
+cdk-frost = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
 tracing.workspace = true

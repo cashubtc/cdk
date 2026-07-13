@@ -54,6 +54,12 @@ pub enum FederationRestMessageKind {
     DkgReveal,
     /// Send private DKG secret-share contributions to the intended receiver.
     DkgSecretShare,
+    /// Broadcast an application-neutral FROST DKG round-one package.
+    FrostDkgRound1,
+    /// Send one confidential application-neutral FROST DKG round-two package.
+    FrostDkgRound2,
+    /// Confirm one member independently derived the identical canonical FROST root.
+    FrostDkgConfirmation,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
     /// Confirm that one member assembled the exact finalized DKG config.
@@ -83,6 +89,9 @@ impl FederationRestMessageKind {
             Self::DkgCommitment
                 | Self::DkgReveal
                 | Self::DkgSecretShare
+                | Self::FrostDkgRound1
+                | Self::FrostDkgRound2
+                | Self::FrostDkgConfirmation
                 | Self::DkgTranscriptSignature
                 | Self::DkgActivation
         )
@@ -95,6 +104,9 @@ impl FederationRestMessageKind {
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
             Self::DkgSecretShare => b"dkg_secret_share",
+            Self::FrostDkgRound1 => b"frost_dkg_round1",
+            Self::FrostDkgRound2 => b"frost_dkg_round2",
+            Self::FrostDkgConfirmation => b"frost_dkg_confirmation",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::DkgActivation => b"dkg_activation",
             Self::SubmitOperation => b"submit_operation",
@@ -2557,6 +2569,10 @@ mod tests {
                         request: "invoice-quote-1".to_string(),
                         amount: Some(Amount::from(1)),
                         unit: Some(CurrencyUnit::Sat),
+                        method: crate::PaymentMethod::BOLT11,
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         state: crate::MintQuoteState::Unpaid,
                         expiry: None,
                         pubkey: None,

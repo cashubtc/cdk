@@ -1293,6 +1293,10 @@ mod tests {
                             request: "invoice-quote-1".to_string(),
                             amount: Some(cdk::Amount::from(1)),
                             unit: Some(cdk::nuts::CurrencyUnit::Sat),
+                            method: cdk::nuts::PaymentMethod::BOLT11,
+                            amount_paid: cdk::Amount::ZERO,
+                            amount_issued: cdk::Amount::ZERO,
+                            updated_at: 0,
                             state: cdk::nuts::MintQuoteState::Unpaid,
                             expiry: None,
                             pubkey: None,
@@ -1532,7 +1536,9 @@ impl MintState {
         let operation_id = envelope.operation_id()?;
         self.ensure_federation_ready_for_public_submit().await?;
 
-        let response = self.submit_federation_envelope_to_consensus(envelope).await?;
+        let response = self
+            .submit_federation_envelope_to_consensus(envelope)
+            .await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
@@ -1570,7 +1576,9 @@ impl MintState {
             }
         }
         let operation_id = envelope.operation_id()?;
-        let response = self.submit_federation_envelope_to_consensus(envelope).await?;
+        let response = self
+            .submit_federation_envelope_to_consensus(envelope)
+            .await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
@@ -1695,6 +1703,39 @@ impl MintState {
             .await
     }
 
+    pub(crate) async fn persist_federation_frost_dkg_round1(
+        &self,
+        request: &cdk::federation::FederationFrostDkgRound1Request,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        self.federation
+            .persist_frost_dkg_round1(request, sender, sequence)
+            .await
+    }
+
+    pub(crate) async fn persist_federation_frost_dkg_round2(
+        &self,
+        record: &cdk::federation::FederationFrostDkgRound2Record,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        self.federation
+            .persist_frost_dkg_round2(record, sender, sequence)
+            .await
+    }
+
+    pub(crate) async fn persist_federation_frost_dkg_confirmation(
+        &self,
+        request: &cdk::federation::FederationFrostDkgConfirmationRequest,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        self.federation
+            .persist_frost_dkg_confirmation(request, sender, sequence)
+            .await
+    }
+
     pub(crate) async fn persist_federation_dkg_secret_share_contribution(
         &self,
         contribution: &FederationDkgSecretShareRequest,
@@ -1780,7 +1821,9 @@ impl MintState {
         sender: MemberId,
         sequence: u64,
     ) {
-        self.federation.record_sequence(kind, sender, sequence).await;
+        self.federation
+            .record_sequence(kind, sender, sequence)
+            .await;
     }
 
     pub(crate) async fn restore_federation_startup_readiness(&self) {

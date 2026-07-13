@@ -1,5 +1,70 @@
 use super::*;
 
+async fn insert_frost_record<C, T>(
+    connection: &C,
+    ceremony_id: FederationDkgCeremonyId,
+    record_kind: &str,
+    sender: MemberId,
+    receiver: Option<MemberId>,
+    payload: &T,
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+    T: Serialize,
+{
+    let rows_affected = query(
+        r#"
+        INSERT INTO federation_frost_dkg_records
+        (ceremony_id, record_kind, sender_id, receiver_id, payload_json)
+        VALUES
+        (:ceremony_id, :record_kind, :sender_id, :receiver_id, :payload_json)
+        ON CONFLICT (ceremony_id, record_kind, sender_id, receiver_id)
+        DO UPDATE SET payload_json = EXCLUDED.payload_json
+        WHERE federation_frost_dkg_records.payload_json = EXCLUDED.payload_json
+        "#,
+    )?
+    .bind("ceremony_id", ceremony_id.to_string())
+    .bind("record_kind", record_kind.to_string())
+    .bind("sender_id", i64::from(sender.get()))
+    .bind(
+        "receiver_id",
+        receiver.map_or(0_i64, |member| i64::from(member.get())),
+    )
+    .bind("payload_json", serde_json::to_string(payload)?)
+    .execute(connection)
+    .await?;
+    if rows_affected == 0 {
+        return Err(Error::Duplicate);
+    }
+    Ok(())
+}
+
+async fn fetch_frost_records<C, T>(connection: &C, record_kind: &str) -> Result<Vec<T>, Error>
+where
+    C: DatabaseExecutor,
+    T: DeserializeOwned,
+{
+    query(
+        r#"
+        SELECT payload_json
+        FROM federation_frost_dkg_records
+        WHERE record_kind = :record_kind
+        ORDER BY ceremony_id ASC, sender_id ASC, receiver_id ASC
+        "#,
+    )?
+    .bind("record_kind", record_kind.to_string())
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|row| {
+        unpack_into!(let (payload_json) = row);
+        serde_json::from_str(&column_as_string!(&payload_json)).map_err(|error| {
+            Error::Internal(format!("Invalid federation FROST DKG record JSON: {error}"))
+        })
+    })
+    .collect()
+}
+
 #[async_trait]
 impl<RM> FederationDkgTransaction for SQLTransaction<RM>
 where
@@ -269,6 +334,89 @@ where
 
         Ok(())
     }
+
+    async fn add_federation_frost_dkg_round1(
+        &mut self,
+        request: &FederationFrostDkgRound1Request,
+    ) -> Result<(), Self::Err> {
+        insert_frost_record(
+            &self.inner,
+            request.context.ceremony_id,
+            FEDERATION_FROST_DKG_ROUND1_RECORD,
+            request.sender,
+            None,
+            request,
+        )
+        .await
+    }
+
+    async fn add_federation_frost_dkg_round2(
+        &mut self,
+        record: &FederationFrostDkgRound2Record,
+    ) -> Result<(), Self::Err> {
+        insert_frost_record(
+            &self.inner,
+            record.context.ceremony_id,
+            FEDERATION_FROST_DKG_ROUND2_RECORD,
+            record.sender,
+            Some(record.receiver),
+            record,
+        )
+        .await
+    }
+
+    async fn set_federation_frost_dkg_local_state(
+        &mut self,
+        state: &FederationFrostDkgLocalState,
+    ) -> Result<(), Self::Err> {
+        let record_kind = match state.phase {
+            cdk_common::federation::FederationFrostDkgLocalPhase::Round1 => {
+                FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD
+            }
+            cdk_common::federation::FederationFrostDkgLocalPhase::Round2 => {
+                FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD
+            }
+        };
+        insert_frost_record(
+            &self.inner,
+            state.context.ceremony_id,
+            record_kind,
+            state.member_id,
+            None,
+            state,
+        )
+        .await
+    }
+
+    async fn add_federation_frost_root_record(
+        &mut self,
+        record: &FederationFrostRootRecord,
+    ) -> Result<(), Self::Err> {
+        insert_frost_record(
+            &self.inner,
+            record.context.ceremony_id,
+            FEDERATION_FROST_DKG_ROOT_RECORD,
+            record.member_id,
+            None,
+            record,
+        )
+        .await
+    }
+
+    async fn add_federation_frost_dkg_confirmation(
+        &mut self,
+        confirmation: &FederationFrostDkgConfirmationRequest,
+    ) -> Result<(), Self::Err> {
+        insert_frost_record(
+            &self.inner,
+            confirmation.context.ceremony_id,
+            FEDERATION_FROST_DKG_CONFIRMATION_RECORD,
+            confirmation.member_id,
+            None,
+            confirmation,
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -456,5 +604,63 @@ where
         .into_iter()
         .map(sql_row_to_federation_dkg_activation)
         .collect()
+    }
+
+    async fn get_federation_frost_dkg_round1(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgRound1Request>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))?;
+        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_ROUND1_RECORD).await
+    }
+
+    async fn get_federation_frost_dkg_round2(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgRound2Record>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))?;
+        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_ROUND2_RECORD).await
+    }
+
+    async fn get_federation_frost_dkg_local_states(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgLocalState>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))?;
+        let mut states =
+            fetch_frost_records(&*conn, FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD).await?;
+        states.extend(fetch_frost_records(&*conn, FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD).await?);
+        Ok(states)
+    }
+
+    async fn get_federation_frost_root_records(
+        &self,
+    ) -> Result<Vec<FederationFrostRootRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))?;
+        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_ROOT_RECORD).await
+    }
+
+    async fn get_federation_frost_dkg_confirmations(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgConfirmationRequest>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))?;
+        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_CONFIRMATION_RECORD).await
     }
 }

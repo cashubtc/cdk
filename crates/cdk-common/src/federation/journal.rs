@@ -1096,6 +1096,10 @@ mod tests {
                         request: "invoice-quote-1".to_string(),
                         amount: Some(Amount::from(amount)),
                         unit: Some(CurrencyUnit::Sat),
+                        method: PaymentMethod::BOLT11,
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         state: crate::MintQuoteState::Unpaid,
                         expiry: None,
                         pubkey: None,
@@ -1112,6 +1116,7 @@ mod tests {
             method: "custom".to_string(),
             request: "payreq".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: serde_json::Value::Null,
         });
         let second = FederationOperationEnvelope::new(
@@ -1522,11 +1527,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "86ce84592b3d0d4795d01d661a8e4153b3f17310b9c867469ab57adc5b38693d"
+            "43cc5060eeb4a59c3997fb34f28a16b258d534724dea83b98eb9b592a5080045"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "7758c9373ff30295b5f4c8c682b18a61cebfd1e136f4816d5c300293334b6cfd"
+            "09b3308341475c3b1ce2ae99b2e830af8e7d03d394e3cfa011cf463e801c7695"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

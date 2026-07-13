@@ -5,6 +5,7 @@ use std::fmt;
 
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::keys::Tweak;
+use frost_secp256k1_tr::rand_core::{CryptoRng, RngCore};
 use k256::elliptic_curve::bigint::U256;
 use k256::elliptic_curve::ops::Reduce;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
@@ -14,14 +15,12 @@ use k256::{AffinePoint, EncodedPoint, ProjectivePoint, Scalar};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::sealed;
 use crate::types::{
     ApplicationRegistration, DerivedPublicPackage, DerivedSigningPublicPackage, FrostCiphersuite,
-    MemberId, RootPublicPackage, SignatureMode, SigningDerivation, MAX_PARTICIPANTS,
+    MemberId, RootKeyEpoch, RootPublicPackage, SignatureMode, SigningDerivation, MAX_PARTICIPANTS,
 };
-use crate::Error;
-
-#[cfg(test)]
-use crate::types::RootKeyEpoch;
+use crate::{EncryptedSecret, Error, SecretEncryptionKey};
 
 pub(crate) const ROOT_DKG_PROTOCOL_VERSION: u16 = 1;
 
@@ -56,7 +55,6 @@ pub(crate) struct DerivedSigningLibraryPackage {
 }
 
 impl CanonicalRootKeyPackage {
-    #[cfg(test)]
     pub(crate) fn from_library(
         participant: MemberId,
         roster: &BTreeMap<MemberId, frost::Identifier>,
@@ -141,6 +139,40 @@ impl CanonicalRootKeyPackage {
     /// Application-neutral untweaked public root package.
     pub fn public(&self) -> &RootPublicPackage {
         &self.public
+    }
+
+    /// Seal the local canonical root share without exposing plaintext bytes.
+    pub fn seal<R>(&self, key: &SecretEncryptionKey, rng: &mut R) -> Result<EncryptedSecret, Error>
+    where
+        R: CryptoRng + RngCore,
+    {
+        sealed::seal(
+            key,
+            &root_secret_aad(self.participant, &self.public),
+            self.signing_share.as_ref(),
+            rng,
+        )
+    }
+
+    /// Open a participant-bound share and validate it against the public root.
+    pub fn open(
+        participant: MemberId,
+        public: RootPublicPackage,
+        key: &SecretEncryptionKey,
+        encrypted: &EncryptedSecret,
+    ) -> Result<Self, Error> {
+        validate_root_public(&public)?;
+        let plaintext = sealed::open(key, &root_secret_aad(participant, &public), encrypted)?;
+        let signing_share: [u8; 32] = plaintext
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::malformed("sealed FROST root share", "expected 32 bytes"))?;
+        validate_local_share(participant, &signing_share, &public)?;
+        Ok(Self {
+            participant,
+            signing_share: Zeroizing::new(signing_share),
+            public,
+        })
     }
 
     pub(crate) fn derive_application(
@@ -247,6 +279,13 @@ impl CanonicalRootKeyPackage {
         );
         Ok(DerivedSigningLibraryPackage { key })
     }
+}
+
+fn root_secret_aad(participant: MemberId, public: &RootPublicPackage) -> Vec<u8> {
+    let mut aad = b"cdk/frost/sealed-root-share/v1".to_vec();
+    aad.extend_from_slice(&participant.get().to_be_bytes());
+    aad.extend_from_slice(&public.encode());
+    aad
 }
 
 pub(crate) fn derive_signing_public(
@@ -408,7 +447,6 @@ pub(crate) fn validate_root_public(public: &RootPublicPackage) -> Result<(), Err
     Ok(())
 }
 
-#[cfg(test)]
 fn validate_local_share(
     participant: MemberId,
     share: &[u8; 32],
@@ -480,14 +518,12 @@ fn point_to_bytes(point: ProjectivePoint) -> [u8; 33] {
         .expect("compressed secp256k1 points are always 33 bytes")
 }
 
-#[cfg(test)]
 fn to_fixed_32(bytes: Vec<u8>, kind: &'static str) -> Result<[u8; 32], Error> {
     bytes
         .try_into()
         .map_err(|_| Error::malformed(kind, "expected 32 bytes"))
 }
 
-#[cfg(test)]
 fn to_fixed_33(bytes: Vec<u8>, kind: &'static str) -> Result<[u8; 33], Error> {
     bytes
         .try_into()

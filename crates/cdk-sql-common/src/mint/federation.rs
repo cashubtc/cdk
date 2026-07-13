@@ -62,7 +62,9 @@ use cdk_common::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
+    FederationDkgTranscriptSignatureRequest, FederationFrostDkgConfirmationRequest,
+    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostRootRecord, FederationId, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
@@ -70,10 +72,13 @@ use cdk_common::federation::{
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use super::completed_operations::get_completed_operations_by_ids_inner;
 use super::quotes::{get_federation_melt_quotes_inner, get_federation_mint_quote_states_inner};
 use super::{SQLMintDatabase, SQLTransaction};
+use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{
@@ -82,6 +87,12 @@ use crate::{
 
 const FEDERATION_DKG_COMMITMENT_PHASE: &str = "commitment";
 const FEDERATION_DKG_REVEAL_PHASE: &str = "reveal";
+const FEDERATION_FROST_DKG_ROUND1_RECORD: &str = "round1";
+const FEDERATION_FROST_DKG_ROUND2_RECORD: &str = "round2";
+const FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD: &str = "local_round1";
+const FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD: &str = "local_round2";
+const FEDERATION_FROST_DKG_ROOT_RECORD: &str = "root";
+const FEDERATION_FROST_DKG_CONFIRMATION_RECORD: &str = "confirmation";
 const FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY: &str = "active";
 
 fn status_to_str(status: FederationOperationStatus) -> &'static str {

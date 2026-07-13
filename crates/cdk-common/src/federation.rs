@@ -10,6 +10,7 @@ mod config;
 mod consensus;
 mod dkg;
 mod dkg_driver;
+mod frost_dkg;
 mod journal;
 mod operation;
 mod signing;
@@ -63,6 +64,11 @@ pub use self::dkg::{
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
+};
+pub use self::frost_dkg::{
+    FederationDualDkgResult, FederationFrostDkgConfirmationRequest, FederationFrostDkgContext,
+    FederationFrostDkgLocalPhase, FederationFrostDkgLocalState, FederationFrostDkgRound1Request,
+    FederationFrostDkgRound2Record, FederationFrostDkgRound2Request, FederationFrostRootRecord,
 };
 pub use self::journal::{
     FederationApplicationState, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,

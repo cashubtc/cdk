@@ -8,10 +8,12 @@ use cdk::federation::{
     FederationConfig, FederationDkgActivationRequest, FederationDkgCommitmentRequest,
     FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    MemberConfigPrivate, MemberConfigPublic, FEDERATION_REST_API_VERSION,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgRound1Request,
+    FederationFrostDkgRound2Request, FederationId, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
@@ -353,6 +355,88 @@ where
             self.federation_id,
             member.member_id,
             FederationRestMessageKind::DkgSecretShare,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_frost_dkg_round1(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostDkgRound1Request,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.decode_package(&self.public_config, self.private_config.member_id)?;
+        let kind = FederationRestMessageKind::FrostDkgRound1;
+        let request = self.signed_request(member, kind, request.clone())?;
+        let response: FederationDkgSetupResponse = self
+            .http_post_with_timeout(
+                member,
+                "dkg/frost/round1",
+                "FROST DKG round-one submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            kind,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_frost_dkg_round2(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostDkgRound2Request,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.decode_package(
+            &self.public_config,
+            self.private_config.member_id,
+            member.member_id,
+        )?;
+        let kind = FederationRestMessageKind::FrostDkgRound2;
+        let request = self.signed_request(member, kind, request.clone())?;
+        let response: FederationDkgSetupResponse = self
+            .http_post_with_timeout(
+                member,
+                "dkg/frost/round2",
+                "FROST DKG round-two submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            kind,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_frost_dkg_confirmation(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostDkgConfirmationRequest,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.validate(&self.public_config, self.private_config.member_id)?;
+        let kind = FederationRestMessageKind::FrostDkgConfirmation;
+        let request = self.signed_request(member, kind, request.clone())?;
+        let response: FederationDkgSetupResponse = self
+            .http_post_with_timeout(
+                member,
+                "dkg/frost/confirmations",
+                "FROST DKG confirmation submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            kind,
             self.private_config.member_id,
         )?;
         Ok(response)
