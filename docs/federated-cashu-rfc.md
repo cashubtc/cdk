@@ -1,165 +1,157 @@
 # Federated Cashu RFC
 
-This RFC records the initial safety model for adding federated Cashu mint support to CDK. It is the Milestone 0 companion to `federated-cashu-implementation-plan.md` and should be updated whenever the federation architecture changes.
+This RFC records the current protocol and safety model for federated Cashu support in CDK. The implementation is authoritative when this document and code disagree. Update this RFC whenever federation wire formats, trust assumptions, consensus operations, DKG, payment policy, recovery, or wallet aggregation change.
 
-## Objective
+## Objective and compatibility
 
-Federated Cashu lets multiple CDK mint members operate one logical Cashu mint. A federation-aware wallet talks to multiple members, receives threshold BLS blind signature shares, verifies those shares against member public shares, and aggregates a threshold subset into ordinary Cashu proofs.
+Federated Cashu lets multiple CDK mint members operate one logical mint. Members order safety-critical state transitions through Byzantine fault tolerant consensus and jointly produce BLS blind signature shares. A federation-aware wallet validates member metadata and responses, rejects invalid shares or inconsistent views, and aggregates a valid threshold into ordinary Cashu proofs.
 
-The public wallet-to-mint Cashu API should remain close to today's NUT endpoints. Federation-specific behavior should be enabled only by explicit feature gates and configuration.
+The public wallet-to-mint API remains close to the existing NUT endpoints. Federation behavior is enabled only by explicit feature gates and configuration; standalone mint and wallet behavior remains unchanged when federation is disabled.
 
-## Initial Scope
+No federation mint or federation database format has been deployed. This is the first implementation, so federation development uses cut-through compatibility: experimental federation protocols, APIs, wire formats, invitations, configurations, databases, migrations, and fixtures may be replaced together without legacy adapters or upgrade paths. This does not relax standalone CDK or public Cashu compatibility.
 
-The first implementation phase was intentionally conservative:
+Federation keysets are v3/BLS-only: `KeySetVersion::Version02`, serialized with keyset ID prefix `02`. Federation configuration, startup, signing, restore, and wallet validation must reject non-v3 keysets and mismatched aggregate keys, public shares, or local secret shares.
 
-- Add feature gates and inert mint setup types.
-- Preserve standalone mint and wallet behavior.
-- Use trusted-dealer key shares for local tests before real DKG. This historical
-  bridge is now restricted to the explicit `federation-test-utils` feature;
-  production setup uses independent member enrollment and dealer-free Pedersen
-  DKG.
-- Use fake wallet payment backends for mint and melt happy paths and scripted failure paths.
-- Add deterministic consensus and networking in later milestones before any member can safely return threshold signing shares.
+## Threat model
 
-## Threat Model
-
-The federation must prevent wallets from obtaining more valid eCash than the accepted operation permits. The motivating attack is a threshold-signing mix-and-match or sliding-window attack: a wallet presents different output sets to different members and aggregates a threshold of shares for each output. The protocol must ensure members sign only the exact output set accepted by consensus.
+The federation must prevent wallets from obtaining more valid eCash than an accepted operation permits. The motivating attack is threshold-signing mix-and-match: a wallet presents different outputs or requests to different members and combines overlapping share subsets. Members must therefore sign only the exact canonical operation accepted by consensus.
 
 The federation assumes:
 
-- Honest members verify operation hashes and consensus outcomes before signing.
-- Faulty or unavailable members may send invalid shares, refuse to respond, replay old messages, or propose conflicting operations.
-- Network messages may be delayed, duplicated, reordered, or temporarily dropped.
-- External payment backends are not deterministic consensus inputs. Payment status must enter consensus as explicit observations or accepted payment events.
+- Honest members verify canonical operation IDs, consensus outcomes, keysets, and request validity before exposing signature shares.
+- Faulty or unavailable members may send invalid shares or responses, refuse requests, replay messages, equivocate, or propose conflicting operations.
+- Networks may delay, duplicate, reorder, partition, or temporarily drop traffic.
+- External payment backends are nondeterministic and may return delayed, conflicting, ambiguous, or stale observations.
+- Safety holds when Byzantine faults remain within the configured consensus and signing assumptions; availability requires the relevant thresholds.
 
-The federation does not assume:
+The federation does not assume wallets are honest, one member's local state is authoritative, a local HTTP request authorizes signing, or development fakewallet behavior proves production payment safety.
 
-- Wallets are honest.
-- A single member's local database state is authoritative.
-- A member can safely sign based only on a local HTTP request.
-- Fake wallet success means production Lightning payment safety.
+## Fault and threshold model
 
-## Fault Model
-
-The default production target is Byzantine fault tolerant consensus. The initial configuration should use a Fedimint-style threshold rule:
+The live runtime uses AlephBFT. For `n` members its consensus threshold is:
 
 ```text
-threshold = n - floor((n - 1) / 3)
+consensus_threshold = n - floor((n - 1) / 3)
 ```
 
-For tests, the implementation may include crash-only or in-memory deterministic engines. Any such engine must be clearly marked as test-only and must not be presented as production-safe consensus.
+The BLS `signature_threshold` is configured separately and may be lower than or equal to the consensus threshold. Configuration must reject zero thresholds, thresholds above the member count, or a signature threshold above the consensus threshold. Consensus ordering and BLS aggregation remain separate security parameters even when configured to the same value.
 
-If CDK later supports a signing threshold lower than the consensus threshold, that must receive a separate review. Consensus ordering and signing threshold are related but not interchangeable security parameters.
+Test-only deterministic helpers must never be presented or admitted as production consensus.
 
-## Core Invariants
+## Core invariants
 
-Every federation milestone must preserve these invariants:
+- Consensus acceptance precedes signature-share creation and externally visible safety-critical state changes. No member may independently authorize issuance, swaps, or melts.
+- Every operation has a versioned canonical envelope containing the federation ID and complete typed payload. Its domain-separated `FederationOperationId` commits to that entire envelope.
+- Accepted operations apply in the same order, deterministically and idempotently. Journal replay must reproduce the same materialized state.
+- A quote can issue only its consensus-authorized mintable amount. Proofs transition to spent at most once, and blinded outputs are signed only for their accepted operation, amount, and keyset.
+- Signature shares are bound to member, operation ID, output index, blinded secret, amount, and keyset, and are durably recorded before being served.
+- Member-local payment or database state is not quorum evidence. Payment results mutate federated state only through accepted observation operations and the configured policy.
+- Conflicting member views or insufficient agreement are ambiguous. They must not produce spendable proofs or definitive success.
+- Startup, DKG, catch-up, rotation, configuration, roster, transcript, keyset, and materialized-state mismatches fail closed.
+- Local time, randomness, unordered data, network I/O, and backend calls must not affect deterministic application unless the relevant value was committed through consensus.
 
-- A member never returns a usable blind signature share before the exact operation payload is accepted by consensus.
-- The operation hash commits to quote IDs, inputs, outputs, amounts, keysets, witnesses, payment method, request signatures, and operation version.
-- All honest members apply accepted operations in the same order.
-- All honest members converge to the same state digest at consensus boundaries.
-- A mint quote can issue only the consensus-tracked mintable amount.
-- A proof can transition to spent exactly once in consensus state.
-- A blinded output can be signed only for the accepted operation and amount.
-- Payment backend results enter consensus as accepted observations or payment events.
-- Lagging members refuse to serve signing shares until they catch up to the relevant accepted operation.
-- Standalone CDK behavior remains unchanged when federation is disabled.
+## Public federation configuration and discovery
 
-## Member Identity
+An active member exposes `GET /federation/v1/config` as a public, unauthenticated, read-only discovery endpoint. Standalone mints return no federation config. Members must not serve an incomplete setup without a finalized transcript and active aggregate keyset. Responses use `Cache-Control: no-store` so rotation or restarted configuration is not hidden by intermediary caches.
 
-Federation member identity is separate from Cashu signing keys:
+`FederationConfig` contains the federation ID, wallet protocol version, thresholds, member IDs, public mint URLs, peer-facing federation API URLs, identity public keys, payment-observation policy, v3/BLS aggregate keysets and member public shares, and the signed setup transcript. Peer-facing URLs are public metadata; access to their routes is authenticated. The config must never contain identity secret keys, BLS secret shares, credentials, or private runtime state.
 
-- Member identity keys authenticate mint-to-mint messages.
-- Threshold BLS shares sign blinded Cashu messages.
-- Every member stores the complete federation roster of member IDs, identity public keys, endpoints, BLS public shares, and aggregate Cashu keysets.
-- Unknown member IDs, wrong federation IDs, mismatched public keys, invalid signatures, and body-hash mismatches must be rejected before state mutation. Effectful DKG messages must enforce durable sequence state; status, catch-up, readiness, and Aleph traffic must use kind-isolated volatile windows. `SubmitOperation` authenticates its sender-local sequence but deliberately derives replay safety and idempotency from the canonical operation ID and durable consensus record.
+URL-based discovery must:
 
-## Public Federation Discovery
+1. fetch and fully validate the public config;
+2. require the supplied URL to identify exactly one roster member;
+3. fetch that member's `GET /v1/info` and verify its member ID, federation ID, wallet protocol version, and complete config digest; and
+4. persist or construct the connector only after those checks succeed.
 
-An active federation member exposes its complete public federation config at
-`GET /federation/v1/config`. This is a public, unauthenticated, read-only wallet
-discovery endpoint, unlike the signed member coordination endpoints under the
-same `/federation/v1/*` prefix. Standalone mints do not expose it, and a member
-must not serve an incomplete setup config without a finalized transcript and
-active aggregate keyset. Responses use `Cache-Control: no-store` so key rotation
-or a restarted finalized config is not hidden by an intermediary cache.
+Invite or file import validates the complete embedded config. Reconstruction from a previously validated local registry may use the validated-config path, while runtime member use still validates advertised federation metadata and active keysets.
 
-The response contains only `FederationConfig`: member public URLs, member
-identity public keys, thresholds, v3/BLS aggregate keysets and public shares,
-payment-observation policy, one wallet-facing protocol version, and the signed
-setup transcript. Member-only operation, consensus, REST, Aleph-unit, and
-catch-up versions are carried by their private payloads and are not wallet
-compatibility gates.
-It must never contain a member identity secret key, BLS secret share, database
-credential, payment credential, or private runtime state.
+## Member identity and private transport
 
-A wallet joining from one member URL treats the response as untrusted input and
-must:
+Member identity keys authenticate mint-to-mint traffic; BLS shares sign Cashu blinded messages. Every member holds the complete public roster and only its own identity secret key and BLS secret shares.
 
-1. fully validate the federation ID, roster, thresholds, transcript, wallet
-   protocol version, payment policy, and every v3/BLS aggregate keyset and
-   member share;
-2. require the supplied URL to identify exactly one member in the config;
-3. fetch that member's `GET /v1/info` response and verify its member ID,
-   federation ID, wallet protocol version, and full config digest against the
-   fetched config; and
-4. persist or construct a federation connector only after all checks succeed.
+Private REST requests bind the REST protocol version, federation ID, sender, receiver, message kind, sender-local sequence, canonical body hash, payload, and member signature. Unknown members, wrong federation or receiver IDs, wrong key kinds, invalid signatures, body-hash mismatches, and unsupported versions are rejected before mutation.
 
-This bootstraps trust from the member URL chosen by the user while preventing a
-stale, mismatched, or unrelated config response from silently selecting another
-federation.
+Replay handling is message-class specific:
 
-## Consensus-Before-Signing Rule
+- Effectful DKG commitment, reveal, secret-share, transcript-signature, and activation traffic uses durable sender sequence state.
+- Status, readiness, catch-up, and AlephBFT traffic uses bounded, kind-isolated volatile replay windows.
+- `SubmitOperation` authenticates its sequence for provenance but uses the canonical operation ID and durable consensus record for restart-safe idempotency.
 
-No direct signing path may be available in federation mode. All minting and swapping outputs, and all melt change outputs, must pass through:
+Private signed REST is transport, not an alternate consensus or authorization path.
 
-1. canonical operation construction,
-2. operation hash computation,
-3. consensus acceptance,
-4. deterministic state application,
-5. durable share recording or deterministic share regeneration,
-6. response to the wallet.
+## Dealer-free DKG
 
-This applies even if the local member was the member contacted first by the wallet.
+Production federation key material is established through restartable dealer-free Pedersen DKG. The ceremony binds its identifier, federation ID, threshold parameters, deterministic participant order, member identity keys, keyset policy, public commitments, aggregate keys, and member public shares.
 
-## Payment Handling
+Members exchange readiness, commitment, reveal, private secret-share contribution, transcript-signature, and activation messages over authenticated REST. Effectful state and local participant material are persisted so exact retries and restart resume are safe. A member activates only the exact finalized configuration derived from the signed transcript and verifies that its local secret shares match its advertised public shares. Members must converge on the same final public configuration before starting the consensus runtime.
 
-For the initial fake-wallet implementation:
+## Consensus operations and application
 
-- Incoming mint payments can be scripted as paid, pending, failed, delayed, duplicated, or conflicting.
-- Outgoing melt payments can be scripted as succeeded, pending, failed, delayed, timed out, or recovered after restart.
-- Fake wallet observations are useful for consensus and recovery tests but are not production payment policy.
+The canonical operation set includes:
 
-For production backends:
+- mint quote creation and mint payment observation;
+- mint issuance;
+- melt quote creation and melt payment observation;
+- payment-observation quarantine;
+- melt execution and optional change signing;
+- swap execution; and
+- federated keyset rotation.
 
-- Payment status cannot be read inside deterministic consensus apply logic.
-- Outgoing payments need idempotency keys.
-- Crash recovery must never pay twice.
-- Final accepted payment observations determine quote and proof state.
+Public request handling prepares and validates an operation without performing irreversible state changes, submits its canonical envelope, and waits for finality or a recoverable pending result. AlephBFT orders admitted operations. A single deterministic apply path durably records the accepted order, applies domain state, records shares or deterministic rejection metadata, and notifies waiting requests. Exact duplicate operation IDs join or return the existing result; conflicting operation reuse is rejected.
 
-## Review Checklist
+Raw standalone signing and state-transition paths reject use by a configured federation member. Wallet-facing shares are reconstructed from persisted operation-bound share records, not generated from an unaccepted request.
 
-Every federation pull request should answer:
+## Payment handling
 
-- Does this change preserve standalone behavior when federation is disabled?
-- Can any route call `blind_sign` or future `blind_sign_share` before consensus acceptance?
-- Does every consensus operation have a canonical encoding and stable operation hash?
-- Does the operation hash commit to all value-bearing request material?
-- Are external payment observations outside deterministic apply logic?
-- Are retries idempotent?
-- Can a lagging member serve stale or unsafe signing shares?
-- Does the database transition have replay and crash-recovery coverage?
-- Do all new public types have clear docs and safe debug output?
-- Are private keys, key shares, payment secrets, local paths, and private endpoints excluded from logs, tests, fixtures, and commits?
+Payment observation policy is explicit and independently configured for mint and melt quotes:
 
-## Milestone 0 Exit Criteria
+- `member_quorum` requires the configured number of matching member observations and must be at least the consensus threshold.
+- `development_single_observation` is restricted to local development or regtest and requires an explicit mintd startup opt-in.
 
-Milestone 0 is complete when:
+Backend status is probed outside deterministic apply. Observations include their member, quote, method, state, amounts, and available payment identity or proof, then enter consensus as canonical operations. Conflicting terminal evidence is quarantined and cannot authorize issuance or settlement. Evidence must be accepted at or before the value operation it authorizes; later observations cannot retroactively authorize an earlier operation.
 
-- The RFC exists.
-- The `federation` Cargo feature exists and is disabled by default.
-- CDK exposes an inert `FederationMode::{Standalone, Member}` type behind the feature gate.
-- Mint setup defaults to standalone mode.
-- Enabling the feature compiles the inert scaffold.
-- Existing default behavior is unchanged.
+For melts, the accepted operation deterministically elects one member to attempt the outgoing payment. A durable saga compare-and-set claims `SetupComplete -> PaymentAttempted` before the backend call, a quote-scoped guard prevents concurrent local attempts, and restart recovery checks ambiguous payment state rather than paying again. Other members observe the result, and accepted policy-satisfying observations determine final quote, proof, change, and saga state.
+
+Fakewallet is a development backend for exercising these same consensus and recovery paths. Its success is not a production payment guarantee.
+
+## Catch-up, readiness, and lifecycle
+
+The accepted journal and finalized AlephBFT items are durable and replayable. Order digests commit to the ordered operation chain; materialized-state digests cover deterministic database state.
+
+Catch-up responses carry finalized AlephBFT items as the authoritative replay history plus compact operation/application metadata. Members sign contiguous-range catch-up certificates binding the federation, range, ordered operation IDs, order digest, and materialized-state digest. A lagging member verifies a consensus-threshold certificate quorum, replays the finalized items, and confirms both order and materialized state before becoming ready.
+
+Startup restores DKG state, active configuration, session markers, pending operations, finalized history, application state, and catch-up evidence before public federation operations are admitted. Missing evidence, divergence, unsupported versions, task failure, or stale readiness leaves the member fail closed. Session rotation and restart must preserve or atomically rebind pending operations; terminal runtime failures tear down inbound admission and supervised tasks.
+
+## Keyset rotation
+
+Rotation is a consensus operation containing a complete active federated keyset and every member's public shares. Admission validates v3 metadata, aggregate interpolation, roster coverage, signer IDs, and the local member's proof of possession for its secret shares. Applying a rotation deactivates the previous active keyset for the same unit, retains old keysets for proof verification, and updates the effective configuration and wallet-facing keyset responses. Members and wallets must reject incomplete or inconsistent rotated views.
+
+## Federation-aware wallet behavior
+
+Federation behavior is centralized in the federation connector rather than duplicated across wallet workflows. The connector owns bounded member fan-out, retry and timeout policy, member metadata validation, quote coordination and threshold visibility, response grouping, error agreement, share verification, BLS aggregation, restore, and check-state aggregation.
+
+Mint and swap succeed only with enough valid shares for the exact requested outputs. Melt, quote-status, restore, and check-state reads require the operation-specific matching threshold view. A matching definitive Cashu rejection may be returned only when it reaches threshold; mixed errors, conflicting successful responses, invalid shares, timeouts, or insufficient agreement remain ambiguous and use existing wallet saga and recovery paths. Wallet applications should otherwise retain ordinary CDK issue, swap, melt, send/receive, restore, and balance workflows.
+
+## Architecture boundaries
+
+- AlephBFT orders operations; the mint domain owns Cashu validation and deterministic application.
+- The federation journal is authoritative history; one member's materialized database is not authorization.
+- DKG output is authoritative for aggregate keys and member shares.
+- Public HTTP handlers remain thin adapters, and the wallet connector owns multi-member aggregation.
+- Consensus, DKG, transport, journal/catch-up, readiness, rotation, and signing coordination remain in dedicated federation modules behind feature gates.
+- Federation and standalone flows reuse existing CDK domain validation, error types, sagas, and persistence where semantics match; federation orchestration must not duplicate the mint implementation or scatter conditionals through unrelated standalone code.
+
+## Review checklist
+
+Every federation change should answer:
+
+- Does it preserve standalone behavior and non-federation builds?
+- Can any path create or expose a signature share without accepted operation provenance?
+- Does every operation retain canonical encoding, stable ID, complete value commitment, bounded size, and conflict handling?
+- Is deterministic apply free of backend calls, local time, randomness, and uncommitted nondeterminism?
+- Are payment observations temporally authorized, quorum-checked, and replay safe?
+- Can retries, cancellation, restart, catch-up, or rotation duplicate value, lose pending work, or serve stale state?
+- Do wallet responses require valid threshold agreement, including matching definitive errors?
+- Do stateful changes cover replay/restart and distributed changes cover adverse ordering or partial failure?
+- Are queues, caches, retries, waiters, payloads, and diagnostics bounded?
+- Are identity secrets, BLS secret shares, DKG private messages, credentials, payment secrets, sensitive payloads, local paths, and generated private configs excluded from logs, fixtures, and commits?
