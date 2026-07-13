@@ -2945,6 +2945,23 @@ unfinalized items. An Axum restart regression recovers two old-session rows,
 finalizes them in the active session, and removes them without wallet
 resubmission.
 
+## 47. Supervise essential AlephBFT tasks and unify terminal teardown
+
+**Status:** Completed (2026-07-13)
+
+Root, finalized-payload apply, and network-pump outcomes now feed one
+generation-scoped supervisor watcher. Non-retryable apply no longer logs and
+skips a finalized payload: it halts the exact installed generation, removes the
+inbound queue, rejects new public submissions, and joins sibling tasks. A halt
+epoch prevents setup racing a terminal transition from publishing afterward,
+and a delayed old-generation failure cannot tear down a rotated supervisor.
+
+Automatic-rotation failure, root/network panic, peer digest mismatch, and
+no-progress catch-up use the same terminal helper. Focused regressions cover
+non-retryable apply, network/root panic, stale generation, failed automatic
+rotation, peer-sync teardown, normal shutdown, natural rotation, and durable
+pending/restart recovery.
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry

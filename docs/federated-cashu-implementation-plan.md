@@ -4651,6 +4651,23 @@ Verified implementation result:
   prove an advanced-marker crash fixture rebinds, finalizes, and removes two
   pending operations without wallet resubmission.
 
+## Post-review essential-task supervision and terminal teardown
+
+- [x] Propagate non-retryable finalized-payload application errors to the
+  session supervisor instead of skipping the payload and continuing Healthy.
+- [x] Treat root, apply, and network-pump outcomes as generation-scoped
+  essential-task events; distinguish normal root-coupled completion from an
+  isolated exit or panic.
+- [x] Route task failure, automatic-rotation failure, peer digest mismatch, and
+  no-progress catch-up through one teardown that clears inbound admission,
+  publishes a generic Halted reason, and stops/joins the matching supervisor.
+- [x] Barrier publication of the complete supervisor and reject publication if
+  a terminal halt advanced the monotonic halt epoch during setup.
+- [x] Prove non-retryable apply and root/network failure halt fail-closed,
+  normal rotation remains healthy, stale generation failure cannot kill the
+  replacement, rotation failure leaves no resources, and peer-sync halt tears
+  down a live generation.
+
 ## Final completion audit
 
 Status: complete for the implementation plan's fakewallet federation scope.

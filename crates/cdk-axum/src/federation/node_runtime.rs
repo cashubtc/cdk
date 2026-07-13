@@ -1,5 +1,6 @@
 //! Federation node runtime ownership.
 
+use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -47,6 +48,7 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
+    pub(crate) aleph_bft_halt_epoch: Arc<AtomicU64>,
     #[cfg(test)]
     pub(crate) local_finality_test: bool,
     #[cfg(test)]
@@ -128,6 +130,7 @@ impl FederationNodeRuntime {
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            aleph_bft_halt_epoch: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
             local_finality_test: false,
             #[cfg(test)]

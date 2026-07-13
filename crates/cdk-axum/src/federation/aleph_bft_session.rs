@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +44,16 @@ const CDK_ALEPH_BFT_MAX_ROUND: u16 = 3000;
 const CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND: usize = 64;
 const CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY: Duration = Duration::from_millis(100);
 const CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY: Duration = Duration::from_secs(2);
+const CDK_ALEPH_BFT_ESSENTIAL_TASK_ROOT_EXIT_GRACE: Duration = Duration::from_secs(1);
+static NEXT_ALEPH_BFT_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_aleph_bft_session_generation() -> Result<u64, cdk::Error> {
+    NEXT_ALEPH_BFT_SESSION_GENERATION
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |generation| {
+            generation.checked_add(1)
+        })
+        .map_err(|_| cdk::Error::Custom("AlephBFT session generation overflowed".to_string()))
+}
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -56,6 +67,12 @@ pub(crate) struct FederationAlephBftLiveSessionOptions {
     panic_session_task: bool,
     #[cfg(test)]
     fail_before_task_spawn: bool,
+    #[cfg(test)]
+    fail_next_finalized_payload_apply: bool,
+    #[cfg(test)]
+    panic_network_pump_task: bool,
+    #[cfg(test)]
+    fail_automatic_rotation_start: bool,
 }
 
 impl FederationAlephBftLiveSessionOptions {
@@ -120,12 +137,35 @@ impl FederationAlephBftLiveSessionOptions {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_finalized_payload_apply_failure(mut self) -> Self {
+        self.fail_next_finalized_payload_apply = true;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_panicking_network_pump_task(mut self) -> Self {
+        self.panic_network_pump_task = true;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_automatic_rotation_start_failure(mut self) -> Self {
+        self.fail_automatic_rotation_start = true;
+        self
+    }
+
     fn automatic_rotation_enabled(&self) -> bool {
         self.automatic_rotation_limit != Some(0)
     }
 
     pub(crate) fn after_automatic_rotation(&self) -> Self {
         let mut next = self.clone();
+        #[cfg(test)]
+        {
+            next.fail_before_task_spawn = next.fail_automatic_rotation_start;
+            next.fail_automatic_rotation_start = false;
+        }
         if let Some(limit) = next.automatic_rotation_limit {
             let remaining = limit.saturating_sub(1);
             if remaining == 0 {
@@ -157,6 +197,12 @@ impl Default for FederationAlephBftLiveSessionOptions {
             panic_session_task: false,
             #[cfg(test)]
             fail_before_task_spawn: false,
+            #[cfg(test)]
+            fail_next_finalized_payload_apply: false,
+            #[cfg(test)]
+            panic_network_pump_task: false,
+            #[cfg(test)]
+            fail_automatic_rotation_start: false,
         }
     }
 }
@@ -165,6 +211,25 @@ impl Default for FederationAlephBftLiveSessionOptions {
 enum AlephBftSessionCompletion {
     Completed,
     Panicked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlephBftEssentialTaskEvent {
+    Root(AlephBftSessionCompletion),
+    FinalizedPayloadApplyFailed,
+    FinalizedPayloadApplyPanicked,
+    FinalizedPayloadApplyStopped,
+    NetworkPumpPanicked,
+    NetworkPumpStopped,
+}
+
+impl AlephBftEssentialTaskEvent {
+    fn is_root_coupled_stop(self) -> bool {
+        matches!(
+            self,
+            Self::FinalizedPayloadApplyStopped | Self::NetworkPumpStopped
+        )
+    }
 }
 
 /// Router-startup decision for the live upstream AlephBFT session.
@@ -240,6 +305,8 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
 /// Live upstream AlephBFT session tasks owned by router state.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct AlephBftSessionSupervisor {
+    session_id: u64,
+    generation: u64,
     state: Mutex<AlephBftSessionSupervisorState>,
     exit: Mutex<Option<oneshot::Sender<()>>>,
     activity_hint: CdkAlephBftActivityHint,
@@ -293,6 +360,10 @@ impl std::fmt::Debug for AlephBftSessionSupervisor {
 }
 
 impl AlephBftSessionSupervisor {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     #[cfg(test)]
     pub(crate) fn state(&self) -> AlephBftSessionSupervisorState {
         self.state
@@ -481,6 +552,7 @@ where
         session_id,
         ..options.pump_config
     };
+    let halt_epoch = state.federation.aleph_bft_halt_epoch.load(Ordering::SeqCst);
 
     let config =
         state.mint.federation_config().cloned().ok_or_else(|| {
@@ -580,10 +652,13 @@ where
     let (exit_sender, exit_receiver) = oneshot::channel();
     let terminator = Terminator::create_root(exit_receiver, "cdk-aleph-bft-session");
     let spawn_handle = CdkAlephBftTokioSpawnHandle::default();
+    let generation = next_aleph_bft_session_generation()?;
+    let (essential_event_sender, essential_event_receiver) = mpsc::unbounded_channel();
+    let (published_sender, published_receiver) = oneshot::channel();
 
     let session_keychain = keychain.clone();
     let session_spawn_handle = spawn_handle.clone();
-    let (session_completed_sender, session_completed_receiver) = oneshot::channel();
+    let root_event_sender = essential_event_sender.clone();
     #[cfg(test)]
     let panic_session_task = options.panic_session_task;
     let session_task = tokio::spawn(async move {
@@ -606,7 +681,7 @@ where
             Ok(()) => AlephBftSessionCompletion::Completed,
             Err(_) => AlephBftSessionCompletion::Panicked,
         };
-        let _ = session_completed_sender.send(completion);
+        let _ = root_event_sender.send(AlephBftEssentialTaskEvent::Root(completion));
     });
     let (activity_sender, activity_receiver) = mpsc::unbounded_channel();
     let activity_broadcast_task = tokio::spawn(run_aleph_bft_activity_broadcast_loop(
@@ -619,76 +694,120 @@ where
         activity_receiver,
     ));
     let pump_keychain = keychain.clone();
+    let network_event_sender = essential_event_sender.clone();
+    #[cfg(test)]
+    let panic_network_pump_task = options.panic_network_pump_task;
     let network_pump_task = tokio::spawn(async move {
-        let mut interval = federation_peer_sync_interval(sync_config);
-        let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
-        loop {
-            let first_outbound = tokio::select! {
-                outbound = network_handle.next_outgoing() => match outbound {
-                    Some(outbound) => Some(outbound),
-                    None => {
-                        tracing::warn!("AlephBFT network outbound bridge is closed");
-                        break;
-                    }
-                },
-                _ = interval.tick() => None,
-            };
-            match run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound(
-                &mut network_handle,
-                &pump_keychain,
-                &client,
-                pump_config,
-                &mut retry_queue,
-                first_outbound,
-            )
-            .await
-            {
-                Ok(outcome) => {
-                    if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
-                        let remote_failed_members = outcome.remote_failed_members.len();
-                        let remote_requeued_members = outcome.remote_requeued_members.len();
-                        let remote_skipped_members = outcome.remote_skipped_members.len();
-                        if remote_failed_members > 0
-                            || remote_requeued_members > 0
-                            || remote_skipped_members > 0
-                        {
-                            tracing::debug!(
-                                messages_drained = outcome.messages_drained,
-                                retry_messages_drained = outcome.retry_messages_drained,
-                                encoded_bytes = outcome.encoded_bytes,
-                                remote_accepted_members = outcome.remote_accepted_members.len(),
-                                remote_failed_members,
-                                remote_requeued_members,
-                                remote_skipped_members,
-                                retry_queue_len = outcome.retry_queue_len,
-                                retry_deliveries_dropped = outcome.retry_deliveries_dropped,
-                                reached_idle = outcome.reached_idle,
-                                "AlephBFT network pump tick completed with incomplete delivery"
-                            );
-                        } else {
-                            tracing::trace!(
-                                messages_drained = outcome.messages_drained,
-                                retry_messages_drained = outcome.retry_messages_drained,
-                                encoded_bytes = outcome.encoded_bytes,
-                                remote_accepted_members = outcome.remote_accepted_members.len(),
-                                retry_queue_len = outcome.retry_queue_len,
-                                retry_deliveries_dropped = outcome.retry_deliveries_dropped,
-                                reached_idle = outcome.reached_idle,
-                                "AlephBFT network pump tick completed"
-                            );
+        let pump = async move {
+            #[cfg(test)]
+            if panic_network_pump_task {
+                panic!("injected AlephBFT network pump task panic");
+            }
+            let mut interval = federation_peer_sync_interval(sync_config);
+            let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
+            loop {
+                let first_outbound = tokio::select! {
+                    outbound = network_handle.next_outgoing() => match outbound {
+                        Some(outbound) => Some(outbound),
+                        None => {
+                            tracing::warn!("AlephBFT network outbound bridge is closed");
+                            break;
+                        }
+                    },
+                    _ = interval.tick() => None,
+                };
+                match run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound(
+                    &mut network_handle,
+                    &pump_keychain,
+                    &client,
+                    pump_config,
+                    &mut retry_queue,
+                    first_outbound,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
+                            let remote_failed_members = outcome.remote_failed_members.len();
+                            let remote_requeued_members = outcome.remote_requeued_members.len();
+                            let remote_skipped_members = outcome.remote_skipped_members.len();
+                            if remote_failed_members > 0
+                                || remote_requeued_members > 0
+                                || remote_skipped_members > 0
+                            {
+                                tracing::debug!(
+                                    messages_drained = outcome.messages_drained,
+                                    retry_messages_drained = outcome.retry_messages_drained,
+                                    encoded_bytes = outcome.encoded_bytes,
+                                    remote_accepted_members = outcome.remote_accepted_members.len(),
+                                    remote_failed_members,
+                                    remote_requeued_members,
+                                    remote_skipped_members,
+                                    retry_queue_len = outcome.retry_queue_len,
+                                    retry_deliveries_dropped = outcome.retry_deliveries_dropped,
+                                    reached_idle = outcome.reached_idle,
+                                    "AlephBFT network pump tick completed with incomplete delivery"
+                                );
+                            } else {
+                                tracing::trace!(
+                                    messages_drained = outcome.messages_drained,
+                                    retry_messages_drained = outcome.retry_messages_drained,
+                                    encoded_bytes = outcome.encoded_bytes,
+                                    remote_accepted_members = outcome.remote_accepted_members.len(),
+                                    retry_queue_len = outcome.retry_queue_len,
+                                    retry_deliveries_dropped = outcome.retry_deliveries_dropped,
+                                    reached_idle = outcome.reached_idle,
+                                    "AlephBFT network pump tick completed"
+                                );
+                            }
                         }
                     }
+                    Err(err) => {
+                        tracing::warn!("AlephBFT network pump tick failed: {}", err);
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!("AlephBFT network pump tick failed: {}", err);
-                }
+            }
+        };
+        match AssertUnwindSafe(pump).catch_unwind().await {
+            Ok(()) => {
+                let _ = network_event_sender.send(AlephBftEssentialTaskEvent::NetworkPumpStopped);
+            }
+            Err(_) => {
+                let _ = network_event_sender.send(AlephBftEssentialTaskEvent::NetworkPumpPanicked);
             }
         }
     });
 
     let apply_state = state.clone();
+    let apply_event_sender = essential_event_sender;
+    #[cfg(test)]
+    let fail_next_finalized_payload_apply = options.fail_next_finalized_payload_apply;
+    #[cfg(not(test))]
+    let fail_next_finalized_payload_apply = false;
     let apply_task = tokio::spawn(async move {
-        run_federation_aleph_bft_finalized_unit_apply_loop(apply_state, finalized_units).await;
+        let apply_loop = run_federation_aleph_bft_finalized_unit_apply_loop(
+            apply_state,
+            finalized_units,
+            fail_next_finalized_payload_apply,
+        );
+        match AssertUnwindSafe(apply_loop).catch_unwind().await {
+            Ok(Ok(())) => {
+                let _ = apply_event_sender
+                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyStopped);
+            }
+            Ok(Err(err)) => {
+                tracing::error!(
+                    "AlephBFT finalized-payload apply task stopped after a non-retryable error: {}",
+                    err
+                );
+                let _ = apply_event_sender
+                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed);
+            }
+            Err(_) => {
+                let _ = apply_event_sender
+                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyPanicked);
+            }
+        }
     });
     let completion_watcher_task = spawn_federation_aleph_bft_session_completion_watcher(
         state.clone(),
@@ -696,9 +815,13 @@ where
         options,
         rotation_transport,
         session_id,
-        session_completed_receiver,
+        generation,
+        published_receiver,
+        essential_event_receiver,
     );
     let handle = Arc::new(AlephBftSessionSupervisor {
+        session_id,
+        generation,
         state: Mutex::new(AlephBftSessionSupervisorState::Running),
         exit: Mutex::new(Some(exit_sender)),
         activity_hint,
@@ -712,8 +835,27 @@ where
             completion_watcher_task,
         })),
     });
-    *state.federation.aleph_bft_network_inbound.write().await = Some(inbound);
-    *state.federation.aleph_bft_live_session.write().await = Some(Arc::clone(&handle));
+    let mut live_session = state.federation.aleph_bft_live_session.write().await;
+    if state.federation.aleph_bft_halt_epoch.load(Ordering::SeqCst) != halt_epoch {
+        drop(live_session);
+        handle.shutdown().await;
+        return Err(cdk::Error::Custom(
+            "AlephBFT live session became halted before publication".to_string(),
+        ));
+    }
+    if live_session.is_some() {
+        drop(live_session);
+        handle.shutdown().await;
+        return Err(cdk::Error::Custom(
+            "AlephBFT live session was concurrently published".to_string(),
+        ));
+    }
+    let mut network_inbound = state.federation.aleph_bft_network_inbound.write().await;
+    *network_inbound = Some(inbound);
+    *live_session = Some(Arc::clone(&handle));
+    drop(network_inbound);
+    drop(live_session);
+    let _ = published_sender.send(());
 
     Ok(Some(handle))
 }
@@ -968,19 +1110,49 @@ fn spawn_federation_aleph_bft_session_completion_watcher<T>(
     options: FederationAlephBftLiveSessionOptions,
     transport: T,
     completed_session: u64,
-    session_completed_receiver: oneshot::Receiver<AlephBftSessionCompletion>,
+    generation: u64,
+    published_receiver: oneshot::Receiver<()>,
+    mut essential_event_receiver: mpsc::UnboundedReceiver<AlephBftEssentialTaskEvent>,
 ) -> JoinHandle<()>
 where
     T: Transport + 'static,
 {
     tokio::spawn(async move {
-        match session_completed_receiver.await {
-            Ok(AlephBftSessionCompletion::Completed) => {
+        if published_receiver.await.is_err() {
+            return;
+        }
+        let Some(mut event) = essential_event_receiver.recv().await else {
+            tracing::debug!(
+                completed_session,
+                generation,
+                "AlephBFT live session stopped before an essential task outcome"
+            );
+            return;
+        };
+        if event.is_root_coupled_stop() {
+            if let Ok(Some(root_or_failure)) =
+                tokio::time::timeout(CDK_ALEPH_BFT_ESSENTIAL_TASK_ROOT_EXIT_GRACE, async {
+                    while let Some(next) = essential_event_receiver.recv().await {
+                        if !next.is_root_coupled_stop() {
+                            return Some(next);
+                        }
+                    }
+                    None
+                })
+                .await
+            {
+                event = root_or_failure;
+            }
+        }
+        match event {
+            AlephBftEssentialTaskEvent::Root(AlephBftSessionCompletion::Completed) => {
                 if !options.automatic_rotation_enabled() {
-                    halt_federation_aleph_bft_session(
+                    halt_federation_aleph_bft_generation(
                         &state,
                         completed_session,
+                        FederationAlephBftHaltTarget::Generation(generation),
                         "completed with automatic rotation disabled",
+                        true,
                     )
                     .await;
                     return;
@@ -1003,41 +1175,169 @@ where
                         "AlephBFT automatic live-session rotation failed: {}",
                         err
                     );
-                    state
-                        .mark_federation_halted(format!(
-                            "AlephBFT automatic rotation after session {completed_session} failed"
-                        ))
-                        .await;
+                    halt_federation_aleph_bft_generation(
+                        &state,
+                        completed_session,
+                        FederationAlephBftHaltTarget::GenerationOrNone(generation),
+                        "automatic rotation failed",
+                        true,
+                    )
+                    .await;
                 }
             }
-            Ok(AlephBftSessionCompletion::Panicked) => {
-                halt_federation_aleph_bft_session(
+            AlephBftEssentialTaskEvent::Root(AlephBftSessionCompletion::Panicked) => {
+                halt_federation_aleph_bft_generation(
                     &state,
                     completed_session,
+                    FederationAlephBftHaltTarget::Generation(generation),
                     "stopped after a root task panic",
+                    true,
                 )
                 .await;
             }
-            Err(_) => {
-                tracing::debug!(
+            AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed => {
+                halt_federation_aleph_bft_generation(
+                    &state,
                     completed_session,
-                    "AlephBFT live session stopped before natural completion"
-                );
+                    FederationAlephBftHaltTarget::Generation(generation),
+                    "stopped after a non-retryable finalized-payload apply failure",
+                    true,
+                )
+                .await;
+            }
+            AlephBftEssentialTaskEvent::FinalizedPayloadApplyPanicked => {
+                halt_federation_aleph_bft_generation(
+                    &state,
+                    completed_session,
+                    FederationAlephBftHaltTarget::Generation(generation),
+                    "stopped after the finalized-payload apply task panicked",
+                    true,
+                )
+                .await;
+            }
+            AlephBftEssentialTaskEvent::FinalizedPayloadApplyStopped => {
+                halt_federation_aleph_bft_generation(
+                    &state,
+                    completed_session,
+                    FederationAlephBftHaltTarget::Generation(generation),
+                    "stopped after the finalized-payload apply task exited unexpectedly",
+                    true,
+                )
+                .await;
+            }
+            AlephBftEssentialTaskEvent::NetworkPumpPanicked => {
+                halt_federation_aleph_bft_generation(
+                    &state,
+                    completed_session,
+                    FederationAlephBftHaltTarget::Generation(generation),
+                    "stopped after the network pump task panicked",
+                    true,
+                )
+                .await;
+            }
+            AlephBftEssentialTaskEvent::NetworkPumpStopped => {
+                halt_federation_aleph_bft_generation(
+                    &state,
+                    completed_session,
+                    FederationAlephBftHaltTarget::Generation(generation),
+                    "stopped after the network pump task exited unexpectedly",
+                    true,
+                )
+                .await;
             }
         }
     })
 }
 
-async fn halt_federation_aleph_bft_session(state: &MintState, session_id: u64, reason: &str) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FederationAlephBftHaltTarget {
+    Current,
+    Generation(u64),
+    GenerationOrNone(u64),
+}
+
+async fn halt_federation_aleph_bft_generation(
+    state: &MintState,
+    session_id: u64,
+    target: FederationAlephBftHaltTarget,
+    reason: &str,
+    called_from_completion_watcher: bool,
+) {
+    let mut live_session = state.federation.aleph_bft_live_session.write().await;
+    let target_matches = match (target, live_session.as_ref()) {
+        (FederationAlephBftHaltTarget::Current, _) => true,
+        (FederationAlephBftHaltTarget::Generation(expected), Some(supervisor)) => {
+            supervisor.generation() == expected
+        }
+        (FederationAlephBftHaltTarget::Generation(_), None) => false,
+        (FederationAlephBftHaltTarget::GenerationOrNone(expected), Some(supervisor)) => {
+            supervisor.generation() == expected
+        }
+        (FederationAlephBftHaltTarget::GenerationOrNone(_), None) => true,
+    };
+    if !target_matches {
+        tracing::debug!(
+            session_id,
+            ?target,
+            "Ignoring stale AlephBFT halt from an inactive live-session generation"
+        );
+        return;
+    }
+
+    let supervisor = live_session.take();
+    let mut network_inbound = state.federation.aleph_bft_network_inbound.write().await;
+    *network_inbound = None;
+    state
+        .federation
+        .aleph_bft_halt_epoch
+        .fetch_add(1, Ordering::SeqCst);
     tracing::error!(session_id, reason, "AlephBFT live session halted");
     state
         .mark_federation_halted(format!("AlephBFT live session {session_id} {reason}"))
         .await;
-    let supervisor = state.federation.aleph_bft_live_session.write().await.take();
+    drop(network_inbound);
+    drop(live_session);
     if let Some(supervisor) = supervisor {
-        supervisor.shutdown_for_rotation().await;
+        if called_from_completion_watcher {
+            supervisor.shutdown_for_rotation().await;
+        } else {
+            supervisor.shutdown().await;
+        }
     }
-    *state.federation.aleph_bft_network_inbound.write().await = None;
+}
+
+pub(crate) async fn halt_current_federation_aleph_bft_session(state: &MintState, reason: &str) {
+    let session_id = state
+        .federation
+        .aleph_bft_live_session
+        .read()
+        .await
+        .as_ref()
+        .map_or(0, |supervisor| supervisor.session_id);
+    halt_federation_aleph_bft_generation(
+        state,
+        session_id,
+        FederationAlephBftHaltTarget::Current,
+        reason,
+        false,
+    )
+    .await;
+}
+
+#[cfg(test)]
+pub(crate) async fn halt_federation_aleph_bft_generation_for_test(
+    state: &MintState,
+    session_id: u64,
+    generation: u64,
+) {
+    halt_federation_aleph_bft_generation(
+        state,
+        session_id,
+        FederationAlephBftHaltTarget::Generation(generation),
+        "injected stale generation failure",
+        false,
+    )
+    .await;
 }
 
 /// Rotate a live upstream AlephBFT task into the next empty session.
@@ -1241,20 +1541,25 @@ async fn run_federation_aleph_bft_finalized_unit_apply_loop(
     mut finalized_units: tokio::sync::mpsc::UnboundedReceiver<
         cdk::federation::FederationAlephBftUnitPayload,
     >,
-) {
+    fail_next_finalized_payload_apply: bool,
+) -> Result<(), cdk::Error> {
     while let Some(payload) = finalized_units.recv().await {
         crate::federation::aleph_bft_latency::record(
             crate::federation::aleph_bft_latency::CdkAlephBftLatencyStage::ApplyLoopReceived,
             payload.operation_ids.iter().copied(),
         );
-        apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await;
+        if fail_next_finalized_payload_apply {
+            return Err(cdk::Error::AmountOverflow);
+        }
+        apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await?;
     }
+    Ok(())
 }
 
 async fn apply_federation_aleph_bft_finalized_unit_with_retry(
     state: &MintState,
     payload: cdk::federation::FederationAlephBftUnitPayload,
-) {
+) -> Result<(), cdk::Error> {
     let mut attempts = 0usize;
     let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
 
@@ -1270,7 +1575,7 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
                         "AlephBFT finalized-unit apply recovered after transient storage contention"
                     );
                 }
-                return;
+                return Ok(());
             }
             Err(err) if is_retryable_federation_apply_error(&err) => {
                 attempts = attempts.saturating_add(1);
@@ -1287,8 +1592,7 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
                     .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
             }
             Err(err) => {
-                tracing::warn!("AlephBFT finalized-unit apply loop failed: {}", err);
-                return;
+                return Err(err);
             }
         }
     }
@@ -1336,6 +1640,8 @@ mod tests {
         let (exit_sender, _exit_receiver) = oneshot::channel();
         let (activity_sender, _activity_receiver) = mpsc::unbounded_channel();
         let supervisor = AlephBftSessionSupervisor {
+            session_id: 0,
+            generation: 1,
             state: Mutex::new(AlephBftSessionSupervisorState::Running),
             exit: Mutex::new(Some(exit_sender)),
             activity_hint: CdkAlephBftActivityHint::default(),

@@ -718,12 +718,14 @@ where
                 recovered_from_peer = true;
                 if !status_made_catch_up_progress(&before_status, &local_status)? {
                     let before_finalized_item = format_aleph_bft_next_item_index(&before_status);
-                    state
-                        .mark_federation_halted(format!(
+                    super::halt_current_federation_aleph_bft_session(
+                        state,
+                        &format!(
                             "peer {} returned no catch-up progress from operation {} / finalized item {}",
                             member.member_id, before_status.operation_count, before_finalized_item
-                        ))
-                        .await;
+                        ),
+                    )
+                    .await;
                     return Err(FederationError::CatchUpNoProgress {
                         index: before_status.operation_count,
                     }
@@ -736,12 +738,14 @@ where
         let order_digest_mismatch =
             local_status.latest_order_digest != peer_status.latest_order_digest;
         if local_status.operation_count == peer_status.operation_count && order_digest_mismatch {
-            state
-                .mark_federation_halted(format!(
+            super::halt_current_federation_aleph_bft_session(
+                state,
+                &format!(
                     "peer {} digest mismatch at operation count {}",
                     member.member_id, peer_status.operation_count
-                ))
-                .await;
+                ),
+            )
+            .await;
             return Err(FederationError::CatchUpDigestMismatch {
                 index: peer_status.operation_count.saturating_sub(1),
                 expected: local_status.latest_order_digest,

@@ -2218,6 +2218,7 @@ async fn create_mint_router_with_custom_cache_inner(
             )),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             local_finality_test: federation_local_finality_test,
             #[cfg(test)]

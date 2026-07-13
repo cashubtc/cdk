@@ -48,6 +48,7 @@ use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_mes
 #[cfg(test)]
 use self::aleph_bft_session::{
     federation_aleph_bft_live_session_startup_decision,
+    halt_federation_aleph_bft_generation_for_test,
     rotate_federation_aleph_bft_live_session_to_next_empty_with_transport,
     start_federation_aleph_bft_live_session_with_config,
     start_federation_aleph_bft_live_session_with_options_and_transport,
@@ -55,7 +56,8 @@ use self::aleph_bft_session::{
     FederationAlephBftLiveSessionStartupDecision,
 };
 pub(crate) use self::aleph_bft_session::{
-    start_federation_aleph_bft_live_session, AlephBftSessionSupervisor,
+    halt_current_federation_aleph_bft_session, start_federation_aleph_bft_live_session,
+    AlephBftSessionSupervisor,
 };
 use self::catch_up_routes::post_journal;
 pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;

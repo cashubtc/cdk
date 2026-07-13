@@ -100,8 +100,8 @@ or explicitly ruled out with a deterministic regression before production use.
 | P6 | Waiter reservation now precedes durable and runtime admission | Resolved (was High) | 99% | Complete: waiter, pending row, and runtime queue are published in one failure-safe order. |
 | P7 | Active-session advance now validates and atomically rebinds pending rows | Resolved (was High) | 99% | Complete: startup and rotation cannot advance past discoverable durable pending work. |
 | P8 | Confirmed duplicate recovery omits waiter/cache notification | Medium | 97% | Route normal and duplicate terminal outcomes through one publication helper. |
-| P9 | False-healthy outcome confirmed; original task-exit mechanism was misstated | High | 92% | Release blocker: an essential apply failure must halt/quarantine the session generation. |
-| P10 | Inconsistent Halted teardown confirmed; automatic-rotation scope overstated | Medium | 85% | Use one generation-scoped teardown path for every terminal Halted transition. |
+| P9 | Non-retryable apply and essential-task failures now halt the exact generation | Resolved (was High) | 99% | Complete: finalized payloads cannot be skipped while the member remains ready. |
+| P10 | Every production Halted transition now uses generation-safe teardown | Resolved (was Medium) | 97% | Complete: Halted cannot retain a live supervisor or inbound queue. |
 | P11 | Confirmed latent soft-skip of local certificate production | Medium | 88% | Fix with P12 so local digest/status failure cannot look like an empty successful round. |
 | P12 | Restart revalidation now compares local state with certified quorum evidence | Resolved (was Critical) | 99% | Complete: startup remains fail-closed until certified order and materialized-state commitments match. |
 | P13 | Readiness bypass confirmed; correct policy remains a design decision | Medium | 75% | Define and test a middle gate at minimum: live current session and not Halted. |
@@ -112,8 +112,8 @@ or explicitly ruled out with a deterministic regression before production use.
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
 | P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
 
-Production priority is therefore P9. P1
-remains a production-startup blocker if the product continues
+There are no remaining Critical or High findings. P1 remains a
+production-startup blocker if the product continues
 to claim one-member federation support even though its general security impact
 is Medium. P5 should not remain an open broad transaction-refactor request in
 its current wording.
@@ -584,7 +584,7 @@ Acceptance criteria:
 
 ### P9: A Non-Retryable Apply Failure Can Leave a False-Healthy Session
 
-**Status:** Open; false-healthy outcome confirmed, deterministic fault injection pending
+**Status:** Resolved (2026-07-13)
 
 **Reassessment:** The original mechanism is slightly inaccurate. A
 non-retryable per-payload apply error returns from
@@ -604,6 +604,26 @@ supervisor also monitors completion of only the root AlephBFT session, leaving
 actual unexpected apply/network task termination as a related unsupervised
 failure mode.
 
+Resolution:
+
+- The finalized-unit retry helper now returns a non-retryable error instead of
+  logging and returning success to the outer receive loop. The apply task sends
+  that terminal outcome to the live-session watcher, which marks the exact
+  generation Halted and tears down its admissions and sibling tasks.
+- Root completion/panic, apply failure/panic/exit, and network-pump panic/exit
+  are represented as explicit essential-task events. Root-coupled channel
+  closure gets a short bounded opportunity to deliver the root completion
+  event; an isolated task exit is terminal.
+- Each installed supervisor carries a process-unique generation. Task failures
+  can halt only that installed generation. A regression rotates to a new
+  supervisor and proves a delayed old-generation failure changes neither the
+  halt epoch nor the new live resources.
+- Session publication is barriered until the complete supervisor is installed.
+  A monotonic halt epoch prevents setup work that raced a terminal halt from
+  publishing afterward.
+- Persisted/operator-visible halt reasons use fixed contextual text; raw apply
+  or task errors are logged locally but are not copied into the halt reason.
+
 Relevant code:
 
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:258`
@@ -615,18 +635,31 @@ Relevant code:
 
 TODO:
 
-- [ ] Add deterministic fault injection for a non-retryable finalized-payload
-  apply error and prove the current member remains falsely ready.
-- [ ] Make the non-retryable payload failure halt/quarantine the exact live
+- [x] Add deterministic fault injection for a non-retryable finalized-payload
+  apply error and prove the member halts instead of remaining falsely ready.
+- [x] Make the non-retryable payload failure halt/quarantine the exact live
   session generation and tear down its consensus admissions.
-- [ ] Supervise the apply loop, network pump, and root session as
+- [x] Supervise the apply loop, network pump, and root session as
   essential tasks whose unexpected exit halts the member.
-- [ ] Distinguish expected task cancellation during shutdown or rotation from
+- [x] Distinguish expected task cancellation during shutdown or rotation from
   unexpected failure.
-- [ ] On failure, persist a redacted halt reason, remove the inbound queue,
+- [x] On failure, publish a fixed redacted halt reason, remove the inbound queue,
   reject new public submissions, and join sibling tasks.
-- [ ] Add tests for apply-task failure, network-pump termination, normal
+- [x] Add tests for apply-task failure, network-pump termination, normal
   shutdown, natural rotation, and restart recovery of finalized work.
+
+Verification:
+
+- Deterministic two-member finality reaches the injected non-retryable apply
+  boundary, then both members become Halted, remove live/inbound resources,
+  retain no falsely Applied journal entry, and reject a new public submission.
+- Root-task and network-pump panic regressions both stop and join the owned
+  supervisor generation.
+- Normal automatic rotation still reaches session 2; stale generation failure
+  leaves the rotated supervisor and inbound queue installed.
+- Existing pending-before-backup and persisted-backup restart recovery tests
+  remain the durable replay coverage for finalized work interrupted with the
+  live generation down.
 
 Acceptance criteria:
 
@@ -637,7 +670,7 @@ Acceptance criteria:
 
 ### P10: Halted Transitions Do Not Consistently Tear Down Live Session Resources
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
 Cleanup added fail-closed handling when automatic AlephBFT session rotation
 fails after natural completion: the completion watcher now calls
@@ -664,6 +697,23 @@ resources.” Public submissions are rejected while Halted, so this is primarily
 a restart-safety/resource-lifecycle issue; P13 makes residual observer
 admission the important neighboring policy risk.
 
+Resolution:
+
+- One teardown helper now owns terminal transition ordering: take the matching
+  live supervisor while holding the lifecycle write guard, clear the inbound
+  queue, advance the halt epoch, publish a generic Halted reason, and then stop
+  and join owned tasks.
+- Completion-watcher failures target their exact generation; peer-sync fatal
+  errors target the current generation. A stale watcher cannot remove a newer
+  supervisor.
+- Automatic-rotation startup failure accepts either the old matching generation
+  or the expected no-supervisor state after rotation detached it, while refusing
+  to tear down a concurrently installed different generation.
+- Equal-height digest mismatch and no-progress peer catch-up now call this
+  helper instead of changing sync status alone.
+- P7 supplies the durable side: active-session advance and pending rebind commit
+  together before a failed rotation is allowed to settle in Halted.
+
 Relevant code:
 
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:1000`
@@ -676,24 +726,33 @@ Relevant code:
 
 TODO:
 
-- [ ] Route every terminal federation halt through one helper that marks
+- [x] Route every terminal federation halt through one helper that marks
   Halted, clears the inbound queue, and shuts down / joins the live-session
   supervisor for the current generation.
-- [ ] Use that helper on automatic-rotation failure instead of
+- [x] Use that helper on automatic-rotation failure instead of
   `mark_federation_halted` alone.
-- [ ] Use the same helper for peer-sync digest-mismatch and no-progress halts.
-- [ ] Ensure a failed rotation after in-memory session advance cannot leave a
+- [x] Use the same helper for peer-sync digest-mismatch and no-progress halts.
+- [x] Ensure a failed rotation after in-memory session advance cannot leave a
   published supervisor or inbound queue that outlives the Halted status (P2).
-- [ ] Coordinate with P7 so failed rotation either rolls back the in-memory
+- [x] Coordinate with P7 so failed rotation either rolls back the in-memory
   session advance or persists pending rebinds before Halted is durable.
-- [ ] Add a deterministic test that forces completed-session rotation to fail
+- [x] Add a deterministic test that forces completed-session rotation to fail
   after the previous supervisor is cleared and proves: status is Halted, live
   session handle is absent, inbound queue is absent, and public submit remains
   rejected.
-- [ ] Add a peer-sync halt test proving digest-mismatch Halted also clears
+- [x] Add a peer-sync halt test proving digest-mismatch Halted also clears
   Aleph live resources.
-- [ ] Re-run natural rotation, root-panic halt, restart recovery, and
+- [x] Re-run natural rotation, root-panic halt, restart recovery, and
   pending-operation recovery suites.
+
+Verification:
+
+- Injected automatic-rotation startup failure halts both members only after the
+  old supervisors are detached, and proves no live or inbound resources remain.
+- The equal-height peer digest-mismatch regression now starts a live supervisor
+  first and proves the fatal sync decision stops it and clears inbound state.
+- Supervisor shutdown, root panic, natural rotation, stale-generation, and P7
+  pending recovery regressions pass through the shared lifecycle path.
 
 Acceptance criteria:
 
@@ -1564,14 +1623,12 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P6/P7/P16 are resolved. The reassessment retains one High finding (P9), ten
-Medium findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
+P6/P7/P9/P10/P16 are resolved. The reassessment retains no Critical or High
+findings, nine Medium findings (P1, P2, P3, P4, P8, P11, P13, P14, P18), and two Low
 findings (P5, P19). P15 is complete under the accepted fresh-database policy;
 P17 is closed as superseded by P14's cut-through registry reset.
 
-P9 is the remaining High production blocker because it affects application of
-finalized state and essential-task health. P1
-must also be resolved before production if one-member configs remain accepted,
+P1 must still be resolved before production if one-member configs remain accepted,
 even though its general security severity is Medium.
 
 P14 is a one-time reset of every federation-owned format to its clean initial

@@ -2133,6 +2133,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             )),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+            aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             local_finality_test,
             manual_finality_test: false,
         },
@@ -5096,8 +5097,19 @@ async fn peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer() {
 
 #[tokio::test]
 async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
-    let (state, public_config, local_private, _) =
+    let (mut state, public_config, local_private, _) =
         federation_route_state_with_local_private().await;
+    let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut state,
+        FederationPeerSyncConfig::default(),
+        FederationAlephBftLiveSessionOptions::default(),
+        RouterFederationTransportRegistry::default(),
+    )
+    .await
+    .expect("start live session before digest mismatch")
+    .expect("live session supervisor");
+    assert!(state.federation_aleph_bft_live_session_active().await);
+    assert!(state.federation_aleph_bft_network_inbound_active().await);
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = test_operation_envelope_for_config(
         &public_config,
@@ -5126,6 +5138,9 @@ async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Halted { .. })
     ));
+    assert!(!state.federation_aleph_bft_live_session_active().await);
+    assert!(!state.federation_aleph_bft_network_inbound_active().await);
+    assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
 }
 
 #[tokio::test]
@@ -9839,6 +9854,167 @@ async fn aleph_bft_session_supervisor_halts_and_cleans_up_after_root_task_panic(
 }
 
 #[tokio::test]
+async fn aleph_bft_session_supervisor_halts_after_network_pump_panic() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let options =
+        FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
+            .with_panicking_network_pump_task();
+    let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut state,
+        FederationPeerSyncConfig::default(),
+        options,
+        RouterFederationTransportRegistry::default(),
+    )
+    .await
+    .expect("start live session with panicking network pump")
+    .expect("live session supervisor");
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            ) && !state.federation_aleph_bft_live_session_active().await
+                && !state.federation_aleph_bft_network_inbound_active().await
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("network pump panic cleanup");
+
+    assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
+}
+
+#[tokio::test]
+async fn aleph_bft_non_retryable_finalized_payload_failure_halts_exact_generation() {
+    let options = fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 128,
+            max_peer_deliveries_per_message: 128,
+        },
+        500,
+    )
+    .with_finalized_payload_apply_failure();
+    let session = start_two_member_aleph_bft_live_session(options)
+        .await
+        .expect("start apply-failure live session");
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&session.first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let submit_state = session.first_state.clone();
+    let submit_task = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_to_consensus(envelope)
+            .await
+    });
+
+    for state in [&session.first_state, &session.second_state] {
+        time::timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(
+                    state.federation_sync_status().await,
+                    Some(crate::FederationSyncStatus::Halted { .. })
+                ) && !state.federation_aleph_bft_live_session_active().await
+                    && !state.federation_aleph_bft_network_inbound_active().await
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("non-retryable apply failure cleanup");
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await
+            .expect("journal lookup after apply failure")
+            .is_none());
+        let rejected = state
+            .submit_federation_envelope(mint_quote_envelope(state, &QuoteId::new()))
+            .await
+            .expect_err("halted generation must reject public submission");
+        assert!(matches!(
+            rejected,
+            cdk::Error::Federation(FederationError::NodeHalted { .. })
+        ));
+    }
+    submit_task.abort();
+    let _ = submit_task.await;
+}
+
+#[tokio::test]
+async fn aleph_bft_automatic_rotation_failure_halts_without_live_resources() {
+    let options = fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 128,
+            max_peer_deliveries_per_message: 128,
+        },
+        6,
+    )
+    .with_automatic_rotation_limit(1)
+    .with_automatic_rotation_start_failure();
+    let session = start_two_member_aleph_bft_live_session(options)
+        .await
+        .expect("start rotation-failure live session");
+    let rotation_activity = FederationOperationId::from_bytes([203; 32]);
+
+    time::timeout(Duration::from_secs(10), async {
+        loop {
+            for state in [&session.first_state, &session.second_state] {
+                if let Some(handle) = state.federation.aleph_bft_live_session.read().await.clone() {
+                    handle.mark_peer_activity(rotation_activity);
+                }
+            }
+            let mut all_halted_and_stopped = true;
+            for state in [&session.first_state, &session.second_state] {
+                all_halted_and_stopped &= matches!(
+                    state.federation_sync_status().await,
+                    Some(crate::FederationSyncStatus::Halted { .. })
+                );
+                all_halted_and_stopped &= !state.federation_aleph_bft_live_session_active().await;
+                all_halted_and_stopped &=
+                    !state.federation_aleph_bft_network_inbound_active().await;
+            }
+            if all_halted_and_stopped {
+                break;
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("automatic rotation failure did not halt both members");
+
+    for state in [&session.first_state, &session.second_state] {
+        assert!(!state.federation_aleph_bft_live_session_active().await);
+        assert!(!state.federation_aleph_bft_network_inbound_active().await);
+        let rejected = state
+            .submit_federation_envelope(mint_quote_envelope(state, &QuoteId::new()))
+            .await
+            .expect_err("rotation-failure halt must reject public submission");
+        assert!(matches!(
+            rejected,
+            cdk::Error::Federation(FederationError::NodeHalted { .. })
+        ));
+    }
+}
+
+#[tokio::test]
 async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -10155,6 +10331,23 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
         initial_request_count_after_rotation,
         "the old live-session pump must stay stopped after rotation"
     );
+
+    let halt_epoch = state.federation.aleph_bft_halt_epoch.load(Ordering::SeqCst);
+    halt_federation_aleph_bft_generation_for_test(&state, 0, initial_handle.generation()).await;
+    assert_eq!(
+        state.federation.aleph_bft_halt_epoch.load(Ordering::SeqCst),
+        halt_epoch,
+        "a stale generation failure must not publish a halt"
+    );
+    let installed = state
+        .federation
+        .aleph_bft_live_session
+        .read()
+        .await
+        .clone()
+        .expect("rotated generation remains installed");
+    assert!(Arc::ptr_eq(&installed, &rotated_handle));
+    assert!(state.federation_aleph_bft_network_inbound_active().await);
 
     drop(initial_handle);
     drop(rotated_handle);
