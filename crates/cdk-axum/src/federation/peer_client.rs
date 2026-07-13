@@ -8,12 +8,15 @@ use cdk::federation::{
     FederationConfig, FederationDkgActivationRequest, FederationDkgCommitmentRequest,
     FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationFrostDkgConfirmationRequest, FederationFrostDkgRound1Request,
-    FederationFrostDkgRound2Request, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
-    FEDERATION_REST_API_VERSION,
+    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
+    FederationFrostCommitmentResponse, FederationFrostDkgConfirmationRequest,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Request,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
+    MemberConfigPublic, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
@@ -442,6 +445,117 @@ where
         Ok(response)
     }
 
+    pub(crate) async fn request_frost_commitment(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostCommitmentRequest,
+    ) -> anyhow::Result<cdk_frost::NonceCommitment> {
+        let kind = FederationRestMessageKind::FrostSigningCommitment;
+        let expected_session =
+            cdk_frost::SigningSessionContext::decode(&request.context)?.session_id();
+        let request = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostCommitmentResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/commitments",
+                "FROST commitment request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response
+            .payload
+            .decode(member.member_id, expected_session)?)
+    }
+
+    pub(crate) async fn request_frost_signature_share(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostSigningPackageRequest,
+    ) -> anyhow::Result<cdk_frost::SignatureShare> {
+        let kind = FederationRestMessageKind::FrostSigningPackage;
+        let expected_session =
+            cdk_frost::SigningSessionContext::decode(&request.context)?.session_id();
+        let package_hash = request.package_hash;
+        let request = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostSignatureShareResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/packages",
+                "FROST signature-share request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response
+            .payload
+            .decode(member.member_id, expected_session, package_hash)?)
+    }
+
+    pub(crate) async fn notify_frost_aggregate_result(
+        &self,
+        member: &MemberConfigPublic,
+        notification: &FederationFrostAggregateResultNotification,
+    ) -> anyhow::Result<()> {
+        let kind = FederationRestMessageKind::FrostAggregateResult;
+        let expected_session =
+            cdk_frost::SigningSessionContext::decode(&notification.context)?.session_id();
+        let request = self.signed_request(member, kind, notification.clone())?;
+        let response: FederationSignedRequest<FederationFrostSigningAck> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/results",
+                "FROST aggregate-result notification",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        if response.payload.version != FEDERATION_REST_API_VERSION
+            || response.payload.kind != kind
+            || response.payload.session_id != expected_session.to_bytes()
+        {
+            return Err(FederationError::FrostSigningInvalid {
+                reason: "aggregate-result acknowledgement bindings are inconsistent".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn abort_frost_signing(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostSigningAbortRequest,
+    ) -> anyhow::Result<()> {
+        let kind = FederationRestMessageKind::FrostSigningAbort;
+        let expected_session =
+            cdk_frost::SigningSessionContext::decode(&request.context)?.session_id();
+        let request = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostSigningAck> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/aborts",
+                "FROST signing abort",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        if response.payload.version != FEDERATION_REST_API_VERSION
+            || response.payload.kind != kind
+            || response.payload.session_id != expected_session.to_bytes()
+        {
+            return Err(FederationError::FrostSigningInvalid {
+                reason: "signing-abort acknowledgement bindings are inconsistent".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     pub(crate) async fn submit_dkg_transcript_signature(
         &self,
         member: &MemberConfigPublic,
@@ -549,6 +663,25 @@ where
             payload,
             &self.private_config,
         )?)
+    }
+
+    fn validate_signed_response<P>(
+        &self,
+        response: &FederationSignedRequest<P>,
+        member: &MemberConfigPublic,
+        kind: FederationRestMessageKind,
+    ) -> anyhow::Result<()>
+    where
+        P: Serialize,
+    {
+        response.verify(&self.public_config, self.private_config.member_id)?;
+        if response.sender != member.member_id || response.kind != kind {
+            return Err(FederationError::FrostSigningInvalid {
+                reason: "signed FROST response sender or kind mismatch".to_string(),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     fn ensure_configured_peer(&self, member: &MemberConfigPublic) -> anyhow::Result<()> {

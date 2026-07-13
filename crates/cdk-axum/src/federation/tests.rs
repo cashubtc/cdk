@@ -85,6 +85,7 @@ mod aleph_bft_routes;
 mod dkg_driver;
 mod dkg_setup_routes;
 mod dkg_transcript_signature;
+mod frost_signing;
 mod private_operation_route;
 
 #[cfg(feature = "prometheus")]
@@ -2230,6 +2231,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
             onchain_wallets: Vec::new(),
+            frost_signing: None,
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),

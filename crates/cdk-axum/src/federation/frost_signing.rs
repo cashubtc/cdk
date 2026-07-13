@@ -1,0 +1,725 @@
+//! Application-aware FROST signing runtime and private REST handlers.
+
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::sync::Arc;
+
+use axum::extract::{Json, State};
+use axum::response::{IntoResponse, Response};
+use cdk::federation::{
+    FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
+    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
+    FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
+    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
+    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
+};
+use cdk::mint::{FederationRuntimeConfig, Mint};
+use cdk_frost::{
+    AuthorizationRequest, DerivedPublicPackage, NonceCommitment, ParticipantKeyManager,
+    RedbNonceStore, SecretEncryptionKey, SignatureShare, SigningDerivation, SigningSessionContext,
+};
+use cdk_frost_bip32::{FrostBip32, WalletBranch, WalletIndex};
+use sha2::{Digest, Sha256};
+use tracing::instrument;
+
+use crate::MintState;
+
+use super::{
+    acquire_private_rest_admission, federation_error_response, federation_runtime_config,
+    verify_federation_request,
+};
+
+const RESULT_CACHE_LIMIT: usize = 1_024;
+
+type AggregateResultCache = BTreeMap<[u8; 32], ([u8; 32], [u8; 64])>;
+
+/// Application-neutral coordinator for one exact selected signer set.
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct FederationFrostSigningCoordinator<'a, T> {
+    client: &'a super::peer_client::FederationRestPeerClient<T>,
+    public: DerivedPublicPackage,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl<'a, T> FederationFrostSigningCoordinator<'a, T>
+where
+    T: cdk_http_client::Transport,
+{
+    /// Construct a coordinator without participant secret material.
+    pub(crate) fn new(
+        client: &'a super::peer_client::FederationRestPeerClient<T>,
+        public: DerivedPublicPackage,
+    ) -> Self {
+        Self { client, public }
+    }
+
+    /// Run both rounds, verify every response, aggregate, and notify signers.
+    pub(crate) async fn sign(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+    ) -> anyhow::Result<cdk_frost::AggregateSignature> {
+        if context.signer_set().len() < usize::from(self.public.threshold()) {
+            anyhow::bail!("FROST signer set is below threshold");
+        }
+        let commitment_request =
+            FederationFrostCommitmentRequest::new(context, derivation, authorization);
+        let mut commitments = Vec::with_capacity(context.signer_set().len());
+        for signer in context.signer_set() {
+            let member_id = cdk::federation::MemberId::new(signer.get())?;
+            let member = public_config
+                .member(member_id)
+                .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
+            match self
+                .client
+                .request_frost_commitment(member, &commitment_request)
+                .await
+            {
+                Ok(commitment) => commitments.push(commitment),
+                Err(error) => {
+                    self.abort_selected(
+                        public_config,
+                        context,
+                        authorization,
+                        cdk_frost::NonceBurnReason::AmbiguousResponse,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+        }
+        let commitments = cdk_frost::NonceCommitmentSet::new(commitments)?;
+        let mut shares = Vec::with_capacity(context.signer_set().len());
+        for signer in context.signer_set() {
+            let member_id = cdk::federation::MemberId::new(signer.get())?;
+            let member = public_config
+                .member(member_id)
+                .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
+            let commitment = commitments
+                .commitments()
+                .get(signer)
+                .ok_or_else(|| anyhow::anyhow!("selected signer commitment is missing"))?;
+            let package = FederationFrostSigningPackageRequest::new(
+                context,
+                commitment.nonce_id(),
+                authorization,
+                &commitments,
+            )?;
+            match self
+                .client
+                .request_frost_signature_share(member, &package)
+                .await
+            {
+                Ok(share) => shares.push(share),
+                Err(error) => {
+                    self.abort_selected(
+                        public_config,
+                        context,
+                        authorization,
+                        cdk_frost::NonceBurnReason::AmbiguousResponse,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+        }
+        let signature = ParticipantKeyManager::aggregate_for_derivation(
+            &self.public,
+            derivation,
+            context.session_id(),
+            &context.message_commitment(),
+            &commitments,
+            shares,
+        )?;
+        let package_hash = cdk_frost::signing_package_hash(
+            context.session_id(),
+            &context.message_commitment(),
+            &commitments,
+        )?;
+        let notification = FederationFrostAggregateResultNotification::new(
+            context,
+            authorization,
+            package_hash,
+            signature,
+        );
+        for signer in context.signer_set() {
+            let member_id = cdk::federation::MemberId::new(signer.get())?;
+            let member = public_config
+                .member(member_id)
+                .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
+            self.client
+                .notify_frost_aggregate_result(member, &notification)
+                .await?;
+        }
+        Ok(signature)
+    }
+
+    async fn abort_selected(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+        reason: cdk_frost::NonceBurnReason,
+    ) {
+        let request = FederationFrostSigningAbortRequest::new(context, authorization, reason);
+        for signer in context.signer_set() {
+            let Ok(member_id) = cdk::federation::MemberId::new(signer.get()) else {
+                continue;
+            };
+            let Some(member) = public_config.member(member_id) else {
+                continue;
+            };
+            let _ = self.client.abort_frost_signing(member, &request).await;
+        }
+    }
+}
+
+/// One participant's long-lived, application-neutral FROST key boundary.
+#[derive(Clone)]
+pub(crate) struct FederationFrostSigningRuntime {
+    managers: Arc<BTreeMap<u64, Arc<tokio::sync::Mutex<ParticipantKeyManager>>>>,
+    aggregate_results: Arc<tokio::sync::Mutex<AggregateResultCache>>,
+    #[cfg(test)]
+    test_authorizations: Arc<
+        BTreeMap<
+            [u8; 32],
+            (
+                SigningSessionContext,
+                AuthorizationRequest,
+                SigningDerivation,
+            ),
+        >,
+    >,
+}
+
+impl std::fmt::Debug for FederationFrostSigningRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FederationFrostSigningRuntime")
+            .field("root_epochs", &self.managers.keys())
+            .field("key_material", &"<redacted>")
+            .finish()
+    }
+}
+
+impl FederationFrostSigningRuntime {
+    /// Open durable nonce stores, root shares, and reviewed application adapters.
+    pub(crate) async fn open(mint: &Mint, storage_root: &Path) -> anyhow::Result<Option<Self>> {
+        let Some(runtime) = mint.federation_config() else {
+            return Ok(None);
+        };
+        let Some(wallet) = runtime.public_config().frost_wallet.as_ref() else {
+            return Ok(None);
+        };
+        let active_applications = wallet
+            .cdk_onchain_applications
+            .iter()
+            .filter(|application| {
+                wallet
+                    .active_epochs
+                    .application_key_epochs
+                    .get(&application.application_id)
+                    == Some(&application.application_key_epoch)
+            })
+            .collect::<Vec<_>>();
+        if active_applications.is_empty() {
+            return Ok(None);
+        }
+
+        let private_roots = mint
+            .localstore()
+            .get_federation_frost_root_private_configs()
+            .await?;
+        let nonce_root = storage_root.join("frost-nonces");
+        std::fs::create_dir_all(&nonce_root)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&nonce_root, std::fs::Permissions::from_mode(0o700))?;
+        let root_epochs = active_applications
+            .iter()
+            .map(|application| application.root_key_epoch)
+            .collect::<BTreeSet<_>>();
+        let mut managers = BTreeMap::new();
+        for root_epoch in root_epochs {
+            let public_root = wallet
+                .root(root_epoch)
+                .ok_or_else(|| anyhow::anyhow!("active FROST application root is missing"))?;
+            let private_root = private_roots
+                .iter()
+                .find(|root| root.root_key_epoch == root_epoch)
+                .ok_or_else(|| anyhow::anyhow!("local FROST root share is missing"))?;
+            let context = cdk::federation::FederationFrostDkgContext::new(
+                runtime.public_config(),
+                public_root.ceremony_id,
+                public_root.root_key_epoch,
+            )?;
+            let root_key =
+                super::dkg_driver::frost_storage_key(runtime.private_config(), &context)?;
+            let root = private_root.open(
+                runtime.public_config(),
+                public_root,
+                runtime.member_id(),
+                &root_key,
+            )?;
+            let nonce_key = nonce_encryption_key(runtime, public_root.root_key_epoch)?;
+            let nonce_path = nonce_root.join(format!("root-{}.redb", public_root.root_key_epoch));
+            let store = RedbNonceStore::open(&nonce_path)?;
+            #[cfg(unix)]
+            std::fs::set_permissions(&nonce_path, std::fs::Permissions::from_mode(0o600))?;
+            let manager = ParticipantKeyManager::with_nonce_store(root, nonce_key, store)?;
+            managers.insert(root_epoch, Arc::new(tokio::sync::Mutex::new(manager)));
+        }
+        for application in active_applications {
+            let manager = managers
+                .get(&application.root_key_epoch)
+                .ok_or_else(|| anyhow::anyhow!("FROST root manager was not initialized"))?;
+            let mut manager = manager.lock().await;
+            manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
+                application,
+            )?)?;
+        }
+        Ok(Some(Self {
+            managers: Arc::new(managers),
+            aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            #[cfg(test)]
+            test_authorizations: Arc::new(BTreeMap::new()),
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        managers: BTreeMap<u64, Arc<tokio::sync::Mutex<ParticipantKeyManager>>>,
+        authorizations: impl IntoIterator<
+            Item = (
+                SigningSessionContext,
+                AuthorizationRequest,
+                SigningDerivation,
+            ),
+        >,
+    ) -> Self {
+        Self {
+            managers: Arc::new(managers),
+            aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            test_authorizations: Arc::new(
+                authorizations
+                    .into_iter()
+                    .map(|value| (value.0.session_id().to_bytes(), value))
+                    .collect(),
+            ),
+        }
+    }
+
+    async fn commit(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+    ) -> Result<NonceCommitment, cdk::Error> {
+        let validated = self.validate(mint, context, authorization).await?;
+        if &validated.derivation != derivation {
+            return Err(frost_invalid("round-one derivation differs from accepted input").into());
+        }
+        let manager = self.manager(context.root_epoch().get())?;
+        manager
+            .lock()
+            .await
+            .commit_nonce_for_derivation(
+                context,
+                derivation.clone(),
+                &mut cdk_frost::rand_core::OsRng,
+            )
+            .map_err(frost_boundary_error)
+    }
+
+    async fn sign(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        nonce_id: cdk_frost::NonceId,
+        authorization: &AuthorizationRequest,
+        commitments: &cdk_frost::NonceCommitmentSet,
+    ) -> Result<SignatureShare, cdk::Error> {
+        self.validate(mint, context, authorization).await?;
+        let manager = self.manager(context.root_epoch().get())?;
+        manager
+            .lock()
+            .await
+            .sign_share(nonce_id, authorization, commitments)
+            .map_err(frost_boundary_error)
+    }
+
+    async fn record_aggregate(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+        package_hash: [u8; 32],
+        signature: cdk_frost::AggregateSignature,
+    ) -> Result<(), cdk::Error> {
+        let validated = self.validate(mint, context, authorization).await?;
+        if package_hash == [0; 32] {
+            return Err(frost_invalid("aggregate result package hash is empty").into());
+        }
+        let manager = self.manager(context.root_epoch().get())?;
+        let manager = manager.lock().await;
+        let public = manager
+            .public_package(authorization.application_id())
+            .map_err(frost_boundary_error)?;
+        ParticipantKeyManager::verify_aggregate_for_derivation(
+            public,
+            &validated.derivation,
+            &context.message_commitment(),
+            signature,
+        )
+        .map_err(frost_boundary_error)?;
+        drop(manager);
+        let mut results = self.aggregate_results.lock().await;
+        if let Some(existing) = results.get(&context.session_id().to_bytes()) {
+            if existing != &(package_hash, signature.to_bytes()) {
+                return Err(frost_invalid("aggregate result equivocation").into());
+            }
+            return Ok(());
+        }
+        while results.len() >= RESULT_CACHE_LIMIT {
+            let first = results
+                .keys()
+                .next()
+                .copied()
+                .expect("non-empty bounded result cache");
+            results.remove(&first);
+        }
+        results.insert(
+            context.session_id().to_bytes(),
+            (package_hash, signature.to_bytes()),
+        );
+        Ok(())
+    }
+
+    async fn abort(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+        reason: cdk_frost::NonceBurnReason,
+    ) -> Result<(), cdk::Error> {
+        self.validate(mint, context, authorization).await?;
+        self.manager(context.root_epoch().get())?
+            .lock()
+            .await
+            .burn_session(context.session_id(), reason)
+            .map_err(frost_boundary_error)
+    }
+
+    fn manager(
+        &self,
+        root_epoch: u64,
+    ) -> Result<&Arc<tokio::sync::Mutex<ParticipantKeyManager>>, cdk::Error> {
+        self.managers
+            .get(&root_epoch)
+            .ok_or_else(|| frost_invalid("FROST root epoch is not active").into())
+    }
+
+    async fn validate(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        #[cfg(test)]
+        if let Some((accepted_context, accepted_authorization, derivation)) = self
+            .test_authorizations
+            .get(&context.session_id().to_bytes())
+        {
+            if accepted_context != context || accepted_authorization != authorization {
+                return Err(frost_invalid("test authorization binding mismatch").into());
+            }
+            return Ok(ValidatedCdkAuthorization {
+                derivation: derivation.clone(),
+            });
+        }
+        validate_cdk_authorization(mint, context, authorization).await
+    }
+}
+
+struct ValidatedCdkAuthorization {
+    derivation: SigningDerivation,
+}
+
+async fn validate_cdk_authorization(
+    mint: &Mint,
+    context: &SigningSessionContext,
+    request: &AuthorizationRequest,
+) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+    let typed = FederationCdkOnchainFrostAuthorization::from_bytes(request.payload())?;
+    let accepted = mint
+        .federation_transaction_signing_authorization(typed.proposal_id)
+        .await?;
+    let input_index = usize::try_from(typed.input_index)
+        .map_err(|_| frost_invalid("FROST input index does not fit usize"))?;
+    let selected = accepted
+        .proposal
+        .selected_inputs
+        .get(input_index)
+        .ok_or_else(|| frost_invalid("FROST input index is out of bounds"))?;
+    let runtime = mint
+        .federation_config()
+        .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
+    let wallet = runtime
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
+    let application = wallet
+        .cdk_onchain_applications
+        .iter()
+        .find(|application| {
+            application.application_id == accepted.proposal.scope.application_id
+                && application.application_key_epoch
+                    == accepted.proposal.scope.application_key_epoch
+                && application.root_key_epoch == accepted.proposal.scope.root_key_epoch
+        })
+        .ok_or_else(|| frost_invalid("accepted transaction application is not registered"))?;
+    let root = wallet
+        .root(application.root_key_epoch)
+        .ok_or_else(|| frost_invalid("accepted transaction root epoch is unavailable"))?;
+    let public = application.derived_public_package(runtime.public_config(), root)?;
+    let branch = match selected.allocation.keychain {
+        cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
+        cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,
+    };
+    let adapter = FrostBip32::new(public.clone(), application.network)
+        .map_err(|error| frost_invalid(error.to_string()))?;
+    let index = WalletIndex::new(selected.allocation.derivation_index)
+        .map_err(|error| frost_invalid(error.to_string()))?;
+    let derived = adapter
+        .derive(branch, index)
+        .map_err(|error| frost_invalid(error.to_string()))?;
+    let expected = FederationCdkOnchainFrostAuthorization::new(
+        &accepted,
+        input_index,
+        derived.signing_derivation(),
+    )?;
+    if typed != expected
+        || context.federation_id() != runtime.federation_id().to_bytes()
+        || context.root_epoch().get() != application.root_key_epoch
+        || context.registration() != public.registration()
+        || context.authorization_reference() != expected.authorization_reference
+        || context.message_commitment() != expected.message
+        || context.derivation_binding() != derived.signing_derivation().binding()
+        || request.session_id() != context.session_id()
+    {
+        return Err(frost_invalid(
+            "FROST request differs from locally revalidated accepted transaction",
+        )
+        .into());
+    }
+    Ok(ValidatedCdkAuthorization {
+        derivation: derived.signing_derivation().clone(),
+    })
+}
+
+fn nonce_encryption_key(
+    runtime: &FederationRuntimeConfig,
+    root_epoch: u64,
+) -> Result<SecretEncryptionKey, cdk::Error> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"cdk/federation/frost-nonce-storage/v1");
+    hasher.update(
+        runtime
+            .private_config()
+            .identity_secret_key
+            .to_secret_bytes(),
+    );
+    hasher.update(runtime.federation_id().to_bytes());
+    hasher.update(root_epoch.to_be_bytes());
+    hasher.update(runtime.member_id().get().to_be_bytes());
+    SecretEncryptionKey::new(hasher.finalize().into()).map_err(frost_boundary_error)
+}
+
+fn frost_boundary_error(error: cdk_frost::Error) -> cdk::Error {
+    frost_invalid(error.to_string()).into()
+}
+
+fn frost_invalid(reason: impl ToString) -> cdk::federation::FederationError {
+    cdk::federation::FederationError::FrostSigningInvalid {
+        reason: reason.to_string(),
+    }
+}
+
+fn signing_runtime(state: &MintState) -> Option<&FederationFrostSigningRuntime> {
+    state.federation.frost_signing.as_ref()
+}
+
+fn signing_unavailable_response() -> Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "federation FROST signing is unavailable",
+    )
+        .into_response()
+}
+
+fn signing_error_response(error: cdk::Error) -> Response {
+    match error {
+        cdk::Error::Federation(error) => federation_error_response(error),
+        error => {
+            tracing::error!(
+                "Federation FROST signing failed: {}",
+                cdk::federation::redact_federation_operator_message(&error.to_string())
+            );
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "federation FROST signing failed closed",
+            )
+                .into_response()
+        }
+    }
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_frost_signing_commitment(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostCommitmentRequest>>,
+) -> Result<Json<FederationSignedRequest<FederationFrostCommitmentResponse>>, Response> {
+    let kind = FederationRestMessageKind::FrostSigningCommitment;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let (context, derivation, authorization) = payload
+        .payload
+        .decode(runtime_config.federation_id(), runtime_config.member_id())
+        .map_err(federation_error_response)?;
+    let commitment = signing_runtime(&state)
+        .ok_or_else(signing_unavailable_response)?
+        .commit(&state.mint, &context, &derivation, &authorization)
+        .await
+        .map_err(signing_error_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .await;
+    let response = FederationSignedRequest::new_signed(
+        runtime_config.federation_id(),
+        verified.sender,
+        verified.sequence,
+        kind,
+        FederationFrostCommitmentResponse::new(&commitment),
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    Ok(Json(response))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_frost_signing_package(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostSigningPackageRequest>>,
+) -> Result<Json<FederationSignedRequest<FederationFrostSignatureShareResponse>>, Response> {
+    let kind = FederationRestMessageKind::FrostSigningPackage;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let (context, nonce_id, authorization, commitments) = payload
+        .payload
+        .decode(runtime_config.federation_id(), runtime_config.member_id())
+        .map_err(federation_error_response)?;
+    let share = signing_runtime(&state)
+        .ok_or_else(signing_unavailable_response)?
+        .sign(
+            &state.mint,
+            &context,
+            nonce_id,
+            &authorization,
+            &commitments,
+        )
+        .await
+        .map_err(signing_error_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .await;
+    let response = FederationSignedRequest::new_signed(
+        runtime_config.federation_id(),
+        verified.sender,
+        verified.sequence,
+        kind,
+        FederationFrostSignatureShareResponse::new(payload.payload.package_hash, &share),
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    Ok(Json(response))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_frost_signing_abort(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostSigningAbortRequest>>,
+) -> Result<Json<FederationSignedRequest<FederationFrostSigningAck>>, Response> {
+    let kind = FederationRestMessageKind::FrostSigningAbort;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let (context, authorization, reason) = payload
+        .payload
+        .decode(runtime_config.federation_id(), runtime_config.member_id())
+        .map_err(federation_error_response)?;
+    signing_runtime(&state)
+        .ok_or_else(signing_unavailable_response)?
+        .abort(&state.mint, &context, &authorization, reason)
+        .await
+        .map_err(signing_error_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .await;
+    let response = FederationSignedRequest::new_signed(
+        runtime_config.federation_id(),
+        verified.sender,
+        verified.sequence,
+        kind,
+        FederationFrostSigningAck::new(context.session_id(), kind),
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    Ok(Json(response))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_frost_aggregate_result(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostAggregateResultNotification>>,
+) -> Result<Json<FederationSignedRequest<FederationFrostSigningAck>>, Response> {
+    let kind = FederationRestMessageKind::FrostAggregateResult;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let (context, authorization, package_hash, signature) = payload
+        .payload
+        .decode()
+        .map_err(federation_error_response)?;
+    signing_runtime(&state)
+        .ok_or_else(signing_unavailable_response)?
+        .record_aggregate(
+            &state.mint,
+            &context,
+            &authorization,
+            package_hash,
+            signature,
+        )
+        .await
+        .map_err(signing_error_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .await;
+    let response = FederationSignedRequest::new_signed(
+        runtime_config.federation_id(),
+        verified.sender,
+        verified.sequence,
+        kind,
+        FederationFrostSigningAck::new(context.session_id(), kind),
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    Ok(Json(response))
+}

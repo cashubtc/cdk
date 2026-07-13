@@ -1369,52 +1369,85 @@ payment backend.
 
 **Work:**
 
-- [ ] Add bounded signed private REST request/response types for commitment,
+- [x] Add bounded signed private REST request/response types for commitment,
   signing package, signature share, and aggregate result notification.
-- [ ] Put application-neutral wire types and orchestration behind the FROST key
+- [x] Put application-neutral wire types and orchestration behind the FROST key
   manager, with registered adapters responsible for application authorization
   and transcript validation.
-- [ ] Reuse member identity authentication, request body hashes, sequence replay
+- [x] Reuse member identity authentication, request body hashes, sequence replay
   protection, timeouts, and response caches.
-- [ ] Bind all requests to root epoch, application ID and key epoch, derivation
+- [x] Bind all requests to root epoch, application ID and key epoch, derivation
   context, authorization reference, attempt, signer set, and canonical package
   hash.
-- [ ] Require the CDK adapter at each signer to load and revalidate the accepted
+- [x] Require the CDK adapter at each signer to load and revalidate the accepted
   transaction state locally before authorizing its request. Future adapters must
   provide their own typed, fail-closed authorization proof and validator.
-- [ ] Reject unregistered applications and prevent any transport caller from
+- [x] Reject unregistered applications and prevent any transport caller from
   bypassing its adapter with a raw digest.
-- [ ] Verify coordinator-selected commitments belong to the declared signers.
-- [ ] Permit any member to act as coordinator while preventing two attempts from
+- [x] Verify coordinator-selected commitments belong to the declared signers.
+- [x] Permit any member to act as coordinator while preventing two attempts from
   sharing nonce material.
-- [ ] Bound concurrent sessions, inputs, body sizes, retries, and per-peer work.
-- [ ] Keep transport outcomes out of the ordering journal unless they cause an
+- [x] Bound concurrent sessions, inputs, body sizes, retries, and per-peer work.
+- [x] Keep transport outcomes out of the ordering journal unless they cause an
   explicit accepted wallet-state transition.
 
 **Success criteria:**
 
-- [ ] A coordinator collects threshold valid commitments and shares over private
+- [x] A coordinator collects threshold valid commitments and shares over private
   REST and produces a valid signature.
-- [ ] One member cannot elicit shares for an unaccepted or altered transaction.
-- [ ] One application cannot elicit shares using another application's key,
+- [x] One member cannot elicit shares for an unaccepted or altered transaction.
+- [x] One application cannot elicit shares using another application's key,
   derivation context, authorization proof, or nonce commitment.
-- [ ] Replayed, reordered, delayed, forged, and cross-session messages fail
+- [x] Replayed, reordered, delayed, forged, and cross-session messages fail
   without nonce reuse.
-- [ ] Signing works with non-coordinator members temporarily offline as long as
+- [x] Signing works with non-coordinator members temporarily offline as long as
   threshold remains.
 
 **Required tests:**
 
-- [ ] 2-of-3 and 3-of-5 live private REST signing.
-- [ ] Threshold-minus-one timeout.
-- [ ] Wrong sender, receiver, sequence, federation, epoch, operation, input,
+- [x] 2-of-3 and 3-of-5 live private REST signing.
+- [x] Threshold-minus-one timeout.
+- [x] Wrong sender, receiver, sequence, federation, epoch, operation, input,
   attempt, and package hash.
-- [ ] Wrong or unregistered application ID, application epoch, derivation
+- [x] Wrong or unregistered application ID, application epoch, derivation
   context, and authorization proof.
-- [ ] Duplicate/reordered commitment and share delivery.
-- [ ] Invalid commitment/share and coordinator equivocation.
-- [ ] Request timeout before and after signer processing.
-- [ ] Backpressure and maximum-concurrency tests.
+- [x] Duplicate/reordered commitment and share delivery.
+- [x] Invalid commitment/share and coordinator equivocation.
+- [x] Request timeout before and after signer processing.
+- [x] Backpressure and maximum-concurrency tests.
+
+**Milestone record:** completed on 2026-07-13. Four bounded private REST
+message kinds now carry canonical commitment, signing-package, abort, and
+aggregate-result payloads inside the existing member-authenticated envelopes.
+They reuse identity signatures, body hashes, per-kind sequence replay checks,
+timeouts, response validation, and inbound/outbound admission limits. Every
+round binds the federation, root and application epochs, typed derivation and
+authorization, exact attempt and signer set, nonce owner, and canonical package
+hash. These volatile messages do not enter the ordering journal.
+
+The long-lived signer runtime opens sealed root shares and one durable redb
+nonce store per root epoch. The application-neutral key manager exposes no raw
+digest signing path; only registered adapters can authorize a request. The CDK
+adapter reloads the accepted transaction state at commitment, share, abort, and
+aggregate-result handling, reconstructs the typed input authorization and
+Taproot derivation, and exact-compares them before cryptographic work. The
+coordinator holds public material only, may run on any member, verifies signer
+ownership and the final aggregate independently, and sends authenticated aborts
+after ambiguous failures so reserved nonces fail closed.
+
+The five live route tests pass for 2-of-3 and 3-of-5 with every non-selected
+member offline, threshold-minus-one rejection, timeout plus outbound
+backpressure, and response loss after signer processing followed by nonce burn
+and a fresh successful attempt. The 22 `cdk-frost` tests, all 370 enabled
+`cdk-common` tests (unit, integration, and doc-test accounting), and all 211 CDK
+federation-filtered tests pass. Strict `cdk-frost` clippy passes; `cdk-common`
+and `cdk-axum` pass with their existing repository warning categories held at
+baseline. The full workspace all-targets check passes. A combined 440-test Axum
+run is not a clean repository gate in this environment: 383 tests pass and 56
+unrelated federation mint/melt fixture tests fail, including local-listener
+tests denied by the sandbox. The isolated M14 transport suite remains clean,
+and this milestone does not change mint business logic beyond startup wiring
+and the existing accepted-state authorization read.
 
 ### Milestone 15: aggregate signatures, finalize PSBTs, and persist signed state
 

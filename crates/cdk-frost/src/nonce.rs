@@ -589,6 +589,9 @@ pub trait DurableNonceStore: fmt::Debug + Send + Sync + 'static {
     /// Load a detailed record by nonce identifier.
     fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error>;
 
+    /// Load a detailed record by fully bound signing session identifier.
+    fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error>;
+
     /// Atomically replace one exact record revision.
     fn compare_and_swap(
         &self,
@@ -676,6 +679,14 @@ impl DurableNonceStore for MemoryNonceStore {
             ));
         }
         Ok(state.records.get(&nonce_id).cloned())
+    }
+
+    fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error> {
+        let state = self.lock()?;
+        let Some(nonce_id) = state.sessions.get(&session_id) else {
+            return Ok(None);
+        };
+        Ok(state.records.get(nonce_id).cloned())
     }
 
     fn compare_and_swap(

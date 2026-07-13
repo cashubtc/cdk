@@ -36,6 +36,7 @@ mod aleph_bft_session;
 mod catch_up_routes;
 mod dkg_driver;
 mod dkg_routes;
+pub(crate) mod frost_signing;
 mod node_runtime;
 mod payment_observation;
 mod peer_client;
@@ -76,6 +77,10 @@ use self::dkg_routes::{
     post_dkg_activation, post_dkg_commitment, post_dkg_readiness, post_dkg_reveal,
     post_dkg_secret_share, post_dkg_transcript_signature, post_frost_dkg_confirmation,
     post_frost_dkg_round1, post_frost_dkg_round2,
+};
+use self::frost_signing::{
+    post_frost_aggregate_result, post_frost_signing_abort, post_frost_signing_commitment,
+    post_frost_signing_package,
 };
 pub(crate) use self::node_runtime::FederationNodeRuntime;
 use self::payment_observation::payment_observation_report_summaries;
@@ -131,9 +136,21 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         )
         .route("/dkg/activations", post(post_dkg_activation))
         .layer(DefaultBodyLimit::max(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES));
+    let frost_signing_router = Router::new()
+        .route(
+            "/frost/signing/commitments",
+            post(post_frost_signing_commitment),
+        )
+        .route("/frost/signing/packages", post(post_frost_signing_package))
+        .route("/frost/signing/aborts", post(post_frost_signing_abort))
+        .route("/frost/signing/results", post(post_frost_aggregate_result))
+        .layer(DefaultBodyLimit::max(
+            cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
+        ));
 
     Router::new()
         .merge(dkg_router)
+        .merge(frost_signing_router)
         .route("/config", get(get_public_config))
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))

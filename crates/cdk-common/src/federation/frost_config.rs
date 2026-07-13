@@ -10,7 +10,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::{Address, Network};
 use cdk_frost::{
-    derive_application_public, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
+    derive_application_public, ApplicationAuthorization, ApplicationId, ApplicationKeyEpoch,
+    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest,
     CanonicalRootKeyPackage, DerivedPublicPackage, EncryptedSecret, FrostCiphersuite,
     RootPublicPackage, SecretEncryptionKey,
 };
@@ -21,8 +22,9 @@ use cdk_frost_bip32::{
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    append_bytes, FederationAddressKeychain, FederationConfig, FederationDkgCeremonyId,
-    FederationError, FederationFrostRootRecord, FederationId, MemberId, Result,
+    append_bytes, FederationAddressKeychain, FederationCdkOnchainFrostAuthorization,
+    FederationConfig, FederationDkgCeremonyId, FederationError, FederationFrostRootRecord,
+    FederationId, MemberId, Result,
 };
 
 const ROOT_CONFIG_VERSION: u16 = 1;
@@ -498,6 +500,50 @@ pub struct FederationFrostApplicationConfig {
     pub confirmation_policy: FederationOnchainConfirmationPolicy,
     /// Version of the consensus fee policy interpreted by transaction validation.
     pub fee_policy_version: u16,
+}
+
+/// Reviewed CDK on-chain application adapter for the generic FROST key manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FederationCdkOnchainFrostAuthorizationAdapter {
+    registration: ApplicationRegistration,
+}
+
+impl FederationCdkOnchainFrostAuthorizationAdapter {
+    /// Construct an adapter only from a validated application registration.
+    pub fn new(application: &FederationFrostApplicationConfig) -> Result<Self> {
+        Ok(Self {
+            registration: application.registration()?,
+        })
+    }
+}
+
+impl ApplicationAuthorization for FederationCdkOnchainFrostAuthorizationAdapter {
+    fn registration(&self) -> ApplicationRegistration {
+        self.registration
+    }
+
+    fn authorize(
+        &self,
+        request: &AuthorizationRequest,
+    ) -> std::result::Result<AuthorizedSigningRequest, cdk_frost::Error> {
+        if request.application_id() != self.registration.id()
+            || request.application_key_epoch() != self.registration.key_epoch()
+            || request.derivation_version() != self.registration.derivation_version()
+        {
+            return Err(cdk_frost::Error::Application(
+                "CDK authorization uses an unregistered application epoch".to_string(),
+            ));
+        }
+        let authorization = FederationCdkOnchainFrostAuthorization::from_bytes(request.payload())
+            .map_err(|error| cdk_frost::Error::Application(error.to_string()))?;
+        let derivation = authorization
+            .signing_derivation()
+            .map_err(|error| cdk_frost::Error::Application(error.to_string()))?;
+        Ok(AuthorizedSigningRequest::new(
+            authorization.message,
+            derivation,
+        ))
+    }
 }
 
 impl FederationFrostApplicationConfig {

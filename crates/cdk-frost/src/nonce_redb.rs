@@ -183,6 +183,34 @@ impl DurableNonceStore for RedbNonceStore {
         Ok(None)
     }
 
+    fn load_session(
+        &self,
+        session_id: crate::SigningSessionId,
+    ) -> Result<Option<NonceRecord>, Error> {
+        let transaction = self.database.begin_read().map_err(persistence)?;
+        let session_key = session_id.to_bytes();
+        let nonce_id = {
+            let sessions = transaction.open_table(SESSIONS).map_err(persistence)?;
+            sessions
+                .get(session_key.as_slice())
+                .map_err(persistence)?
+                .map(|value| value.value().to_vec())
+        };
+        let Some(nonce_id) = nonce_id else {
+            return Ok(None);
+        };
+        let bytes = {
+            let records = transaction.open_table(RECORDS).map_err(persistence)?;
+            records
+                .get(nonce_id.as_slice())
+                .map_err(persistence)?
+                .map(|value| value.value().to_vec())
+        };
+        bytes
+            .map(|bytes| NonceRecord::from_bytes(&bytes))
+            .transpose()
+    }
+
     fn compare_and_swap(
         &self,
         expected: &NonceRecord,

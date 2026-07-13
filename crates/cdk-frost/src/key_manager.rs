@@ -466,6 +466,18 @@ impl ParticipantKeyManager {
         self.burn_record(&record, reason)
     }
 
+    /// Permanently burn the nonce for one exact session, if it was generated.
+    pub fn burn_session(
+        &self,
+        session_id: SigningSessionId,
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        let Some(record) = self.nonce_store.load_session(session_id)? else {
+            return Ok(());
+        };
+        self.burn_record(&record, reason)
+    }
+
     /// Compact old terminal detail while preserving replay tombstones.
     pub fn cleanup_terminal_nonces(&self, retain_detailed: usize) -> Result<usize, Error> {
         self.nonce_store.compact_terminal(retain_detailed)
@@ -598,6 +610,27 @@ impl ParticipantKeyManager {
         Ok(AggregateSignature::from_bytes_unchecked(encoded))
     }
 
+    /// Independently verify an aggregate signature for one exact derived target.
+    pub fn verify_aggregate_for_derivation(
+        public: &DerivedPublicPackage,
+        derivation: &SigningDerivation,
+        message: &[u8; 32],
+        signature: AggregateSignature,
+    ) -> Result<(), Error> {
+        let target = derive_signing_public(public, derivation)?;
+        let mut library_public = library_signing_public_package(&target)?;
+        if let SignatureMode::TaprootKeyPath { merkle_root } = derivation.signature_mode() {
+            use frost_secp256k1_tr::keys::Tweak;
+            library_public = library_public.tweak(merkle_root.as_ref().map(|root| root.as_slice()));
+        }
+        let signature = frost::Signature::deserialize(&signature.to_bytes())
+            .map_err(|error| Error::InvalidShare(error.to_string()))?;
+        library_public
+            .verifying_key()
+            .verify(message, &signature)
+            .map_err(|_| Error::AggregateVerification)
+    }
+
     /// Publicly derive one registered application's exact signing target.
     pub fn signing_public_package(
         &self,
@@ -622,7 +655,8 @@ fn nonce_secret_aad(
     aad
 }
 
-fn signing_package_hash(
+/// Canonical hash of the exact session, message, signer set, and commitments.
+pub fn signing_package_hash(
     session_id: SigningSessionId,
     message: &[u8; 32],
     set: &NonceCommitmentSet,

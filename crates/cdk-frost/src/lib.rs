@@ -21,7 +21,9 @@ pub use crate::dkg::{
     DkgRound2Package, DkgRound2Secret,
 };
 pub use crate::error::Error;
-pub use crate::key_manager::{ApplicationAuthorization, ParticipantKeyManager};
+pub use crate::key_manager::{
+    signing_package_hash, ApplicationAuthorization, ParticipantKeyManager,
+};
 pub use crate::nonce::{
     DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle, NonceRecord,
     NonceReservation, NonceTombstone, SigningAuthorizationScope, SigningSessionContext,

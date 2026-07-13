@@ -49,6 +49,7 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
     pub(crate) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
+    pub(crate) frost_signing: Option<super::frost_signing::FederationFrostSigningRuntime>,
     #[cfg(test)]
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     #[cfg(test)]
@@ -135,6 +136,7 @@ impl FederationNodeRuntime {
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
             onchain_wallets: Vec::new(),
+            frost_signing: None,
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),

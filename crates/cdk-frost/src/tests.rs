@@ -339,6 +339,10 @@ impl DurableNonceStore for FailingNonceStore {
         self.inner.load_nonce(nonce_id)
     }
 
+    fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error> {
+        self.inner.load_session(session_id)
+    }
+
     fn compare_and_swap(
         &self,
         expected: &NonceRecord,
@@ -440,6 +444,64 @@ fn threshold_matrix_and_bip340_interoperability() {
         );
         verify_with_rust_bitcoin(&public, message, signature);
     }
+}
+
+#[test]
+fn signing_transport_wire_round_trips_and_rejects_mutation() {
+    let mut managers = managers(3, 2, 87);
+    let registration = wallet_registration();
+    let derivation = SigningDerivation::application_key();
+    let message = [87; 32];
+    let context = signing_context(registration, &derivation, session(87), message, &[0, 1]);
+    let request = authorized_request(
+        registration,
+        context.session_id(),
+        message,
+        b"wallet-test-policy/v1",
+    );
+    let mut rng = ChaCha20Rng::from_seed([88; 32]);
+    let commitments = managers[..2]
+        .iter_mut()
+        .map(|manager| {
+            manager
+                .commit_nonce(&context, &mut rng)
+                .expect("commitment")
+        })
+        .collect::<Vec<_>>();
+    let set = NonceCommitmentSet::new(commitments).expect("commitment set");
+
+    assert_eq!(
+        SigningSessionContext::decode(&context.encode()).expect("context wire"),
+        context
+    );
+    assert_eq!(
+        SigningDerivation::decode(&derivation.encode()).expect("derivation wire"),
+        derivation
+    );
+    assert_eq!(
+        AuthorizationRequest::decode(&request.encode()).expect("authorization wire"),
+        request
+    );
+    assert_eq!(
+        NonceCommitmentSet::decode(&set.encode()).expect("commitment-set wire"),
+        set
+    );
+
+    let context_bytes = context.encode();
+    let mut trailing = context_bytes.clone();
+    trailing.push(0);
+    assert!(SigningSessionContext::decode(&trailing).is_err());
+    assert!(SigningSessionContext::decode(&context_bytes[..context_bytes.len() - 1]).is_err());
+    let mut mutated = context_bytes;
+    mutated[0] ^= 1;
+    assert!(SigningSessionContext::decode(&mutated).is_err());
+
+    let mut authorization = request.encode();
+    authorization[0] ^= 1;
+    assert!(AuthorizationRequest::decode(&authorization).is_err());
+    let mut commitment_set = set.encode();
+    commitment_set.push(0);
+    assert!(NonceCommitmentSet::decode(&commitment_set).is_err());
 }
 
 #[test]

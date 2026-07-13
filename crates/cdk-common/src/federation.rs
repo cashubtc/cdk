@@ -38,6 +38,8 @@ pub const FEDERATION_MAX_DKG_MEMBERS: usize = 64;
 pub const FEDERATION_MAX_DKG_KEYSET_AMOUNTS: usize = 64;
 /// Maximum JSON body accepted by one private DKG REST route.
 pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+/// Maximum JSON body accepted by one private FROST signing REST route.
+pub const FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES: usize = 512 * 1024;
 
 pub use self::address_allocation::{
     FederationAddressAllocation, FederationAddressAllocationOperation,
@@ -83,7 +85,8 @@ pub use self::dkg_driver::{
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
 pub use self::frost_config::{
-    FederationFrostActiveEpochs, FederationFrostApplicationConfig, FederationFrostApplicationId,
+    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostActiveEpochs,
+    FederationFrostApplicationConfig, FederationFrostApplicationId,
     FederationFrostConsumerRegistration, FederationFrostEpochState,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
     FederationFrostSealedStorageMetadata, FederationFrostWalletConfig,
@@ -121,8 +124,8 @@ pub use self::signing::{
 };
 pub use self::transaction_proposal::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
-    FederationFrostSigningAuthorizationReference, FederationOnchainBatchId,
-    FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
+    FederationCdkOnchainFrostAuthorization, FederationFrostSigningAuthorizationReference,
+    FederationOnchainBatchId, FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
     FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
     FederationOnchainPaymentIntentState, FederationTaprootSighashType,
     FederationTransactionChangeOutput, FederationTransactionInput,
@@ -139,12 +142,15 @@ pub use self::transport::{
     FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
     FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationInvalidOperationAlertSummary,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationLocalStatusResponse, FederationOnchainWalletStatus, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationRestSignature, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationDkgTranscriptSignatureRequest, FederationFrostAggregateResultNotification,
+    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest,
+    FederationInvalidOperationAlertSummary, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationLocalStatusResponse, FederationOnchainWalletStatus,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestBodyHash,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     FEDERATION_CATCH_UP_CERTIFICATE_VERSION, FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
@@ -393,6 +399,12 @@ pub enum FederationError {
     #[error("Invalid federation FROST wallet configuration: {reason}")]
     FrostConfigurationInvalid {
         /// Stable validation reason without secret material.
+        reason: String,
+    },
+    /// An application-aware FROST signing transport message failed validation.
+    #[error("Federation FROST signing request is invalid: {reason}")]
+    FrostSigningInvalid {
+        /// Stable validation reason without nonce or local storage material.
         reason: String,
     },
     /// A federation ID must be exactly 32 bytes.

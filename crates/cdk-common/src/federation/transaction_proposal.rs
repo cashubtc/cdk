@@ -32,6 +32,8 @@ const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transac
 const PSBT_CONSENSUS_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-psbt-consensus-v1";
 const FROST_SIGNING_AUTHORIZATION_HASH_DOMAIN: &[u8] =
     b"cdk-federation-frost-signing-authorization-v1";
+const CDK_ONCHAIN_FROST_AUTHORIZATION_VERSION: u16 = 1;
+const CDK_ONCHAIN_FROST_AUTHORIZATION_MAX_BYTES: usize = 16 * 1024;
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_DESTINATION_SCRIPT_BYTES: usize = 10_000;
 const MAX_FEE_TIER: u32 = 255;
@@ -1026,6 +1028,87 @@ impl FederationFrostSigningAuthorizationReference {
         payload.push(self.sighash_type.consensus_code());
         payload.extend_from_slice(&self.sighash);
         canonical_hash(FROST_SIGNING_AUTHORIZATION_HASH_DOMAIN, &payload)
+    }
+}
+
+/// Typed CDK on-chain authorization payload accepted by the FROST adapter.
+///
+/// The private REST signer must first reload the proposal through
+/// `Mint::federation_transaction_signing_authorization`, rebuild this value,
+/// and compare it exactly before invoking the key manager.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCdkOnchainFrostAuthorization {
+    /// Payload schema version.
+    pub version: u16,
+    /// Exact accepted proposal identity.
+    pub proposal_id: FederationTransactionProposalId,
+    /// Transaction input being signed.
+    pub input_index: u32,
+    /// Canonical accepted-state authorization commitment.
+    pub authorization_reference: [u8; 32],
+    /// Exact BIP341 sighash authorized by local policy recomputation.
+    pub message: [u8; 32],
+    /// Canonical application-derived BIP32/Taproot signing plan.
+    pub derivation: Vec<u8>,
+}
+
+impl FederationCdkOnchainFrostAuthorization {
+    /// Build a typed authorization from revalidated accepted state.
+    pub fn new(
+        accepted: &FederationAcceptedTransaction,
+        input_index: usize,
+        derivation: &cdk_frost::SigningDerivation,
+    ) -> Result<Self> {
+        let reference = FederationFrostSigningAuthorizationReference::new(accepted, input_index)?;
+        Ok(Self {
+            version: CDK_ONCHAIN_FROST_AUTHORIZATION_VERSION,
+            proposal_id: reference.proposal_id(),
+            input_index: reference.input_index(),
+            authorization_reference: reference.commitment(),
+            message: reference.sighash(),
+            derivation: derivation.encode(),
+        })
+    }
+
+    /// Decode, bound, and fully validate a typed adapter payload.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > CDK_ONCHAIN_FROST_AUTHORIZATION_MAX_BYTES {
+            return Err(invalid("CDK FROST authorization payload is oversized"));
+        }
+        let value: Self = serde_json::from_slice(bytes)?;
+        value.validate()?;
+        if value.to_bytes()? != bytes {
+            return Err(invalid("CDK FROST authorization is not canonical"));
+        }
+        Ok(value)
+    }
+
+    /// Canonically encode this typed adapter payload.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let bytes = serde_json::to_vec(self)?;
+        if bytes.len() > CDK_ONCHAIN_FROST_AUTHORIZATION_MAX_BYTES {
+            return Err(invalid("CDK FROST authorization payload is oversized"));
+        }
+        Ok(bytes)
+    }
+
+    /// Decode the exact reviewed signing derivation.
+    pub fn signing_derivation(&self) -> Result<cdk_frost::SigningDerivation> {
+        cdk_frost::SigningDerivation::decode(&self.derivation)
+            .map_err(|error| invalid(error.to_string()))
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.version != CDK_ONCHAIN_FROST_AUTHORIZATION_VERSION
+            || self.authorization_reference == [0; 32]
+            || self.message == [0; 32]
+        {
+            return Err(invalid("CDK FROST authorization metadata is invalid"));
+        }
+        self.signing_derivation()?;
+        Ok(())
     }
 }
 

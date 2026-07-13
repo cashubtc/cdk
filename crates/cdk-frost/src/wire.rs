@@ -6,18 +6,28 @@ use frost_secp256k1_tr as frost;
 
 use crate::canonical::validate_root_public;
 use crate::types::{
-    ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
-    FrostCiphersuite, MemberId, NonceCommitment, NonceId, RootKeyEpoch, RootPublicPackage,
-    SignatureShare, SigningSessionId, MAX_COMMITMENT_BYTES, MAX_PARTICIPANTS,
+    AggregateSignature, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
+    ApplicationRegistration, AuthorizationRequest, FrostCiphersuite, MemberId, NonceCommitment,
+    NonceCommitmentSet, NonceId, RootKeyEpoch, RootPublicPackage, SignatureMode, SignatureShare,
+    SigningDerivation, SigningSessionId, MAX_AUTHORIZATION_BYTES, MAX_COMMITMENT_BYTES,
+    MAX_DERIVATION_STEPS, MAX_PARTICIPANTS,
 };
-use crate::Error;
+use crate::{Error, SigningAuthorizationScope, SigningSessionContext};
 
 const ROOT_MAGIC: &[u8; 8] = b"CDKFRT01";
 const COMMITMENT_MAGIC: &[u8; 8] = b"CDKFNC03";
 const SHARE_MAGIC: &[u8; 8] = b"CDKFSH03";
+const SESSION_MAGIC: &[u8; 8] = b"CDKFSC01";
+const DERIVATION_MAGIC: &[u8; 8] = b"CDKFSD01";
+const AUTHORIZATION_MAGIC: &[u8; 8] = b"CDKFAU01";
+const COMMITMENT_SET_MAGIC: &[u8; 8] = b"CDKFCS01";
 const ROOT_WIRE_MAX: usize = 128 + MAX_PARTICIPANTS * 35;
 const COMMITMENT_WIRE_MAX: usize = 192 + MAX_COMMITMENT_BYTES;
 const SHARE_WIRE_LEN: usize = 8 + 8 + 32 + 8 + 2 + 32 + 32 + 32 + 2 + 32;
+const SESSION_WIRE_MAX: usize = 256 + MAX_PARTICIPANTS * 2;
+const DERIVATION_WIRE_MAX: usize = 80 + MAX_DERIVATION_STEPS * 32;
+const AUTHORIZATION_WIRE_MAX: usize = 96 + MAX_AUTHORIZATION_BYTES;
+const COMMITMENT_SET_WIRE_MAX: usize = 16 + MAX_PARTICIPANTS * (4 + COMMITMENT_WIRE_MAX);
 
 impl RootPublicPackage {
     /// Encode the public root package canonically.
@@ -244,6 +254,269 @@ impl SignatureShare {
     }
 }
 
+impl SigningSessionContext {
+    /// Encode every authorization and attempt-separation field canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let registration = self.registration();
+        let mut output = Vec::with_capacity(224 + self.signer_set().len() * 2);
+        output.extend_from_slice(SESSION_MAGIC);
+        output.extend_from_slice(&self.federation_id());
+        output.extend_from_slice(&self.root_epoch().get().to_be_bytes());
+        output.extend_from_slice(&registration.id().to_bytes());
+        output.extend_from_slice(&registration.key_epoch().get().to_be_bytes());
+        output.extend_from_slice(&registration.derivation_version().get().to_be_bytes());
+        output.extend_from_slice(&registration.authorization_policy());
+        output.extend_from_slice(&self.derivation_binding());
+        output.extend_from_slice(&self.authorization_reference());
+        output.extend_from_slice(&self.message_commitment());
+        output.extend_from_slice(&self.attempt().to_be_bytes());
+        output.extend_from_slice(&(self.signer_set().len() as u16).to_be_bytes());
+        for member in self.signer_set() {
+            output.extend_from_slice(&member.get().to_be_bytes());
+        }
+        output
+    }
+
+    /// Decode a bounded canonical signing context and recompute its session ID.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > SESSION_WIRE_MAX {
+            return Err(Error::OversizedInput {
+                kind: "signing session context",
+                max: SESSION_WIRE_MAX,
+            });
+        }
+        let mut reader = Reader::new(bytes, "signing session context");
+        reader.expect_magic(SESSION_MAGIC)?;
+        let federation_id = reader.array::<32>()?;
+        let root_epoch = RootKeyEpoch::new(reader.u64()?)?;
+        let registration = ApplicationRegistration::new(
+            ApplicationId::from_bytes(reader.array::<32>()?)?,
+            ApplicationKeyEpoch::new(reader.u64()?)?,
+            ApplicationDerivationVersion::new(reader.u16()?)?,
+            reader.array::<32>()?,
+        )?;
+        let derivation_binding = reader.array::<32>()?;
+        let authorization_reference = reader.array::<32>()?;
+        let message_commitment = reader.array::<32>()?;
+        let attempt = reader.u32()?;
+        let count = usize::from(reader.u16()?);
+        if count > MAX_PARTICIPANTS {
+            return Err(Error::OversizedInput {
+                kind: "signing session signer set",
+                max: MAX_PARTICIPANTS,
+            });
+        }
+        let signers = (0..count)
+            .map(|_| MemberId::new(reader.u16()?))
+            .collect::<Result<Vec<_>, _>>()?;
+        reader.finish()?;
+        let scope = SigningAuthorizationScope::new(
+            federation_id,
+            root_epoch,
+            registration,
+            derivation_binding,
+            authorization_reference,
+            message_commitment,
+        )?;
+        let value = Self::new(scope, attempt, signers)?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "signing session context",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl SigningDerivation {
+    /// Encode the bounded additive derivation and final signature mode.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(80 + self.tweaks().len() * 32);
+        output.extend_from_slice(DERIVATION_MAGIC);
+        output.extend_from_slice(&self.context());
+        output.extend_from_slice(&(self.tweaks().len() as u16).to_be_bytes());
+        for tweak in self.tweaks() {
+            output.extend_from_slice(tweak);
+        }
+        match self.signature_mode() {
+            SignatureMode::Plain => output.push(0),
+            SignatureMode::TaprootKeyPath { merkle_root: None } => output.push(1),
+            SignatureMode::TaprootKeyPath {
+                merkle_root: Some(root),
+            } => {
+                output.push(2);
+                output.extend_from_slice(&root);
+            }
+        }
+        output
+    }
+
+    /// Decode and validate a canonical derivation plan.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > DERIVATION_WIRE_MAX {
+            return Err(Error::OversizedInput {
+                kind: "signing derivation",
+                max: DERIVATION_WIRE_MAX,
+            });
+        }
+        let mut reader = Reader::new(bytes, "signing derivation");
+        reader.expect_magic(DERIVATION_MAGIC)?;
+        let context = reader.array::<32>()?;
+        let count = usize::from(reader.u16()?);
+        if count > MAX_DERIVATION_STEPS {
+            return Err(Error::OversizedInput {
+                kind: "signing derivation",
+                max: MAX_DERIVATION_STEPS,
+            });
+        }
+        let tweaks = (0..count)
+            .map(|_| reader.array::<32>())
+            .collect::<Result<Vec<_>, _>>()?;
+        let mode = match reader.u8()? {
+            0 => SignatureMode::Plain,
+            1 => SignatureMode::TaprootKeyPath { merkle_root: None },
+            2 => SignatureMode::TaprootKeyPath {
+                merkle_root: Some(reader.array::<32>()?),
+            },
+            _ => {
+                return Err(Error::malformed(
+                    "signing derivation",
+                    "unknown signature mode",
+                ))
+            }
+        };
+        reader.finish()?;
+        let value = Self::new(context, tweaks, mode)?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "signing derivation",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl AuthorizationRequest {
+    /// Encode the registered-application authorization request canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(88 + self.payload().len());
+        output.extend_from_slice(AUTHORIZATION_MAGIC);
+        output.extend_from_slice(&self.application_id().to_bytes());
+        output.extend_from_slice(&self.application_key_epoch().get().to_be_bytes());
+        output.extend_from_slice(&self.derivation_version().get().to_be_bytes());
+        output.extend_from_slice(&self.session_id().to_bytes());
+        output.extend_from_slice(&(self.payload().len() as u32).to_be_bytes());
+        output.extend_from_slice(self.payload());
+        output
+    }
+
+    /// Decode a bounded canonical application authorization request.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > AUTHORIZATION_WIRE_MAX {
+            return Err(Error::OversizedInput {
+                kind: "authorization request",
+                max: AUTHORIZATION_WIRE_MAX,
+            });
+        }
+        let mut reader = Reader::new(bytes, "authorization request");
+        reader.expect_magic(AUTHORIZATION_MAGIC)?;
+        let application_id = ApplicationId::from_bytes(reader.array::<32>()?)?;
+        let key_epoch = ApplicationKeyEpoch::new(reader.u64()?)?;
+        let derivation_version = ApplicationDerivationVersion::new(reader.u16()?)?;
+        let session_id = SigningSessionId::from_bytes(reader.array::<32>()?)?;
+        let payload_len = usize::try_from(reader.u32()?)
+            .map_err(|_| Error::malformed("authorization request", "length overflow"))?;
+        if payload_len > MAX_AUTHORIZATION_BYTES {
+            return Err(Error::OversizedInput {
+                kind: "authorization request",
+                max: MAX_AUTHORIZATION_BYTES,
+            });
+        }
+        let payload = reader.bytes(payload_len)?.to_vec();
+        reader.finish()?;
+        let value = Self::new(
+            application_id,
+            key_epoch,
+            derivation_version,
+            session_id,
+            payload,
+        )?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "authorization request",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl NonceCommitmentSet {
+    /// Encode a canonically ordered bounded signer commitment set.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::new();
+        output.extend_from_slice(COMMITMENT_SET_MAGIC);
+        output.extend_from_slice(&(self.commitments().len() as u16).to_be_bytes());
+        for commitment in self.commitments().values() {
+            let encoded = commitment.encode();
+            output.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            output.extend_from_slice(&encoded);
+        }
+        output
+    }
+
+    /// Decode a bounded canonical commitment set and reject duplicates.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > COMMITMENT_SET_WIRE_MAX {
+            return Err(Error::OversizedInput {
+                kind: "nonce commitment set",
+                max: COMMITMENT_SET_WIRE_MAX,
+            });
+        }
+        let mut reader = Reader::new(bytes, "nonce commitment set");
+        reader.expect_magic(COMMITMENT_SET_MAGIC)?;
+        let count = usize::from(reader.u16()?);
+        if count > MAX_PARTICIPANTS {
+            return Err(Error::OversizedInput {
+                kind: "nonce commitment set",
+                max: MAX_PARTICIPANTS,
+            });
+        }
+        let mut commitments = Vec::with_capacity(count);
+        for _ in 0..count {
+            let length = usize::try_from(reader.u32()?)
+                .map_err(|_| Error::malformed("nonce commitment set", "length overflow"))?;
+            if length > COMMITMENT_WIRE_MAX {
+                return Err(Error::OversizedInput {
+                    kind: "nonce commitment",
+                    max: COMMITMENT_WIRE_MAX,
+                });
+            }
+            commitments.push(NonceCommitment::decode(reader.bytes(length)?)?);
+        }
+        reader.finish()?;
+        let value = Self::new(commitments)?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "nonce commitment set",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl AggregateSignature {
+    /// Decode and validate a compact BIP340 aggregate signature.
+    pub fn from_bytes(bytes: [u8; 64]) -> Result<Self, Error> {
+        frost::Signature::deserialize(&bytes)
+            .map_err(|error| Error::InvalidShare(error.to_string()))?;
+        Ok(Self::from_bytes_unchecked(bytes))
+    }
+}
+
 fn encode_scope(
     output: &mut Vec<u8>,
     epoch: RootKeyEpoch,
@@ -300,6 +573,14 @@ impl<'a> Reader<'a> {
 
     fn u16(&mut self) -> Result<u16, Error> {
         Ok(u16::from_be_bytes(self.array()?))
+    }
+
+    fn u8(&mut self) -> Result<u8, Error> {
+        Ok(self.array::<1>()?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, Error> {
+        Ok(u32::from_be_bytes(self.array()?))
     }
 
     fn u64(&mut self) -> Result<u64, Error> {

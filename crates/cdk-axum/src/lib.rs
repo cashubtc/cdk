@@ -2502,8 +2502,12 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
     #[cfg(feature = "federation")]
-    let (federation_consensus, federation_sequences, federation_onchain_wallets) =
-        create_federation_runtime_state_with_wallet(&mint, federation_bdk_config).await?;
+    let (
+        federation_consensus,
+        federation_sequences,
+        federation_onchain_wallets,
+        federation_frost_signing,
+    ) = create_federation_runtime_state_with_wallet(&mint, federation_bdk_config).await?;
     #[cfg(feature = "federation")]
     let federation_sync = federation_consensus
         .as_ref()
@@ -2538,6 +2542,7 @@ async fn create_mint_router_with_custom_cache_inner(
             }),
             payment_observer: federation::FederationPaymentObserver::default(),
             onchain_wallets: federation_onchain_wallets,
+            frost_signing: federation_frost_signing,
             #[cfg(test)]
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
@@ -2711,6 +2716,7 @@ async fn create_federation_runtime_state_with_wallet(
     Option<FederationConsensusHandle>,
     Option<FederationSequenceHandle>,
     Vec<FederatedBdkWallet>,
+    Option<federation::frost_signing::FederationFrostSigningRuntime>,
 )> {
     let Some(config) = mint.federation_config() else {
         if local_wallet_config.is_some() {
@@ -2718,11 +2724,21 @@ async fn create_federation_runtime_state_with_wallet(
                 "federated BDK configuration requires an active federation mint"
             ));
         }
-        return Ok((None, None, Vec::new()));
+        return Ok((None, None, Vec::new(), None));
     };
 
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
+    let frost_signing = match local_wallet_config.as_ref() {
+        Some(local) => {
+            federation::frost_signing::FederationFrostSigningRuntime::open(
+                mint,
+                &local.storage_root,
+            )
+            .await?
+        }
+        None => None,
+    };
     let onchain_wallets = initialize_federation_onchain_wallets(config, local_wallet_config)?;
     let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
     let mut tx = db.begin_transaction().await?;
@@ -2794,6 +2810,7 @@ async fn create_federation_runtime_state_with_wallet(
         Some(Arc::new(tokio::sync::Mutex::new(consensus))),
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
         onchain_wallets,
+        frost_signing,
     ))
 }
 
@@ -2837,7 +2854,8 @@ async fn create_federation_runtime_state(
     Option<FederationConsensusHandle>,
     Option<FederationSequenceHandle>,
 )> {
-    let (consensus, sequences, _) = create_federation_runtime_state_with_wallet(mint, None).await?;
+    let (consensus, sequences, _, _) =
+        create_federation_runtime_state_with_wallet(mint, None).await?;
     Ok((consensus, sequences))
 }
 
