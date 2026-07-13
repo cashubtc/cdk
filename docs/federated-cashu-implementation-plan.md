@@ -4620,6 +4620,20 @@ Verified implementation result:
   pre-backup restart path recovers durable pending work without resubmission.
   All seven focused submission tests and all 28 standalone Axum tests pass.
 
+## Post-review melt-observation concurrency
+
+- [x] Remove the federation-wide melt observer mutex so backend and consensus
+  latency for one quote cannot block unrelated quote IDs.
+- [x] Use a quote-scoped RAII active-payment guard for the local in-flight
+  window and remove it on success, error, or cancellation.
+- [x] Make the saga transition the authoritative initiation claim: atomically
+  compare-and-set `SetupComplete -> PaymentAttempted`, and allow only the
+  durable winner to call the payment backend. Keep standalone melt behavior
+  unchanged.
+- [x] Prove a concurrent same-quote duplicate cannot make a second payment and
+  a second quote reaches its backend while the first backend call remains
+  blocked. The generic saga database claim regression also passes.
+
 ## Final completion audit
 
 Status: complete for the implementation plan's fakewallet federation scope.

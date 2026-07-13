@@ -107,12 +107,12 @@ or explicitly ruled out with a deterministic regression before production use.
 | P13 | Readiness bypass confirmed; correct policy remains a design decision | Medium | 75% | Define and test a middle gate at minimum: live current session and not Halted. |
 | P14 | Cut-through policy is incomplete while federation-owned v2 labels remain | Medium | 98% | Make every current federation-owned protocol/artifact boundary the initial v1, remove pre-cut-through compatibility, regenerate all affected artifacts, and freeze v1. |
 | P15 | Fresh-schema migration squash accepted; development databases unsupported | Complete | — | No further upgrade work required; freeze the consolidated migration at the first supported release. |
-| P16 | Confirmed global lock across backend and consensus latency | High | 99% | Release blocker for production liveness: use quote-scoped single-flight or a durable claim. |
+| P16 | Global lock removed; quote-scoped guard and durable saga claim added | Resolved (was High) | 99% | Complete: unrelated quotes proceed concurrently and only the durable transition winner may initiate payment. |
 | P17 | Legacy registry migration conflicts with the accepted cut-through policy | Complete | 99% | Superseded by P14: reset the current registry shape to initial v1 and do not add a legacy loader or CLI alias. |
 | P18 | Confirmed architecture-assurance gap, not a demonstrated current bypass | Medium | 90% | Add a sealed capability boundary or retain narrow interim enforcement. |
 | P19 | Confirmed documentation/policy mismatch; operation-ID idempotence remains sound | Low | 99% | Document the `SubmitOperation` exception or enforce sequence-to-operation binding after exact-duplicate resolution. |
 
-Production priority is therefore P7/P9/P16. P1
+Production priority is therefore P7/P9. P1
 remains a production-startup blocker if the product continues
 to claim one-member federation support even though its general security impact
 is Medium. P5 should not remain an open broad transaction-refactor request in
@@ -1185,7 +1185,7 @@ Acceptance criteria:
 
 ### P16: One Global Melt-Observation Lock Serializes Unrelated Payments
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
 **Severity:** High — a slow or unavailable backend for one quote can block
 payment initiation, settlement observation, repair scans, and status responses
@@ -1212,29 +1212,59 @@ two callers to reach `make_payment`. The correct replacement is a quote-scoped
 single-flight lock or, preferably, an atomic durable claim that permits exactly
 one caller to initiate payment without blocking unrelated quotes.
 
+Resolution:
+
+- `FederationPaymentObserver` no longer owns or holds a federation-wide melt
+  mutex across backend and consensus work.
+- `Mint` keeps a quote-scoped active-payment set. Its RAII guard is removed on
+  success, error, or cancellation, so it suppresses only overlapping local
+  probes for the same quote and cannot accumulate terminal quote IDs.
+- The authoritative payment-initiation boundary is durable, not in-memory:
+  `SagaTransaction::compare_and_set_saga_state` atomically claims
+  `SetupComplete -> PaymentAttempted`. Only the transaction that changes the
+  row calls `make_payment`; another process or mint instance that loses the
+  claim returns without initiating a second payment.
+- Standalone melt keeps its existing unconditional saga transition and payment
+  path. The conditional claim is used only for federation observation.
+
+This combined design is stronger than either replacement alone. A keyed local
+guard removes head-of-line blocking and prevents premature same-process status
+checks while a backend call is in flight, but cannot coordinate processes or
+survive restart. The database compare-and-set supplies that authority across
+processes and restarts without serializing unrelated quote IDs.
+
 Relevant code:
 
-- `crates/cdk-axum/src/federation/payment_observation.rs:20`
-- `crates/cdk-axum/src/federation/payment_observation.rs:49`
-- `crates/cdk-axum/src/federation/payment_observation.rs:91`
-- `crates/cdk-axum/src/federation/payment_observation.rs:169`
-- `crates/cdk/src/mint/federation.rs:990`
+- `crates/cdk-axum/src/federation/payment_observation.rs`
+- `crates/cdk/src/mint/federation.rs`
+- `crates/cdk/src/mint/melt/melt_saga/mod.rs`
+- `crates/cdk-common/src/database/mint/mod.rs`
+- `crates/cdk-sql-common/src/mint/saga.rs`
 
 TODO:
 
-- [ ] Replace the global lock with a per-quote keyed lock or another
+- [x] Replace the global lock with a per-quote keyed lock or another
   quote-scoped single-flight mechanism.
-- [ ] Bound and clean up the keyed-lock map when a quote becomes terminal so
+- [x] Bound and clean up the keyed-lock map when a quote becomes terminal so
   arbitrary quote IDs cannot grow it indefinitely.
-- [ ] Keep exactly-one elected payment attempt for concurrent requests against
+- [x] Keep exactly-one elected payment attempt for concurrent requests against
   the same quote.
-- [ ] Do not hold a global observer lock while waiting on backend I/O or
+- [x] Do not hold a global observer lock while waiting on backend I/O or
   consensus finality.
-- [ ] Add a deterministic test with two different pending quotes: block the
+- [x] Add a deterministic test with two different pending quotes: block the
   first backend probe and prove the second quote can still initiate/observe and
   submit its result.
-- [ ] Retain the existing concurrent-identical-melt regression proving one
+- [x] Retain the existing concurrent-identical-melt regression proving one
   outgoing payment attempt for one quote.
+
+Verification:
+
+- The generic saga database regression proves the first conditional transition
+  succeeds and a stale second claim does not change the row.
+- A deterministic same-quote race blocks the winning backend call and proves a
+  concurrent duplicate returns without a second `make_payment`.
+- A deterministic two-quote race blocks the first backend call and proves the
+  second quote reaches its backend concurrently.
 
 Acceptance criteria:
 
@@ -1500,14 +1530,14 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P6 are resolved. The reassessment retains three High findings (P7, P9, P16), ten
+P6/P16 are resolved. The reassessment retains two High findings (P7, P9), ten
 Medium findings (P1, P2, P3, P4, P8, P10, P11, P13, P14, P18), and two Low
 findings (P5, P19). P15 is complete under the accepted fresh-database policy;
 P17 is closed as superseded by P14's cut-through registry reset.
 
-P7, P9, and P16 are the remaining production blockers
+P7 and P9 are the remaining production blockers
 because they affect admission atomicity, pending-operation restart recovery,
-application of finalized state, and federation-wide melt-observer liveness. P1
+and application of finalized state. P1
 must also be resolved before production if one-member configs remain accepted,
 even though its general security severity is Medium.
 

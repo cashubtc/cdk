@@ -7,7 +7,7 @@ use cdk_common::federation::FederationOperationId;
 use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::payment::OutgoingPaymentOptions;
+use cdk_common::payment::{DynMintPayment, OutgoingPaymentOptions};
 use cdk_common::{
     Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
     State,
@@ -526,11 +526,28 @@ impl MeltSaga<SetupComplete> {
     #[cfg(feature = "federation")]
     pub(super) async fn attempt_external_payment_for_federation_observation(
         self,
-    ) -> Result<MakePaymentResponse, Error> {
-        let response = self.attempt_external_payment().await?;
+    ) -> Result<Option<MakePaymentResponse>, Error> {
+        let ln = self.external_payment_processor()?;
+        let claimed = {
+            let mut tx = self.db.begin_transaction().await?;
+            let claimed = tx
+                .compare_and_set_saga_state(
+                    &self.operation_id,
+                    SagaStateEnum::Melt(MeltSagaState::SetupComplete),
+                    SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+                )
+                .await?;
+            tx.commit().await?;
+            claimed
+        };
+        if !claimed {
+            return Ok(None);
+        }
+
+        let response = self.execute_payment_and_verify(ln).await?;
         self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
             .await;
-        Ok(response)
+        Ok(Some(response))
     }
 
     #[cfg(feature = "federation")]
@@ -827,22 +844,7 @@ impl MeltSaga<SetupComplete> {
     }
 
     async fn attempt_external_payment(&self) -> Result<MakePaymentResponse, Error> {
-        // Get LN payment processor
-        let ln = self
-            .mint
-            .payment_processors
-            .get(&crate::types::PaymentProcessorKey::new(
-                self.state_data.quote.unit.clone(),
-                self.state_data.quote.payment_method.clone(),
-            ))
-            .ok_or_else(|| {
-                tracing::info!(
-                    "Could not get ln backend for {}, {}",
-                    self.state_data.quote.unit,
-                    self.state_data.quote.payment_method
-                );
-                Error::UnsupportedUnit
-            })?;
+        let ln = self.external_payment_processor()?;
 
         // Update saga state to PaymentAttempted BEFORE making payment
         // This ensures crash recovery knows payment may have been attempted
@@ -856,14 +858,30 @@ impl MeltSaga<SetupComplete> {
             tx.commit().await?;
         }
 
-        self.execute_payment_and_verify(Arc::clone(ln)).await
+        self.execute_payment_and_verify(ln).await
+    }
+
+    fn external_payment_processor(&self) -> Result<DynMintPayment, Error> {
+        self.mint
+            .payment_processors
+            .get(&crate::types::PaymentProcessorKey::new(
+                self.state_data.quote.unit.clone(),
+                self.state_data.quote.payment_method.clone(),
+            ))
+            .cloned()
+            .ok_or_else(|| {
+                tracing::info!(
+                    "Could not get ln backend for {}, {}",
+                    self.state_data.quote.unit,
+                    self.state_data.quote.payment_method
+                );
+                Error::UnsupportedUnit
+            })
     }
 
     async fn execute_payment_and_verify(
         &self,
-        ln: Arc<
-            dyn cdk_common::payment::MintPayment<Err = cdk_common::payment::Error> + Send + Sync,
-        >,
+        ln: DynMintPayment,
     ) -> Result<MakePaymentResponse, Error> {
         // Make payment with idempotent verification
         let quote = &self.state_data.quote;

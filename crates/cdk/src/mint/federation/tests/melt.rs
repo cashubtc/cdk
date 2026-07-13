@@ -170,6 +170,100 @@ async fn standalone_melt_quote_creation_still_persists_quote() {
 }
 
 #[tokio::test]
+async fn concurrent_same_quote_payment_probe_has_one_durable_winner() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls, first_started, release_first) =
+        federated_test_mint_with_blocking_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (quote, _) =
+        setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+
+    let first_mint = mint.clone();
+    let first_quote = quote.clone();
+    let first = tokio::spawn(async move {
+        first_mint
+            .probe_federation_melt_quote_payment(&first_quote)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), first_started.acquire())
+        .await
+        .expect("first payment attempt start timeout")
+        .expect("first payment start semaphore closed")
+        .forget();
+
+    let duplicate = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        mint.probe_federation_melt_quote_payment(&quote),
+    )
+    .await
+    .expect("duplicate probe must not wait for the payment backend")
+    .expect("duplicate probe");
+    assert!(duplicate.is_none());
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+
+    release_first.add_permits(1);
+    assert!(first
+        .await
+        .expect("first probe task")
+        .expect("first probe")
+        .is_none());
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn unrelated_quote_payment_probes_do_not_serialize() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls, first_started, release_first) =
+        federated_test_mint_with_blocking_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (first_quote, _) = setup_pending_federated_melt_with_label(
+        &mint,
+        &localstore,
+        &runtime_config,
+        &mut journal,
+        "first-concurrent-melt",
+    )
+    .await;
+    let (second_quote, _) = setup_pending_federated_melt_with_label(
+        &mint,
+        &localstore,
+        &runtime_config,
+        &mut journal,
+        "second-concurrent-melt",
+    )
+    .await;
+
+    let first_mint = mint.clone();
+    let first = tokio::spawn(async move {
+        first_mint
+            .probe_federation_melt_quote_payment(&first_quote)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), first_started.acquire())
+        .await
+        .expect("first payment attempt start timeout")
+        .expect("first payment start semaphore closed")
+        .forget();
+
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        mint.probe_federation_melt_quote_payment(&second_quote),
+    )
+    .await
+    .expect("unrelated quote must proceed while first backend call is blocked")
+    .expect("second probe");
+    assert!(second.is_none());
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 2);
+
+    release_first.add_permits(1);
+    assert!(first
+        .await
+        .expect("first probe task")
+        .expect("first probe")
+        .is_none());
+}
+
+#[tokio::test]
 async fn later_melt_quote_does_not_retroactively_authorize_older_melt() {
     let runtime_config = runtime_config();
     let (mint, localstore, make_payment_calls) =
@@ -1867,6 +1961,8 @@ async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() 
     let make_payment_calls = Arc::new(AtomicUsize::new(0));
     let payment_processor = Arc::new(CountingBackendAgnosticPaymentProcessor {
         make_payment_calls: Arc::clone(&make_payment_calls),
+        first_payment_started: None,
+        release_first_payment: None,
     });
     let (mint, localstore) =
         federated_test_mint_with_payment_processor(runtime_config.clone(), payment_processor).await;

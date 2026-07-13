@@ -182,6 +182,31 @@ where
         Ok(())
     }
 
+    async fn compare_and_set_saga_state(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        expected_state: mint::SagaStateEnum,
+        new_state: mint::SagaStateEnum,
+    ) -> Result<bool, Self::Err> {
+        let current_time = unix_time();
+
+        let updated = query(
+            r#"
+            UPDATE saga_state
+            SET state = :new_state, updated_at = :updated_at
+            WHERE operation_id = :operation_id AND state = :expected_state
+            "#,
+        )?
+        .bind("new_state", new_state.state())
+        .bind("updated_at", current_time as i64)
+        .bind("operation_id", operation_id.to_string())
+        .bind("expected_state", expected_state.state())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(updated == 1)
+    }
+
     async fn update_saga_with_finalization_data(
         &mut self,
         operation_id: &uuid::Uuid,

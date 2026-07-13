@@ -17,10 +17,8 @@ const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
 const FEDERATION_PAYMENT_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct FederationPaymentObserver {
-    melt: std::sync::Arc<tokio::sync::Mutex<()>>,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FederationPaymentObserver;
 
 impl FederationPaymentObserver {
     pub(crate) async fn observe_mint_quotes(
@@ -51,7 +49,6 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
     ) -> Result<bool, cdk::Error> {
-        let _guard = self.melt.lock().await;
         let Some(observation) = state
             .mint
             .probe_federation_melt_quote_payment(quote_id)

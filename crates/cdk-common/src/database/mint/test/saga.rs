@@ -102,6 +102,53 @@ where
     tx.commit().await.unwrap();
 }
 
+/// Test conditionally claiming a saga state transition.
+pub async fn compare_and_set_saga_state<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = uuid::Uuid::new_v4();
+    let setup_complete = SagaStateEnum::Melt(MeltSagaState::SetupComplete);
+    let payment_attempted = SagaStateEnum::Melt(MeltSagaState::PaymentAttempted);
+    let saga = Saga {
+        operation_id,
+        operation_kind: OperationKind::Melt,
+        state: setup_complete.clone(),
+        quote_id: Some("conditional_transition_quote".to_string()),
+        finalization_data: None,
+        federation_operation_id: None,
+        created_at: 1234567890,
+        updated_at: 1234567890,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(tx
+        .compare_and_set_saga_state(
+            &operation_id,
+            setup_complete.clone(),
+            payment_attempted.clone(),
+        )
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(!tx
+        .compare_and_set_saga_state(&operation_id, setup_complete, payment_attempted.clone())
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let retrieved = tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.state, payment_attempted);
+    tx.commit().await.unwrap();
+}
+
 /// Test updating saga state with persisted melt finalization data.
 pub async fn update_saga_with_finalization_data<DB>(db: DB)
 where

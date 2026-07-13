@@ -2911,6 +2911,22 @@ the database nor consensus, deterministic pending-write failure leaks no waiter
 or row and permits one clean retry, and pre-backup restart recovers durable
 pending work without wallet resubmission. All 28 standalone Axum tests pass.
 
+## 45. Remove federation-wide melt-observation serialization
+
+**Status:** Completed (2026-07-13)
+
+The observer no longer holds one mutex for all melt quotes across backend and
+consensus latency. A quote-scoped RAII guard suppresses overlapping local probes
+for only the same quote and removes itself on every exit, while an atomic saga
+compare-and-set durably claims `SetupComplete -> PaymentAttempted` before the
+external side effect. Only the durable transition winner can call the payment
+backend; unrelated quote IDs never share a lock.
+
+Focused regressions prove the conditional saga claim is one-shot, concurrent
+same-quote probes make exactly one backend call, and a second quote reaches its
+backend while the first quote's backend call is deterministically blocked.
+Standalone melt retains its existing transition and payment behavior.
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry

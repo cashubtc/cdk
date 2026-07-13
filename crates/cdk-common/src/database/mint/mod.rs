@@ -596,6 +596,16 @@ pub trait SagaTransaction {
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err>;
 
+    /// Update saga state only when it still matches `expected_state`.
+    ///
+    /// Returns whether this transaction claimed the transition.
+    async fn compare_and_set_saga_state(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        expected_state: mint::SagaStateEnum,
+        new_state: mint::SagaStateEnum,
+    ) -> Result<bool, Self::Err>;
+
     /// Update saga state and optional finalization metadata.
     async fn update_saga_with_finalization_data(
         &mut self,

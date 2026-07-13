@@ -204,7 +204,7 @@ impl Mint {
         &self,
         quote: MeltQuote,
         saga: Saga,
-    ) -> Result<cdk_common::payment::MakePaymentResponse, Error> {
+    ) -> Result<Option<cdk_common::payment::MakePaymentResponse>, Error> {
         MeltSaga::resume_federation_external_payment(
             Arc::new(self.clone()),
             self.localstore.clone(),

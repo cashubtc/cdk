@@ -47,7 +47,7 @@ use cdk_common::{
     SpendingConditions, State, SwapRequest,
 };
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 mod admission;
 mod keyset;
@@ -329,6 +329,8 @@ impl MintPayment for BackendAgnosticPaymentProcessor {
 
 struct CountingBackendAgnosticPaymentProcessor {
     make_payment_calls: Arc<AtomicUsize>,
+    first_payment_started: Option<Arc<Semaphore>>,
+    release_first_payment: Option<Arc<Semaphore>>,
 }
 
 struct QuoteCountingBackendAgnosticPaymentProcessor {
@@ -438,7 +440,19 @@ impl MintPayment for CountingBackendAgnosticPaymentProcessor {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        self.make_payment_calls.fetch_add(1, Ordering::Relaxed);
+        let call_index = self.make_payment_calls.fetch_add(1, Ordering::Relaxed);
+        if call_index == 0 {
+            if let (Some(started), Some(release)) =
+                (&self.first_payment_started, &self.release_first_payment)
+            {
+                started.add_permits(1);
+                release
+                    .acquire()
+                    .await
+                    .map_err(|_| payment::Error::Custom("payment release closed".to_string()))?
+                    .forget();
+            }
+        }
         BackendAgnosticPaymentProcessor
             .make_payment(unit, options)
             .await
@@ -512,11 +526,42 @@ async fn federated_test_mint_with_counting_payment_processor(
     let make_payment_calls = Arc::new(AtomicUsize::new(0));
     let payment_processor = Arc::new(CountingBackendAgnosticPaymentProcessor {
         make_payment_calls: Arc::clone(&make_payment_calls),
+        first_payment_started: None,
+        release_first_payment: None,
     });
     let (mint, localstore) =
         federated_test_mint_with_payment_processor(runtime_config, payment_processor).await;
 
     (mint, localstore, make_payment_calls)
+}
+
+async fn federated_test_mint_with_blocking_payment_processor(
+    runtime_config: FederationRuntimeConfig,
+) -> (
+    Mint,
+    Arc<MintSqliteDatabase>,
+    Arc<AtomicUsize>,
+    Arc<Semaphore>,
+    Arc<Semaphore>,
+) {
+    let make_payment_calls = Arc::new(AtomicUsize::new(0));
+    let first_payment_started = Arc::new(Semaphore::new(0));
+    let release_first_payment = Arc::new(Semaphore::new(0));
+    let payment_processor = Arc::new(CountingBackendAgnosticPaymentProcessor {
+        make_payment_calls: Arc::clone(&make_payment_calls),
+        first_payment_started: Some(Arc::clone(&first_payment_started)),
+        release_first_payment: Some(Arc::clone(&release_first_payment)),
+    });
+    let (mint, localstore) =
+        federated_test_mint_with_payment_processor(runtime_config, payment_processor).await;
+
+    (
+        mint,
+        localstore,
+        make_payment_calls,
+        first_payment_started,
+        release_first_payment,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -882,6 +927,16 @@ async fn setup_pending_federated_melt(
     runtime_config: &FederationRuntimeConfig,
     journal: &mut InMemoryFederationJournal,
 ) -> (QuoteId, Vec<PublicKey>) {
+    setup_pending_federated_melt_with_label(mint, localstore, runtime_config, journal, "melt").await
+}
+
+async fn setup_pending_federated_melt_with_label(
+    mint: &Mint,
+    localstore: &Arc<MintSqliteDatabase>,
+    runtime_config: &FederationRuntimeConfig,
+    journal: &mut InMemoryFederationJournal,
+    label: &str,
+) -> (QuoteId, Vec<PublicKey>) {
     let quote = QuoteId::new();
     let quote_entry = appended_entry(
         journal,
@@ -894,8 +949,8 @@ async fn setup_pending_federated_melt(
     persist_and_apply_entry(mint, &quote_entry).await;
 
     let proofs = vec![
-        proof_for_runtime(runtime_config, "melt-input-one"),
-        proof_for_runtime(runtime_config, "melt-input-two"),
+        proof_for_runtime(runtime_config, &format!("{label}-input-one")),
+        proof_for_runtime(runtime_config, &format!("{label}-input-two")),
     ];
     let input_ys = proofs.ys().expect("melt input ys");
     let melt_request = MeltRequest::new(quote.clone(), proofs, None);

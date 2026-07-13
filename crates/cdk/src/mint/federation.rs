@@ -46,6 +46,21 @@ use super::MintInput;
 use crate::fees::calculate_fee;
 use crate::types::PaymentProcessorKey;
 
+struct FederationActiveMeltPayment {
+    active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
+    quote_id: QuoteId,
+}
+
+impl Drop for FederationActiveMeltPayment {
+    fn drop(&mut self) {
+        let mut active = match self.active.lock() {
+            Ok(active) => active,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        active.remove(&self.quote_id);
+    }
+}
+
 /// Defines whether a mint runs as a standalone Cashu mint or as a federation member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FederationMode {
@@ -883,6 +898,24 @@ async fn finish_federation_apply_transaction<T>(
 }
 
 impl Mint {
+    fn claim_active_federation_melt_payment(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Option<FederationActiveMeltPayment> {
+        let mut active = match self.federation_active_melt_payments.lock() {
+            Ok(active) => active,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !active.insert(quote_id.clone()) {
+            return None;
+        }
+
+        Some(FederationActiveMeltPayment {
+            active: std::sync::Arc::clone(&self.federation_active_melt_payments),
+            quote_id: quote_id.clone(),
+        })
+    }
+
     /// Return a previously ordered mint-quote response for an idempotent
     /// wallet retry, while rejecting reuse of the assigned ID for another
     /// request.
@@ -1023,11 +1056,24 @@ impl Mint {
             .elected_melt_payment_member(operation_id)
             .ok_or(Error::Internal)?
             == config.member_id();
+        let _active_payment = if is_elected {
+            let Some(active_payment) = self.claim_active_federation_melt_payment(quote_id) else {
+                return Ok(None);
+            };
+            Some(active_payment)
+        } else {
+            None
+        };
 
         let payment = match saga.state {
             SagaStateEnum::Melt(MeltSagaState::SetupComplete) if is_elected => {
-                self.attempt_federation_external_melt_payment(quote.clone(), saga)
+                let Some(payment) = self
+                    .attempt_federation_external_melt_payment(quote.clone(), saga)
                     .await?
+                else {
+                    return Ok(None);
+                };
+                payment
             }
             SagaStateEnum::Melt(
                 MeltSagaState::SetupComplete

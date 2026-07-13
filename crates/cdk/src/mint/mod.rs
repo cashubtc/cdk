@@ -1,6 +1,8 @@
 //! Cashu Mint
 
 use std::collections::HashMap;
+#[cfg(feature = "federation")]
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -122,6 +124,9 @@ pub struct Mint {
     /// Backend payment events consumed by the consensus-aware observer.
     #[cfg(feature = "federation")]
     federation_payment_events: broadcast::Sender<cdk_common::payment::Event>,
+    /// Quote-scoped local guard for outgoing federation payment probes.
+    #[cfg(feature = "federation")]
+    federation_active_melt_payments: Arc<std::sync::Mutex<HashSet<QuoteId>>>,
 }
 
 impl std::fmt::Debug for Mint {
@@ -336,6 +341,8 @@ impl Mint {
             federation_effective_config_cache: Arc::new(Mutex::new(None)),
             #[cfg(feature = "federation")]
             federation_payment_events,
+            #[cfg(feature = "federation")]
+            federation_active_melt_payments: Arc::new(std::sync::Mutex::new(HashSet::new())),
         })
     }
 
