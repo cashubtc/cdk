@@ -27,10 +27,10 @@ use crate::{
     MintQuoteState, MintRequest, PaymentMethod, QuoteId, SwapRequest,
 };
 
-const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v2";
+const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 2;
+pub const FEDERATION_OPERATION_VERSION: u16 = 1;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -215,6 +215,7 @@ pub enum FederationOperationConflictKey {
 
 /// Proposed mint quote creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMintQuoteOperation {
     /// Quote ID assigned by the proposing member.
     pub quote: String,
@@ -228,6 +229,7 @@ pub struct FederationMintQuoteOperation {
 
 /// Observed incoming mint quote payment state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMintQuotePaymentObservation {
     /// Quote ID being observed.
     pub quote: String,
@@ -298,6 +300,7 @@ impl FederationMintQuotePaymentObservation {
 
 /// Request to sign blinded outputs for a paid mint quote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMintOperation {
     /// Original wallet mint request.
     pub request: FederationMintRequest,
@@ -305,7 +308,12 @@ pub struct FederationMintOperation {
 
 /// Wallet mint request variants represented in federation consensus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum FederationMintRequest {
     /// Legacy NUT-04 single-quote mint request.
     Single(MintRequest<String>),
@@ -326,6 +334,7 @@ impl FederationMintRequest {
 
 /// Proposed melt quote creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMeltQuoteOperation {
     /// Quote ID assigned by the proposing member.
     pub quote: String,
@@ -339,6 +348,7 @@ pub struct FederationMeltQuoteOperation {
 
 /// Backend metadata required to execute an accepted federated melt quote.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMeltQuoteMetadata {
     /// Stable payment-processor lookup identifier.
     pub request_lookup_id: Option<PaymentIdentifier>,
@@ -537,6 +547,7 @@ pub(crate) fn test_melt_quote_operation(
 
 /// Observed outgoing melt payment state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMeltQuotePaymentObservation {
     /// Quote ID being observed.
     pub quote: String,
@@ -607,7 +618,12 @@ impl FederationMeltQuotePaymentObservation {
 
 /// Payment observation extracted from an accepted federation operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum FederationPaymentObservation {
     /// Incoming mint quote payment observation.
     MintQuote(FederationMintQuotePaymentObservation),
@@ -639,6 +655,7 @@ impl fmt::Display for FederationPaymentObservationQuarantineReason {
 
 /// Consensus operation that explicitly halts payment finalization for one quote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationPaymentObservationQuarantine {
     /// Observation context being quarantined.
     pub context: FederationPaymentObservationContext,
@@ -1250,6 +1267,7 @@ fn competing_terminal_state_observers(
 
 /// Request to spend proofs against a melt quote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationMeltOperation {
     /// Original wallet melt request.
     pub request: MeltRequest<String>,
@@ -1257,6 +1275,7 @@ pub struct FederationMeltOperation {
 
 /// Request to spend proofs and sign replacement outputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationSwapOperation {
     /// Original wallet swap request.
     pub request: SwapRequest,
@@ -1264,6 +1283,7 @@ pub struct FederationSwapOperation {
 
 /// Request to add a new federated aggregate keyset through consensus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationKeysetRotationOperation {
     /// Proposed public aggregate keyset and every member's public BLS shares.
     pub keyset: FederatedKeyset,
@@ -1355,7 +1375,12 @@ impl FederationOperationBalanceAudit {
 
 /// Consensus operation payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum FederationOperation {
     /// Create and persist a mint quote.
     MintQuote(FederationMintQuoteOperation),
@@ -1550,6 +1575,7 @@ fn outputs_amount(
 
 /// Versioned envelope that binds an operation to one federation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationOperationEnvelope {
     /// Operation envelope version.
     pub version: u16,
@@ -2020,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v2_golden_vector() {
+    fn canonical_operation_encoding_matches_v1_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2036,12 +2062,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":2}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":1}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "b4636fa385a9dc0e788fa7c37206fff72d437c1d774a20fa87aa57484fcc83b5"
+            "f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd"
         );
     }
 
@@ -2093,36 +2119,39 @@ mod tests {
 
     #[test]
     fn operation_envelope_rejects_unsupported_version_before_admission() {
-        let mut envelope = envelope(mint_operation(
+        let envelope = envelope(mint_operation(
             "quote-version",
             vec![output(
                 1,
                 "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
             )],
         ));
-        envelope.version = FEDERATION_OPERATION_VERSION + 1;
 
-        let err = envelope
-            .ensure_admissible_size()
-            .expect_err("unsupported version should fail admission");
-        assert!(matches!(
-            err,
-            FederationError::OperationVersionMismatch {
-                expected: FEDERATION_OPERATION_VERSION,
-                found
-            } if found == FEDERATION_OPERATION_VERSION + 1
-        ));
+        for found in [0, 2, u16::MAX] {
+            let mut unsupported = envelope.clone();
+            unsupported.version = found;
+            let err = unsupported
+                .ensure_admissible_size()
+                .expect_err("unsupported version should fail admission");
+            assert!(matches!(
+                err,
+                FederationError::OperationVersionMismatch {
+                    expected: FEDERATION_OPERATION_VERSION,
+                    found: actual
+                } if actual == found
+            ));
 
-        let err = envelope
-            .operation_id()
-            .expect_err("unsupported version should not hash");
-        assert!(matches!(
-            err,
-            FederationError::OperationVersionMismatch {
-                expected: FEDERATION_OPERATION_VERSION,
-                found
-            } if found == FEDERATION_OPERATION_VERSION + 1
-        ));
+            let err = unsupported
+                .operation_id()
+                .expect_err("unsupported version should not hash");
+            assert!(matches!(
+                err,
+                FederationError::OperationVersionMismatch {
+                    expected: FEDERATION_OPERATION_VERSION,
+                    found: actual
+                } if actual == found
+            ));
+        }
     }
 
     #[test]
@@ -2137,18 +2166,20 @@ mod tests {
         let encoded = serde_json::to_vec(&envelope).expect("operation json");
         FederationOperationEnvelope::from_json_slice(&encoded).expect("valid operation envelope");
 
-        let mut unsupported = envelope;
-        unsupported.version = FEDERATION_OPERATION_VERSION + 1;
-        let unsupported = serde_json::to_vec(&unsupported).expect("unsupported operation json");
-        let err = FederationOperationEnvelope::from_json_slice(&unsupported)
-            .expect_err("unsupported version should fail decode");
-        assert!(matches!(
-            err,
-            FederationError::OperationVersionMismatch {
-                expected: FEDERATION_OPERATION_VERSION,
-                found
-            } if found == FEDERATION_OPERATION_VERSION + 1
-        ));
+        for found in [0, 2, u16::MAX] {
+            let mut unsupported = envelope.clone();
+            unsupported.version = found;
+            let unsupported = serde_json::to_vec(&unsupported).expect("unsupported operation json");
+            let err = FederationOperationEnvelope::from_json_slice(&unsupported)
+                .expect_err("unsupported version should fail decode");
+            assert!(matches!(
+                err,
+                FederationError::OperationVersionMismatch {
+                    expected: FEDERATION_OPERATION_VERSION,
+                    found: actual
+                } if actual == found
+            ));
+        }
 
         for malformed in [
             br#"{"#.as_slice(),
@@ -2160,6 +2191,60 @@ mod tests {
                 "malformed payload should fail decode"
             );
         }
+    }
+
+    #[test]
+    fn operation_envelope_rejects_removed_and_unknown_v1_fields() {
+        let envelope = envelope(FederationOperation::MeltQuotePayment(
+            FederationMeltQuotePaymentObservation {
+                quote: "quote-strict-v1".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MeltQuoteState::Paid,
+                amount: Amount::from(1),
+                fee_reserve: Amount::from(1),
+                payment_id: None,
+                payment_proof: Some("preimage".to_string()),
+            },
+        ));
+
+        for (field, removed_value) in [
+            ("failure_reason", json!("route failed")),
+            ("observed_time", json!(42)),
+            ("unknown_v1_field", json!(true)),
+        ] {
+            let mut value = serde_json::to_value(&envelope).expect("operation json");
+            value["operation"]["data"][field] = removed_value;
+            let encoded = serde_json::to_vec(&value).expect("operation bytes");
+            FederationOperationEnvelope::from_json_slice(&encoded)
+                .expect_err("removed operation fields must not survive the v1 cut-through");
+        }
+
+        let mut value = serde_json::to_value(&envelope).expect("operation json");
+        value["unknown_envelope_field"] = json!(true);
+        let encoded = serde_json::to_vec(&value).expect("operation bytes");
+        FederationOperationEnvelope::from_json_slice(&encoded)
+            .expect_err("unknown envelope fields must fail closed");
+    }
+
+    #[test]
+    fn operation_envelope_rejects_removed_restore_variant() {
+        let envelope = envelope(mint_operation(
+            "quote-removed-restore",
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        ));
+        let mut value = serde_json::to_value(&envelope).expect("operation json");
+        value["operation"] = json!({
+            "type": "restore",
+            "data": { "request": { "outputs": [] } }
+        });
+        let encoded = serde_json::to_vec(&value).expect("operation bytes");
+
+        FederationOperationEnvelope::from_json_slice(&encoded)
+            .expect_err("removed restore operation must fail closed");
     }
 
     #[test]

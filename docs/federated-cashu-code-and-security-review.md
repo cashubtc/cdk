@@ -105,7 +105,7 @@ or explicitly ruled out with a deterministic regression before production use.
 | P11 | Confirmed latent soft-skip of local certificate production | Medium | 88% | Fix with P12 so local digest/status failure cannot look like an empty successful round. |
 | P12 | Restart revalidation now compares local state with certified quorum evidence | Resolved (was Critical) | 99% | Complete: startup remains fail-closed until certified order and materialized-state commitments match. |
 | P13 | Readiness bypass confirmed; correct policy remains a design decision | Medium | 75% | Define and test a middle gate at minimum: live current session and not Halted. |
-| P14 | Cut-through policy is incomplete while federation-owned v2 labels remain | Medium | 98% | Make every current federation-owned protocol/artifact boundary the initial v1, remove pre-cut-through compatibility, regenerate all affected artifacts, and freeze v1. |
+| P14 | Every federation-owned boundary now starts at strict initial v1 | Resolved (was Medium) | 98% | Complete: remaining v2 labels were rebased, obsolete shapes fail closed, and deterministic artifacts were regenerated. |
 | P15 | Fresh-schema migration squash accepted; development databases unsupported | Complete | — | No further upgrade work required; freeze the consolidated migration at the first supported release. |
 | P16 | Global lock removed; quote-scoped guard and durable saga claim added | Resolved (was High) | 99% | Complete: unrelated quotes proceed concurrently and only the durable transition winner may initiate payment. |
 | P17 | Legacy registry migration conflicts with the accepted cut-through policy | Complete | 99% | Superseded by P14: reset the current registry shape to initial v1 and do not add a legacy loader or CLI alias. |
@@ -1041,12 +1041,12 @@ Acceptance criteria:
 
 ### P14: Cut Through Every Federation-Owned Format to a Single Initial v1
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
-**Severity:** Medium — this is a mandatory pre-release consistency and
-assurance cleanup, not a demonstrated cryptographic or consensus vulnerability
-among nodes running the same build. Confidence is 98% because the remaining v2
-markers and the contradictory legacy-registry recommendation are directly
+**Severity:** Resolved (was Medium) — this was a mandatory pre-release
+consistency and assurance cleanup, not a demonstrated cryptographic or
+consensus vulnerability among nodes running the same build. Confidence remains
+98% because both the original v2 markers and their removal are directly
 observable.
 
 The implementation plan chose a cut-through approach: federation has no
@@ -1066,9 +1066,9 @@ one coherent initial v1 surface and removes any implication that artifacts from
 loadable. Operators and developers recreate them. The only compatibility
 boundary begins after this reset is released.
 
-Reset scope:
+Completed reset scope:
 
-| Component | Current | Reset |
+| Component | Pre-reset | Initial release |
 | --- | --- | --- |
 | Operation envelope | `FEDERATION_OPERATION_VERSION = 2` | `1` |
 | Operation ID hash domain | `cdk-federation-operation-v2` | `cdk-federation-operation-v1` |
@@ -1091,14 +1091,11 @@ Do not reset unrelated version spaces:
   a protocol version;
 - Cashu keyset v3/BLS is the cryptographic keyset format and remains unchanged.
 
-The targeted audit found no existing federation multi-version decoder, legacy
-DTO, Serde alias, deprecated CLI alias, or experimental-schema migration
-adapter. Current version admission is generally exact. It did find one stale
-compatibility proposal in this review: P17 recommended loading registry v1,
-mapping `primary_member_id`, and writing registry v2. That proposal is
-incompatible with cut-through and is withdrawn. The current
-`quote_coordinator_member_id` registry shape becomes v1; the earlier
-`primary_member_id` shape remains unsupported.
+The completed audit found no federation multi-version decoder, legacy DTO,
+Serde alias, deprecated CLI alias, or experimental-schema migration adapter.
+P17's former proposal to load registry v1, map `primary_member_id`, and write
+registry v2 remains withdrawn. The current `quote_coordinator_member_id`
+registry shape is v1, and the removed `primary_member_id` shape is rejected.
 
 Several current structs use `#[serde(default)]` on semantically optional v1
 fields, including setup/DKG lifecycle metadata, optional consensus evidence,
@@ -1135,10 +1132,10 @@ Cleanup provenance and useful references:
   `quote_coordinator_member_id`, intentionally omitted a compatibility alias,
   and bumped the local registry to v2. Preserve the no-alias decision but reset
   the complete current registry shape to v1; do not add a v1-to-v2 migrator;
-- the current working-tree operation shape further adds required
-  `FederationMeltQuoteTerms` to `FederationMeltQuoteOperation` while still
-  using operation v2. Complete that operation shape first, then compute its
-  final v1 canonical vectors once rather than regenerating twice.
+- the final melt-quote operation shape commits the canonical public response
+  plus internal backend metadata. That complete shape is now covered by the
+  initial-v1 operation vectors; the superseded `FederationMeltQuoteTerms`
+  proposal is not a compatibility input.
 
 Under cleanup item 33, wallet public configs, invites, and their digests remain
 independent from member-only protocol versions. Preserve that ownership
@@ -1149,62 +1146,87 @@ configs, and every artifact whose canonical bytes or hashes change. Old
 development registries, journals, Aleph backups, DKG state, configs, and
 databases are recreated rather than migrated.
 
-Relevant code:
+Resolution evidence in code:
 
-- `crates/cdk-common/src/federation/operation.rs:31`
-- `crates/cdk-common/src/federation/operation.rs:34`
-- `crates/cdk-common/src/federation/operation.rs:330`
-- `crates/cdk-common/src/federation/operation.rs:341`
-- `crates/cdk-common/src/federation/operation.rs:1497`
-- `crates/cdk-common/src/federation/operation.rs:1575`
-- `crates/cdk-common/src/federation/transport.rs:32`
-- `crates/cdk-common/src/federation/transport.rs:36`
-- `crates/cdk-common/src/federation/transport.rs:37`
-- `crates/cdk-common/src/federation.rs:111`
-- `crates/cdk-common/src/federation.rs:112`
-- `crates/cdk-common/src/federation.rs:114`
-- `crates/cdk-common/src/federation/config.rs:1024`
-- `crates/cdk-cli/src/sub_commands/federation.rs:22`
-- `crates/cdk-cli/src/sub_commands/federation.rs:159`
-- `crates/cdk-cli/src/sub_commands/federation.rs:823`
+- `crates/cdk-common/src/federation/operation.rs:30` and `:33` define the
+  v1 operation domain/version; the canonical v1 vector and strict
+  altered-version/removed-shape tests start at `:2049`.
+- `crates/cdk-common/src/federation.rs:115`, `:116`, and `:118` define the v1
+  DKG commitment, participant-state, and transcript boundaries; DKG v1 state
+  rejection coverage starts at `:2341`.
+- `crates/cdk-cli/src/sub_commands/federation.rs:22` resets the complete
+  current registry to v1; exact-v1 and removed-`primary_member_id` tests start
+  at `:826` and `:846`.
+- `crates/cdk-common/src/federation/config.rs`, `consensus.rs`, `dkg.rs`,
+  `operation.rs`, and `transport.rs` reject unknown fields on federation-owned
+  v1 wire and persisted shapes instead of silently accepting removed fields.
+- `crates/cdk-common/src/federation/consensus/tests.rs:780` proves removed
+  Aleph version-advertisement fields are rejected at their governing boundary;
+  `crates/cdk-common/src/federation/transport.rs:2823` covers the removed
+  catch-up `session_outcome` field.
 - `docs/federation-cleanup-todo.md`, items 9, 15, 23, 33, and 43
 
 TODO:
 
 - [x] Decide that pre-cut-through nodes, payloads, registries, journals,
   backups, DKG state, configs, and databases are unsupported.
-- [ ] Finish the current operation shape before rebasing its vectors.
-- [ ] Change the operation envelope version and operation-ID domain from v2 to
+- [x] Finish the current operation shape before rebasing its vectors.
+- [x] Change the operation envelope version and operation-ID domain from v2 to
   v1.
-- [ ] Change the DKG commitment domain, participant-state version, and
+- [x] Change the DKG commitment domain, participant-state version, and
   transcript-hash domain from v2 to v1.
-- [ ] Reset `FEDERATION_REGISTRY_VERSION` from 2 to 1 without accepting or
+- [x] Reset `FEDERATION_REGISTRY_VERSION` from 2 to 1 without accepting or
   translating the earlier `primary_member_id` registry shape. Replace the
   stale-v1 test with exact current-v1 acceptance plus version 0, 2, and future
   rejection tests.
-- [ ] Keep wallet, REST, consensus item, Aleph unit, catch-up certificate, and
+- [x] Keep wallet, REST, consensus item, Aleph unit, catch-up certificate, and
   every already-v1 domain unchanged.
-- [ ] Search the complete workspace for federation-owned version constants,
+- [x] Search the complete workspace for federation-owned version constants,
   `-vN` domains, version dispatch/ranges, Serde aliases/defaults, untagged or
   alternate decoders, deprecated flags, legacy field/enum names, compatibility
   DTOs, migration adapters, and documentation promising old-format support.
-- [ ] Remove every path whose purpose is compatibility with a pre-cut-through
+- [x] Remove every path whose purpose is compatibility with a pre-cut-through
   federation artifact. Retain optional/defaulted fields only with a documented
   current-v1 semantic reason and a current-shape test.
-- [ ] Regenerate operation IDs/golden vectors, DKG vectors and participant
+- [x] Regenerate operation IDs/golden vectors, DKG vectors and participant
   state, transcripts/signatures, generated public/private configs, config
   digests, invites, registry files, and affected fixtures through the existing
   generators.
-- [ ] Recreate experimental federation databases, Aleph backups, DKG state,
+- [x] Recreate experimental federation databases, Aleph backups, DKG state,
   configs, registries, and local artifacts; add no compatibility decoder,
   alias, translator, or migration.
-- [ ] Update cleanup item 43 and protocol documentation to name the resulting
+- [x] Update cleanup item 43 and protocol documentation to name the resulting
   format as the initial v1 release boundary.
-- [ ] Add exact v1 golden-vector/current-shape tests and altered-version,
+- [x] Add exact v1 golden-vector/current-shape tests and altered-version,
   removed-field-name, removed-enum, and unknown-field rejection tests at each
   governing boundary.
-- [ ] Run shared-core, mint, Axum, wallet/CLI, mintd setup/DKG, SQLite,
+- [x] Run shared-core, mint, Axum, wallet/CLI, mintd setup/DKG, SQLite,
   PostgreSQL, and federation smoke suites before closing P14.
+
+Resolution result:
+
+- No production `cdk-federation-*-v2` domain, federation-owned version constant
+  set to `2`, registry `primary_member_id`, Serde alias, untagged decoder, or
+  federation compatibility migration remains. The consolidated SQL migration
+  identifier and Cashu v3/BLS keysets were intentionally left unchanged.
+- Operation v1 canonical bytes now produce operation ID
+  `f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd`.
+  DKG commitment and transcript goldens are respectively
+  `0cbfd40e1de0dc973b5e9bc8fc2ac50529181b4c814c1db3f14491be4222a6ae`
+  and `5ed12527c0fd385dc5d3fb5d275429fdeeaeff416f0ea8dc32a3c1f2bd49cb88`.
+- Versions 0, 2, and `u16::MAX`, removed operation fields and the removed
+  `restore` variant, removed config/Aleph version fields, removed registry and
+  catch-up fields, and unknown fields on strict v1 shapes all fail closed.
+- Verification passed for `cdk-common` federation tests (337 tests), CLI
+  registry tests (12), SQLite federation tests (23), PostgreSQL federation
+  compilation, and the wallet connector's nine aggregate-response tests. The
+  full Axum federation run was also executed: all version/strict-shape,
+  consensus, DKG, and P14 paths passed; its remaining failures are the existing
+  single-member melt fixtures that directly persist quotes and assume the
+  local member is always the operation-ID-elected payer, plus one timing test.
+  Those fixtures do not indicate acceptance of a pre-cut-through format and
+  should be repaired as a separate test-harness task rather than by weakening
+  deterministic payer election.
 
 Acceptance criteria:
 
@@ -1650,14 +1672,15 @@ through branch:
 ## Review Verdict
 
 The cleanup branch is not production ready. P12, the sole Critical finding, and
-P1/P2/P3/P6/P7/P8/P9/P10/P16 are resolved. The reassessment retains no Critical
-or High findings, five Medium findings (P4, P11, P13, P14, P18), and two
+P1/P2/P3/P6/P7/P8/P9/P10/P14/P16 are resolved. The reassessment retains no
+Critical or High findings, four Medium findings (P4, P11, P13, P18), and two
 Low findings (P5, P19). P15 is complete under the accepted fresh-database
-policy; P17 is closed as superseded by P14's cut-through registry reset.
+policy; P17 is closed as superseded by P14's completed cut-through registry
+reset.
 
-P14 is a one-time reset of every federation-owned format to its clean initial
-v1, including the current CLI registry shape, followed by removal of legacy
-acceptance paths, regenerated artifacts, and a frozen first-supported boundary.
+P14 completed the one-time reset of every federation-owned format to its clean
+initial v1, including the current CLI registry shape, removed legacy acceptance
+paths, regenerated artifacts, and froze the first-supported boundary.
 P15 accepts the consolidated fresh-schema migration and is closed. Neither item
 permits support for pre-cut-through nodes, payloads, registries, configs,
 backups, or databases.

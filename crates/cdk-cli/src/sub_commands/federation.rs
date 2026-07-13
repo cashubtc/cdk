@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils::set_federation_registry;
 
-const FEDERATION_REGISTRY_VERSION: u16 = 2;
+const FEDERATION_REGISTRY_VERSION: u16 = 1;
 const FEDERATION_REGISTRY_FILE: &str = "federations.json";
 
 /// Federation-aware wallet commands.
@@ -116,6 +116,7 @@ impl FederationAddSubCommand {
 
 /// Persistent public federation wallet registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationWalletRegistry {
     /// Sidecar schema version.
     pub version: u16,
@@ -204,6 +205,7 @@ impl FederationWalletRegistry {
 
 /// Public metadata needed by the CLI to reopen a federation wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoredFederationWallet {
     /// Mint URL used by existing CLI wallet and token flows.
     pub local_mint_url: MintUrl,
@@ -304,6 +306,7 @@ impl StoredFederationWallet {
 
 /// Persisted wallet-side federation request policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoredFederationConnectorPolicy {
     /// Preferred member for the first quote-creation attempt.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -820,19 +823,41 @@ mod tests {
     }
 
     #[test]
-    fn registry_rejects_pre_coordinator_registry_version() {
-        let registry = FederationWalletRegistry {
-            version: 1,
-            wallets: Vec::new(),
-        };
+    fn registry_accepts_only_current_v1_shape() {
+        let registry = FederationWalletRegistry::default();
+        assert_eq!(registry.version, 1);
+        registry.validate().expect("current v1 registry");
 
-        let err = registry
-            .validate()
-            .expect_err("stale registry version rejected");
+        for version in [0, 2, u16::MAX] {
+            let registry = FederationWalletRegistry {
+                version,
+                wallets: Vec::new(),
+            };
+            let err = registry
+                .validate()
+                .expect_err("non-v1 registry version rejected");
+            assert!(err
+                .to_string()
+                .contains("Unsupported federation registry version"));
+        }
+    }
 
-        assert!(err
-            .to_string()
-            .contains("Unsupported federation registry version"));
+    #[test]
+    fn registry_rejects_removed_primary_member_field() {
+        let mut value = serde_json::to_value(FederationWalletRegistry {
+            version: FEDERATION_REGISTRY_VERSION,
+            wallets: vec![StoredFederationWallet {
+                local_mint_url: MintUrl::from_str("https://wallet.example.com")
+                    .expect("local mint url"),
+                public_config: valid_public_config(),
+                connector_policy: StoredFederationConnectorPolicy::default(),
+            }],
+        })
+        .expect("registry json");
+        value["wallets"][0]["connector_policy"]["primary_member_id"] = serde_json::json!(1);
+
+        serde_json::from_value::<FederationWalletRegistry>(value)
+            .expect_err("removed primary_member_id must not be accepted as current v1");
     }
 
     #[test]

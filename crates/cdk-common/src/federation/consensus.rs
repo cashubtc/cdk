@@ -131,6 +131,7 @@ impl<'de> Deserialize<'de> for FederationAlephBftUnitBodyHash {
 /// The payload deliberately remains CDK-specific: AlephBFT orders units, while
 /// the unit body carries already-versioned CDK consensus items.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationAlephBftUnitPayload {
     /// AlephBFT unit payload version.
     pub version: u16,
@@ -358,7 +359,12 @@ pub struct FederationAlephBftPendingOperationRecord {
 
 /// One item that can enter the federation consensus pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum FederationConsensusItem {
     /// A canonical Cashu mint operation envelope.
     Operation(FederationOperationEnvelope),
@@ -502,6 +508,7 @@ impl FederationVerifiedOperationAdmission {
 
 /// Module-defined fact to order through consensus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationConsensusModuleFact {
     /// Item format version.
     pub version: u16,
@@ -537,6 +544,7 @@ impl FederationConsensusModuleFact {
 
 /// Generic consensus item for forward-compatible item classes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationConsensusDefaultItem {
     /// Item format version.
     pub version: u16,

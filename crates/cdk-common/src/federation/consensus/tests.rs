@@ -779,6 +779,12 @@ fn aleph_bft_unit_payload_commits_to_ordered_items_and_operation_ids() {
     let payload_json = serde_json::to_value(&payload).expect("payload json");
     assert!(payload_json.get("protocol_versions").is_none());
     assert!(payload_json.get("consensus_item_version").is_none());
+    for field in ["protocol_versions", "consensus_item_version"] {
+        let mut obsolete = payload_json.clone();
+        obsolete[field] = json!({ "operation": 1 });
+        serde_json::from_value::<FederationAlephBftUnitPayload>(obsolete)
+            .expect_err("removed Aleph unit protocol metadata must fail closed");
+    }
     assert_eq!(payload.body_hash, same_payload.body_hash);
     assert_eq!(
         payload.canonical_bytes().expect("payload canonical bytes"),

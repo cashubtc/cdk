@@ -1522,11 +1522,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "3e69f5d33d1efbea007002834b3e38494955c9632271b649d6df8c3c0463434d"
+            "86ce84592b3d0d4795d01d661a8e4153b3f17310b9c867469ab57adc5b38693d"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "8af3ca0fdcced73cd382fb48d0c17c67f5a3697e89396c6aa9080fd3da855fdf"
+            "7758c9373ff30295b5f4c8c682b18a61cebfd1e136f4816d5c300293334b6cfd"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

@@ -112,10 +112,10 @@ use crate::{Amount, CurrencyUnit, Id};
 
 const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
 const FEDERATION_CONFIG_DIGEST_VERSION: &[u8] = b"cdk-federation-config-digest-v1";
-const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v2";
-const FEDERATION_DKG_PARTICIPANT_STATE_VERSION: u16 = 2;
+const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v1";
+const FEDERATION_DKG_PARTICIPANT_STATE_VERSION: u16 = 1;
 const FEDERATION_DKG_PUBLIC_CEREMONY_VERSION: u16 = 1;
-const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v2";
+const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-transcript-signature-v1";
 const FEDERATION_KEYSET_ROTATION_PROOF_VERSION: &[u8] = b"cdk-federation-keyset-rotation-pop-v1";
@@ -1868,6 +1868,19 @@ mod tests {
     }
 
     #[test]
+    fn federation_config_rejects_removed_member_protocol_fields() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+
+        for field in ["protocol_versions", "consensus_item_version"] {
+            let mut json = serde_json::to_value(&config).expect("config json");
+            json[field] = serde_json::json!({ "operation": 1 });
+            serde_json::from_value::<FederationConfig>(json)
+                .expect_err("removed member protocol metadata must fail closed");
+        }
+    }
+
+    #[test]
     fn federation_config_rejects_missing_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
@@ -2052,6 +2065,10 @@ mod tests {
             .get(&member_id(1))
             .expect("member commitment")
             .commitment_hash;
+        assert_eq!(
+            commitment_hash.to_hex(),
+            "0cbfd40e1de0dc973b5e9bc8fc2ac50529181b4c814c1db3f14491be4222a6ae"
+        );
         let hash_json = serde_json::to_string(&commitment_hash).expect("hash json");
         assert_eq!(
             serde_json::from_str::<FederationDkgCommitmentHash>(&hash_json)
@@ -2321,6 +2338,47 @@ mod tests {
     }
 
     #[test]
+    fn dkg_participant_state_accepts_only_current_v1_shape() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let setup_config =
+            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let keyset_spec = FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            7,
+            Some(1_900_000_000),
+            [Amount::from(1), Amount::from(2), Amount::from(4)]
+                .into_iter()
+                .collect(),
+        )
+        .expect("keyset spec");
+
+        let state = FederationDkgParticipantState::generate(
+            &setup_config,
+            dkg_ceremony_id(),
+            member_id(1),
+            keyset_spec.clone(),
+        )
+        .expect("participant state");
+        let state_json = serde_json::to_value(&state).expect("participant state json");
+        assert_eq!(state_json["version"], serde_json::json!(1));
+        for version in [0, 2, u16::MAX] {
+            let mut unsupported = state_json.clone();
+            unsupported["version"] = serde_json::json!(version);
+            let unsupported = serde_json::from_value::<FederationDkgParticipantState>(unsupported)
+                .expect("complete non-v1 state decodes before semantic validation");
+            unsupported
+                .validate(&setup_config)
+                .expect_err("non-v1 participant state must fail closed");
+        }
+        let mut unknown = state_json;
+        unknown["unknown_state_field"] = serde_json::json!(true);
+        serde_json::from_value::<FederationDkgParticipantState>(unknown)
+            .expect_err("unknown participant state fields must fail closed");
+    }
+
+    #[test]
     fn dealer_free_dkg_participants_derive_same_five_member_keyset_after_reload() {
         let params = ThresholdParams::with_bft_consensus(5, 3).expect("params");
         let members = test_roster_with_count(5);
@@ -2556,6 +2614,10 @@ mod tests {
             &dkg_transcript_private_configs(&public_config),
         )
         .expect("pedersen DKG transcript");
+        assert_eq!(
+            transcript.transcript_hash.to_hex(),
+            "5ed12527c0fd385dc5d3fb5d275429fdeeaeff416f0ea8dc32a3c1f2bd49cb88"
+        );
         assert_eq!(
             transcript.payload.setup_method,
             FederationDkgSetupMethod::PedersenDkg

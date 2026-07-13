@@ -32,6 +32,7 @@ use crate::{Amount, CurrencyUnit, Id, PublicKey};
 
 /// Public DKG-derived keyset plus one member's local secret BLS shares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgMemberKeysetShare {
     /// Federation roster this completed DKG keyset belongs to.
     pub federation_id: FederationId,
@@ -240,6 +241,7 @@ impl<'de> Deserialize<'de> for FederationDkgCeremonyId {
 /// when members disagree about the unit, fees, expiry, activation state, or
 /// supported denominations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgKeysetSpec {
     /// Keyset currency unit.
     pub unit: CurrencyUnit,
@@ -328,6 +330,7 @@ impl FederationDkgCeremonyState {
 
 /// Durable operator and driver record for one dealer-free DKG ceremony.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgCeremonyRecord {
     /// Federation roster and threshold this ceremony belongs to.
     pub federation_id: FederationId,
@@ -494,6 +497,7 @@ impl<'de> Deserialize<'de> for FederationDkgCommitmentHash {
 
 /// A member's pre-reveal DKG commitment hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgParticipantCommitment {
     /// Federation roster hash this commitment belongs to.
     pub federation_id: FederationId,
@@ -574,6 +578,7 @@ impl FederationDkgParticipantCommitment {
 
 /// Revealed public DKG polynomial commitments for one participant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgParticipantCommitmentReveal {
     /// Federation roster hash this reveal belongs to.
     pub federation_id: FederationId,
@@ -707,6 +712,7 @@ impl FederationDkgParticipantCommitmentReveal {
 /// already-evaluated per-recipient contributions remain in this state; the
 /// polynomial coefficients are dropped and zeroized before generation returns.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgParticipantState {
     version: u16,
     federation_id: FederationId,
@@ -934,6 +940,7 @@ impl FederationDkgParticipantState {
 
 /// DKG commitment round collected before participants reveal public commitments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgCommitmentRound {
     /// Federation roster hash for this setup round.
     pub federation_id: FederationId,
@@ -1276,6 +1283,7 @@ impl FederationDkgCommitmentRound {
 /// exchange and deterministically rederive the aggregate keyset and all public
 /// member shares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgPublicCeremony {
     /// Public ceremony record format version.
     pub version: u16,
@@ -1375,6 +1383,7 @@ fn dkg_participant_secret_share(
 
 /// In-memory DKG setup state collected from authenticated member setup messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgSetupState {
     /// Federation roster hash for this setup state.
     pub federation_id: FederationId,
@@ -1792,6 +1801,7 @@ pub enum FederationDkgSetupMethod {
 
 /// Public keyset material committed by a DKG/setup transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgKeysetTranscript {
     /// Federated keyset ID.
     pub keyset_id: Id,
@@ -1834,6 +1844,7 @@ impl FederationDkgKeysetTranscript {
 
 /// Public, signed DKG/setup transcript payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgTranscriptPayload {
     /// Setup method used to derive the public key material.
     pub setup_method: FederationDkgSetupMethod,
@@ -1853,6 +1864,7 @@ pub struct FederationDkgTranscriptPayload {
 
 /// Signed public DKG/setup transcript for audit and recovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgTranscript {
     /// Public transcript payload.
     pub payload: FederationDkgTranscriptPayload,

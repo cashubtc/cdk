@@ -10,11 +10,10 @@ use bip39::Mnemonic;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationConfig, FederationError,
     FederationId, FederationInvite, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationMeltQuoteMetadata, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, InMemoryFederationJournal, MemberId, ThresholdParams,
+    TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
-use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey};
 use cdk_common::nuts::nut02::KeySet;
@@ -1074,35 +1073,49 @@ async fn persist_paid_mint_quote_to_federation(
     }
 }
 
-async fn add_unpaid_bolt11_melt_quote(
-    mint: &Mint,
+async fn persist_unpaid_bolt11_melt_quote_to_federation(
+    mints: &[Arc<Mint>],
+    config: &FederationRuntimeConfig,
+    journal: &Arc<tokio::sync::Mutex<InMemoryFederationJournal>>,
     quote_id: &QuoteId,
     invoice: &Bolt11Invoice,
     amount: u64,
     expiry: u64,
 ) {
-    let amount = Amount::new(amount, CurrencyUnit::Sat);
-    let quote = MeltQuote::new(
-        Some(quote_id.clone()),
-        MeltPaymentRequest::Bolt11 {
-            bolt11: invoice.clone(),
-        },
-        CurrencyUnit::Sat,
-        amount,
-        Amount::new(1, CurrencyUnit::Sat),
+    let request = MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        request: invoice.clone(),
+        unit: CurrencyUnit::Sat,
+        options: None,
+    });
+    let response = MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
+        quote: quote_id.clone(),
+        amount: Amount::from(amount),
+        fee_reserve: Amount::from(1),
+        state: MeltQuoteState::Unpaid,
         expiry,
-        Some(PaymentIdentifier::PaymentHash(
+        payment_preimage: None,
+        change: None,
+        request: Some(invoice.to_string()),
+        unit: Some(CurrencyUnit::Sat),
+    });
+    let metadata = FederationMeltQuoteMetadata {
+        request_lookup_id: Some(PaymentIdentifier::PaymentHash(
             *invoice.payment_hash().as_ref(),
         )),
-        None,
-        PaymentMethod::Known(KnownMethod::Bolt11),
-        None,
-        None,
-    );
-    let localstore = mint.localstore();
-    let mut tx = localstore.begin_transaction().await.expect("begin tx");
-    tx.add_melt_quote(quote).await.expect("add melt quote");
-    tx.commit().await.expect("commit melt quote");
+        extra_json: None,
+        estimated_blocks: None,
+    };
+    let entry = {
+        let mut journal = journal.lock().await;
+        appended_entry(
+            &mut journal,
+            config.melt_quote_operation(quote_id, request, response, metadata),
+        )
+    };
+
+    for mint in mints {
+        persist_and_apply_entry(mint, &entry).await;
+    }
 }
 
 async fn fake_wallet_member_connectors_with_melt_quote(
@@ -1118,14 +1131,6 @@ async fn fake_wallet_member_connectors_with_melt_quote(
     let melt_expiry = unix_time() + 10_000;
     for member_id in bundle.public_config.members.keys().copied() {
         let mint = Arc::new(create_fake_wallet_member_mint(bundle, member_id).await);
-        add_unpaid_bolt11_melt_quote(
-            mint.as_ref(),
-            melt_quote_id,
-            melt_invoice,
-            melt_amount,
-            melt_expiry,
-        )
-        .await;
         member_mints.insert(member_id, mint);
     }
 
@@ -1137,6 +1142,16 @@ async fn fake_wallet_member_connectors_with_melt_quote(
         .federation_config()
         .expect("federation config")
         .clone();
+    persist_unpaid_bolt11_melt_quote_to_federation(
+        &federation_mints,
+        &federation_config,
+        &federation_journal,
+        melt_quote_id,
+        melt_invoice,
+        melt_amount,
+        melt_expiry,
+    )
+    .await;
     persist_paid_mint_quote_to_federation(
         &federation_mints,
         &federation_config,
@@ -1175,8 +1190,6 @@ async fn rotated_fake_wallet_member_connectors_with_state(
 
     for member_id in [member_id(1), member_id(2), member_id(3)] {
         let mint = Arc::new(create_fake_wallet_member_mint(bundle, member_id).await);
-        add_unpaid_bolt11_melt_quote(&mint, melt_quote_id, melt_invoice, melt_amount, melt_expiry)
-            .await;
         member_mints.insert(member_id, mint);
     }
 
@@ -1188,6 +1201,16 @@ async fn rotated_fake_wallet_member_connectors_with_state(
         .federation_config()
         .expect("federation config")
         .clone();
+    persist_unpaid_bolt11_melt_quote_to_federation(
+        &federation_mints,
+        &config,
+        &federation_journal,
+        melt_quote_id,
+        melt_invoice,
+        melt_amount,
+        melt_expiry,
+    )
+    .await;
     persist_paid_mint_quote_to_federation(
         &federation_mints,
         &config,

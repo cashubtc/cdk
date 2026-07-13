@@ -2785,7 +2785,7 @@ variability, and can conceal missed wakeups or ordering races.
 
 ## 43. Cut through every federation-owned format to initial version 1
 
-**Status:** Todo (reopened 2026-07-13)
+**Status:** Completed (2026-07-13)
 
 ### Decision
 
@@ -2893,6 +2893,33 @@ inconsistent about whether the first operation encoding is v1 or v2.
   unchanged, and search the whole workspace for stale v2 labels, obsolete
   aliases/defaults/DTOs/version branches, compatibility wording, and unlisted
   federation version constants before marking this item complete.
+
+### Result
+
+- Reset the operation envelope and operation-ID domain, DKG commitment domain,
+  persisted participant-state version, DKG transcript domain, and complete
+  current CLI registry shape to v1. Wallet metadata and every already-v1
+  boundary remained independent and unchanged.
+- Made federation-owned current-v1 DTOs reject unknown fields. Exact current
+  shapes remain usable, while version 0, version 2, future versions, removed
+  `failure_reason` / `observed_time` / `primary_member_id` /
+  `protocol_versions` / `consensus_item_version` / `session_outcome` fields,
+  and the removed `restore` operation fail closed.
+- Regenerated and froze operation, journal-order, DKG commitment, and DKG
+  transcript vectors. Current registry v1 round trips without an alias or
+  translator for the discarded registry shape.
+- A workspace search found no production federation-owned v2 domain/version,
+  compatibility decoder, Serde alias, untagged alternate decoder, deprecated
+  federation flag, or upgrade migration. The SQL migration timestamp and Cashu
+  v3/BLS keyset version remain in their unrelated version spaces.
+- Focused verification passed in `cdk-common`, `cdk-cli`, `cdk-sqlite`, the
+  PostgreSQL federation build, and wallet federation aggregation. The complete
+  Axum federation run was executed as an additional audit: its strict-v1,
+  consensus, DKG, and protocol-boundary coverage passed. Remaining failures
+  are stale single-member melt fixtures that bypass ordered quote creation and
+  assume the local member is always the deterministically elected payer, plus
+  one timing-sensitive live-session test; weakening production election is not
+  an acceptable fix for that separate harness debt.
 
 ## 44. Reserve response waiters before durable pending admission
 

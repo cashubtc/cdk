@@ -99,6 +99,7 @@ impl FederationRestMessageKind {
 
 /// Signed probe confirming a member is ready for one exact DKG ceremony.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgReadinessRequest {
     /// Federation whose members are preparing the ceremony.
     pub federation_id: FederationId,
@@ -359,6 +360,7 @@ enum FederationRestSigningMode {
 
 /// Signed private REST request between two federation members.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationSignedRequest<T> {
     /// Private REST payload version.
     pub version: u16,
@@ -718,6 +720,7 @@ impl FederationRestSequenceWindow {
 
 /// Signed payload used to request a peer status snapshot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationPeerStatusRequest {
     /// Include per-row materialized state fingerprints for operator diffing.
     pub include_materialized_rows: bool,
@@ -735,6 +738,7 @@ impl FederationPeerStatusRequest {
 
 /// Signed request payload carrying one member's pre-reveal DKG commitment hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgCommitmentRequest {
     /// DKG commitment being shared by the signed sender.
     pub commitment: FederationDkgParticipantCommitment,
@@ -777,6 +781,7 @@ impl FederationDkgCommitmentRequest {
 
 /// Signed request payload revealing one member's DKG public commitments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgRevealRequest {
     /// DKG reveal being shared by the signed sender.
     pub reveal: FederationDkgParticipantCommitmentReveal,
@@ -838,6 +843,7 @@ impl FederationDkgRevealRequest {
 
 /// Signed request payload carrying one participant's private DKG contributions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgSecretShareRequest {
     /// Federation whose DKG round this contribution belongs to.
     pub federation_id: FederationId,
@@ -957,6 +963,7 @@ impl FederationDkgSecretShareRequest {
 
 /// Signed request payload carrying one member's DKG/setup transcript signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgTranscriptSignatureRequest {
     /// Federation whose transcript is being signed.
     pub federation_id: FederationId,
@@ -1009,6 +1016,7 @@ impl FederationDkgTranscriptSignatureRequest {
 
 /// Signed confirmation that one member assembled the exact finalized DKG config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgActivationRequest {
     /// Federation whose finalized configuration is being confirmed.
     pub federation_id: FederationId,
@@ -1233,6 +1241,7 @@ fn dkg_activation_signing_hash(
 
 /// Response acknowledging a validated DKG setup payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationDkgSetupResponse {
     /// Private REST payload version.
     pub version: u16,
@@ -1309,6 +1318,7 @@ impl FederationDkgSetupResponse {
 
 /// Aggregated invalid-operation alert counters exposed to federation operators.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationInvalidOperationAlertSummary {
     /// Redacted source category, such as `auth_token` or `client_ip`.
     pub source: String,
@@ -1324,6 +1334,7 @@ pub struct FederationInvalidOperationAlertSummary {
 
 /// Detailed private federation member status used by operator tooling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationLocalStatusResponse {
     /// Private REST payload version.
     pub version: u16,
@@ -1391,6 +1402,7 @@ pub struct FederationLocalStatusResponse {
 
 /// Peer status response for federation health and catch-up checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationPeerStatus {
     /// Private REST payload version.
     pub version: u16,
@@ -1498,6 +1510,7 @@ fn ensure_dkg_payload_sender(payload_member: MemberId, sender: MemberId) -> Resu
 
 /// Request to submit an operation envelope to a federation peer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationSubmitOperationRequest {
     /// Operation envelope proposed for consensus.
     pub envelope: FederationOperationEnvelope,
@@ -1523,6 +1536,7 @@ impl FederationSubmitOperationRequest {
 
 /// Response to an operation submit request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationSubmitOperationResponse {
     /// Submitted operation ID.
     pub operation_id: FederationOperationId,
@@ -1586,6 +1600,7 @@ impl FederationSubmitOperationResponse {
 
 /// Signed control request that wakes one idle AlephBFT live session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationAlephBftActivityRequest {
     /// AlephBFT session containing the newly admitted operation.
     pub session_id: u64,
@@ -1606,6 +1621,7 @@ impl FederationAlephBftActivityRequest {
 
 /// Response acknowledging one authenticated AlephBFT activity request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationAlephBftActivityResponse {
     /// Private REST payload version.
     pub version: u16,
@@ -1671,6 +1687,7 @@ impl FederationAlephBftActivityResponse {
 
 /// Request to deliver one opaque AlephBFT network message to a federation peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationAlephBftNetworkMessageRequest {
     /// AlephBFT session this message belongs to.
     pub session_id: u64,
@@ -1710,6 +1727,7 @@ impl FederationAlephBftNetworkMessageRequest {
 
 /// Response to an opaque AlephBFT network-message delivery request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationAlephBftNetworkMessageResponse {
     /// Private REST payload version.
     pub version: u16,
@@ -1761,6 +1779,7 @@ impl FederationAlephBftNetworkMessageResponse {
 
 /// Request journal entries starting at the next missing index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationJournalCatchUpRequest {
     /// First missing zero-based journal index.
     pub next_index: u64,
@@ -2040,6 +2059,7 @@ impl FederationCatchUpCertificate {
 
 /// Catch-up response containing finalized history and compact application metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationJournalCatchUpResponse {
     /// Private REST payload version.
     pub version: u16,
@@ -2796,6 +2816,11 @@ mod tests {
         assert!(!operation.contains_key("consensus_evidence"));
         let mut obsolete_response = encoded_response.clone();
         obsolete_response["entries"][0]["envelope"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<FederationJournalCatchUpResponse>(obsolete_response).is_err()
+        );
+        let mut obsolete_response = encoded_response.clone();
+        obsolete_response["session_outcome"] = serde_json::Value::Null;
         assert!(
             serde_json::from_value::<FederationJournalCatchUpResponse>(obsolete_response).is_err()
         );

@@ -286,6 +286,7 @@ impl<'de> Deserialize<'de> for MemberId {
 
 /// Federation threshold settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThresholdParams {
     /// Number of federation members.
     pub member_count: u16,
@@ -525,6 +526,7 @@ impl FederationPaymentVerificationPolicy {
 
 /// Public configuration for one federation member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemberConfigPublic {
     /// Stable federation member ID.
     pub member_id: MemberId,
@@ -558,6 +560,7 @@ impl MemberConfigPublic {
 
 /// Public aggregate keyset plus every member's public BLS shares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederatedKeyset {
     /// Cashu keyset ID derived from the aggregate public keys.
     pub id: Id,
@@ -878,6 +881,7 @@ impl FederatedKeyset {
 
 /// Public federation config shared by every member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationConfig {
     /// Stable federation roster ID.
     pub federation_id: FederationId,
@@ -1329,6 +1333,7 @@ impl FederationConfig {
 
 /// Private federation config stored by one local member.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemberConfigPrivate {
     /// Final federation roster hash this private config belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1490,6 +1495,7 @@ impl MemberConfigPrivate {
 /// derive member HTTP connectors from the public mint URLs already committed to
 /// that config, then validate aggregate keysets against live member responses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationInvite {
     /// Invite payload version.
     pub version: u16,
@@ -1577,6 +1583,7 @@ impl FromStr for FederationInvite {
 /// config and a digest so a member does not accidentally reuse a database with
 /// a different federation roster, keyset set, policy, or protocol version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationConfigSnapshot {
     /// Federation ID derived from the static roster.
     pub federation_id: FederationId,
