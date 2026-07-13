@@ -501,7 +501,7 @@ impl FederationNodeRuntime {
             return;
         };
 
-        if quorum.operation_count < operation_count {
+        if quorum.operation_count != operation_count {
             self.finish_startup_revalidation(
                 &initial_status,
                 FederationSyncStatus::VerifyingCatchUpCertificate {

@@ -115,7 +115,37 @@ or explicitly ruled out with a deterministic regression before production use.
 There are no remaining Critical or High findings. P5 should not remain an open
 broad transaction-refactor request in its current wording.
 
-## Open Findings
+### Critical/High Resolution Design Audit
+
+The resolved Critical/High findings were re-reviewed against their original
+failure modes, current code, and focused regressions. "Best" below means the
+smallest design that makes the safety authority durable and unambiguous within
+the current CDK architecture, not the largest possible rewrite.
+
+| Finding | Design verdict | Assessment and remaining boundary |
+| --- | --- | --- |
+| P6 | Best practical fix | Reserving an RAII waiter before persistence removes the demonstrated error path without a compensating delete. Publishing the already-built consensus clone immediately after commit leaves no further application-level cancellation point, and restart reconstruction handles process loss after durable commit. A dedicated durable admission actor/outbox could also reconcile ambiguous database-driver cancellation, but would be a much broader architecture for no demonstrated safety gain here. |
+| P7 | Best available fix | The active marker is the serialization point for both insertion and advancement. One SQL transaction locks it, validates every pending envelope/ID, rejects future rows, and atomically rebinds older rows. This is stronger and simpler than an in-memory repair loop or a second migration table. Its linear scan occurs only on session advancement and is appropriate for the bounded pending set. |
+| P9 | Correct safety design; future simplification is optional | Generation-scoped task events, publication barriers, and one teardown path prevent a stale or failed task from leaving a false-healthy member. A single structured-concurrency owner could eventually replace some custom watcher/event plumbing and the bounded root-exit grace, but that would primarily reduce code complexity; the current design is deterministic and fail-closed. |
+| P12 | Best fix for the cut-through policy | Recomputing local materialized state and comparing it with exact, contiguous, quorum-signed journal coverage reconstructs the safety latch from authoritative evidence. Restoring the removed generic status snapshot would create a second source of truth and legacy persistence. The fix deliberately detects and blocks divergence; it does not attempt automatic state repair. |
+| P16 | Best available fix | The quote-scoped RAII guard removes local head-of-line blocking and cleans itself on every exit, while the durable compare-and-set is the cross-process authority for exactly one payment initiator. Either mechanism alone would be insufficient. Recovery after the durable `PaymentAttempted` boundary remains the separate narrow P5 saga question, not a defect in quote isolation. |
+
+Final audit verification (2026-07-13):
+
+- workspace-wide `cargo check --workspace --all-targets` passed;
+- P6: seven submission-path tests plus the injected persistence-failure test
+  passed;
+- P7: the SQLite atomic rebind regression and Axum restart/finalization
+  regression passed;
+- P9: the deterministic non-retryable apply/generation halt regression passed;
+- P12: all 18 startup/readiness regressions passed after tightening certificate
+  coverage to exact equality;
+- P16: the same-quote idempotency and unrelated-quote concurrency regressions,
+  plus the generic saga compare-and-set regression, passed;
+- P19: all seven shared sequence-tracker regressions and all seven private
+  operation-route regressions passed.
+
+## Findings
 
 ### P1: A Valid Single-Member Federation Starts but Cannot Operate
 
@@ -431,22 +461,34 @@ must remain visible in the production-readiness work queue.
 
 ### P6: Pending Operation Persistence Precedes Waiter Admission
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
-Submission persists a newly accepted pending operation before registering its
-bounded response waiter and before publishing the cloned consensus runtime that
-contains the operation. If waiter registration fails because the configured
-limit is full, the method returns an error while durable storage says the
-operation is pending and the live runtime does not contain it. A later wallet
-retry can repair the mismatch, but recovery must not depend on resubmission.
+**Severity:** Resolved (was High).
+
+Before resolution, submission persisted a newly accepted pending operation
+before registering its bounded response waiter and before publishing the cloned
+consensus runtime that contained the operation. If waiter registration failed
+because the configured limit was full, the method returned an error while
+durable storage said the operation was pending and the live runtime did not
+contain it. A later wallet retry could repair the mismatch, but recovery must
+not depend on resubmission.
+
+**Resolution:** Admission now operates on an unpublished consensus clone, then
+reserves an RAII waiter, persists a newly accepted pending row, and publishes
+the clone without another cancellation point. Waiter exhaustion therefore
+happens before durable or runtime mutation. Persistence failure drops the
+reservation automatically and leaves the original runtime unchanged. A crash
+after durable commit remains safe because startup reconstructs the queue from
+pending rows; no compensating delete creates another partial-failure path.
 
 Relevant code:
 
-- `crates/cdk-axum/src/federation/node_runtime.rs:715`
-- `crates/cdk-axum/src/federation/node_runtime.rs:738`
-- `crates/cdk-axum/src/federation/node_runtime.rs:756`
-- `crates/cdk-axum/src/federation/node_runtime.rs:759`
-- `crates/cdk-axum/src/federation/node_runtime.rs:1390`
+- `crates/cdk-axum/src/federation/node_runtime.rs:723`
+- `crates/cdk-axum/src/federation/node_runtime.rs:770`
+- `crates/cdk-axum/src/federation/node_runtime.rs:803`
+- `crates/cdk-axum/src/federation/node_runtime.rs:815`
+- `crates/cdk-axum/src/federation/node_runtime.rs:1444`
+- `crates/cdk-axum/src/lib.rs:610`
 
 TODO:
 
@@ -484,6 +526,8 @@ Verification:
 ### P7: Session Rotation Does Not Rebind Durable Pending Operations
 
 **Status:** Resolved (2026-07-13)
+
+**Severity:** Resolved (was High).
 
 Automatic session rotation requeues unfinalized local operations into the next
 AlephBFT session in memory, but their durable pending records retain the old
@@ -612,6 +656,8 @@ Acceptance criteria:
 ### P9: A Non-Retryable Apply Failure Can Leave a False-Healthy Session
 
 **Status:** Resolved (2026-07-13)
+
+**Severity:** Resolved (was High).
 
 **Reassessment:** The original mechanism is slightly inaccurate. A
 non-retryable per-payload apply error returns from
@@ -839,35 +885,38 @@ Acceptance criteria:
 
 ### P12 [CRITICAL]: Restart Can Clear a Materialized-State Mismatch Without Revalidation
 
-**Status:** Open
+**Status:** Resolved (2026-07-13)
 
-**Severity:** Critical — a member previously proven to have divergent
-materialized state can become authoritative after restart without proving that
-the divergence was repaired.
+**Severity:** Resolved (was Critical) — before the fix, a member previously
+proven to have divergent materialized state could become authoritative after
+restart without proving that the divergence was repaired.
 
 **Resolution:** `FederationCatchUpCertificateQuorum` and the contiguous quorum
 status now retain the materialized-state digest authenticated by the verified
 certificate signatures. Startup no longer promotes its initial fail-closed
 status before reading durable evidence. For non-empty history it requires a
-fully contiguous certificate quorum, projects the current local materialized
-state, compares the two digests, and makes one generation-safe final status
-transition. A matching digest opens Healthy; incomplete coverage remains in
-certificate verification; a mismatch remains `MaterializedStateMismatch`; and
-projection, digest, or storage errors remain Halted. The final transition is
+fully contiguous certificate quorum covering exactly the local journal,
+projects the current local materialized state, compares the two digests, and
+makes one generation-safe final status transition. A matching digest opens
+Healthy; incomplete or excess coverage remains in certificate verification; a
+mismatch remains `MaterializedStateMismatch`; and projection, digest, or
+storage errors remain Halted. The final transition is
 discarded if a newer readiness state was published while the asynchronous
 checks ran, so startup cannot overwrite a concurrent safety decision.
 
 No general status snapshot or compatibility table was restored. Durable
 journal rows and signed catch-up certificates remain the authoritative evidence.
 
-The readiness cleanup removed durable `FederationMemberStatusSnapshot` state,
+Original defect and provenance:
+
+The readiness cleanup had removed durable `FederationMemberStatusSnapshot` state,
 including `MaterializedStateMismatch` and safety-relevant `Halted` reasons.
-Startup now reconstructs readiness from the local journal length and stored
+Startup then reconstructed readiness from the local journal length and stored
 catch-up certificate coverage. `catch_up_certificate_quorum_status` groups and
 verifies certificates using their materialized-state digest, but its returned
-`CatchUpCertificateQuorumStatus` retains only signers and index/count fields.
-`restore_startup_readiness` therefore marks the member Healthy when certified
-operation-count coverage reaches the local journal length without recomputing
+`CatchUpCertificateQuorumStatus` retained only signers and index/count fields.
+`restore_startup_readiness` therefore marked the member Healthy when certified
+operation-count coverage reached the local journal length without recomputing
 the local materialized-state digest or comparing it with the certified digest.
 
 On `bls-federation`, a detected materialized-state mismatch was persisted and
@@ -875,8 +924,8 @@ restored, so startup remained fail-closed. The cleanup correctly identified
 that ordinary Lagging/CatchingUp labels are transient, but it removed the
 durable safety latch together with those operational labels.
 
-The existing restart-with-certificate test signs the actual local digest. It
-does not cover the critical case where stored certificates bind digest A while
+The pre-fix restart-with-certificate test signed the actual local digest. It
+did not cover the critical case where stored certificates bind digest A while
 the restarted local database produces digest B.
 
 Cleanup provenance and useful references:
@@ -903,14 +952,15 @@ Cleanup provenance and useful references:
 
 Relevant code:
 
-- `crates/cdk-axum/src/federation/node_runtime.rs:376`
-- `crates/cdk-axum/src/federation/node_runtime.rs:417`
-- `crates/cdk-axum/src/federation/node_runtime.rs:428`
-- `crates/cdk-axum/src/federation.rs:376`
-- `crates/cdk-axum/src/federation.rs:384`
-- `crates/cdk-axum/src/federation.rs:407`
-- `crates/cdk-axum/src/federation.rs:434`
-- `crates/cdk-axum/src/federation/sync_loop.rs:846`
+- `crates/cdk-axum/src/federation/node_runtime.rs:420`
+- `crates/cdk-axum/src/federation/node_runtime.rs:504`
+- `crates/cdk-axum/src/federation/node_runtime.rs:516`
+- `crates/cdk-axum/src/federation/node_runtime.rs:545`
+- `crates/cdk-axum/src/federation/node_runtime.rs:557`
+- `crates/cdk-axum/src/federation.rs:379`
+- `crates/cdk-axum/src/federation.rs:439`
+- `crates/cdk-axum/src/federation.rs:509`
+- `crates/cdk-axum/src/lib.rs:2298`
 - `docs/federation-cleanup-todo.md`, item 31
 
 TODO:
@@ -933,7 +983,7 @@ TODO:
   Healthy.
 - [x] Test empty history, partially certified history, multiple contiguous
   certificate ranges, and a mismatch at the latest fully certified range.
-- [ ] Coordinate with P10 so a digest-mismatch halt also tears down live Aleph
+- [x] Coordinate with P10 so a digest-mismatch halt also tears down live Aleph
   resources and cannot be reopened by the count-only startup path.
 
 Acceptance criteria:
@@ -1329,9 +1379,9 @@ Acceptance criteria:
 
 **Status:** Resolved (2026-07-13)
 
-**Severity:** High — a slow or unavailable backend for one quote can block
-payment initiation, settlement observation, repair scans, and status responses
-for every other melt quote on that member.
+**Severity:** Resolved (was High) — before the fix, a slow or unavailable
+backend for one quote could block payment initiation, settlement observation,
+repair scans, and status responses for every other melt quote on that member.
 
 `FederationPaymentObserver` owns one `Arc<tokio::sync::Mutex<()>>` for all melt
 quotes. `observe_melt_quote` holds that lock while it loads saga state, may
