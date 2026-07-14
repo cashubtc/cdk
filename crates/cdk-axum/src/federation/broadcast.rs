@@ -54,6 +54,8 @@ impl FederationTransactionBroadcaster {
                     FederationTransactionBroadcastIntent {
                         proposal_id: signed.proposal_id,
                         txid: signed.txid,
+                        settlement_policy: runtime
+                            .onchain_transaction_settlement_policy(accepted.proposal.scope)?,
                     },
                 );
                 state.submit_federation_envelope(envelope).await?;
@@ -64,12 +66,15 @@ impl FederationTransactionBroadcaster {
                 .broadcast
                 .as_ref()
                 .expect("checked broadcast state");
-            if broadcast.observations.iter().any(|record| {
-                matches!(
-                    record.observation.result,
-                    FederationTransactionBroadcastResult::Confirmed { .. }
-                )
-            }) {
+            if accepted.state == FederationAcceptedTransactionState::Confirmed
+                || broadcast.observations.iter().any(|record| {
+                    record.observation.observer == observer
+                        && matches!(
+                            record.observation.result,
+                            FederationTransactionBroadcastResult::Confirmed { .. }
+                        )
+                })
+            {
                 continue;
             }
             let attempt = broadcast
@@ -91,6 +96,7 @@ impl FederationTransactionBroadcaster {
                     result: FederationTransactionBroadcastResult::Confirmed {
                         block_hash: confirmation.block_hash,
                         block_height: confirmation.block_height,
+                        confirmation_depth: confirmation.confirmation_depth,
                     },
                     detail: None,
                 };

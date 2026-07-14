@@ -430,13 +430,13 @@ impl FederationFrostRootPrivateConfig {
     }
 }
 
-/// Consensus-visible confirmation rule for incoming on-chain funds.
+/// Consensus-visible confirmation rule for federated on-chain funds and settlements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationOnchainConfirmationPolicy {
     /// Policy schema version.
     pub version: u16,
-    /// Blocks required before a deposit may become payable.
+    /// Blocks required before a deposit or outgoing melt may become payable.
     pub minimum_confirmations: u32,
 }
 

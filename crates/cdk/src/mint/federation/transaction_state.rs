@@ -10,10 +10,10 @@ use cdk_common::federation::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
     FederationChainObservationState, FederationError, FederationJournalEntry,
     FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord, FederationOperation,
-    FederationOperationStatus, FederationSignedTransaction, FederationTransactionBroadcastIntent,
-    FederationTransactionBroadcastObservation, FederationTransactionProposal,
-    FederationTransactionProposalId, FederationTransactionScope, FederationTransactionState,
-    FederationTransactionStateOutcome, MemberId,
+    FederationOperationId, FederationOperationStatus, FederationSignedTransaction,
+    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
+    FederationTransactionProposal, FederationTransactionProposalId, FederationTransactionScope,
+    FederationTransactionState, FederationTransactionStateOutcome, MemberId,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 
@@ -270,6 +270,7 @@ impl Mint {
         &self,
         intent: &FederationTransactionBroadcastIntent,
     ) -> Result<(), Error> {
+        intent.settlement_policy.validate()?;
         let state = self.federation_transaction_state().await?;
         let accepted = state
             .accepted_transaction(intent.proposal_id)
@@ -281,6 +282,17 @@ impl Mint {
         if signed.txid != intent.txid {
             return Err(invalid(
                 "broadcast intent txid differs from signed transaction",
+            ));
+        }
+        let runtime = self
+            .effective_federation_config()
+            .await?
+            .ok_or_else(|| invalid("broadcast intent has no federation config"))?;
+        if intent.settlement_policy
+            != runtime.onchain_transaction_settlement_policy(accepted.proposal.scope)?
+        {
+            return Err(invalid(
+                "broadcast intent settlement policy differs from federation config",
             ));
         }
         if accepted.broadcast.is_none()
@@ -394,6 +406,7 @@ pub(super) async fn persist_pending_onchain_intent(
     transaction: &mut database::mint::DynMintTransaction,
     runtime: &FederationRuntimeConfig,
     quote: &MeltQuote,
+    melt_operation_id: FederationOperationId,
     accepted_time: u64,
 ) -> Result<(), Error> {
     let MeltPaymentRequest::Onchain { address } = &quote.request else {
@@ -418,6 +431,7 @@ pub(super) async fn persist_pending_onchain_intent(
         .ok_or_else(|| invalid("on-chain melt has no selected fee tier"))?;
     let intent = FederationOnchainPaymentIntent::new(
         quote.id.to_string(),
+        melt_operation_id,
         destination.script_pubkey(),
         quote.amount().to_sat()?,
         quote.fee_reserve().to_sat()?,

@@ -186,6 +186,7 @@ fn intents(
         vec![
             FederationOnchainPaymentIntent::new(
                 "melt-quote-b".to_string(),
+                FederationOperationId::from_bytes([21; 32]),
                 wallet_script(runtime, FederationAddressKeychain::External, 50),
                 15_000,
                 1_000,
@@ -196,6 +197,7 @@ fn intents(
             .expect("intent b"),
             FederationOnchainPaymentIntent::new(
                 "melt-quote-a".to_string(),
+                FederationOperationId::from_bytes([22; 32]),
                 wallet_script(runtime, FederationAddressKeychain::External, 51),
                 10_000,
                 1_000,
@@ -574,6 +576,7 @@ fn destination_change_fee_and_transaction_policy_are_independently_enforced() {
     let dust_batch = FederationOnchainPaymentBatch::new(
         vec![FederationOnchainPaymentIntent::new(
             "dust-intent".to_string(),
+            FederationOperationId::from_bytes([23; 32]),
             wallet_script(&runtime, FederationAddressKeychain::External, 100),
             1,
             1_000,
@@ -808,8 +811,7 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
         .federation_transaction_state()
         .await
         .expect("durable transaction state");
-    let mut tampered_audit =
-        serde_json::to_value(&durable).expect("transaction state audit JSON");
+    let mut tampered_audit = serde_json::to_value(&durable).expect("transaction state audit JSON");
     let accepted_transactions = tampered_audit["accepted_transactions"]
         .as_object_mut()
         .expect("accepted transaction object");
@@ -820,8 +822,7 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
     let sighash_byte = accepted_value["policy_audit"]["taproot_sighashes"][0][0]
         .as_u64()
         .expect("sighash byte");
-    accepted_value["policy_audit"]["taproot_sighashes"][0][0] =
-        serde_json::json!(sighash_byte ^ 1);
+    accepted_value["policy_audit"]["taproot_sighashes"][0][0] = serde_json::json!(sighash_byte ^ 1);
     let mut audit_tamper_transaction = localstore
         .begin_transaction()
         .await
@@ -899,6 +900,9 @@ fn aleph_bft_journal_rejects_same_batch_and_shared_utxo_competitors() {
         .map(|(index, original)| {
             FederationOnchainPaymentIntent::new(
                 format!("competing-{}", original.quote),
+                FederationOperationId::from_bytes(
+                    [u8::try_from(index + 24).expect("operation marker"); 32],
+                ),
                 original.destination_script.clone(),
                 original.amount_sat,
                 original.maximum_fee_sat,

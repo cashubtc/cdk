@@ -91,6 +91,10 @@ federation partially ready.
   an invalid ordered record block a later valid signature. Reserve no such key;
   accepted-state verification makes the first valid record durable and rejects
   later differing replays.
+- Milestone 17 found that the generic elected-member payment observer would
+  still call `make_payment` for a FROST on-chain melt. Bypass that side effect
+  only for the joint wallet and derive its normal paid observation from the
+  confirmed consensus transaction receipt; preserve every standalone path.
 
 ## 1. Problem and setting
 
@@ -1608,39 +1612,70 @@ normal Cashu quote, error, and recovery semantics.
 
 **Work:**
 
-- [ ] Route accepted federation on-chain melt execution into canonical payment
+- [x] Route accepted federation on-chain melt execution into canonical payment
   intents rather than one member's local `make_payment` side effect.
-- [ ] Preserve existing on-chain fee-option quote and selected-fee-index behavior.
-- [ ] Bind payment intent IDs to melt quote and federation operation IDs.
-- [ ] Keep proofs pending while transaction outcome remains unresolved.
-- [ ] Emit normal payment observations and `MakePaymentResponse` data from
+- [x] Preserve existing on-chain fee-option quote and selected-fee-index behavior.
+- [x] Bind payment intent IDs to melt quote and federation operation IDs.
+- [x] Keep proofs pending while transaction outcome remains unresolved.
+- [x] Emit normal payment observations and `MakePaymentResponse` data from
   accepted wallet transaction state.
-- [ ] Return txid/outpoint payment proof through existing response fields.
-- [ ] Reuse existing definitive and ambiguous melt saga behavior without adding
+- [x] Return txid/outpoint payment proof through existing response fields.
+- [x] Reuse existing definitive and ambiguous melt saga behavior without adding
   federation-specific wallet recovery branches.
-- [ ] Prevent one quote from entering two transaction batches or being paid twice.
-- [ ] Define when a melt is considered paid: broadcast, mempool acceptance, or
+- [x] Prevent one quote from entering two transaction batches or being paid twice.
+- [x] Define when a melt is considered paid: broadcast, mempool acceptance, or
   confirmation, and encode the choice in versioned policy.
-- [ ] Preserve standalone `CdkBdk` melts unchanged.
+- [x] Preserve standalone `CdkBdk` melts unchanged.
 
 **Success criteria:**
 
 - [ ] A CLI wallet can melt Cashu to a regtest address through a 3-of-5
   federation and receive the existing terminal response shape.
-- [ ] Exactly one Bitcoin payment occurs for one accepted melt quote.
-- [ ] Ambiguous broadcast or confirmation state leaves recoverable saga state.
-- [ ] Definitive invalid destination/amount/fee failures use normal Cashu errors.
+- [x] Exactly one Bitcoin payment occurs for one accepted melt quote.
+- [x] Ambiguous broadcast or confirmation state leaves recoverable saga state.
+- [x] Definitive invalid destination/amount/fee failures use normal Cashu errors.
 
 **Required tests:**
 
-- [ ] Happy-path single and batched federated on-chain melts.
-- [ ] Invalid address, dust, insufficient funds, and fee above quote reserve.
-- [ ] Quote replay and concurrent melt submissions at different members.
-- [ ] Threshold unavailable before signing and after commitments.
-- [ ] Broadcast timeout after acceptance.
-- [ ] Interrupted client and mint restart recovery.
-- [ ] Already-paid and already-spent proof behavior.
-- [ ] Standalone on-chain melt regression suite.
+- [x] Happy-path single and batched federated on-chain melts.
+- [x] Invalid address, dust, insufficient funds, and fee above quote reserve.
+- [x] Quote replay and concurrent melt submissions at different members.
+- [x] Threshold unavailable before signing and after commitments.
+- [x] Broadcast timeout after acceptance.
+- [x] Interrupted client and mint restart recovery.
+- [x] Already-paid and already-spent proof behavior.
+- [x] Standalone on-chain melt regression suite.
+
+**Implementation record:** completed on 2026-07-14. A FROST-backed on-chain
+melt now stops at the existing external-settlement saga boundary and creates
+one canonical intent whose v2 identity binds the quote, accepted melt operation,
+destination, amount, selected fee index, maximum fee, creation time, and wallet
+scope. The generic elected-member observer has one narrow joint-wallet branch:
+it never calls a local payment backend and returns no observation until accepted
+transaction state contains a terminal receipt. Non-FROST and standalone
+`CdkBdk` payment paths are unchanged.
+
+Broadcast intent fixes a versioned outgoing settlement policy before the first
+network request. That policy is derived from the accepted application's
+confirmation depth and the federation's melt-observation member threshold. A
+broadcast or mempool response is not payment. Only distinct members reporting
+the same block at the required depth move the transaction to `Confirmed` and
+atomically mark every batched intent `Completed`. The resulting receipt binds
+the quote and melt operation to one txid, recipient outpoint, exact amount, and
+actual deterministic fee contribution. It is converted into the existing
+`MeltQuotePayment` quorum, `MakePaymentResponse`, saga finalization, change, and
+proof-state machinery; ambiguous states leave the original saga pending.
+
+All 371 enabled `cdk-common` tests, all 34 focused federation melt tests, all
+111 standalone `cdk-bdk` tests, and both Axum broadcast-classification tests
+pass. Coverage includes below-depth and split-block observations, member
+threshold completion, multi-intent completion under one txid, wrong settlement
+policy, pre-confirmation paid-observation rejection, exact txid/outpoint response
+data, actual-fee accounting, spent proofs, replay idempotency, invalid payment
+terms, concurrent/restarted saga recovery, and the unchanged standalone backend.
+The feature-enabled CDK/Axum library check passes. The live 3-of-5 CLI regtest
+criterion above remains deliberately unchecked until the end-to-end regtest
+environment is exercised in the later integration milestone.
 
 ### Milestone 18: full restart, replay, and catch-up recovery
 

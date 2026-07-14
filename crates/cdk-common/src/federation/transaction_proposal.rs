@@ -23,12 +23,12 @@ use super::{
     MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
 };
 
-const PAYMENT_INTENT_VERSION: u16 = 1;
+const PAYMENT_INTENT_VERSION: u16 = 2;
 const PAYMENT_BATCH_VERSION: u16 = 1;
 const TRANSACTION_PROPOSAL_VERSION: u16 = 1;
-const TRANSACTION_STATE_VERSION: u16 = 1;
+const TRANSACTION_STATE_VERSION: u16 = 2;
 const SIGNED_TRANSACTION_VERSION: u16 = 1;
-const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v1";
+const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v2";
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
 const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v1";
 const PSBT_CONSENSUS_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-psbt-consensus-v1";
@@ -40,6 +40,7 @@ const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_DESTINATION_SCRIPT_BYTES: usize = 10_000;
 const MAX_FEE_TIER: u32 = 255;
 const MAX_BROADCAST_DETAIL_BYTES: usize = 512;
+const TRANSACTION_SETTLEMENT_POLICY_VERSION: u16 = 1;
 
 /// Maximum number of payment intents in one consensus batch.
 pub const FEDERATION_MAX_ONCHAIN_BATCH_INTENTS: usize = 64;
@@ -168,6 +169,8 @@ pub struct FederationOnchainPaymentIntent {
     pub version: u16,
     /// Unique melt quote authorizing this payment.
     pub quote: String,
+    /// Accepted federation melt operation authorizing this exact intent.
+    pub melt_operation_id: FederationOperationId,
     /// Exact recipient script, parsed on the expected network before creation.
     pub destination_script: ScriptBuf,
     /// Recipient value in satoshis.
@@ -187,6 +190,7 @@ impl FederationOnchainPaymentIntent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         quote: String,
+        melt_operation_id: FederationOperationId,
         destination_script: ScriptBuf,
         amount_sat: u64,
         maximum_fee_sat: u64,
@@ -197,6 +201,7 @@ impl FederationOnchainPaymentIntent {
         let intent = Self {
             version: PAYMENT_INTENT_VERSION,
             quote,
+            melt_operation_id,
             destination_script,
             amount_sat,
             maximum_fee_sat,
@@ -933,6 +938,8 @@ pub enum FederationAcceptedTransactionState {
     BroadcastPending,
     /// At least one success-equivalent broadcast observation was accepted.
     Broadcast,
+    /// The versioned confirmation policy was satisfied by distinct members.
+    Confirmed,
     /// No longer preferred, while every input remains reserved.
     Abandoned,
     /// Superseded by a consensus-designated replacement proposal.
@@ -972,6 +979,46 @@ pub struct FederationTransactionBroadcastIntent {
     pub proposal_id: FederationTransactionProposalId,
     /// Exact signed transaction identity.
     pub txid: Txid,
+    /// Versioned rule for completing the transaction's melt intents.
+    pub settlement_policy: FederationTransactionSettlementPolicy,
+}
+
+/// Versioned consensus rule for treating an outgoing transaction as paid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionSettlementPolicy {
+    /// Policy schema version.
+    pub version: u16,
+    /// Required confirmation depth in each accepted member observation.
+    pub minimum_confirmations: u32,
+    /// Required distinct member observations for the same confirmed block.
+    pub required_observers: u16,
+}
+
+impl FederationTransactionSettlementPolicy {
+    /// Construct the current outgoing settlement policy.
+    pub fn new(minimum_confirmations: u32, required_observers: u16) -> Result<Self> {
+        let policy = Self {
+            version: TRANSACTION_SETTLEMENT_POLICY_VERSION,
+            minimum_confirmations,
+            required_observers,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    /// Validate the current policy schema and non-zero thresholds.
+    pub fn validate(self) -> Result<()> {
+        if self.version != TRANSACTION_SETTLEMENT_POLICY_VERSION
+            || self.minimum_confirmations == 0
+            || self.required_observers == 0
+        {
+            return Err(invalid(
+                "unsupported outgoing transaction settlement policy",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Classified result of one member's exact-byte broadcast or reconciliation.
@@ -994,6 +1041,8 @@ pub enum FederationTransactionBroadcastResult {
         block_hash: BlockHash,
         /// Height of the containing block.
         block_height: u32,
+        /// Depth relative to the observer's locally persisted chain tip.
+        confirmation_depth: u32,
     },
 }
 
@@ -1033,6 +1082,15 @@ impl FederationTransactionBroadcastObservation {
         if self.attempt == 0 {
             return Err(invalid("broadcast attempt is zero"));
         }
+        if matches!(
+            self.result,
+            FederationTransactionBroadcastResult::Confirmed {
+                confirmation_depth: 0,
+                ..
+            }
+        ) {
+            return Err(invalid("confirmed broadcast observation has zero depth"));
+        }
         if self.detail.as_ref().is_some_and(|detail| {
             detail.is_empty()
                 || detail.len() > MAX_BROADCAST_DETAIL_BYTES
@@ -1067,11 +1125,45 @@ pub struct FederationTransactionBroadcastState {
     pub intent_operation_id: FederationOperationId,
     /// Accepted journal position of the first intent.
     pub intent_operation_index: u64,
+    /// Policy fixed before the first network request.
+    pub settlement_policy: FederationTransactionSettlementPolicy,
     /// Latest authenticated observation per member, ordered by member ID.
     pub observations: Vec<FederationTransactionBroadcastObservationRecord>,
     /// First success-equivalent observation, retained across later uncertainty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_success: Option<FederationTransactionBroadcastObservationRecord>,
+    /// First threshold set proving the required confirmation rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<FederationTransactionSettlement>,
+}
+
+/// Sticky threshold evidence that one exact transaction satisfied settlement policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionSettlement {
+    /// Block containing the exact signed transaction.
+    pub block_hash: BlockHash,
+    /// Height of the containing block.
+    pub block_height: u32,
+    /// Canonically ordered distinct-member confirmations retained at settlement.
+    pub confirmations: Vec<FederationTransactionBroadcastObservationRecord>,
+}
+
+/// Existing melt response data derived solely from accepted transaction state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationOnchainMeltPaymentReceipt {
+    /// Melt quote authorizing the payment.
+    pub quote: String,
+    /// Federation melt operation bound into the intent identity.
+    pub melt_operation_id: FederationOperationId,
+    /// Exact confirmed transaction identifier.
+    pub txid: Txid,
+    /// Recipient output proving payment.
+    pub outpoint: OutPoint,
+    /// Recipient amount in satoshis.
+    pub amount_sat: u64,
+    /// Actual deterministic fee contribution assigned to this intent.
+    pub fee_sat: u64,
 }
 
 /// Public audit for one input's completed threshold signing attempt.
@@ -1457,6 +1549,56 @@ impl FederationTransactionState {
         &self.accepted_transactions
     }
 
+    /// Derive one terminal on-chain melt receipt from accepted transaction state.
+    pub fn completed_payment_for_quote(
+        &self,
+        quote: &str,
+    ) -> Result<Option<FederationOnchainMeltPaymentReceipt>> {
+        let Some(intent) = self.intent_for_quote(quote) else {
+            return Ok(None);
+        };
+        let FederationOnchainPaymentIntentState::Completed { txid } = intent.state else {
+            return Ok(None);
+        };
+        let mut owners = self
+            .accepted_transactions
+            .iter()
+            .filter(|(_, accepted)| accepted.proposal.intent_ids.contains(&intent.intent_id));
+        let (_proposal_id, accepted) = owners
+            .next()
+            .ok_or_else(|| invalid("completed payment intent has no accepted transaction"))?;
+        if owners.next().is_some()
+            || accepted.state != FederationAcceptedTransactionState::Confirmed
+            || accepted.signed.as_ref().map(|signed| signed.txid) != Some(txid)
+        {
+            return Err(invalid(
+                "completed payment intent has ambiguous transaction ownership",
+            ));
+        }
+        let recipient = accepted
+            .proposal
+            .recipient_outputs
+            .iter()
+            .find(|recipient| recipient.intent_id == intent.intent_id)
+            .ok_or_else(|| invalid("completed payment intent has no recipient output"))?;
+        if recipient.output.value.to_sat() != intent.intent.amount_sat
+            || recipient.fee_contribution_sat > intent.intent.maximum_fee_sat
+        {
+            return Err(invalid("completed payment receipt violates intent terms"));
+        }
+        Ok(Some(FederationOnchainMeltPaymentReceipt {
+            quote: intent.intent.quote.clone(),
+            melt_operation_id: intent.intent.melt_operation_id,
+            txid,
+            outpoint: OutPoint {
+                txid,
+                vout: recipient.output_index,
+            },
+            amount_sat: intent.intent.amount_sat,
+            fee_sat: recipient.fee_contribution_sat,
+        }))
+    }
+
     /// Return the proposal that owns one wallet reservation.
     #[must_use]
     pub fn reservation(&self, outpoint: OutPoint) -> Option<FederationTransactionProposalId> {
@@ -1623,6 +1765,7 @@ impl FederationTransactionState {
         if operation_index == 0 {
             return Err(invalid("broadcast intent operation index is zero"));
         }
+        intent.settlement_policy.validate()?;
         let accepted = self
             .accepted_transactions
             .get_mut(&intent.proposal_id)
@@ -1636,10 +1779,18 @@ impl FederationTransactionState {
                 "broadcast intent txid differs from signed transaction",
             ));
         }
-        if accepted.broadcast.is_some() {
-            if accepted.state == FederationAcceptedTransactionState::BroadcastPending
-                || accepted.state == FederationAcceptedTransactionState::Broadcast
-            {
+        if let Some(existing) = &accepted.broadcast {
+            if existing.settlement_policy != intent.settlement_policy {
+                return Err(invalid(
+                    "broadcast intent conflicts with durable settlement policy",
+                ));
+            }
+            if matches!(
+                accepted.state,
+                FederationAcceptedTransactionState::BroadcastPending
+                    | FederationAcceptedTransactionState::Broadcast
+                    | FederationAcceptedTransactionState::Confirmed
+            ) {
                 return Ok(FederationTransactionStateOutcome::Existing);
             }
             return Err(invalid(
@@ -1654,8 +1805,10 @@ impl FederationTransactionState {
         accepted.broadcast = Some(FederationTransactionBroadcastState {
             intent_operation_id: operation_id,
             intent_operation_index: operation_index,
+            settlement_policy: intent.settlement_policy,
             observations: Vec::new(),
             first_success: None,
+            settlement: None,
         });
         accepted.state = FederationAcceptedTransactionState::BroadcastPending;
         self.validate()?;
@@ -1673,62 +1826,86 @@ impl FederationTransactionState {
         if operation_index == 0 {
             return Err(invalid("broadcast observation operation index is zero"));
         }
-        let accepted = self
-            .accepted_transactions
-            .get_mut(&observation.proposal_id)
-            .ok_or_else(|| invalid("broadcast observation references an unknown transaction"))?;
-        let signed = accepted
-            .signed
-            .as_ref()
-            .ok_or_else(|| invalid("broadcast observation has no signed transaction"))?;
-        if signed.txid != observation.txid {
-            return Err(invalid(
-                "broadcast observation txid differs from signed transaction",
-            ));
-        }
-        let broadcast = accepted
-            .broadcast
-            .as_mut()
-            .ok_or_else(|| invalid("broadcast observation precedes durable intent"))?;
-        let success = observation.result.is_success_equivalent();
-        let record = FederationTransactionBroadcastObservationRecord {
-            observation,
-            operation_id,
-            operation_index,
-        };
-        match broadcast
-            .observations
-            .iter_mut()
-            .find(|existing| existing.observation.observer == record.observation.observer)
+        let mut completed = None;
         {
-            Some(existing) if existing.observation.attempt == record.observation.attempt => {
-                if existing.observation == record.observation {
-                    return Ok(FederationTransactionStateOutcome::Existing);
-                }
+            let accepted = self
+                .accepted_transactions
+                .get_mut(&observation.proposal_id)
+                .ok_or_else(|| {
+                    invalid("broadcast observation references an unknown transaction")
+                })?;
+            let signed = accepted
+                .signed
+                .as_ref()
+                .ok_or_else(|| invalid("broadcast observation has no signed transaction"))?;
+            if signed.txid != observation.txid {
                 return Err(invalid(
-                    "broadcast attempt replay carries a different result",
+                    "broadcast observation txid differs from signed transaction",
                 ));
             }
-            Some(existing) if existing.observation.attempt > record.observation.attempt => {
-                return Err(invalid("broadcast observation attempt is stale"));
+            let broadcast = accepted
+                .broadcast
+                .as_mut()
+                .ok_or_else(|| invalid("broadcast observation precedes durable intent"))?;
+            let success = observation.result.is_success_equivalent();
+            let record = FederationTransactionBroadcastObservationRecord {
+                observation,
+                operation_id,
+                operation_index,
+            };
+            match broadcast
+                .observations
+                .iter_mut()
+                .find(|existing| existing.observation.observer == record.observation.observer)
+            {
+                Some(existing) if existing.observation.attempt == record.observation.attempt => {
+                    if existing.observation == record.observation {
+                        return Ok(FederationTransactionStateOutcome::Existing);
+                    }
+                    return Err(invalid(
+                        "broadcast attempt replay carries a different result",
+                    ));
+                }
+                Some(existing) if existing.observation.attempt > record.observation.attempt => {
+                    return Err(invalid("broadcast observation attempt is stale"));
+                }
+                Some(existing) => *existing = record.clone(),
+                None => broadcast.observations.push(record.clone()),
             }
-            Some(existing) => *existing = record.clone(),
-            None => broadcast.observations.push(record.clone()),
+            broadcast
+                .observations
+                .sort_by_key(|existing| existing.observation.observer);
+            if success && broadcast.first_success.is_none() {
+                broadcast.first_success = Some(record);
+            }
+            if success
+                && matches!(
+                    accepted.state,
+                    FederationAcceptedTransactionState::BroadcastPending
+                        | FederationAcceptedTransactionState::Broadcast
+                )
+            {
+                accepted.state = FederationAcceptedTransactionState::Broadcast;
+            }
+            if broadcast.settlement.is_none() {
+                broadcast.settlement = transaction_settlement_from_observations(
+                    broadcast.settlement_policy,
+                    &broadcast.observations,
+                );
+                if broadcast.settlement.is_some() {
+                    accepted.state = FederationAcceptedTransactionState::Confirmed;
+                    completed = Some((accepted.proposal.intent_ids.clone(), signed.txid));
+                }
+            }
         }
-        broadcast
-            .observations
-            .sort_by_key(|existing| existing.observation.observer);
-        if success && broadcast.first_success.is_none() {
-            broadcast.first_success = Some(record);
-        }
-        if success
-            && matches!(
-                accepted.state,
-                FederationAcceptedTransactionState::BroadcastPending
-                    | FederationAcceptedTransactionState::Broadcast
-            )
-        {
-            accepted.state = FederationAcceptedTransactionState::Broadcast;
+        if let Some((intent_ids, txid)) = completed {
+            for intent_id in intent_ids {
+                let intent = self
+                    .intents
+                    .get_mut(&intent_id)
+                    .ok_or_else(|| invalid("confirmed transaction intent disappeared"))?;
+                intent.state = FederationOnchainPaymentIntentState::Completed { txid };
+            }
         }
         self.validate()?;
         Ok(FederationTransactionStateOutcome::Updated)
@@ -1813,16 +1990,37 @@ impl FederationTransactionState {
             {
                 return Err(invalid("on-chain intent durable identity mismatch"));
             }
-            if let FederationOnchainPaymentIntentState::Accepted { proposal_id } = record.state {
-                let accepted = self
-                    .accepted_transactions
-                    .get(&proposal_id)
-                    .ok_or_else(|| invalid("accepted intent references an unknown transaction"))?;
-                if !accepted.proposal.intent_ids.contains(intent_id) {
-                    return Err(invalid(
-                        "accepted intent is absent from its owning transaction",
-                    ));
+            match record.state {
+                FederationOnchainPaymentIntentState::Accepted { proposal_id } => {
+                    let accepted =
+                        self.accepted_transactions
+                            .get(&proposal_id)
+                            .ok_or_else(|| {
+                                invalid("accepted intent references an unknown transaction")
+                            })?;
+                    if !accepted.proposal.intent_ids.contains(intent_id) {
+                        return Err(invalid(
+                            "accepted intent is absent from its owning transaction",
+                        ));
+                    }
                 }
+                FederationOnchainPaymentIntentState::Completed { txid } => {
+                    let owners = self
+                        .accepted_transactions
+                        .values()
+                        .filter(|accepted| accepted.proposal.intent_ids.contains(intent_id))
+                        .collect::<Vec<_>>();
+                    if owners.len() != 1
+                        || owners[0].state != FederationAcceptedTransactionState::Confirmed
+                        || owners[0].signed.as_ref().map(|signed| signed.txid) != Some(txid)
+                    {
+                        return Err(invalid(
+                            "completed intent does not have one confirmed transaction owner",
+                        ));
+                    }
+                }
+                FederationOnchainPaymentIntentState::Pending
+                | FederationOnchainPaymentIntentState::Failed => {}
             }
         }
         if self.accepted_transactions.len() != self.batch_owners.len() {
@@ -1847,7 +2045,9 @@ impl FederationTransactionState {
                 | (FederationAcceptedTransactionState::BroadcastPending, None, _)
                 | (FederationAcceptedTransactionState::BroadcastPending, _, None)
                 | (FederationAcceptedTransactionState::Broadcast, None, _)
-                | (FederationAcceptedTransactionState::Broadcast, _, None) => {
+                | (FederationAcceptedTransactionState::Broadcast, _, None)
+                | (FederationAcceptedTransactionState::Confirmed, None, _)
+                | (FederationAcceptedTransactionState::Confirmed, _, None) => {
                     return Err(invalid("accepted transaction signed-state mismatch"));
                 }
                 (_, Some(signed), _) => {
@@ -1861,6 +2061,7 @@ impl FederationTransactionState {
                 (_, None, _) => {}
             }
             if let Some(broadcast) = &accepted.broadcast {
+                broadcast.settlement_policy.validate()?;
                 if broadcast.intent_operation_index == 0 {
                     return Err(invalid("broadcast intent operation index is zero"));
                 }
@@ -1898,6 +2099,50 @@ impl FederationTransactionState {
                         return Err(invalid("broadcast success durable identity mismatch"));
                     }
                 }
+                if let Some(settlement) = &broadcast.settlement {
+                    if settlement.confirmations.len()
+                        != usize::from(broadcast.settlement_policy.required_observers)
+                    {
+                        return Err(invalid("transaction settlement has the wrong quorum size"));
+                    }
+                    let mut settlement_observers = BTreeSet::new();
+                    for confirmation in &settlement.confirmations {
+                        confirmation.observation.validate()?;
+                        let FederationTransactionBroadcastResult::Confirmed {
+                            block_hash,
+                            block_height,
+                            confirmation_depth,
+                        } = confirmation.observation.result
+                        else {
+                            return Err(invalid(
+                                "transaction settlement contains non-confirmation evidence",
+                            ));
+                        };
+                        if confirmation.observation.proposal_id != *proposal_id
+                            || accepted
+                                .signed
+                                .as_ref()
+                                .is_none_or(|signed| confirmation.observation.txid != signed.txid)
+                            || confirmation.operation_index <= broadcast.intent_operation_index
+                            || block_hash != settlement.block_hash
+                            || block_height != settlement.block_height
+                            || confirmation_depth
+                                < broadcast.settlement_policy.minimum_confirmations
+                            || !settlement_observers.insert(confirmation.observation.observer)
+                        {
+                            return Err(invalid(
+                                "transaction settlement confirmation is inconsistent",
+                            ));
+                        }
+                    }
+                    if !settlement.confirmations.windows(2).all(|window| {
+                        window[0].observation.observer < window[1].observation.observer
+                    }) {
+                        return Err(invalid(
+                            "transaction settlement confirmations are not canonical",
+                        ));
+                    }
+                }
                 match accepted.state {
                     FederationAcceptedTransactionState::Broadcast
                         if broadcast.first_success.is_none() =>
@@ -1909,6 +2154,17 @@ impl FederationTransactionState {
                     {
                         return Err(invalid("broadcast lifecycle does not match observations"));
                     }
+                    FederationAcceptedTransactionState::Confirmed
+                        if broadcast.first_success.is_none() || broadcast.settlement.is_none() =>
+                    {
+                        return Err(invalid("confirmed lifecycle lacks settlement evidence"));
+                    }
+                    FederationAcceptedTransactionState::Broadcast
+                    | FederationAcceptedTransactionState::BroadcastPending
+                        if broadcast.settlement.is_some() =>
+                    {
+                        return Err(invalid("unconfirmed lifecycle carries settlement evidence"));
+                    }
                     _ => {}
                 }
             }
@@ -1917,11 +2173,21 @@ impl FederationTransactionState {
                     .intents
                     .get(intent_id)
                     .ok_or_else(|| invalid("accepted transaction references a missing intent"))?;
-                if record.state
-                    != (FederationOnchainPaymentIntentState::Accepted {
-                        proposal_id: *proposal_id,
-                    })
-                {
+                let expected_state =
+                    if accepted.state == FederationAcceptedTransactionState::Confirmed {
+                        FederationOnchainPaymentIntentState::Completed {
+                            txid: accepted
+                                .signed
+                                .as_ref()
+                                .ok_or_else(|| invalid("confirmed transaction has no signed txid"))?
+                                .txid,
+                        }
+                    } else {
+                        FederationOnchainPaymentIntentState::Accepted {
+                            proposal_id: *proposal_id,
+                        }
+                    };
+                if record.state != expected_state {
                     return Err(invalid("accepted transaction does not own its intent"));
                 }
             }
@@ -2026,6 +2292,38 @@ where
     })
 }
 
+fn transaction_settlement_from_observations(
+    policy: FederationTransactionSettlementPolicy,
+    observations: &[FederationTransactionBroadcastObservationRecord],
+) -> Option<FederationTransactionSettlement> {
+    let required = usize::from(policy.required_observers);
+    let mut by_block = BTreeMap::<([u8; 32], u32), Vec<_>>::new();
+    for record in observations {
+        let FederationTransactionBroadcastResult::Confirmed {
+            block_hash,
+            block_height,
+            confirmation_depth,
+        } = record.observation.result
+        else {
+            continue;
+        };
+        if confirmation_depth < policy.minimum_confirmations {
+            continue;
+        }
+        by_block
+            .entry((block_hash.to_byte_array(), block_height))
+            .or_default()
+            .push(record.clone());
+    }
+    by_block.into_iter().find_map(|((hash, height), records)| {
+        (records.len() >= required).then(|| FederationTransactionSettlement {
+            block_hash: BlockHash::from_byte_array(hash),
+            block_height: height,
+            confirmations: records.into_iter().take(required).collect(),
+        })
+    })
+}
+
 fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
 where
     T: Serialize + ?Sized,
@@ -2098,6 +2396,7 @@ mod tests {
     ) -> FederationOnchainPaymentIntent {
         FederationOnchainPaymentIntent::new(
             quote.to_string(),
+            FederationOperationId::from_bytes([marker; 32]),
             ScriptBuf::from_bytes(vec![0x51, marker]),
             10_000 + u64::from(marker),
             1_000,
@@ -2339,7 +2638,7 @@ mod tests {
         }
         assert_eq!(
             proposal.proposal_id().expect("proposal id").to_hex(),
-            "e7dc8e8ef9abf0a8cb618398c38185bffff72ac94e69d943b2136c095ab0fbee"
+            "5845c1a53d69849cc62ba0a4f07f4ab5876c8af2d9bd0193bf1697f807f22d19"
         );
     }
 
@@ -2845,7 +3144,12 @@ mod tests {
     #[test]
     fn broadcast_intent_and_member_results_are_exact_restart_safe_and_convergent() {
         let (mut state, proposal_id, txid) = signed_transaction_state();
-        let intent = FederationTransactionBroadcastIntent { proposal_id, txid };
+        let intent = FederationTransactionBroadcastIntent {
+            proposal_id,
+            txid,
+            settlement_policy: FederationTransactionSettlementPolicy::new(1, 1)
+                .expect("settlement policy"),
+        };
         assert_eq!(
             state
                 .authorize_transaction_broadcast(
@@ -2997,6 +3301,7 @@ mod tests {
                     result: FederationTransactionBroadcastResult::Confirmed {
                         block_hash: BlockHash::from_byte_array([9; 32]),
                         block_height: 101,
+                        confirmation_depth: 1,
                     },
                     detail: None,
                 },
@@ -3009,14 +3314,16 @@ mod tests {
                 .accepted_transaction(proposal_id)
                 .expect("broadcast transaction")
                 .state,
-            FederationAcceptedTransactionState::Broadcast
+            FederationAcceptedTransactionState::Confirmed
         );
         assert!(state.intents().values().all(|record| matches!(
             record.state,
-            FederationOnchainPaymentIntentState::Accepted {
-                proposal_id: owner
-            } if owner == proposal_id
+            FederationOnchainPaymentIntentState::Completed { txid: completed } if completed == txid
         )));
+        assert!(state
+            .completed_payment_for_quote("quote-a")
+            .expect("completed payment receipt")
+            .is_some());
 
         let restarted = FederationTransactionState::from_bytes(
             &state.to_bytes().expect("persist broadcast state"),
@@ -3030,6 +3337,112 @@ mod tests {
                 .signed
                 .as_ref()
                 .expect("signed bytes")
+                .txid,
+            txid
+        );
+    }
+
+    #[test]
+    fn settlement_requires_matching_member_and_confirmation_thresholds() {
+        let (mut state, proposal_id, txid) = signed_transaction_state();
+        state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent {
+                    proposal_id,
+                    txid,
+                    settlement_policy: FederationTransactionSettlementPolicy::new(2, 2)
+                        .expect("settlement policy"),
+                },
+                FederationOperationId::from_bytes([61; 32]),
+                61,
+            )
+            .expect("authorize broadcast");
+        for (index, observer, block_hash, confirmation_depth) in [
+            (62, member(1), BlockHash::from_byte_array([1; 32]), 1),
+            (63, member(2), BlockHash::from_byte_array([2; 32]), 2),
+        ] {
+            state
+                .record_transaction_broadcast_observation(
+                    FederationTransactionBroadcastObservation {
+                        proposal_id,
+                        txid,
+                        observer,
+                        attempt: 1,
+                        result: FederationTransactionBroadcastResult::Confirmed {
+                            block_hash,
+                            block_height: 101,
+                            confirmation_depth,
+                        },
+                        detail: None,
+                    },
+                    FederationOperationId::from_bytes(
+                        [u8::try_from(index).expect("operation marker"); 32],
+                    ),
+                    index,
+                )
+                .expect("record non-settling confirmation");
+        }
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("accepted transaction")
+                .state,
+            FederationAcceptedTransactionState::Broadcast
+        );
+        assert!(state
+            .completed_payment_for_quote("quote-a")
+            .expect("pending receipt")
+            .is_none());
+
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(1),
+                    attempt: 2,
+                    result: FederationTransactionBroadcastResult::Confirmed {
+                        block_hash: BlockHash::from_byte_array([2; 32]),
+                        block_height: 101,
+                        confirmation_depth: 2,
+                    },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([64; 32]),
+                64,
+            )
+            .expect("record threshold confirmation");
+        let accepted = state
+            .accepted_transaction(proposal_id)
+            .expect("confirmed transaction");
+        assert_eq!(
+            accepted.state,
+            FederationAcceptedTransactionState::Confirmed
+        );
+        assert_eq!(
+            accepted
+                .broadcast
+                .as_ref()
+                .and_then(|broadcast| broadcast.settlement.as_ref())
+                .expect("settlement evidence")
+                .confirmations
+                .len(),
+            2
+        );
+        let receipt = state
+            .completed_payment_for_quote("quote-a")
+            .expect("completed receipt")
+            .expect("receipt");
+        assert_eq!(receipt.txid, txid);
+        assert_eq!(
+            receipt.melt_operation_id,
+            FederationOperationId::from_bytes([1; 32])
+        );
+        assert_eq!(
+            state
+                .completed_payment_for_quote("quote-b")
+                .expect("batched receipt")
+                .expect("second receipt")
                 .txid,
             txid
         );
@@ -3062,6 +3475,8 @@ mod tests {
                 FederationTransactionBroadcastIntent {
                     proposal_id,
                     txid: wrong_txid,
+                    settlement_policy: FederationTransactionSettlementPolicy::new(1, 1)
+                        .expect("settlement policy"),
                 },
                 FederationOperationId::from_bytes([51; 32]),
                 51,
@@ -3069,7 +3484,12 @@ mod tests {
             .is_err());
         state
             .authorize_transaction_broadcast(
-                FederationTransactionBroadcastIntent { proposal_id, txid },
+                FederationTransactionBroadcastIntent {
+                    proposal_id,
+                    txid,
+                    settlement_policy: FederationTransactionSettlementPolicy::new(1, 1)
+                        .expect("settlement policy"),
+                },
                 FederationOperationId::from_bytes([51; 32]),
                 51,
             )
