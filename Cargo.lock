@@ -1266,6 +1266,7 @@ version = "0.17.0"
 dependencies = [
  "async-trait",
  "bdk_bitcoind_rpc",
+ "bdk_electrum",
  "bdk_esplora",
  "bdk_wallet 3.1.0",
  "cdk-common",

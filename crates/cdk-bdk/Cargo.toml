@@ -11,14 +11,16 @@ description = "CDK onchain backend with bdk"
 readme = "README.md"
 
 [features]
-default = ["bitcoin-rpc", "esplora"]
+default = ["bitcoin-rpc", "electrum", "esplora"]
 bitcoin-rpc = ["dep:bdk_bitcoind_rpc"]
+electrum = ["dep:bdk_electrum"]
 esplora = ["dep:bdk_esplora"]
 
 [dependencies]
 async-trait.workspace = true
 bdk_wallet = { version = "3.0.0", default-features = false, features = ["std", "rusqlite", "keys-bip39"] }
 bdk_bitcoind_rpc = { version = "0.21.0", default-features = false, optional = true }
+bdk_electrum = { version = "0.23.2", default-features = false, features = ["use-rustls-ring"], optional = true }
 bdk_esplora = { version = "0.22.1", default-features = false, features = ["async-https-rustls", "tokio"], optional = true }
 cdk-common = { workspace = true, features = ["mint"] }
 futures.workspace = true

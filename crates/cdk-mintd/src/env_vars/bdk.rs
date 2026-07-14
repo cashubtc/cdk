@@ -13,6 +13,8 @@ pub const BDK_BITCOIND_RPC_PASSWORD_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_
 pub const BDK_CHAIN_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_BDK_CHAIN_SOURCE_TYPE";
 pub const BDK_ESPLORA_URL_ENV_VAR: &str = "CDK_MINTD_BDK_ESPLORA_URL";
 pub const BDK_ESPLORA_PARALLEL_REQUESTS_ENV_VAR: &str = "CDK_MINTD_BDK_ESPLORA_PARALLEL_REQUESTS";
+pub const BDK_ELECTRUM_URL_ENV_VAR: &str = "CDK_MINTD_BDK_ELECTRUM_URL";
+pub const BDK_ELECTRUM_BATCH_SIZE_ENV_VAR: &str = "CDK_MINTD_BDK_ELECTRUM_BATCH_SIZE";
 pub const BDK_NUM_CONFS_ENV_VAR: &str = "CDK_MINTD_BDK_NUM_CONFS";
 pub const BDK_FEE_PERCENT_ENV_VAR: &str = "CDK_MINTD_BDK_FEE_PERCENT";
 pub const BDK_RESERVE_FEE_MIN_ENV_VAR: &str = "CDK_MINTD_BDK_RESERVE_FEE_MIN";
@@ -72,6 +74,16 @@ impl Bdk {
         if let Ok(esplora_parallel_requests) = env::var(BDK_ESPLORA_PARALLEL_REQUESTS_ENV_VAR) {
             if let Ok(esplora_parallel_requests) = esplora_parallel_requests.parse::<usize>() {
                 self.esplora_parallel_requests = esplora_parallel_requests;
+            }
+        }
+
+        if let Ok(electrum_url) = env::var(BDK_ELECTRUM_URL_ENV_VAR) {
+            self.electrum_url = Some(electrum_url);
+        }
+
+        if let Ok(electrum_batch_size) = env::var(BDK_ELECTRUM_BATCH_SIZE_ENV_VAR) {
+            if let Ok(electrum_batch_size) = electrum_batch_size.parse::<usize>() {
+                self.electrum_batch_size = electrum_batch_size;
             }
         }
 

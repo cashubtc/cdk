@@ -617,6 +617,153 @@ impl LnBackendSetup for config::LdkNode {
 }
 
 #[cfg(feature = "bdk")]
+impl crate::config::Bdk {
+    fn chain_source(&self) -> anyhow::Result<cdk_bdk::ChainSource> {
+        use anyhow::bail;
+
+        let chain_source_type = self
+            .chain_source_type
+            .as_deref()
+            .unwrap_or("bitcoinrpc")
+            .to_lowercase();
+
+        match chain_source_type.as_str() {
+            "esplora" => {
+                let esplora_url = self.esplora_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!("BDK esplora_url must be set when chain_source_type is esplora")
+                })?;
+                Ok(cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
+                    url: esplora_url,
+                    parallel_requests: self.esplora_parallel_requests.max(1),
+                }))
+            }
+            "electrum" => {
+                let electrum_url = self.electrum_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "BDK electrum_url must be set when chain_source_type is electrum"
+                    )
+                })?;
+                if self.electrum_batch_size == 0 {
+                    bail!("BDK electrum_batch_size must be greater than zero");
+                }
+                Ok(cdk_bdk::ChainSource::Electrum(cdk_bdk::ElectrumConfig {
+                    url: electrum_url,
+                    batch_size: self.electrum_batch_size,
+                }))
+            }
+            "bitcoinrpc" => {
+                let host = self
+                    .bitcoind_rpc_host
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let port = self.bitcoind_rpc_port.unwrap_or(18443);
+                let user = self
+                    .bitcoind_rpc_user
+                    .clone()
+                    .unwrap_or_else(|| "user".to_string());
+                let password = self
+                    .bitcoind_rpc_password
+                    .clone()
+                    .unwrap_or_else(|| "pass".to_string());
+
+                Ok(cdk_bdk::ChainSource::BitcoinRpc(
+                    cdk_bdk::BitcoinRpcConfig {
+                        host,
+                        port,
+                        user,
+                        password,
+                    },
+                ))
+            }
+            _ => bail!("Unknown BDK chain_source_type: {chain_source_type}"),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "bdk"))]
+mod bdk_tests {
+    use super::*;
+
+    #[test]
+    fn parses_electrum_chain_source() {
+        let config = config::Bdk {
+            chain_source_type: Some("ElEcTrUm".to_string()),
+            electrum_url: Some("ssl://electrum.example.com:50002".to_string()),
+            electrum_batch_size: 7,
+            ..Default::default()
+        };
+
+        match config.chain_source().expect("electrum config should parse") {
+            cdk_bdk::ChainSource::Electrum(config) => {
+                assert_eq!(config.url, "ssl://electrum.example.com:50002");
+                assert_eq!(config.batch_size, 7);
+            }
+            _ => panic!("expected an Electrum chain source"),
+        }
+    }
+
+    #[test]
+    fn electrum_chain_source_requires_url() {
+        let config = config::Bdk {
+            chain_source_type: Some("electrum".to_string()),
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("electrum config without a URL should fail");
+
+        assert!(error.to_string().contains("electrum_url must be set"));
+    }
+
+    #[test]
+    fn electrum_chain_source_rejects_zero_batch_size() {
+        let config = config::Bdk {
+            chain_source_type: Some("electrum".to_string()),
+            electrum_url: Some("tcp://127.0.0.1:50001".to_string()),
+            electrum_batch_size: 0,
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("zero Electrum batch size should fail");
+
+        assert!(error
+            .to_string()
+            .contains("electrum_batch_size must be greater than zero"));
+    }
+
+    #[test]
+    fn esplora_chain_source_requires_url() {
+        let config = config::Bdk {
+            chain_source_type: Some("esplora".to_string()),
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("esplora config without a URL should fail");
+
+        assert!(error.to_string().contains("esplora_url must be set"));
+    }
+
+    #[test]
+    fn rejects_unknown_chain_source() {
+        let config = config::Bdk {
+            chain_source_type: Some("unknown".to_string()),
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("unknown chain source should fail");
+
+        assert_eq!(error.to_string(), "Unknown BDK chain_source_type: unknown");
+    }
+}
+
+#[cfg(feature = "bdk")]
 #[async_trait]
 impl OnchainBackendSetup for crate::config::Bdk {
     async fn setup(
@@ -650,47 +797,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
             _ => bail!("Unknown BDK network: {}", network_str),
         };
 
-        let chain_source_type = self
-            .chain_source_type
-            .as_deref()
-            .unwrap_or("bitcoinrpc")
-            .to_lowercase();
-
-        let chain_source = match chain_source_type.as_str() {
-            "esplora" => {
-                let esplora_url = self
-                    .esplora_url
-                    .clone()
-                    .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
-                cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
-                    url: esplora_url,
-                    parallel_requests: self.esplora_parallel_requests.max(1),
-                })
-            }
-            "bitcoinrpc" => {
-                let host = self
-                    .bitcoind_rpc_host
-                    .clone()
-                    .unwrap_or_else(|| "127.0.0.1".to_string());
-                let port = self.bitcoind_rpc_port.unwrap_or(18443);
-                let user = self
-                    .bitcoind_rpc_user
-                    .clone()
-                    .unwrap_or_else(|| "user".to_string());
-                let password = self
-                    .bitcoind_rpc_password
-                    .clone()
-                    .unwrap_or_else(|| "pass".to_string());
-
-                cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
-                    host,
-                    port,
-                    user,
-                    password,
-                })
-            }
-            _ => bail!("Unknown BDK chain_source_type: {}", chain_source_type),
-        };
+        let chain_source = self.chain_source()?;
 
         let mnemonic = match &self.mnemonic {
             Some(m) => Mnemonic::parse(m)?,

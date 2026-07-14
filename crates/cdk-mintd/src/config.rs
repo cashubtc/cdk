@@ -354,7 +354,7 @@ pub struct Bdk {
     pub reserve_fee_min: Amount,
     /// Bitcoin network (mainnet, testnet, signet, regtest)
     pub network: Option<String>,
-    /// Chain source type ("esplora" or "bitcoinrpc"; defaults to "bitcoinrpc")
+    /// Chain source type ("esplora", "electrum", or "bitcoinrpc"; defaults to "bitcoinrpc")
     pub chain_source_type: Option<String>,
     /// Esplora URL (when chain_source_type = "esplora")
     pub esplora_url: Option<String>,
@@ -365,6 +365,11 @@ pub struct Bdk {
     /// Esplora server.
     #[serde(default = "default_bdk_esplora_parallel_requests")]
     pub esplora_parallel_requests: usize,
+    /// Electrum URL (when chain_source_type = "electrum")
+    pub electrum_url: Option<String>,
+    /// Number of scripts to request in each Electrum sync batch
+    #[serde(default = "default_bdk_electrum_batch_size")]
+    pub electrum_batch_size: usize,
     /// Bitcoin RPC host (when chain_source_type = "bitcoinrpc")
     pub bitcoind_rpc_host: Option<String>,
     /// Bitcoin RPC port
@@ -407,6 +412,8 @@ impl Default for Bdk {
             chain_source_type: None,
             esplora_url: None,
             esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
+            electrum_url: None,
+            electrum_batch_size: default_bdk_electrum_batch_size(),
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
@@ -471,6 +478,11 @@ fn default_bdk_sync_interval_secs() -> u64 {
 #[cfg(feature = "bdk")]
 fn default_bdk_esplora_parallel_requests() -> usize {
     1
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_electrum_batch_size() -> usize {
+    5
 }
 
 #[cfg(feature = "bdk")]
@@ -1271,6 +1283,10 @@ mod tests {
     fn clear_bdk_env_vars() {
         std::env::remove_var(crate::env_vars::BDK_MNEMONIC_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_NETWORK_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_CHAIN_SOURCE_TYPE_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_ESPLORA_URL_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_ELECTRUM_URL_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_ELECTRUM_BATCH_SIZE_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_FEE_OPTIONS_ENV_VAR);
@@ -1330,6 +1346,40 @@ mod tests {
 
     #[cfg(feature = "bdk")]
     #[test]
+    fn test_bdk_default_electrum_batch_size() {
+        assert_eq!(Bdk::default().electrum_batch_size, 5);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_electrum_toml_config() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_bdk_electrum_config");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[bdk]
+network = "regtest"
+chain_source_type = "electrum"
+electrum_url = "tcp://127.0.0.1:50001"
+electrum_batch_size = 11
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+        let bdk = settings.bdk.expect("bdk config should be present");
+
+        assert_eq!(bdk.chain_source_type, Some("electrum".to_string()));
+        assert_eq!(bdk.electrum_url, Some("tcp://127.0.0.1:50001".to_string()));
+        assert_eq!(bdk.electrum_batch_size, 11);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
     fn test_bdk_config_min_send_amount_sat_override() {
         use std::{env, fs};
 
@@ -1377,6 +1427,31 @@ min_send_amount_sat = 1200
                 .min_send_amount_sat,
             777
         );
+
+        clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_env_electrum_config() {
+        let _guard = config_env_lock();
+        clear_bdk_env_vars();
+        std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
+        std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+        std::env::set_var(crate::env_vars::BDK_CHAIN_SOURCE_TYPE_ENV_VAR, "electrum");
+        std::env::set_var(
+            crate::env_vars::BDK_ELECTRUM_URL_ENV_VAR,
+            "tcp://127.0.0.1:50001",
+        );
+        std::env::set_var(crate::env_vars::BDK_ELECTRUM_BATCH_SIZE_ENV_VAR, "9");
+
+        let mut settings = Settings::default();
+        settings.from_env().expect("Failed to apply env vars");
+
+        let bdk = settings.bdk.expect("bdk config should be present");
+        assert_eq!(bdk.chain_source_type, Some("electrum".to_string()));
+        assert_eq!(bdk.electrum_url, Some("tcp://127.0.0.1:50001".to_string()));
+        assert_eq!(bdk.electrum_batch_size, 9);
 
         clear_bdk_env_vars();
     }

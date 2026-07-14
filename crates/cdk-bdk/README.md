@@ -7,7 +7,7 @@ CDK onchain payment backend using [BDK (Bitcoin Development Kit)](https://bitcoi
 - On-chain Bitcoin payments (receive and send)
 - BIP84 (Native SegWit) key derivation from a BIP39 mnemonic
 - SQLite-backed wallet persistence via BDK
-- Blockchain sync via Bitcoin Core RPC
+- Blockchain sync via Bitcoin Core RPC, Electrum, or Esplora
 - Confirmation tracking for incoming and outgoing transactions
 - Pending transaction persistence via KV store
 
@@ -16,7 +16,17 @@ CDK onchain payment backend using [BDK (Bitcoin Development Kit)](https://bitcoi
 | Source | Status |
 |---|---|
 | Bitcoin Core RPC | Supported |
+| Electrum | Supported |
 | Esplora | Supported |
+
+Electrum sources accept `tcp://` and `ssl://` server URLs:
+
+```rust,ignore
+let chain_source = ChainSource::Electrum(ElectrumConfig {
+    url: "ssl://electrum.example.com:50002".to_string(),
+    batch_size: 5,
+});
+```
 
 ## Usage
 

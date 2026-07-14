@@ -5,6 +5,8 @@ use crate::error::Error;
 
 #[cfg(feature = "bitcoin-rpc")]
 pub mod bitcoin_rpc;
+#[cfg(feature = "electrum")]
+pub mod electrum;
 #[cfg(feature = "esplora")]
 pub mod esplora;
 
@@ -30,12 +32,24 @@ pub struct EsploraConfig {
     pub parallel_requests: usize,
 }
 
+/// Configuration for connecting to Electrum
+#[derive(Debug, Clone)]
+pub struct ElectrumConfig {
+    /// URL of the Electrum server endpoint
+    pub url: String,
+    /// Number of scripts to request in each Electrum batch
+    pub batch_size: usize,
+}
+
 /// Source of blockchain data for the BDK wallet
 #[derive(Debug, Clone)]
 pub enum ChainSource {
     /// Use an Esplora server for blockchain data
     #[cfg(feature = "esplora")]
     Esplora(EsploraConfig),
+    /// Use an Electrum server for blockchain data
+    #[cfg(feature = "electrum")]
+    Electrum(ElectrumConfig),
     /// Use Bitcoin Core RPC for blockchain data
     #[cfg(feature = "bitcoin-rpc")]
     BitcoinRpc(BitcoinRpcConfig),
@@ -77,6 +91,21 @@ impl BroadcastFailure {
 }
 
 impl ChainSource {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "electrum")]
+            Self::Electrum(config) if config.batch_size == 0 => {
+                return Err(Error::InvalidConfig(
+                    "Electrum batch_size must be greater than zero".to_string(),
+                ));
+            }
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     pub async fn sync_wallet(
         &self,
         cdk_bdk: &crate::CdkBdk,
@@ -86,6 +115,10 @@ impl ChainSource {
             #[cfg(feature = "esplora")]
             ChainSource::Esplora(config) => {
                 esplora::sync_esplora(cdk_bdk, config, cancel_token).await
+            }
+            #[cfg(feature = "electrum")]
+            ChainSource::Electrum(config) => {
+                electrum::sync_electrum(cdk_bdk, config, cancel_token).await
             }
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => {
@@ -103,6 +136,8 @@ impl ChainSource {
         match self {
             #[cfg(feature = "esplora")]
             ChainSource::Esplora(config) => esplora::broadcast_esplora(config, tx).await,
+            #[cfg(feature = "electrum")]
+            ChainSource::Electrum(config) => electrum::broadcast_electrum(config, tx).await,
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => bitcoin_rpc::broadcast_bitcoin_rpc(config, tx).await,
             #[allow(unreachable_patterns)]
@@ -116,6 +151,10 @@ impl ChainSource {
             ChainSource::Esplora(config) => {
                 esplora::fetch_fee_rate_esplora(config, target_blocks).await
             }
+            #[cfg(feature = "electrum")]
+            ChainSource::Electrum(config) => {
+                electrum::fetch_fee_rate_electrum(config, target_blocks).await
+            }
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => {
                 bitcoin_rpc::fetch_fee_rate_bitcoin_rpc(config, target_blocks).await
@@ -123,5 +162,24 @@ impl ChainSource {
             #[allow(unreachable_patterns)]
             _ => unreachable!("ChainSource must have at least one feature enabled"),
         }
+    }
+}
+
+#[cfg(all(test, feature = "electrum"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_electrum_batch_size() {
+        let chain_source = ChainSource::Electrum(ElectrumConfig {
+            url: "tcp://127.0.0.1:50001".to_string(),
+            batch_size: 0,
+        });
+
+        let error = chain_source
+            .validate()
+            .expect_err("zero Electrum batch size should fail");
+
+        assert!(matches!(error, Error::InvalidConfig(_)));
     }
 }

@@ -59,6 +59,11 @@ pub enum Error {
     #[error("Esplora error: {0}")]
     Esplora(String),
 
+    /// Electrum error
+    #[cfg(feature = "electrum")]
+    #[error("Electrum error: {0}")]
+    Electrum(String),
+
     /// Bip32 key derivation error
     #[error("Bip32 key derivation error: {0}")]
     Bip32(#[from] bdk_wallet::bitcoin::bip32::Error),
@@ -186,6 +191,8 @@ impl Error {
             // is accurate for operational purposes.
             #[cfg(feature = "bitcoin-rpc")]
             Self::BitcoinRpc(_) => true,
+            #[cfg(feature = "electrum")]
+            Self::Electrum(_) => true,
             Self::Esplora(_) => true,
             Self::Io(e) => matches!(
                 e.kind(),

@@ -34,7 +34,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::chain::{BitcoinRpcConfig, ChainSource, EsploraConfig};
+pub use crate::chain::{BitcoinRpcConfig, ChainSource, ElectrumConfig, EsploraConfig};
 pub use crate::error::Error;
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{
@@ -247,6 +247,8 @@ impl CdkBdk {
         shutdown_timeout_secs: Option<u64>,
         sync_config: Option<SyncConfig>,
     ) -> Result<Self, Error> {
+        chain_source.validate()?;
+
         let storage_dir_path = PathBuf::from(storage_dir_path);
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
         fs::create_dir_all(&storage_dir_path)?;
@@ -799,6 +801,26 @@ mod tests {
         batch_config: Option<BatchConfig>,
         sync_interval_secs: u64,
     ) -> Result<(CdkBdk, tempfile::TempDir), Error> {
+        let chain_source = ChainSource::Esplora(EsploraConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            parallel_requests: 1,
+        });
+
+        build_test_instance_with_chain_source(
+            shutdown_timeout_secs,
+            batch_config,
+            sync_interval_secs,
+            chain_source,
+        )
+        .await
+    }
+
+    async fn build_test_instance_with_chain_source(
+        shutdown_timeout_secs: u64,
+        batch_config: Option<BatchConfig>,
+        sync_interval_secs: u64,
+        chain_source: ChainSource,
+    ) -> Result<(CdkBdk, tempfile::TempDir), Error> {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mnemonic = Mnemonic::from_str(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -808,11 +830,6 @@ mod tests {
         let kv = cdk_sqlite::mint::memory::empty()
             .await
             .expect("in-memory kv store");
-
-        let chain_source = ChainSource::Esplora(EsploraConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            parallel_requests: 1,
-        });
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
@@ -1812,6 +1829,32 @@ mod tests {
             assert!(
                 !bg.sync.is_finished(),
                 "sync task must not exit on transient Esplora errors"
+            );
+        }
+
+        backend.stop().await.expect("stop");
+    }
+
+    #[cfg(feature = "electrum")]
+    #[tokio::test]
+    async fn test_sync_wallet_survives_unreachable_electrum() {
+        let chain_source = ChainSource::Electrum(ElectrumConfig {
+            url: "tcp://127.0.0.1:1".to_string(),
+            batch_size: 5,
+        });
+        let (backend, _tmp) = build_test_instance_with_chain_source(5, None, 60, chain_source)
+            .await
+            .expect("build Electrum test instance");
+
+        backend.start().await.expect("start");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        {
+            let tasks = backend.tasks.lock().await;
+            let background = tasks.as_ref().expect("tasks running");
+            assert!(
+                !background.sync.is_finished(),
+                "sync task must not exit on transient Electrum errors"
             );
         }
 
