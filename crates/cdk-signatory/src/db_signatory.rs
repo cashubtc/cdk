@@ -10,7 +10,7 @@ use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error, PublicKey};
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 use tracing::instrument;
 
 use crate::common::{
@@ -33,6 +33,9 @@ pub struct DbSignatory {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     xpriv: Xpriv,
     xpub: PublicKey,
+    /// Latest keyset snapshot, published on every reload (initial load and each
+    /// rotation).
+    keyset_updates: watch::Sender<SignatoryKeysets>,
 }
 
 impl DbSignatory {
@@ -55,14 +58,21 @@ impl DbSignatory {
             .entry(CurrencyUnit::Auth)
             .or_insert((0, vec![1]));
 
+        let xpub: PublicKey = xpriv.to_keypair(&secp_ctx).public_key().into();
+        let (keyset_updates, _) = watch::channel(SignatoryKeysets {
+            pubkey: xpub,
+            keysets: vec![],
+        });
+
         let keys = Self {
             keysets: Default::default(),
             active_keysets: Default::default(),
             localstore,
             custom_paths,
-            xpub: xpriv.to_keypair(&secp_ctx).public_key().into(),
+            xpub,
             secp_ctx,
             xpriv,
+            keyset_updates,
         };
         keys.reload_keys_from_db().await?;
 
@@ -93,6 +103,14 @@ impl DbSignatory {
             }
             keysets.insert(id, (info, keyset));
         }
+
+        // Publish the new snapshot to any keyset subscribers. Sending while the
+        // locks are held keeps the published set consistent with in-memory
+        // state.
+        self.keyset_updates.send_replace(SignatoryKeysets {
+            pubkey: self.xpub,
+            keysets: keysets.values().map(|k| k.into()).collect(),
+        });
 
         Ok(())
     }
@@ -182,6 +200,11 @@ impl Signatory for DbSignatory {
                 .map(|k| k.into())
                 .collect::<Vec<_>>(),
         })
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+        Ok(self.keyset_updates.subscribe())
     }
 
     /// Add current keyset to inactive keysets
@@ -296,6 +319,52 @@ mod test {
             matches!(result, Err(Error::ExpiredKeyset)),
             "expected ExpiredKeyset error, got: {:?}",
             result
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_keysets_pushes_rotation() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-for-subscribe",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let mut updates = signatory.subscribe_keysets().await.expect("subscribe");
+
+        // The current snapshot is available immediately.
+        let initial = updates.borrow_and_update().keysets.len();
+
+        let rotated = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        // The rotation is pushed to the subscriber.
+        updates.changed().await.expect("keyset update");
+        let after = updates.borrow_and_update();
+
+        assert!(
+            after.keysets.iter().any(|k| k.id == rotated.id),
+            "new keyset should be present after rotation"
+        );
+        assert!(
+            after.keysets.len() > initial,
+            "keyset count should grow after rotation"
         );
     }
 

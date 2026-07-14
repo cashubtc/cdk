@@ -13,11 +13,11 @@ use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
+use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
 use futures::StreamExt;
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
@@ -71,6 +71,13 @@ pub struct Mint {
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
+    /// Serializes writes to `keysets`.
+    ///
+    /// Both a mint-initiated `rotate_keyset` and the signatory subscription
+    /// drain task replace the snapshot. Holding this lock across "read the
+    /// freshest signatory snapshot, then store it" makes the last write always
+    /// the newest one, so a stale snapshot can never overwrite a newer one.
+    keyset_store_lock: Arc<Mutex<()>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
     /// Maximum number of inputs allowed per transaction
@@ -92,6 +99,9 @@ struct TaskState {
     shutdown_notify: Option<Arc<Notify>>,
     /// Handle to the main supervisor task
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
+    /// Keyset subscription retained from construction, drained once by the first
+    /// `start()`. `None` after it has been taken; a restart re-subscribes.
+    keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
 }
 
 impl Mint {
@@ -149,7 +159,13 @@ impl Mint {
         max_inputs: usize,
         max_outputs: usize,
     ) -> Result<Self, Error> {
-        let keysets = signatory.keysets().await?;
+        // Subscribe up front and bootstrap the in-memory snapshot from the same
+        // receiver that keeps it fresh. `borrow_and_update` pins the receiver
+        // cursor to this snapshot, so any signatory rotation that lands before
+        // `start()` spawns the drain task makes the loop's first `changed()`
+        // return immediately instead of being silently skipped.
+        let mut keyset_updates = signatory.subscribe_keysets().await?;
+        let keysets = keyset_updates.borrow_and_update().clone();
         if !keysets
             .keysets
             .iter()
@@ -245,7 +261,11 @@ impl Mint {
             payment_processors,
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
-            task_state: Arc::new(Mutex::new(TaskState::default())),
+            keyset_store_lock: Arc::new(Mutex::new(())),
+            task_state: Arc::new(Mutex::new(TaskState {
+                keyset_updates: Some(keyset_updates),
+                ..Default::default()
+            })),
             max_inputs,
             max_outputs,
         })
@@ -338,6 +358,65 @@ impl Mint {
             )
             .await
         });
+
+        // Keyset refresh: drain signatory keyset updates into the in-memory
+        // keysets. A signatory-side rotation reaches the mint here without a
+        // restart or a mint-initiated rotate.
+        //
+        // The receiver is normally the one retained from construction, whose
+        // cursor is pinned to the bootstrapped snapshot. On a restart after
+        // `stop()` that receiver was already consumed, so re-subscribe. A fresh
+        // `subscribe()` marks the current value as seen, so the re-subscribe
+        // branch applies the current snapshot immediately before waiting for the
+        // next change; the retained branch does not, since construction already
+        // seeded the same snapshot into the ArcSwap.
+        let keyset_updates = match task_state.keyset_updates.take() {
+            Some(rx) => Some(rx),
+            None => match self.signatory.subscribe_keysets().await {
+                Ok(mut rx) => {
+                    let _store = self.keyset_store_lock.lock().await;
+                    let current = rx.borrow_and_update().keysets.clone();
+                    if !current.is_empty() {
+                        self.keysets.store(Arc::new(current));
+                    }
+                    Some(rx)
+                }
+                Err(err) => {
+                    tracing::warn!("Could not subscribe to signatory keyset updates: {}", err);
+                    None
+                }
+            },
+        };
+
+        if let Some(mut keyset_updates) = keyset_updates {
+            let keysets = self.keysets.clone();
+            let keyset_store_lock = Arc::clone(&self.keyset_store_lock);
+            let shutdown = shutdown_notify.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = shutdown.notified() => break,
+                        changed = keyset_updates.changed() => {
+                            if changed.is_err() {
+                                // Signatory dropped the sender; stop draining.
+                                break;
+                            }
+                            // Serialize with mint-initiated rotations: read the
+                            // freshest snapshot and store it under the lock, so a
+                            // concurrent rotate cannot land a stale snapshot after
+                            // this newer one.
+                            let _store = keyset_store_lock.lock().await;
+                            let updated =
+                                keyset_updates.borrow_and_update().keysets.clone();
+                            if updated.is_empty() {
+                                continue;
+                            }
+                            keysets.store(Arc::new(updated));
+                        }
+                    }
+                }
+            });
+        }
 
         // Store the handles
         task_state.shutdown_notify = Some(shutdown_notify);
@@ -1308,8 +1387,10 @@ mod tests {
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
     use cdk_common::PaymentMethod;
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-    use cdk_signatory::signatory::RotateKeyArguments;
+    use cdk_signatory::db_signatory::DbSignatory;
+    use cdk_signatory::signatory::{RotateKeyArguments, SignatoryKeysets};
     use cdk_sqlite::mint::memory::new_with_state;
+    use tokio::sync::watch;
 
     use super::*;
     use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
@@ -1326,6 +1407,524 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+    }
+
+    /// A stand-in for the in-memory signatory whose keyset subscription is
+    /// driven by the test. Injected snapshots are delivered verbatim through
+    /// `subscribe_keysets`, so the mint's drain task can be exercised in
+    /// isolation from `DbSignatory`'s rotation logic.
+    struct MockSignatory {
+        updates: watch::Sender<SignatoryKeysets>,
+    }
+
+    impl MockSignatory {
+        fn new(initial: SignatoryKeysets) -> Self {
+            let (updates, _) = watch::channel(initial);
+            Self { updates }
+        }
+
+        /// Inject a new keyset snapshot through the subscription.
+        fn push(&self, keysets: SignatoryKeysets) {
+            self.updates.send_replace(keysets);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Signatory for MockSignatory {
+        fn name(&self) -> String {
+            "mock".to_string()
+        }
+
+        async fn blind_sign(
+            &self,
+            _blinded_messages: Vec<BlindedMessage>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn verify_proofs(&self, _proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+            Ok(self.updates.borrow().clone())
+        }
+
+        async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+            Ok(self.updates.subscribe())
+        }
+
+        async fn rotate_keyset(&self, _args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+    }
+
+    /// Produce a sequence of valid, distinct keyset snapshots by rotating a real
+    /// `DbSignatory` `count` times and reading the full set after each rotation.
+    /// Each rotation makes a new active Sat keyset, so the snapshots differ.
+    async fn rotated_snapshots(count: usize) -> Vec<SignatoryKeysets> {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"mock-signatory-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let amounts = vec![1, 2, 4, 8];
+        let mut snapshots = Vec::with_capacity(count);
+        for _ in 0..count {
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: CurrencyUnit::Sat,
+                    amounts: amounts.clone(),
+                    input_fee_ppk: 0,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .expect("rotate_keyset");
+            snapshots.push(signatory.keysets().await.expect("keysets"));
+        }
+        snapshots
+    }
+
+    /// The id of the active Sat keyset in a snapshot.
+    fn active_sat_id(snapshot: &SignatoryKeysets) -> Id {
+        snapshot
+            .keysets
+            .iter()
+            .find(|k| k.active && k.unit == CurrencyUnit::Sat)
+            .expect("snapshot should have an active Sat keyset")
+            .id
+    }
+
+    /// Build a mint around an arbitrary signatory, with a fresh empty store.
+    async fn create_mint_with_signatory(signatory: Arc<dyn Signatory + Send + Sync>) -> Mint {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            1000,
+            1000,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mock_injection_updates_mint_keysets() {
+        let snaps = rotated_snapshots(2).await;
+        let next = snaps[1].clone();
+        let new_id = active_sat_id(&next);
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        let before: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+        assert!(
+            !before.contains(&new_id),
+            "injected keyset id must not exist before injection"
+        );
+
+        // Inject a new snapshot straight through the subscription.
+        mock.push(next);
+
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == new_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "injected keyset did not reach the mint in time"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    #[tokio::test]
+    async fn mock_injection_latest_wins() {
+        let snaps = rotated_snapshots(3).await;
+        let b = snaps[1].clone();
+        let c = snaps[2].clone();
+        let c_id = active_sat_id(&c);
+        let c_len = c.keysets.len();
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        // Two injections back-to-back: the watch keeps only the latest, so the
+        // mint must settle on C even if B is never observed.
+        mock.push(b);
+        mock.push(c);
+
+        let converged = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == c_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            converged.is_ok(),
+            "mint did not converge to the latest snapshot"
+        );
+        assert_eq!(
+            mint.keysets.load().len(),
+            c_len,
+            "mint should settle on the latest snapshot, not an earlier one"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    #[tokio::test]
+    async fn empty_snapshot_is_ignored() {
+        let snaps = rotated_snapshots(2).await;
+        let seed = snaps[0].clone();
+        let next = snaps[1].clone();
+        let next_id = active_sat_id(&next);
+        let seed_pubkey = seed.pubkey;
+        let seed_ids: Vec<Id> = seed.keysets.iter().map(|k| k.id).collect();
+
+        let mock = Arc::new(MockSignatory::new(seed));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        // An empty snapshot must be dropped by the drain guard: the mint
+        // keysets stay untouched.
+        mock.push(SignatoryKeysets {
+            pubkey: seed_pubkey,
+            keysets: vec![],
+        });
+        // Give the drain task time to observe and discard the empty snapshot.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let current: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+        assert_eq!(
+            current, seed_ids,
+            "empty snapshot must not change the mint keysets"
+        );
+
+        // A valid snapshot after the empty one still propagates: the guard must
+        // not wedge the drain loop.
+        mock.push(next);
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == next_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            applied.is_ok(),
+            "valid snapshot after an empty one should still propagate"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// Regression test for the bootstrap/subscribe race: a rotation that lands
+    /// between mint construction and `start()` must still reach the mint.
+    ///
+    /// The subscription is now both the bootstrap and the update source, so the
+    /// snapshot pushed in that window is delivered by the drain task's first
+    /// `changed()`. Under the old two-phase bootstrap (unary `keysets()` in the
+    /// constructor, `subscribe_keysets()` later in `start()`) this snapshot was
+    /// silently skipped until the next rotation, and this test would time out.
+    #[tokio::test]
+    async fn rotation_between_construction_and_start_is_not_missed() {
+        let snaps = rotated_snapshots(2).await;
+        let next = snaps[1].clone();
+        let new_id = active_sat_id(&next);
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+
+        // The mint bootstrapped snapshot A. Rotate to B *before* start() spawns
+        // the drain task: this is exactly the window the old bootstrap missed.
+        assert!(
+            !mint.keysets.load().iter().any(|k| k.id == new_id),
+            "bootstrapped snapshot must not already contain the rotated keyset"
+        );
+        mock.push(next);
+
+        mint.start().await.expect("mint should start");
+
+        // No push after start(): the mint must converge to B purely from the
+        // snapshot that landed in the construction-to-start window.
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == new_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "snapshot pushed before start() did not reach the mint"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// A restart after `stop()` re-subscribes (the retained receiver was
+    /// consumed by the first `start()`) and must catch up on any snapshot that
+    /// landed while the drain task was stopped.
+    #[tokio::test]
+    async fn restart_catches_up_on_missed_rotation() {
+        let snaps = rotated_snapshots(2).await;
+        let next = snaps[1].clone();
+        let new_id = active_sat_id(&next);
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+
+        mint.start().await.expect("mint should start");
+        mint.stop().await.expect("mint should stop");
+
+        // Rotate while stopped: the drain task is gone, so the ArcSwap is stale.
+        mock.push(next);
+
+        mint.start().await.expect("mint should restart");
+
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == new_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "restart did not catch up on the snapshot pushed while stopped"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// A single armed pause point for a `GatedSignatory::keysets` call.
+    struct Gate {
+        reached: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    /// Wraps a real `DbSignatory`, delegating every call, but lets a test hold a
+    /// single `keysets()` call open: it reads the current snapshot, signals the
+    /// test, then blocks until released and returns the snapshot it read. This
+    /// reproduces the window where `Mint::rotate_keyset` has read a snapshot but
+    /// not yet stored it while another rotation lands, which without the shared
+    /// store lock let a stale write clobber a newer one in the keyset ArcSwap.
+    struct GatedSignatory {
+        inner: Arc<DbSignatory>,
+        gate: Mutex<Option<Gate>>,
+    }
+
+    impl GatedSignatory {
+        fn new(inner: Arc<DbSignatory>) -> Self {
+            Self {
+                inner,
+                gate: Mutex::new(None),
+            }
+        }
+
+        /// Arm the next `keysets()` call to pause. Returns a receiver that fires
+        /// once the call has read its snapshot, and a sender that releases it.
+        async fn arm(
+            &self,
+        ) -> (
+            tokio::sync::oneshot::Receiver<()>,
+            tokio::sync::oneshot::Sender<()>,
+        ) {
+            let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *self.gate.lock().await = Some(Gate {
+                reached: reached_tx,
+                release: release_rx,
+            });
+            (reached_rx, release_tx)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Signatory for GatedSignatory {
+        fn name(&self) -> String {
+            self.inner.name()
+        }
+
+        async fn blind_sign(
+            &self,
+            blinded_messages: Vec<BlindedMessage>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            self.inner.blind_sign(blinded_messages).await
+        }
+
+        async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
+            self.inner.verify_proofs(proofs).await
+        }
+
+        async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+            let snapshot = self.inner.keysets().await?;
+            let gate = self.gate.lock().await.take();
+            if let Some(gate) = gate {
+                let _ = gate.reached.send(());
+                let _ = gate.release.await;
+            }
+            Ok(snapshot)
+        }
+
+        async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+            self.inner.subscribe_keysets().await
+        }
+
+        async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+            self.inner.rotate_keyset(args).await
+        }
+    }
+
+    /// Regression test for the two-writer keyset race. A mint-initiated rotation
+    /// reads the signatory snapshot and then stores it, while the subscription
+    /// drain task also stores every published snapshot. If a newer rotation is
+    /// drained between the mint rotation's read and its store, the stale store
+    /// must not clobber the newer snapshot.
+    ///
+    /// The gate holds the mint rotation's `keysets()` read open while an
+    /// out-of-band rotation on another unit lands and is drained. When the
+    /// rotation resumes and stores its now-stale read, the shared store lock
+    /// serializes it with the drain so the newest snapshot still wins. Without
+    /// the lock the stale store sticks and this test times out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rotate_store_does_not_clobber_newer_drained_snapshot() {
+        let amounts: Vec<u64> = (0..4).map(|i| 2u64.pow(i)).collect();
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Sat, (0u64, amounts.clone()));
+        supported_units.insert(CurrencyUnit::Msat, (0u64, amounts.clone()));
+
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let inner = Arc::new(
+            DbSignatory::new(
+                store,
+                b"gated-signatory-seed",
+                supported_units.clone(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+        // Seed an active keyset for each unit.
+        for (unit, (fee, amts)) in &supported_units {
+            inner
+                .rotate_keyset(RotateKeyArguments {
+                    unit: unit.clone(),
+                    amounts: amts.clone(),
+                    input_fee_ppk: *fee,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .expect("seed rotate");
+        }
+
+        let gated = Arc::new(GatedSignatory::new(inner));
+        let mint = create_mint_with_signatory(gated.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        // Arm the gate, then start a mint-initiated Sat rotation. It commits the
+        // new Sat keyset, then reads a snapshot that still predates the Msat
+        // rotation below, and blocks before storing it.
+        let (reached, release) = gated.arm().await;
+        let mint_c = mint.clone();
+        let amts = amounts.clone();
+        let rotate = tokio::spawn(async move {
+            mint_c
+                .rotate_keyset(CurrencyUnit::Sat, amts, 0, true, None)
+                .await
+        });
+
+        // Wait until the rotation has read its soon-to-be-stale snapshot.
+        reached.await.expect("rotation reached the gate");
+
+        // Land an out-of-band Msat rotation; the drain applies the newer
+        // snapshot while the mint rotation is still parked at the gate.
+        let rotated_msat = mint
+            .signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Msat,
+                amounts: amounts.clone(),
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("out-of-band msat rotate");
+
+        // Release the parked rotation; its stale store must not win.
+        release.send(()).expect("release the gate");
+        let sat_info = rotate.await.expect("join").expect("mint rotate");
+
+        // The cache must converge to hold BOTH the new Sat and the new Msat
+        // keyset. A stale rotate store drops the drained Msat keyset and never
+        // recovers, so this loop would time out.
+        let converged = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ids: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+                if ids.contains(&sat_info.id) && ids.contains(&rotated_msat.id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            converged.is_ok(),
+            "stale rotate store clobbered the newer drained Msat keyset"
+        );
+
+        mint.stop().await.expect("mint should stop");
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -1786,6 +2385,59 @@ mod tests {
             rotation_result,
             Err(Error::UnitStringCollision(_currency_unit))
         ));
+    }
+
+    #[tokio::test]
+    async fn signatory_rotation_propagates_to_mint() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts.clone()));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+        mint.start().await.expect("mint should start");
+
+        let before: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+
+        // Rotate directly on the signatory, out of band from the mint. Without
+        // the keyset subscription the mint would never see this new keyset.
+        let rotated = mint
+            .signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::default(),
+                amounts,
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        assert!(
+            !before.contains(&rotated.id),
+            "rotated keyset should be new"
+        );
+
+        // The drain task should observe the pushed update and store it, so
+        // polling the in-memory keysets eventually sees the rotated keyset.
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == rotated.id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "signatory rotation did not propagate to the mint in time"
+        );
+
+        mint.stop().await.expect("mint should stop");
     }
 
     #[tokio::test]

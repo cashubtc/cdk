@@ -176,6 +176,16 @@ pub trait Signatory {
     /// Retrieve the list of all mint keysets
     async fn keysets(&self) -> Result<SignatoryKeysets, Error>;
 
+    /// Subscribe to keyset updates.
+    ///
+    /// The returned receiver holds the latest full set of keysets. The current
+    /// set is available immediately and the value is replaced on every
+    /// rotation. Consumers should treat each value as the complete current
+    /// state, not a delta.
+    async fn subscribe_keysets(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<SignatoryKeysets>, Error>;
+
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
