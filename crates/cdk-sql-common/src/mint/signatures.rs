@@ -215,6 +215,10 @@ where
         &mut self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+        if blinded_messages.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -265,6 +269,10 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+        if blinded_messages.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let conn = self
             .pool
             .get()

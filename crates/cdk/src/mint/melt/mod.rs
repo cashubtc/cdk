@@ -17,9 +17,11 @@ use cdk_common::payment::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::subscription::Params;
 use cdk_common::{
-    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
-    MeltQuoteCustomResponse, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltQuoteResponse,
+    BlindSignature, MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse,
+    MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltQuoteOnchainRequest,
+    MeltQuoteOnchainResponse, MeltQuoteResponse,
 };
+use cdk_signatory::signatory::{ReconstructDleqArguments, Signatory};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
@@ -153,6 +155,54 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Loads stored change blind signatures for a quote and reconstructs their DLEQ proofs
+    /// in a single batched signatory call.
+    pub(crate) async fn load_quote_change_with_dleq(
+        localstore: &DynMintDatabase,
+        signatory: &Arc<dyn Signatory + Send + Sync>,
+        quote_id: &QuoteId,
+    ) -> Result<Option<Vec<BlindSignature>>, Error> {
+        let signatures_and_secrets = localstore
+            .get_blind_signatures_and_secret_for_quote(quote_id)
+            .await?;
+
+        if signatures_and_secrets.is_empty() {
+            return Ok(None);
+        }
+
+        let args: Vec<ReconstructDleqArguments> = signatures_and_secrets
+            .iter()
+            .map(|(blind_signature, blind_secret)| ReconstructDleqArguments {
+                blind_signature: blind_signature.clone(),
+                blind_secret: *blind_secret,
+            })
+            .collect();
+
+        let blind_signatures = match signatory.reconstruct_dleq(args).await {
+            Ok(with_dleq) => with_dleq,
+            Err(Error::SignatureMissingOrInvalid) => {
+                tracing::error!(
+                    %quote_id,
+                    "Stored change signature failed DLEQ reconstruction; possible corrupted state"
+                );
+                return Err(Error::SignatureMissingOrInvalid);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %quote_id,
+                    error = %err,
+                    "Could not reconstruct DLEQ for change signatures; serving them without DLEQ"
+                );
+                signatures_and_secrets
+                    .into_iter()
+                    .map(|(blind_signature, _)| blind_signature)
+                    .collect()
+            }
+        };
+
+        Ok(Some(blind_signatures))
+    }
+
     /// Loads a settled (non-pending, non-unknown) melt response from the database.
     ///
     /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
@@ -169,6 +219,7 @@ impl Mint {
     /// state.
     async fn load_settled_melt_response(
         localstore: &DynMintDatabase,
+        signatory: &Arc<dyn Signatory + Send + Sync>,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
         let quote = Self::load_melt_quote_for_response(localstore, quote_id)
@@ -182,14 +233,9 @@ impl Mint {
             return Ok(None);
         }
 
-        let change = localstore.get_blind_signatures_for_quote(quote_id).await?;
-        let change_opt = if change.is_empty() {
-            None
-        } else {
-            Some(change)
-        };
+        let change = Self::load_quote_change_with_dleq(localstore, signatory, quote_id).await?;
 
-        Ok(Some(quote.into_response(change_opt)))
+        Ok(Some(quote.into_response(change)))
     }
 
     #[instrument(skip_all)]
@@ -829,12 +875,9 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            let blind_signatures = self
-                .localstore
-                .get_blind_signatures_for_quote(quote_id)
-                .await?;
-
-            let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
+            let change =
+                Self::load_quote_change_with_dleq(&self.localstore, &self.signatory, quote_id)
+                    .await?;
 
             let response = match quote.payment_method {
                 PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -961,6 +1004,7 @@ impl Mint {
         let quote_id_for_log = quote_id.clone();
         let localstore = self.localstore();
         let pubsub = self.pubsub_manager();
+        let signatory = self.signatory.clone();
 
         let quote_for_spawn = quote.clone();
         let completion = tokio::spawn(async move {
@@ -1017,9 +1061,12 @@ impl Mint {
                         let start = tokio::time::Instant::now();
 
                         loop {
-                            if let Some(response) =
-                                Self::load_settled_melt_response(&localstore, &quote_id_for_log)
-                                    .await?
+                            if let Some(response) = Self::load_settled_melt_response(
+                                &localstore,
+                                &signatory,
+                                &quote_id_for_log,
+                            )
+                            .await?
                             {
                                 return Ok(response);
                             }
@@ -1068,11 +1115,67 @@ impl Mint {
                                 {
                                     if let Some(response) = Self::load_settled_melt_response(
                                         &localstore,
+                                        &signatory,
                                         &quote_id_for_log,
                                     )
                                     .await?
                                     {
                                         return Ok(response);
+                                    }
+
+                                    if start.elapsed() >= pending_melt_wait_timeout() {
+                                        return Err(Error::PendingMeltTimeout {
+                                            last_backend_error: None,
+                                        });
+                                    }
+
+                                    let Ok(maybe_event) = tokio::time::timeout(
+                                        pending_melt_notification_wait_interval(),
+                                        sub.recv(),
+                                    )
+                                    .await
+                                    else {
+                                        continue;
+                                    };
+
+                                    if let Some(event) = maybe_event {
+                                        let (event_quote_id, state) = match event.into_inner() {
+                                            NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            // Onchain is the one method where the subscription
+                                            // fast-path is most valuable, because confirmation is
+                                            // inherently asynchronous. We subscribe to
+                                            // `OnchainMeltQuote` events above (see `Kind` mapping)
+                                            // and must handle them here; otherwise onchain waiters
+                                            // would rely solely on the
+                                            // explicit quote-check path.
+                                            NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            _ => continue,
+                                        };
+
+                                        if event_quote_id == quote_id_for_log
+                                            && state != MeltQuoteState::Pending
+                                        {
+                                            if let Some(response) =
+                                                Self::load_settled_melt_response(
+                                                    &localstore,
+                                                    &signatory,
+                                                    &quote_id_for_log,
+                                                )
+                                                .await?
+                                            {
+                                                return Ok(response);
+                                            }
+                                        }
                                     }
                                 }
                             }

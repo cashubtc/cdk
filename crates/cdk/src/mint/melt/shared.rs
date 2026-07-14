@@ -926,8 +926,7 @@ pub async fn finalize_melt_quote(
                 tx.rollback().await?;
             }
 
-            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
-            return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+            return Mint::load_quote_change_with_dleq(db, &mint.signatory, &quote.id).await;
         }
     };
 
@@ -950,8 +949,7 @@ pub async fn finalize_melt_quote(
             tx.rollback().await?;
         }
 
-        let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
-        return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+        return Mint::load_quote_change_with_dleq(db, &mint.signatory, &quote.id).await;
     }
 
     #[cfg(feature = "prometheus")]
@@ -1038,8 +1036,7 @@ pub async fn finalize_melt_quote(
                 return Err(Error::PaidQuote);
             }
 
-            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
-            return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+            return Mint::load_quote_change_with_dleq(db, &mint.signatory, &quote.id).await;
         }
     };
 

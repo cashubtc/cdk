@@ -15,7 +15,9 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
+use cdk_signatory::signatory::{
+    ReconstructDleqArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
@@ -387,8 +389,12 @@ impl Mint {
         let payment_processors = Arc::new(payment_processors);
 
         Ok(Self {
-            signatory,
-            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
+            signatory: signatory.clone(),
+            pubsub_manager: PubSubManager::new((
+                localstore.clone(),
+                payment_processors.clone(),
+                signatory.clone(),
+            )),
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
@@ -1375,7 +1381,8 @@ impl Mint {
         let metrics = MintMetricGuard::new("restore");
 
         let result = async {
-            let output_len = request.outputs.len();
+            let blinded_messages = request.outputs;
+            let output_len = blinded_messages.len();
 
             if output_len == 0 {
                 return Ok(RestoreResponse {
@@ -1384,7 +1391,7 @@ impl Mint {
                 });
             }
 
-            // Check max outputs limit
+            // Bound the request before doing any DB work
             if output_len > self.max_outputs {
                 tracing::warn!(
                     "Restore request exceeds max outputs limit: {} > {}",
@@ -1397,60 +1404,65 @@ impl Mint {
                 });
             }
 
-            let mut outputs = Vec::with_capacity(output_len);
-            let mut signatures = Vec::with_capacity(output_len);
-
-            // Build a position map to track original request order for verification
-            let position_map: HashMap<PublicKey, usize> = request
-                .outputs
-                .iter()
-                .enumerate()
-                .map(|(idx, output)| (output.blinded_secret, idx))
-                .collect();
-
-            let blinded_message: Vec<PublicKey> =
-                request.outputs.iter().map(|b| b.blinded_secret).collect();
+            let blinded_secrets: Vec<PublicKey> =
+                blinded_messages.iter().map(|b| b.blinded_secret).collect();
 
             let blinded_signatures = self
                 .localstore
-                .get_blind_signatures(&blinded_message)
+                .get_blind_signatures(&blinded_secrets)
                 .await?;
-
             if blinded_signatures.len() != output_len {
                 return Err(Error::Internal);
             }
 
+            let mut outputs = Vec::with_capacity(output_len);
+            let mut dleq_args = Vec::with_capacity(output_len);
+
             for (blinded_message, blinded_signature) in
-                request.outputs.into_iter().zip(blinded_signatures)
+                blinded_messages.into_iter().zip(blinded_signatures)
             {
-                if let Some(blinded_signature) = blinded_signature {
-                    outputs.push(blinded_message);
-                    signatures.push(blinded_signature);
+                let Some(blinded_signature) = blinded_signature else {
+                    continue;
+                };
+
+                // Claimed values must match what the mint actually signed
+                if blinded_signature.keyset_id != blinded_message.keyset_id
+                    || blinded_signature.amount != blinded_message.amount
+                {
+                    continue;
                 }
+
+                // Authoritative expiry check on the stored signature's keyset
+                if self
+                    .get_keyset_info(&blinded_signature.keyset_id)
+                    .is_some_and(|k| k.is_expired())
+                {
+                    continue;
+                }
+
+                dleq_args.push(ReconstructDleqArguments {
+                    blind_signature: blinded_signature,
+                    blind_secret: blinded_message.blinded_secret,
+                });
+                outputs.push(blinded_message);
             }
 
-            // Verify response outputs maintain the same relative order as the request
-            // This ensures the NUT-09 spec requirement that outputs[i] corresponds to signatures[i]
-            let mut last_position: Option<usize> = None;
-            for output in &outputs {
-                let current_position =
-                    position_map.get(&output.blinded_secret).ok_or_else(|| {
-                        tracing::error!("Restore response contains output not in original request");
-                        Error::Internal
-                    })?;
+            let signatures = if dleq_args.is_empty() {
+                Vec::new()
+            } else {
+                let fallback: Vec<BlindSignature> = dleq_args
+                    .iter()
+                    .map(|a| a.blind_signature.clone())
+                    .collect();
 
-                if let Some(last_pos) = last_position {
-                    if *current_position <= last_pos {
-                        tracing::error!(
-                            "Restore response outputs are out of order: position {} after {}",
-                            current_position,
-                            last_pos
-                        );
-                        return Err(Error::Internal);
-                    }
-                }
-                last_position = Some(*current_position);
-            }
+                self.signatory
+                    .reconstruct_dleq(dleq_args)
+                    .await
+                    .unwrap_or_else(|err| {
+                        tracing::warn!("Failed to reconstruct DLEQ proofs on restore: {err}");
+                        fallback
+                    })
+            };
 
             Ok(RestoreResponse {
                 outputs,
@@ -1553,12 +1565,12 @@ mod tests {
     /// driven by the test. Injected snapshots are delivered verbatim through
     /// `subscribe_keysets`, so the mint's drain task can be exercised in
     /// isolation from `DbSignatory`'s rotation logic.
-    struct MockSignatory {
+    pub struct MockSignatory {
         updates: watch::Sender<SignatoryKeysets>,
     }
 
     impl MockSignatory {
-        fn new(initial: SignatoryKeysets) -> Self {
+        pub fn new(initial: SignatoryKeysets) -> Self {
             let (updates, _) = watch::channel(initial);
             Self { updates }
         }
@@ -1597,12 +1609,19 @@ mod tests {
         async fn rotate_keyset(&self, _args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             Err(Error::Custom("unsupported in mock".to_string()))
         }
+
+        async fn reconstruct_dleq(
+            &self,
+            args: Vec<ReconstructDleqArguments>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            Ok(args.into_iter().map(|a| a.blind_signature).collect())
+        }
     }
 
     /// Produce a sequence of valid, distinct keyset snapshots by rotating a real
     /// `DbSignatory` `count` times and reading the full set after each rotation.
     /// Each rotation makes a new active Sat keyset, so the snapshots differ.
-    async fn rotated_snapshots(count: usize) -> Vec<SignatoryKeysets> {
+    pub async fn rotated_snapshots(count: usize) -> Vec<SignatoryKeysets> {
         let store = Arc::new(
             cdk_sqlite::mint::memory::empty()
                 .await
@@ -2009,6 +2028,13 @@ mod tests {
 
         async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             self.inner.rotate_keyset(args).await
+        }
+
+        async fn reconstruct_dleq(
+            &self,
+            args: Vec<ReconstructDleqArguments>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            self.inner.reconstruct_dleq(args).await
         }
     }
 

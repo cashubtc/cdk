@@ -6,8 +6,11 @@ use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use crate::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
+#[allow(clippy::large_enum_variant)]
 enum Request {
     BlindSign(
         (
@@ -22,6 +25,12 @@ enum Request {
         (
             RotateKeyArguments,
             oneshot::Sender<Result<SignatoryKeySet, Error>>,
+        ),
+    ),
+    ReconstructDleq(
+        (
+            Vec<ReconstructDleqArguments>,
+            oneshot::Sender<Result<Vec<BlindSignature>, Error>>,
         ),
     ),
 }
@@ -97,6 +106,14 @@ impl Service {
                         tracing::error!("Error sending keyset-rotation response: receiver dropped");
                     }
                 }
+                Request::ReconstructDleq((args, response)) => {
+                    let output = handler.reconstruct_dleq(args).await;
+                    if response.send(output).is_err() {
+                        tracing::error!(
+                            "Error sending reconstruct-dleq response: receiver dropped"
+                        );
+                    }
+                }
             }
         }
     }
@@ -160,6 +177,21 @@ impl Signatory for Service {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::RotateKeyset((args, tx)))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
+
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn reconstruct_dleq(
+        &self,
+        args: Vec<ReconstructDleqArguments>,
+    ) -> Result<Vec<BlindSignature>, Error> {
+        let (tx, rx) = oneshot::channel();
+
+        self.pipeline
+            .send(Request::ReconstructDleq((args, tx)))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 

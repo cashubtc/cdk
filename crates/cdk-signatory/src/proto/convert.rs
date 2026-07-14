@@ -105,6 +105,7 @@ impl From<cdk_common::Error> for super::Error {
             cdk_common::Error::DuplicateOutputs => ErrorCode::DuplicateInputsProvided,
             cdk_common::Error::UnknownKeySet => ErrorCode::KeysetNotKnown,
             cdk_common::Error::InactiveKeyset => ErrorCode::KeysetInactive,
+            cdk_common::Error::SignatureMissingOrInvalid => ErrorCode::InvalidBlindMessage,
             _ => ErrorCode::Unspecified,
         };
 
@@ -124,6 +125,7 @@ impl From<super::Error> for cdk_common::Error {
             ErrorCode::DuplicateInputsProvided => cdk_common::Error::DuplicateInputs,
             ErrorCode::KeysetNotKnown => cdk_common::Error::UnknownKeySet,
             ErrorCode::KeysetInactive => cdk_common::Error::InactiveKeyset,
+            ErrorCode::InvalidBlindMessage => cdk_common::Error::SignatureMissingOrInvalid,
             ErrorCode::Unspecified => cdk_common::Error::Custom(val.detail),
             _ => todo!(),
         }
@@ -401,6 +403,34 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
             final_expiry: self.final_expiry,
+        })
+    }
+}
+
+impl From<crate::signatory::ReconstructDleqArguments> for ReconstructDleqEntry {
+    fn from(value: crate::signatory::ReconstructDleqArguments) -> Self {
+        Self {
+            blind_signature: Some(value.blind_signature.into()),
+            blind_secret: value.blind_secret.to_bytes().to_vec(),
+        }
+    }
+}
+
+impl TryInto<crate::signatory::ReconstructDleqArguments> for ReconstructDleqEntry {
+    type Error = Status;
+
+    fn try_into(self) -> Result<crate::signatory::ReconstructDleqArguments, Self::Error> {
+        Ok(crate::signatory::ReconstructDleqArguments {
+            blind_signature: self
+                .blind_signature
+                .ok_or(Status::invalid_argument("blind_signature not set"))?
+                .try_into()
+                .map_err(|err: cdk_common::error::Error| {
+                    Status::invalid_argument(err.to_string())
+                })?,
+            blind_secret: PublicKey::from_slice(&self.blind_secret).map_err(
+                |err: cdk_common::nut01::Error| Status::invalid_argument(err.to_string()),
+            )?,
         })
     }
 }
