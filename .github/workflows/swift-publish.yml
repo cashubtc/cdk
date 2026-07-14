@@ -169,7 +169,7 @@ jobs:
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-swift/rust/Cargo.toml
 
           # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-swift/rust/Cargo.toml
+          printf '\n[workspace]\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-swift/rust/Cargo.toml
 
           # Stamp framework Info.plist bundle versions for App Store validation.
           sed -i \
@@ -180,6 +180,13 @@ jobs:
 
           echo "--- rust/Cargo.toml ---"
           cat cdk-swift/rust/Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Cargo.lock for standalone crate
+        working-directory: cdk-swift/rust
+        run: cargo generate-lockfile
 
       - name: Push to cdk-swift release branch
         working-directory: cdk-swift
@@ -247,9 +254,9 @@ jobs:
           export DEVELOPER_DIR=$(/usr/bin/xcrun xcode-select -p)
           if [[ "${{ matrix.unset_macos_env }}" == "true" ]]; then
             env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
-              cargo build --release --target ${{ matrix.target }}
+              cargo build --release --locked --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }}
           fi
 
       - name: Fix dylib install name
@@ -350,7 +357,7 @@ jobs:
         working-directory: cdk-swift/rust
         run: |
           # Build uniffi-bindgen-swift binary
-          cargo build --release --bin uniffi-bindgen-swift
+          cargo build --release --locked --bin uniffi-bindgen-swift
 
           BINDGEN="./target/release/uniffi-bindgen-swift"
 

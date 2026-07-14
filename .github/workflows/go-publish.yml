@@ -123,7 +123,7 @@ jobs:
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-go/rust/Cargo.toml
 
           # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-go/rust/Cargo.toml
+          printf '\n[workspace]\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-go/rust/Cargo.toml
 
           echo "--- rust/Cargo.toml ---"
           cat cdk-go/rust/Cargo.toml
@@ -182,7 +182,7 @@ jobs:
       - name: Build cdk-ffi
         shell: bash
         run: |
-          cargo build --release --package cdk-ffi \
+          cargo build --release --locked --package cdk-ffi \
             --target ${{ matrix.target }}
 
       - name: Fix dylib install name

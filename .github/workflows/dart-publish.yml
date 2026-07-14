@@ -164,11 +164,18 @@ jobs:
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-dart/rust/Cargo.toml
 
           # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-dart/rust/Cargo.toml
+          printf '\n[workspace]\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-dart/rust/Cargo.toml
 
           cat cdk-dart/pubspec.yaml
           echo "---"
           cat cdk-dart/rust/Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Cargo.lock for standalone crate
+        working-directory: cdk-dart/rust
+        run: cargo generate-lockfile
 
       - name: Push to cdk-dart release branch
         working-directory: cdk-dart
@@ -257,12 +264,12 @@ jobs:
       - name: Build (native)
         if: "!contains(matrix.target, 'android')"
         working-directory: cdk-dart/rust
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Build (cross / Android)
         if: contains(matrix.target, 'android')
         working-directory: cdk-dart/rust
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Strip debug symbols
         shell: bash
@@ -280,7 +287,7 @@ jobs:
         working-directory: cdk-dart/rust
         run: |
           mkdir -p ../generated-bindings
-          cargo run --release --bin uniffi-bindgen -- \
+          cargo run --release --locked --bin uniffi-bindgen -- \
             target/${{ matrix.target }}/release/${{ matrix.artifact }} \
             --out-dir ../generated-bindings
 
