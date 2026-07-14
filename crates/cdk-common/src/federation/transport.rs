@@ -1441,6 +1441,8 @@ pub struct FederationPeerStatus {
     /// Next AlephBFT finalized-item index required by this peer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aleph_bft_next_item_index: Option<u64>,
+    /// AlephBFT session represented by this peer status.
+    pub aleph_bft_session: u64,
     /// Number of accepted operations in the local journal.
     pub operation_count: u64,
     /// Highest accepted operation index, if any.
@@ -1468,6 +1470,7 @@ impl FederationPeerStatus {
             federation_id,
             member_id,
             aleph_bft_next_item_index: Some(0),
+            aleph_bft_session: 0,
             operation_count,
             latest_index,
             latest_order_digest,
@@ -1490,6 +1493,7 @@ impl FederationPeerStatus {
             federation_id,
             member_id,
             aleph_bft_next_item_index: Some(0),
+            aleph_bft_session: 0,
             operation_count,
             latest_index,
             latest_order_digest,
@@ -1501,6 +1505,13 @@ impl FederationPeerStatus {
     #[must_use]
     pub fn with_aleph_bft_next_item_index(mut self, next_item_index: u64) -> Self {
         self.aleph_bft_next_item_index = Some(next_item_index);
+        self
+    }
+
+    /// Return this status with an explicit AlephBFT session.
+    #[must_use]
+    pub fn with_aleph_bft_session(mut self, session: u64) -> Self {
+        self.aleph_bft_session = session;
         self
     }
 
@@ -1819,6 +1830,12 @@ pub struct FederationJournalCatchUpRequest {
     pub known_order_digest: Option<FederationJournalDigest>,
     /// Next missing AlephBFT finalized-item index for AlephBFT catch-up.
     pub aleph_bft_next_item_index: u64,
+    /// Optional bounded AlephBFT backup-page request for live-session recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aleph_bft_backup: Option<FederationAlephBftBackupRequest>,
+    /// Whether the peer may return a smaller persisted historical certificate checkpoint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_historical_certificate_page: bool,
 }
 
 impl FederationJournalCatchUpRequest {
@@ -1830,6 +1847,8 @@ impl FederationJournalCatchUpRequest {
             limit: None,
             known_order_digest: None,
             aleph_bft_next_item_index: 0,
+            aleph_bft_backup: None,
+            allow_historical_certificate_page: false,
         }
     }
 
@@ -1854,12 +1873,53 @@ impl FederationJournalCatchUpRequest {
         self
     }
 
+    /// Request AlephBFT backup chunks starting at `next_chunk` for one session.
+    #[must_use]
+    pub fn with_aleph_bft_backup(mut self, session: u64, next_chunk: u64) -> Self {
+        self.aleph_bft_backup = Some(FederationAlephBftBackupRequest {
+            session,
+            next_chunk,
+        });
+        self
+    }
+
+    /// Allow a peer to return a smaller exact historical certificate checkpoint.
+    #[must_use]
+    pub fn with_historical_certificate_page(mut self) -> Self {
+        self.allow_historical_certificate_page = true;
+        self
+    }
+
     /// Return the bounded limit to apply to a response.
     #[must_use]
     pub fn effective_limit(&self, default_limit: u16, max_limit: u16) -> usize {
         let requested = self.limit.unwrap_or(default_limit).min(max_limit);
         usize::from(requested)
     }
+}
+
+/// One page request for an append-only AlephBFT session backup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAlephBftBackupRequest {
+    /// AlephBFT session whose signed DAG backup is requested.
+    pub session: u64,
+    /// First missing zero-based backup chunk.
+    pub next_chunk: u64,
+}
+
+/// One bounded page of an append-only AlephBFT session backup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAlephBftBackupResponse {
+    /// AlephBFT session represented by these chunks.
+    pub session: u64,
+    /// Zero-based index of the first returned chunk.
+    pub from_chunk: u64,
+    /// Consecutive opaque upstream AlephBFT backup chunks.
+    pub chunks: Vec<Vec<u8>>,
+    /// Whether this page reaches the peer's current append-only backup end.
+    pub complete: bool,
 }
 
 /// Signed summary of a contiguous accepted-operation range served during catch-up.
@@ -2107,10 +2167,16 @@ pub struct FederationJournalCatchUpResponse {
     /// Signed summary of the returned accepted-operation range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catch_up_certificate: Option<FederationCatchUpCertificate>,
+    /// Persisted member signatures relayed for this exact historical range.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catch_up_certificates: Vec<FederationCatchUpCertificate>,
     /// AlephBFT finalized items returned for exact adapter replay.
     pub aleph_bft_finalized_items: Vec<FederationAlephBftFinalizedItem>,
     /// Whether all requested AlephBFT finalized items were returned.
     pub aleph_bft_finalized_items_complete: bool,
+    /// Optional bounded AlephBFT backup page requested for session recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aleph_bft_backup: Option<FederationAlephBftBackupResponse>,
     /// Whether the peer returned all entries currently available from `from_index`.
     pub complete: bool,
 }
@@ -2181,8 +2247,10 @@ impl FederationJournalCatchUpResponse {
             latest_order_digest: journal.latest_order_digest(),
             materialized_state_digest,
             catch_up_certificate: None,
+            catch_up_certificates: Vec::new(),
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
+            aleph_bft_backup: None,
             complete,
         }
     }
@@ -2196,6 +2264,23 @@ impl FederationJournalCatchUpResponse {
     ) -> Self {
         self.aleph_bft_finalized_items = finalized_items;
         self.aleph_bft_finalized_items_complete = complete;
+        self
+    }
+
+    /// Attach one bounded AlephBFT backup page for live-session recovery.
+    #[must_use]
+    pub fn with_aleph_bft_backup(mut self, backup: FederationAlephBftBackupResponse) -> Self {
+        self.aleph_bft_backup = Some(backup);
+        self
+    }
+
+    /// Attach persisted member signatures for this exact historical range.
+    #[must_use]
+    pub fn with_catch_up_certificates(
+        mut self,
+        certificates: Vec<FederationCatchUpCertificate>,
+    ) -> Self {
+        self.catch_up_certificates = certificates;
         self
     }
 
@@ -2615,6 +2700,23 @@ mod tests {
     }
 
     #[test]
+    fn peer_status_round_trips_aleph_bft_session() {
+        let status = FederationPeerStatus::new(
+            federation_id(),
+            member_id(),
+            0,
+            None,
+            FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_session(3);
+
+        let json = serde_json::to_string(&status).expect("status json");
+        let decoded: FederationPeerStatus = serde_json::from_str(&json).expect("status");
+
+        assert_eq!(decoded.aleph_bft_session, 3);
+    }
+
+    #[test]
     fn local_status_wire_fixture_round_trips_every_current_field() {
         let member = member_id();
         let status = FederationLocalStatusResponse {
@@ -2815,10 +2917,21 @@ mod tests {
 
     #[test]
     fn catch_up_request_and_response_carry_aleph_bft_replay_fields() {
-        let request = FederationJournalCatchUpRequest::new(3).with_aleph_bft_next_item_index(7);
+        let request = FederationJournalCatchUpRequest::new(3)
+            .with_aleph_bft_next_item_index(7)
+            .with_aleph_bft_backup(2, 11);
         assert_eq!(request.aleph_bft_next_item_index, 7);
+        assert_eq!(
+            request.aleph_bft_backup,
+            Some(FederationAlephBftBackupRequest {
+                session: 2,
+                next_chunk: 11,
+            })
+        );
         let encoded_request = serde_json::to_value(&request).expect("request json");
         assert_eq!(encoded_request["aleph_bft_next_item_index"], 7);
+        assert_eq!(encoded_request["aleph_bft_backup"]["session"], 2);
+        assert_eq!(encoded_request["aleph_bft_backup"]["next_chunk"], 11);
 
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -2830,7 +2943,13 @@ mod tests {
             50,
             100,
         )
-        .with_aleph_bft_finalized_items(Vec::new(), false);
+        .with_aleph_bft_finalized_items(Vec::new(), false)
+        .with_aleph_bft_backup(FederationAlephBftBackupResponse {
+            session: 2,
+            from_chunk: 11,
+            chunks: vec![b"backup".to_vec()],
+            complete: true,
+        });
         let encoded_response = serde_json::to_value(&response).expect("response json");
         let operation = encoded_response["entries"][0]
             .as_object()
@@ -2860,6 +2979,9 @@ mod tests {
             encoded_response["aleph_bft_finalized_items_complete"],
             false
         );
+        assert_eq!(encoded_response["aleph_bft_backup"]["session"], 2);
+        assert_eq!(encoded_response["aleph_bft_backup"]["from_chunk"], 11);
+        assert_eq!(encoded_response["aleph_bft_backup"]["complete"], true);
     }
 
     #[test]

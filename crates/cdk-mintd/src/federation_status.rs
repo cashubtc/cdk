@@ -472,6 +472,14 @@ fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<(
                 redact_federation_operator_message(&status.sync_message)
             );
         }
+        if !status.aleph_bft_live_session_active || !status.aleph_bft_network_inbound_active {
+            bail!(
+                "federation member {} is not ready: AlephBFT live session active={} network inbound active={}",
+                status.peer_status.member_id,
+                status.aleph_bft_live_session_active,
+                status.aleph_bft_network_inbound_active
+            );
+        }
     }
 
     Ok(())
@@ -484,14 +492,16 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
     };
     for status in statuses.iter().skip(1) {
         if status.peer_status.operation_count != first.peer_status.operation_count
+            || status.peer_status.aleph_bft_session != first.peer_status.aleph_bft_session
             || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
             || status.peer_status.materialized_state_digest
                 != first.peer_status.materialized_state_digest
         {
             bail!(
-                "federation status is not converged: member {} has operations {} order digest {} materialized state digest {}, expected operations {} order digest {} materialized state digest {}",
+                "federation status is not converged: member {} has operations {} AlephBFT session {} order digest {} materialized state digest {}, expected operations {} AlephBFT session {} order digest {} materialized state digest {}",
                 status.peer_status.member_id,
                 status.peer_status.operation_count,
+                status.peer_status.aleph_bft_session,
                 status.peer_status.latest_order_digest,
                 status
                     .peer_status
@@ -499,6 +509,7 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
                     .map(|digest| digest.to_string())
                     .unwrap_or_else(|| "none".to_string()),
                 first.peer_status.operation_count,
+                first.peer_status.aleph_bft_session,
                 first.peer_status.latest_order_digest,
                 first
                     .peer_status

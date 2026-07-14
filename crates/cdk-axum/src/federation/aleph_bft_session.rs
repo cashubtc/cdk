@@ -525,7 +525,7 @@ async fn await_aleph_bft_session_activation(mut activation: watch::Receiver<bool
 
 /// Start the live upstream AlephBFT session and install its inbound network queue.
 pub(crate) async fn start_federation_aleph_bft_live_session(
-    state: &mut MintState,
+    state: &MintState,
     sync_config: FederationPeerSyncConfig,
 ) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error> {
     start_federation_aleph_bft_live_session_with_config(
@@ -539,7 +539,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session(
 /// Start the live upstream AlephBFT session with explicit testable work bounds.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
-    state: &mut MintState,
+    state: &MintState,
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
 ) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error> {
@@ -555,7 +555,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
 /// Start the live upstream AlephBFT session with an injected private REST transport.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_transport<T>(
-    state: &mut MintState,
+    state: &MintState,
     sync_config: FederationPeerSyncConfig,
     pump_config: CdkAlephBftNetworkPumpConfig,
     transport: T,
@@ -574,7 +574,7 @@ where
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_options_and_transport<T>(
-    state: &mut MintState,
+    state: &MintState,
     sync_config: FederationPeerSyncConfig,
     options: FederationAlephBftLiveSessionOptions,
     transport: T,
@@ -593,7 +593,7 @@ where
 }
 
 async fn start_federation_aleph_bft_live_session_with_options_and_transport_inner<T>(
-    state: &mut MintState,
+    state: &MintState,
     sync_config: FederationPeerSyncConfig,
     options: FederationAlephBftLiveSessionOptions,
     transport: T,

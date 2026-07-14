@@ -97,6 +97,9 @@ fn finalized_unit_recovery_mismatch(
 fn federation_not_ready_error(status: FederationSyncStatus) -> cdk::Error {
     match status {
         FederationSyncStatus::Healthy => runtime_unavailable("readiness gate"),
+        FederationSyncStatus::AwaitingQuorum { operation_count } => {
+            FederationError::NodeAwaitingQuorum { operation_count }.into()
+        }
         FederationSyncStatus::Lagging {
             peer,
             local_operation_count,
@@ -494,15 +497,10 @@ impl FederationNodeRuntime {
             return;
         };
         let initial_status = sync.lock().await.status();
-        if initial_status.is_aleph_bft_startup_halt() {
-            if !self.live_session_available().await {
-                return;
-            }
-        }
         match &initial_status {
             FederationSyncStatus::Healthy
+            | FederationSyncStatus::AwaitingQuorum { .. }
             | FederationSyncStatus::VerifyingCatchUpCertificate { .. } => {}
-            FederationSyncStatus::Halted { .. } if initial_status.is_aleph_bft_startup_halt() => {}
             FederationSyncStatus::Lagging { .. }
             | FederationSyncStatus::CatchingUp { .. }
             | FederationSyncStatus::MaterializedStateMismatch { .. }
@@ -534,8 +532,11 @@ impl FederationNodeRuntime {
         };
         let operation_count = entries.len() as u64;
         if operation_count == 0 {
-            self.finish_startup_revalidation(&initial_status, FederationSyncStatus::Healthy)
-                .await;
+            self.finish_startup_revalidation(
+                &initial_status,
+                FederationSyncStatus::AwaitingQuorum { operation_count },
+            )
+            .await;
             return;
         }
 
@@ -609,7 +610,7 @@ impl FederationNodeRuntime {
             }
         };
         let next_status = if local_digest == quorum.materialized_state_digest {
-            FederationSyncStatus::Healthy
+            FederationSyncStatus::AwaitingQuorum { operation_count }
         } else {
             FederationSyncStatus::MaterializedStateMismatch {
                 peer,
@@ -639,6 +640,11 @@ impl FederationNodeRuntime {
             sync.mark_lagging(peer, local_operation_count, peer_operation_count);
         })
         .await
+    }
+
+    pub(crate) async fn mark_awaiting_quorum(&self, operation_count: u64) {
+        self.update_sync_status(|sync| sync.mark_awaiting_quorum(operation_count))
+            .await
     }
 
     pub(crate) async fn mark_catching_up(&self, peer: MemberId) {
@@ -673,33 +679,9 @@ impl FederationNodeRuntime {
         .await
     }
 
-    pub(crate) async fn mark_healthy_if_catch_up_certificate_verified(
-        &self,
-        verified_operation_count: u64,
-    ) {
-        self.update_sync_status(|sync| {
-            sync.mark_healthy_if_catch_up_certificate_verified(verified_operation_count);
-        })
-        .await
-    }
-
-    #[cfg(test)]
     pub(crate) async fn mark_healthy(&self) {
         self.update_sync_status(FederationSyncState::mark_healthy)
             .await
-    }
-
-    pub(crate) async fn mark_healthy_if_caught_up(&self, local_operation_count: u64) {
-        self.update_sync_status(|sync| match sync.status() {
-            FederationSyncStatus::Lagging {
-                peer_operation_count,
-                ..
-            } if peer_operation_count > local_operation_count => {}
-            FederationSyncStatus::VerifyingCatchUpCertificate { .. }
-            | FederationSyncStatus::Halted { .. } => {}
-            _ => sync.mark_healthy(),
-        })
-        .await
     }
 
     pub(crate) async fn mark_halted(&self, reason: String) {

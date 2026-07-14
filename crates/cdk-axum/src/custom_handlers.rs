@@ -3725,7 +3725,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_error_detail(response).await;
         assert!(
-            body.contains("public federation submissions are disabled"),
+            body.contains("awaiting quorum peer validation"),
             "AlephBFT public route should fail closed before queueing: {body}"
         );
     }
@@ -3743,8 +3743,10 @@ mod tests {
     #[cfg(feature = "federation")]
     fn assert_aleph_bft_error_not_ready(error: &cdk::Error) {
         match error {
-            cdk::Error::Federation(cdk::federation::FederationError::NodeHalted { reason })
-                if reason.contains("public federation submissions are disabled") => {}
+            cdk::Error::Federation(
+                cdk::federation::FederationError::NodeAwaitingQuorum { .. }
+                | cdk::federation::FederationError::NodeHalted { .. },
+            ) => {}
             _ => panic!("AlephBFT public submit should fail closed, got: {error}"),
         }
     }

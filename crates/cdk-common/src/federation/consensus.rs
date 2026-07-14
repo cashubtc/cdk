@@ -1669,6 +1669,7 @@ impl FederationConsensusRuntime {
     ) -> FederationPeerStatus {
         FederationPeerStatus::from_journal(federation_id, member_id, &self.journal)
             .with_aleph_bft_next_item_index(self.next_item_index())
+            .with_aleph_bft_session(self.session())
     }
 
     /// Begin a later AlephBFT session for both data-provider and finalizer.

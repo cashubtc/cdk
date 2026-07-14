@@ -948,6 +948,9 @@ fn aleph_bft_catch_up_recovery_mismatch(reason: String) -> cdk::Error {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FederationSyncStatus {
     Healthy,
+    AwaitingQuorum {
+        operation_count: u64,
+    },
     Lagging {
         peer: MemberId,
         local_operation_count: u64,
@@ -977,21 +980,15 @@ impl Default for FederationSyncStatus {
 }
 
 #[cfg(feature = "federation")]
-const ALEPH_BFT_STARTUP_HALT_REASON: &str = "aleph_bft live session or network inbound queue is not active; public federation submissions are disabled until the live session is ready";
-
-#[cfg(feature = "federation")]
 impl FederationSyncStatus {
     pub(crate) fn is_ready(&self) -> bool {
         matches!(self, Self::Healthy)
     }
 
-    fn is_aleph_bft_startup_halt(&self) -> bool {
-        matches!(self, Self::Halted { reason } if reason == ALEPH_BFT_STARTUP_HALT_REASON)
-    }
-
     pub(crate) fn state_name(&self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
+            Self::AwaitingQuorum { .. } => "awaiting_quorum",
             Self::Lagging { .. } => "lagging",
             Self::CatchingUp { .. } => "catching_up",
             Self::VerifyingCatchUpCertificate { .. } => "verifying_catch_up_certificate",
@@ -1006,7 +1003,7 @@ impl FederationSyncStatus {
             | Self::CatchingUp { peer }
             | Self::VerifyingCatchUpCertificate { peer, .. }
             | Self::MaterializedStateMismatch { peer, .. } => Some(*peer),
-            Self::Healthy | Self::Halted { .. } => None,
+            Self::Healthy | Self::AwaitingQuorum { .. } | Self::Halted { .. } => None,
         }
     }
 
@@ -1017,6 +1014,7 @@ impl FederationSyncStatus {
                 ..
             } => Some(*local_operation_count),
             Self::Healthy
+            | Self::AwaitingQuorum { .. }
             | Self::CatchingUp { .. }
             | Self::VerifyingCatchUpCertificate { .. }
             | Self::MaterializedStateMismatch { .. }
@@ -1031,6 +1029,7 @@ impl FederationSyncStatus {
                 ..
             } => Some(*peer_operation_count),
             Self::Healthy
+            | Self::AwaitingQuorum { .. }
             | Self::CatchingUp { .. }
             | Self::VerifyingCatchUpCertificate { .. }
             | Self::MaterializedStateMismatch { .. }
@@ -1045,7 +1044,8 @@ impl FederationSyncStatus {
             }
             | Self::MaterializedStateMismatch {
                 operation_count, ..
-            } => Some(*operation_count),
+            }
+            | Self::AwaitingQuorum { operation_count } => Some(*operation_count),
             Self::Healthy
             | Self::Lagging { .. }
             | Self::CatchingUp { .. }
@@ -1056,6 +1056,9 @@ impl FederationSyncStatus {
     pub(crate) fn not_ready_message(&self) -> String {
         match self {
             Self::Healthy => "federation member is healthy".to_string(),
+            Self::AwaitingQuorum { operation_count } => format!(
+                "federation member is awaiting a quorum-compatible peer view: operation_count={operation_count}"
+            ),
             Self::Lagging {
                 peer,
                 local_operation_count,
@@ -1109,9 +1112,7 @@ pub(crate) struct FederationSyncTransitionStats {
 impl FederationSyncState {
     fn for_aleph_bft() -> Self {
         Self {
-            status: FederationSyncStatus::Halted {
-                reason: ALEPH_BFT_STARTUP_HALT_REASON.to_string(),
-            },
+            status: FederationSyncStatus::AwaitingQuorum { operation_count: 0 },
             #[cfg(test)]
             transition_stats: FederationSyncTransitionStats::default(),
         }
@@ -1164,6 +1165,19 @@ impl FederationSyncState {
             local_operation_count,
             peer_operation_count,
         };
+    }
+
+    fn mark_awaiting_quorum(&mut self, operation_count: u64) {
+        match self.status {
+            FederationSyncStatus::Lagging { .. }
+            | FederationSyncStatus::CatchingUp { .. }
+            | FederationSyncStatus::MaterializedStateMismatch { .. }
+            | FederationSyncStatus::Halted { .. } => return,
+            FederationSyncStatus::Healthy
+            | FederationSyncStatus::AwaitingQuorum { .. }
+            | FederationSyncStatus::VerifyingCatchUpCertificate { .. } => {}
+        }
+        self.status = FederationSyncStatus::AwaitingQuorum { operation_count };
     }
 
     fn mark_catching_up(&mut self, peer: MemberId) {
@@ -1221,20 +1235,6 @@ impl FederationSyncState {
                     operation_count,
                 };
             }
-        }
-    }
-
-    fn mark_healthy_if_catch_up_certificate_verified(&mut self, verified_operation_count: u64) {
-        match self.status {
-            FederationSyncStatus::Halted { .. } => {}
-            FederationSyncStatus::Lagging {
-                peer_operation_count,
-                ..
-            } if peer_operation_count > verified_operation_count => {}
-            FederationSyncStatus::VerifyingCatchUpCertificate {
-                operation_count, ..
-            } if operation_count > verified_operation_count => {}
-            _ => self.mark_healthy(),
         }
     }
 
@@ -1876,6 +1876,10 @@ impl MintState {
             .await;
     }
 
+    pub(crate) async fn mark_federation_awaiting_quorum(&self, operation_count: u64) {
+        self.federation.mark_awaiting_quorum(operation_count).await;
+    }
+
     pub(crate) async fn mark_federation_catching_up(&self, peer: MemberId) {
         self.federation.mark_catching_up(peer).await;
     }
@@ -1900,24 +1904,8 @@ impl MintState {
             .await;
     }
 
-    pub(crate) async fn mark_federation_healthy_if_catch_up_certificate_verified(
-        &self,
-        verified_operation_count: u64,
-    ) {
-        self.federation
-            .mark_healthy_if_catch_up_certificate_verified(verified_operation_count)
-            .await;
-    }
-
-    #[cfg(test)]
     pub(crate) async fn mark_federation_healthy(&self) {
         self.federation.mark_healthy().await;
-    }
-
-    pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {
-        self.federation
-            .mark_healthy_if_caught_up(local_operation_count)
-            .await;
     }
 
     pub(crate) async fn mark_federation_halted<S>(&self, reason: S)
@@ -2347,25 +2335,6 @@ async fn create_mint_router_with_custom_cache_inner(
             }),
             None => None,
         };
-    }
-    #[cfg(feature = "federation")]
-    let start_federation_live_session = state.federation.consensus.is_some() && {
-        #[cfg(test)]
-        {
-            !state.federation.local_finality_test
-        }
-        #[cfg(not(test))]
-        {
-            true
-        }
-    };
-    #[cfg(feature = "federation")]
-    if start_federation_live_session {
-        federation::start_federation_aleph_bft_live_session(
-            &mut state,
-            federation_peer_sync_config,
-        )
-        .await?;
     }
     #[cfg(feature = "federation")]
     if spawn_federation_peer_sync {

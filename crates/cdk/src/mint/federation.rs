@@ -1436,11 +1436,7 @@ impl Mint {
         max_operation_index: u64,
     ) -> Result<(), Error> {
         let entries = self.localstore.get_federation_journal_entries().await?;
-        Self::require_prior_applied_mint_quote_in_entries(
-            &entries,
-            quote,
-            max_operation_index,
-        )
+        Self::require_prior_applied_mint_quote_in_entries(&entries, quote, max_operation_index)
     }
 
     async fn require_prior_applied_mint_quotes(

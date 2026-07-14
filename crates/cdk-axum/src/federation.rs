@@ -484,8 +484,10 @@ async fn catch_up_certificate_quorum_status(
             latest_order_digest: range.latest_order_digest,
             materialized_state_digest: range.materialized_state_digest,
             catch_up_certificate: None,
+            catch_up_certificates: Vec::new(),
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
+            aleph_bft_backup: None,
             complete: true,
         };
 
@@ -602,6 +604,7 @@ fn federation_error_status(err: &FederationError) -> StatusCode {
         | FederationError::ResponseWaiterLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
         FederationError::ConsensusQuorumUnavailable { .. }
         | FederationError::RuntimeUnavailable { .. }
+        | FederationError::NodeAwaitingQuorum { .. }
         | FederationError::NodeLagging { .. }
         | FederationError::NodeCatchingUp { .. }
         | FederationError::NodeVerifyingCatchUpCertificate { .. }
@@ -724,7 +727,16 @@ async fn local_peer_order_status_with_latest_operation_status(
         ),
     };
     let next_item_index = local_finalized_item_cursor(state).await?;
-    status = status.with_aleph_bft_next_item_index(next_item_index);
+    let session = state
+        .federation_aleph_bft_status()
+        .await
+        .ok_or(FederationError::RuntimeUnavailable {
+            component: "AlephBFT consensus status",
+        })?
+        .session;
+    status = status
+        .with_aleph_bft_next_item_index(next_item_index)
+        .with_aleph_bft_session(session);
     Ok((status, latest_operation_status))
 }
 

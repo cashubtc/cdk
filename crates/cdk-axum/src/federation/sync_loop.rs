@@ -22,6 +22,8 @@ use super::{
     CatchUpCertificateQuorumStatus,
 };
 
+const MAX_RECOVERED_ALEPH_BFT_BACKUP_BYTES: usize = 256 * 1024 * 1024;
+
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(
     state: MintState,
     sync_config: FederationPeerSyncConfig,
@@ -127,8 +129,10 @@ async fn run_federation_peer_sync_attempts<T>(
 where
     T: Transport,
 {
+    let round_started_at = Instant::now();
     let mut synced = 0;
     let mut evidence_peers = Vec::with_capacity(peers.len());
+    let mut peer_statuses = Vec::with_capacity(peers.len());
     for peer in peers {
         let now = Instant::now();
         if let Some(backoff) = backoff.as_ref() {
@@ -144,6 +148,7 @@ where
             Ok(status) => {
                 synced += 1;
                 evidence_peers.push(peer);
+                peer_statuses.push(status.clone());
                 if let Some(backoff) = backoff.as_mut() {
                     backoff.record_success(peer.member_id);
                 }
@@ -185,19 +190,167 @@ where
             }
         }
     }
-    if evidence_peers.is_empty() {
-        return synced;
-    }
-
-    let collected =
-        collect_catch_up_certificate_round(state, client, &evidence_peers, backoff).await;
+    let collected = if evidence_peers.is_empty() {
+        0
+    } else {
+        collect_catch_up_certificate_round(state, client, &evidence_peers, backoff).await
+    };
     if collected > 0 {
         tracing::debug!(
             catch_up_certificates = collected,
             "Federation peer sync collected catch-up certificates"
         );
     }
+    reconcile_federation_startup_with_quorum(
+        state,
+        client.sync_config,
+        round_started_at,
+        &peer_statuses,
+    )
+    .await;
     synced
+}
+
+async fn reconcile_federation_startup_with_quorum(
+    state: &MintState,
+    sync_config: FederationPeerSyncConfig,
+    evidence_observed_at: Instant,
+    peer_statuses: &[FederationPeerStatus],
+) {
+    if matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Halted { .. })
+    ) {
+        return;
+    }
+    let live_session_active = state.federation.live_session_active().await;
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return;
+    };
+    let local_status = match local_peer_status(state).await {
+        Ok(status) => status,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect local federation status for quorum startup: {}",
+                err
+            );
+            return;
+        }
+    };
+    let required = usize::from(
+        runtime_config
+            .public_config()
+            .threshold_params
+            .consensus_threshold,
+    );
+    let max_evidence_age = sync_config.peer_request_timeout.saturating_mul(u32::from(
+        runtime_config.public_config().threshold_params.member_count,
+    ));
+    if !quorum_evidence_is_current(evidence_observed_at, Instant::now(), max_evidence_age) {
+        state
+            .mark_federation_awaiting_quorum(local_status.operation_count)
+            .await;
+        return;
+    }
+    let target_session = quorum_compatible_session(&local_status, peer_statuses, required);
+    let Some(target_session) = target_session else {
+        state
+            .mark_federation_awaiting_quorum(local_status.operation_count)
+            .await;
+        return;
+    };
+
+    if local_status.operation_count > 0 {
+        let certificate_verified = matches!(
+            state
+                .federation
+                .catch_up_certificate_quorum_status(&state.mint)
+                .await,
+            Ok(Some(quorum))
+                if quorum.from_index == 0
+                    && quorum.operation_count >= local_status.operation_count
+        );
+        if !certificate_verified {
+            return;
+        }
+    }
+
+    if live_session_active {
+        if target_session == local_status.aleph_bft_session {
+            state.mark_federation_healthy().await;
+        } else {
+            state
+                .mark_federation_awaiting_quorum(local_status.operation_count)
+                .await;
+        }
+        return;
+    }
+
+    if target_session > local_status.aleph_bft_session {
+        let Some(consensus) = state.federation.consensus.as_ref() else {
+            return;
+        };
+        let mut consensus = consensus.lock().await;
+        if let Err(err) = consensus.begin_aleph_bft_session(target_session) {
+            tracing::warn!(
+                target_session,
+                "Could not advance federation consensus to quorum session: {}",
+                err
+            );
+            return;
+        }
+    }
+
+    match super::start_federation_aleph_bft_live_session(state, sync_config).await {
+        Ok(Some(_)) => {}
+        Ok(None) if state.federation.live_session_active().await => {}
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!("Could not start quorum-validated AlephBFT session: {}", err);
+        }
+    }
+}
+
+pub(super) fn quorum_evidence_is_current(
+    observed_at: Instant,
+    now: Instant,
+    max_age: std::time::Duration,
+) -> bool {
+    now.saturating_duration_since(observed_at) <= max_age
+}
+
+pub(super) fn quorum_compatible_session(
+    local_status: &FederationPeerStatus,
+    peer_statuses: &[FederationPeerStatus],
+    required: usize,
+) -> Option<u64> {
+    peer_statuses
+        .iter()
+        .filter(|candidate| {
+            candidate.aleph_bft_session >= local_status.aleph_bft_session
+                && peer_status_has_same_state(local_status, candidate)
+        })
+        .map(|candidate| candidate.aleph_bft_session)
+        .filter(|candidate_session| {
+            let matching_peers = peer_statuses
+                .iter()
+                .filter(|status| {
+                    status.aleph_bft_session == *candidate_session
+                        && peer_status_has_same_state(local_status, status)
+                })
+                .count();
+            matching_peers.saturating_add(1) >= required
+        })
+        .max()
+}
+
+fn peer_status_has_same_state(local: &FederationPeerStatus, peer: &FederationPeerStatus) -> bool {
+    local.federation_id == peer.federation_id
+        && local.aleph_bft_next_item_index == peer.aleph_bft_next_item_index
+        && local.operation_count == peer.operation_count
+        && local.latest_index == peer.latest_index
+        && local.latest_order_digest == peer.latest_order_digest
+        && local.materialized_state_digest == peer.materialized_state_digest
 }
 
 #[cfg(feature = "prometheus")]
@@ -266,9 +419,6 @@ where
         .await
     {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
-            state
-                .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)
-                .await;
             return 0;
         }
         Ok(quorum) => quorum,
@@ -347,9 +497,6 @@ where
         .await
     {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
-            state
-                .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)
-                .await;
             return 0;
         }
         Ok(quorum) => quorum,
@@ -408,8 +555,6 @@ where
             }
         };
     }
-
-    mark_healthy_after_catch_up_certificate_quorum(state, operation_count).await;
 
     collected
 }
@@ -577,8 +722,36 @@ where
     if let Some(catch_up_certificate) = response.catch_up_certificate.as_ref() {
         signers.insert(catch_up_certificate.signer);
     }
+    let mut additional_certificates = Vec::new();
+    for certificate in &response.catch_up_certificates {
+        let Some(member) = public_config.member(certificate.signer) else {
+            tracing::warn!(
+                member_id = %certificate.signer,
+                "Federation peer relayed a catch-up certificate from an unknown member"
+            );
+            continue;
+        };
+        if let Err(err) = certificate.verify(
+            member,
+            response.federation_id,
+            response.from_index,
+            &response.entries,
+            response.latest_order_digest,
+            response.materialized_state_digest,
+        ) {
+            tracing::warn!(
+                member_id = %certificate.signer,
+                "Federation peer relayed an invalid catch-up certificate: {}",
+                err
+            );
+            continue;
+        }
+        if signers.insert(certificate.signer) {
+            additional_certificates.push(certificate.clone());
+        }
+    }
     if signers.len() >= required {
-        return Ok(Vec::new());
+        return Ok(additional_certificates);
     }
 
     let first = response
@@ -594,8 +767,6 @@ where
     let request = FederationJournalCatchUpRequest::new(response.from_index)
         .with_limit(limit)
         .with_known_order_digest(first.previous_order_digest);
-    let mut additional_certificates = Vec::new();
-
     for peer in public_config.members.values() {
         if peer.member_id == runtime_config.member_id()
             || peer.member_id == source_member.member_id
@@ -654,27 +825,6 @@ where
     Ok(additional_certificates)
 }
 
-async fn mark_healthy_after_catch_up_certificate_quorum(state: &MintState, operation_count: u64) {
-    match state
-        .federation
-        .catch_up_certificate_quorum_status(&state.mint)
-        .await
-    {
-        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
-            state
-                .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)
-                .await;
-        }
-        Ok(_) => {}
-        Err(err) => {
-            tracing::warn!(
-                "Could not verify federation catch-up certificate quorum after collection: {}",
-                err
-            );
-        }
-    }
-}
-
 impl<T> FederationRestPeerClient<T>
 where
     T: Transport,
@@ -696,7 +846,8 @@ where
             let consensus = consensus.lock().await;
             let mut request = consensus
                 .catch_up_request()
-                .with_limit(self.sync_config.catch_up_limit);
+                .with_limit(self.sync_config.catch_up_limit)
+                .with_historical_certificate_page();
             if let Ok(status) = consensus.aleph_bft_status() {
                 request = request.with_aleph_bft_next_item_index(status.next_item_index);
             }
@@ -816,6 +967,21 @@ where
             .await?;
         }
 
+        let local_full_status = local_peer_status(state).await?;
+        if !state.federation.live_session_active().await
+            && peer_status.aleph_bft_session == local_full_status.aleph_bft_session
+            && peer_status_has_same_state(&local_full_status, &peer_status)
+            && peer_status.aleph_bft_next_item_index.unwrap_or(0) > 0
+        {
+            self.recover_aleph_bft_backup_from_member(
+                state,
+                member,
+                peer_status.aleph_bft_session,
+                recovered_from_peer,
+            )
+            .await?;
+        }
+
         if !peer_requires_catch_up(&local_status, &peer_status)? {
             if recovered_from_peer && local_status.operation_count > 0 {
                 state
@@ -824,14 +990,126 @@ where
                         local_status.operation_count,
                     )
                     .await;
-            } else {
-                state
-                    .mark_federation_healthy_if_caught_up(local_status.operation_count)
-                    .await;
             }
         }
 
-        Ok(local_status)
+        Ok(peer_status)
+    }
+
+    async fn recover_aleph_bft_backup_from_member(
+        &self,
+        state: &MintState,
+        member: &MemberConfigPublic,
+        session: u64,
+        replace_existing: bool,
+    ) -> anyhow::Result<()> {
+        let db = state.mint.localstore();
+        if !replace_existing
+            && !db
+                .get_federation_aleph_bft_backup_chunks(session)
+                .await?
+                .is_empty()
+        {
+            return Ok(());
+        }
+
+        let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
+            FederationError::RuntimeUnavailable {
+                component: "consensus",
+            }
+        })?;
+        let mut chunks = Vec::new();
+        let mut next_chunk = 0u64;
+        let mut total_bytes = 0usize;
+        loop {
+            let request = {
+                let consensus = consensus.lock().await;
+                let mut request = consensus
+                    .catch_up_request()
+                    .with_limit(self.sync_config.catch_up_limit)
+                    .with_aleph_bft_backup(session, next_chunk);
+                if let Ok(status) = consensus.aleph_bft_status() {
+                    request = request.with_aleph_bft_next_item_index(status.next_item_index);
+                }
+                request
+            };
+            let response = self.catch_up(member, &request).await?;
+            let backup = response.aleph_bft_backup.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "federation member {} omitted requested AlephBFT session {} backup",
+                    member.member_id,
+                    session
+                )
+            })?;
+            if backup.session != session || backup.from_chunk != next_chunk {
+                anyhow::bail!(
+                    "federation member {} returned AlephBFT backup page session/chunk {}/{}; expected {}/{}",
+                    member.member_id,
+                    backup.session,
+                    backup.from_chunk,
+                    session,
+                    next_chunk
+                );
+            }
+            if backup.chunks.iter().any(Vec::is_empty) {
+                anyhow::bail!(
+                    "federation member {} returned an empty AlephBFT backup chunk",
+                    member.member_id
+                );
+            }
+            if backup.chunks.is_empty() && !backup.complete {
+                anyhow::bail!(
+                    "federation member {} returned no AlephBFT backup progress",
+                    member.member_id
+                );
+            }
+            for chunk in backup.chunks {
+                total_bytes = total_bytes
+                    .checked_add(chunk.len())
+                    .ok_or_else(|| anyhow::anyhow!("AlephBFT backup byte count overflowed"))?;
+                if total_bytes > MAX_RECOVERED_ALEPH_BFT_BACKUP_BYTES {
+                    anyhow::bail!(
+                        "AlephBFT session {} backup exceeds the {} byte recovery bound",
+                        session,
+                        MAX_RECOVERED_ALEPH_BFT_BACKUP_BYTES
+                    );
+                }
+                chunks.push(chunk);
+                next_chunk = next_chunk
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("AlephBFT backup chunk count overflowed"))?;
+            }
+            if backup.complete {
+                break;
+            }
+        }
+        if chunks.is_empty() {
+            anyhow::bail!(
+                "federation member {} has no AlephBFT backup for progressed session {}",
+                member.member_id,
+                session
+            );
+        }
+
+        let mut tx = db.begin_transaction().await?;
+        if replace_existing {
+            tx.replace_federation_aleph_bft_backup_chunks(session, &chunks)
+                .await?;
+        } else {
+            for chunk in &chunks {
+                tx.append_federation_aleph_bft_backup_bytes(session, chunk)
+                    .await?;
+            }
+        }
+        tx.commit().await?;
+        tracing::info!(
+            member_id = %member.member_id,
+            session,
+            backup_chunks = chunks.len(),
+            backup_bytes = total_bytes,
+            "Recovered AlephBFT live-session backup from federation peer"
+        );
+        Ok(())
     }
 }
 

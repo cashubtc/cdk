@@ -1,8 +1,9 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftFinalizedItem, FederationError, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationRestMessageKind, FederationSignedRequest,
+    FederationAlephBftBackupResponse, FederationAlephBftFinalizedItem, FederationError,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationRestMessageKind,
+    FederationSignedRequest,
 };
 use tracing::instrument;
 
@@ -16,6 +17,8 @@ use super::{
 
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
 const MAX_FEDERATION_CATCH_UP_LIMIT: u16 = 1000;
+const MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_RESPONSE: usize = 512;
+const MAX_ALEPH_BFT_BACKUP_BYTES_PER_RESPONSE: usize = 1024 * 1024;
 
 #[instrument(skip_all)]
 pub(super) async fn post_journal(
@@ -80,10 +83,136 @@ async fn durable_catch_up_response(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
+    let response = maybe_attach_historical_catch_up_certificate_quorum(state, request, response)
+        .await
+        .map_err(anyhow_response)?;
     let response = maybe_attach_aleph_bft_finalized_items(state, request, response)
         .await
         .map_err(anyhow_response)?;
+    let response = maybe_attach_aleph_bft_backup(state, request, response)
+        .await
+        .map_err(anyhow_response)?;
     Ok(response)
+}
+
+async fn maybe_attach_historical_catch_up_certificate_quorum(
+    state: &MintState,
+    request: &FederationJournalCatchUpRequest,
+    mut response: FederationJournalCatchUpResponse,
+) -> anyhow::Result<FederationJournalCatchUpResponse> {
+    if !request.allow_historical_certificate_page || response.entries.is_empty() {
+        return Ok(response);
+    }
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or_else(|| FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
+    let public_config = runtime_config.public_config();
+    let required = usize::from(public_config.threshold_params.consensus_threshold);
+    let mut certificates = state
+        .mint
+        .localstore()
+        .get_federation_catch_up_certificates_at(response.from_index)
+        .await?;
+    if certificates.len() < required {
+        return Ok(response);
+    }
+    certificates.sort_by_key(|certificate| std::cmp::Reverse(certificate.operation_count()));
+
+    for candidate in &certificates {
+        if candidate.operation_count() == 0
+            || candidate.latest_order_digest != candidate.range_order_digest()
+        {
+            continue;
+        }
+        let Ok(operation_count) = usize::try_from(candidate.operation_count()) else {
+            continue;
+        };
+        let Some(entries) = response.entries.get(..operation_count) else {
+            continue;
+        };
+        let mut signers = std::collections::BTreeSet::new();
+        let mut relayed = Vec::with_capacity(required);
+        for certificate in &certificates {
+            let Some(member) = public_config.member(certificate.signer) else {
+                continue;
+            };
+            if certificate
+                .verify(
+                    member,
+                    response.federation_id,
+                    response.from_index,
+                    entries,
+                    candidate.latest_order_digest,
+                    candidate.materialized_state_digest,
+                )
+                .is_ok()
+                && signers.insert(certificate.signer)
+            {
+                relayed.push(certificate.clone());
+            }
+        }
+        if signers.len() < required {
+            continue;
+        }
+
+        let original_entry_count = response.entries.len();
+        response.entries.truncate(operation_count);
+        response.latest_index = Some(candidate.latest_index());
+        response.latest_order_digest = candidate.latest_order_digest;
+        response.materialized_state_digest = candidate.materialized_state_digest;
+        response.complete = response.complete && operation_count == original_entry_count;
+        response.catch_up_certificates = relayed;
+        return Ok(response);
+    }
+
+    Ok(response)
+}
+
+async fn maybe_attach_aleph_bft_backup(
+    state: &MintState,
+    request: &FederationJournalCatchUpRequest,
+    response: FederationJournalCatchUpResponse,
+) -> anyhow::Result<FederationJournalCatchUpResponse> {
+    let Some(backup_request) = request.aleph_bft_backup else {
+        return Ok(response);
+    };
+    let query_limit = MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_RESPONSE.saturating_add(1);
+    let available = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_backup_chunks_from(
+            backup_request.session,
+            backup_request.next_chunk,
+            query_limit,
+        )
+        .await?;
+    let available_len = available.len();
+    let mut chunks = Vec::new();
+    let mut encoded_bytes = 0usize;
+    for chunk in available
+        .into_iter()
+        .take(MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_RESPONSE)
+    {
+        let next_bytes = encoded_bytes.saturating_add(chunk.len());
+        if !chunks.is_empty() && next_bytes > MAX_ALEPH_BFT_BACKUP_BYTES_PER_RESPONSE {
+            break;
+        }
+        encoded_bytes = next_bytes;
+        chunks.push(chunk);
+    }
+    let complete = available_len <= chunks.len();
+    Ok(
+        response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
+            session: backup_request.session,
+            from_chunk: backup_request.next_chunk,
+            chunks,
+            complete,
+        }),
+    )
 }
 
 async fn maybe_attach_aleph_bft_finalized_items(
@@ -96,10 +225,15 @@ async fn maybe_attach_aleph_bft_finalized_items(
         .localstore()
         .get_federation_aleph_bft_finalized_items_from(request.aleph_bft_next_item_index)
         .await?;
-    let limit = request.effective_limit(
+    let requested_limit = request.effective_limit(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
+    let limit = if response.catch_up_certificates.is_empty() {
+        requested_limit
+    } else {
+        requested_limit.min(response.entries.len())
+    };
     let (finalized_items, complete) = truncate_to_complete_aleph_bft_units(finalized_items, limit)?;
     Ok(response.with_aleph_bft_finalized_items(finalized_items, complete))
 }

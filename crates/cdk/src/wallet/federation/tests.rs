@@ -3283,12 +3283,7 @@ async fn federated_mint_connector_waits_for_catching_up_member_with_identical_re
     );
 
     let rejecting_member = MockMintConnector::new();
-    set_member_advertisement_with_keyset(
-        &rejecting_member,
-        &bundle,
-        member_id(4),
-        advertised,
-    );
+    set_member_advertisement_with_keyset(&rejecting_member, &bundle, member_id(4), advertised);
     rejecting_member.set_post_swap_response(Err(crate::Error::InvalidPaymentMethod));
     connectors.insert(
         member_id(4),

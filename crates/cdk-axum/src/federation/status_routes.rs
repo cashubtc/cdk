@@ -14,10 +14,9 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, cdk_error_response, local_peer_order_status,
-    local_peer_status, local_peer_status_with_materialized_rows,
-    payment_observation_report_summaries, verify_federation_request,
-    CatchUpCertificateQuorumStatus,
+    acquire_private_rest_admission, anyhow_response, cdk_error_response, local_peer_status,
+    local_peer_status_with_materialized_rows, payment_observation_report_summaries,
+    verify_federation_request, CatchUpCertificateQuorumStatus,
 };
 
 #[instrument(skip_all)]
@@ -35,9 +34,7 @@ pub(super) async fn post_status(
             verified.sequence,
         )
         .await;
-    let peer_status = local_peer_order_status(&state)
-        .await
-        .map_err(anyhow_response)?;
+    let peer_status = local_peer_status(&state).await.map_err(anyhow_response)?;
     Ok(Json(peer_status))
 }
 
@@ -188,6 +185,7 @@ fn response_cache_hit_rate_bps(hits: u64, lookups: u64) -> u64 {
 fn record_federation_local_status_metrics(response: &FederationLocalStatusResponse) {
     const SYNC_STATES: &[&str] = &[
         "healthy",
+        "awaiting_quorum",
         "lagging",
         "catching_up",
         "verifying_catch_up_certificate",

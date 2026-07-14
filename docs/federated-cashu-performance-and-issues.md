@@ -119,7 +119,7 @@ result must prove; they are not additional independent tasks.
 
 | Order | Milestone | Current status | Detailed issues |
 | ---: | --- | --- | --- |
-| 1 | Fresh-member recovery, readiness, and live-session convergence | Fix in progress | 1, 2 |
+| 1 | Fresh-member recovery, readiness, and live-session convergence | Complete | 1, 2 |
 | 2 | Cancellation-safe server application and bounded wallet completion | Confirmed; investigation pending | 3, 4, 5 |
 | 3 | Exactly-once melt completion under repetition and member faults | Confirmed; investigation pending | 6 |
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Confirmed; investigation pending | 8 |
@@ -130,25 +130,31 @@ result must prove; they are not additional independent tasks.
 | 9 | Production release validation and operator readiness | Pending | Remaining release work |
 | U1 | Validate payment-report quote-age semantics | Unconfirmed | 13 |
 | U2 | Validate network-pump retry duplication | Unconfirmed | Secondary Issue 8 hypothesis |
-| U3 | Validate single-source AlephBFT backup poisoning and fallback | Unconfirmed | Found during Milestone 1 fix verification |
+| U3 | Validate stale or unusable AlephBFT backup replacement and fallback | Partially confirmed; stale-backup fix verified | Found during Milestone 1 and U4 verification |
+| U4 | Validate catch-up certificate deadlock with two stale members | Resolved and verified | Found during Milestone 1 two-member-behind verification |
+| U5 | Validate paged catch-up full-tip digest mismatch | Closed; hypothesis not reproduced | Found during Milestone U4 certificate-boundary tracing |
+| U6 | Validate large-history catch-up page-cost scaling | Unconfirmed | Found during Milestone U5 scale verification |
 
 ## Executive summary
 
-The current federation implementation performs well for normal local operation
-and restart, but it still has a critical recovery defect. A five-member local
-federation reached healthy state in 1.303 seconds, processed 100 parallel
-receives at 25.09 committed swaps per second, restarted all five members at a
-316-operation height in 2.958 seconds, and restarted one member with an intact
-database in 1.673 seconds.
+Milestone 1 has closed the highest-priority recovery and readiness defects in
+the current federation implementation. Empty and stale members now remain
+non-ready, recover quorum-authoritative journal, finalized-item, certificate,
+materialized-state, and AlephBFT backup state, and join only a quorum-compatible
+live session. Intact and full-federation restarts remain bounded. The existing
+local performance baseline remains: a five-member federation reached healthy
+state in 1.303 seconds, processed 100 parallel receives at 25.09 committed
+swaps per second, restarted all five members at a 316-operation height in 2.958
+seconds, and restarted one member with an intact database in 1.673 seconds.
 
-A member whose database was erased did not recover. After approximately 155
-seconds it held only 1 of 316 accepted operations while reporting
-`sync=healthy` and `ready=true`. Its logs showed an AlephBFT backup/collection
-round mismatch followed by a new session that the other four members rejected
-as the wrong session. This is both a catch-up failure and an incorrect readiness
-claim. It is the highest-priority open issue in this report.
+Before the fix, a member whose database was erased did not recover. After
+approximately 155 seconds it held only 1 of 316 accepted operations while
+reporting `sync=healthy` and `ready=true`. Its logs showed an AlephBFT
+backup/collection round mismatch followed by a new session that the other four
+members rejected as the wrong session. This established both a catch-up failure
+and an incorrect readiness claim.
 
-A focused local confirmation run reproduced both defects again from a smaller
+A focused local confirmation run had reproduced both defects from a smaller
 35-operation history. The erased member recovered only through operation 10,
 remained at 11 of 35 operations for more than 15 minutes, entered session 1
 while the other four members remained in session 0, and continued to report
@@ -197,7 +203,7 @@ software revisions, and workload shapes differ.
 
 ### Milestone 1: Fresh-member recovery, readiness, and live-session convergence
 
-**Status:** Fix in progress
+**Status:** Complete
 
 **Covers:** Issues 1 and 2
 
@@ -280,18 +286,76 @@ backup is recovered or the quorum moves to a new session. Any accepted fix must
 address that continuity boundary; suppressing the readiness error or merely
 delaying unilateral rotation is insufficient.
 
+The corrected path has now passed erased-member recovery at independent
+seven- and 36-operation histories. A restart matrix then processed a standard
+seven-operation mint/swap/melt/restore batch, recovered one intact member in 21
+seconds, and recovered a full federation restart in 28 seconds. Two members
+were restored concurrently from seven-operation snapshots while the other
+three held 15 operations; both recovered the exact journal, finalized cursor,
+backup, certificate quorum, materialized state, and session 0 in 46 seconds.
+The first version of that test exposed the historical-certificate and stale
+backup defects now tracked in U4 and U3. After their narrow fixes, the same
+test passed without relaxing readiness or certificate thresholds.
+
+An interruption test next restored member 5 from 15 operations while the
+quorum held 51. Before catch-up mutation it was observed as
+`awaiting_quorum`, `ready=false`, with no live session; the process was killed
+at that boundary. Restart converged all five members to journal indices 0-50,
+59 finalized items, session 0, and 2,923 persisted backup chunks totaling
+459,984 bytes in 59 seconds. All five strict status records were healthy and
+ready with the same order and materialized-state digests. This verifies
+fail-closed interruption and durable restart at a larger independent suffix;
+the paging-boundary and standalone regressions below complete Milestone 1.
+The distinct release-mode large-history cost question remains unconfirmed and
+is isolated in Milestone U6 rather than hidden by a timeout or page-size change.
+
+#### Verification results
+
+- The five-member process matrix passed erased recovery at seven and 36
+  operations, intact-member restart, full-federation restart, concurrent
+  two-stale-member recovery from 7 to 15 operations, and interrupted recovery
+  from 15 to 51 operations. Every final member had the exact journal, finalized
+  cursor, order and materialized-state digests, certificate quorum, backup, and
+  session 0; strict health/readiness passed and new work committed.
+- `cargo test -p cdk-axum --features federation startup_` passed 21 tests;
+  the `historical` filter passed 2; and `rest_peer_client_` passed all 24,
+  including atomic backup recovery, malformed-page rejection, two-stale-member
+  certificate relay, full-tip digest rejection, and 99/100/101 paging.
+- Focused `transcript`, `keyset`, `roster`, and `configuration` filters passed
+  5, 9, 1, and 1 tests respectively. These retain fail-closed validation at the
+  configuration and cryptographic boundaries adjacent to startup.
+- `cargo test -p cdk-mintd --lib --features
+  federation-test-utils,sqlite,prometheus federation_status::tests` passed all
+  42 status tests, including inactive live transport and equal-height session
+  disagreement. The focused SQLite AlephBFT backup persistence test passed its
+  append, bounded-page, replacement rollback, commit, and session-isolation
+  assertions.
+- `cargo test -p cdk --features federation standalone` passed all 10 standalone
+  startup, mint, BLS issue, persistence, and builder tests. `cargo check -p
+  cdk-axum --features federation`, `cargo fmt --all -- --check`, and `git diff
+  --check` passed.
+- An additional `cdk-common` `catch_up` test-filter attempt did not run because
+  unrelated existing test fixtures no longer initialize current Cashu quote
+  fields (15 compile errors across consensus, journal, operation, signing, and
+  transport test modules). Production `cdk-common` code compiled through the
+  successful `cdk-axum` check; this unrelated fixture drift was not folded into
+  Milestone 1.
+- Temporary timing cases, fault injection, process wrappers, generated
+  snapshots, and the stale-backup probe were removed. The permanent bounded
+  regressions and normal low-overhead status fields remain.
+
 #### Work checklist
 
 - [x] Reproduce the failure and confirm the owning causal path with hard
   evidence; record it above before changing behavior.
-- [ ] Complete the smallest fix in the existing startup, peer-sync, status, or
+- [x] Complete the smallest fix in the existing startup, peer-sync, status, or
   session-supervisor path so an empty/stale member recovers quorum-authoritative
   state before joining the live session and readiness requires current,
   compatible signed quorum evidence. Do not add a parallel recovery system.
-- [ ] Add the narrow regression and verify the acceptance criteria, including
+- [x] Add the narrow regression and verify the acceptance criteria, including
   fail-closed roster, transcript, keyset, configuration, journal, and session
   disagreement behavior.
-- [ ] Remove temporary instrumentation, record sanitized commands/results and
+- [x] Remove temporary instrumentation, record sanitized commands/results and
   any tests not run, update this milestone's status, and commit it with a
   conventional commit.
 
@@ -749,11 +813,13 @@ HTTP latency, and quorum progress remain bounded.
 **Minimum verification:** Focused completion/cancellation/retry tests and one
 five-member delayed-peer plus reconnect process regression.
 
-### Milestone U3: Validate single-source AlephBFT backup poisoning and fallback
+### Milestone U3: Validate stale or unusable AlephBFT backup replacement and fallback
 
-**Status:** Unconfirmed
+**Status:** Partially confirmed; stale-backup fix verified, opaque-source
+poisoning remains unconfirmed
 
-**Found during:** Milestone 1 recovery-fix verification
+**Found during:** Milestone 1 recovery-fix verification and Milestone U4's
+two-stale-member process regression
 
 **Observation:** Live-session backup bytes are authenticated in transit but are
 opaque, append-order snapshots that legitimately differ between honest peers.
@@ -766,17 +832,48 @@ public API returns no typed startup result. A Byzantine peer might therefore
 pin a recovered member to unusable bytes. This is code-path evidence, not an
 independent reproduction of a real liveness failure.
 
+The two-stale-member regression independently confirmed the adjacent concrete
+failure. Both members recovered the exact 15-operation journal and finalized
+cursor, but their non-empty session-0 backups came from the earlier
+seven-operation snapshots. Sync skipped backup recovery solely because bytes
+already existed. Both members then advanced alone to session 1 while members
+1-3 remained in session 0; every member stayed fail-closed in
+`awaiting_quorum`. Persisted state showed identical journal indices, order and
+materialized digests, and finalized cursor 27, isolating the stale backup as
+the remaining continuity input. A focused injected-transport test independently
+proved that a non-empty local backup suppressed every honest backup request.
+
+The smallest fix keeps intact restarts unchanged but treats any finalized-item
+catch-up as proof that the pre-existing backup predates the recovered cursor.
+It downloads one complete bounded authenticated peer snapshot and atomically
+replaces the old session chunks. The transaction preserves the old snapshot on
+rollback; malformed pages still fail before mutation. The two-stale-member
+process test then converged all five members at 15 operations in session 0, and
+the interrupted 15-to-51 recovery also converged in session 0. This does not
+prove fallback from a syntactically valid but internally unusable remote
+snapshot because upstream still provides no typed startup rejection.
+
 #### Work checklist
 
-- [ ] Independently inject one representative unusable backup followed by an
-  honest source and prove whether it can persistently block recovery. Do not
-  require byte-identical honest snapshots; close without code if fallback works.
-- [ ] If confirmed, apply the smallest fail-closed peer-sync,
+- [x] Independently inject a non-empty stale local backup, prove that it
+  suppresses honest recovery, and correlate it with a five-member session
+  split after exact finalized catch-up.
+- [x] Apply the smallest fail-closed peer-sync and backup-persistence fix for
+  that confirmed case: replace the snapshot atomically only after finalized
+  catch-up proves the local bytes stale.
+- [x] Verify focused replacement, rollback, malformed-page atomicity,
+  two-stale-member recovery, interrupted restart, readiness/session safety,
+  and new consensus work.
+- [ ] Independently inject one syntactically valid but internally unusable
+  remote backup followed by an honest source and prove whether it can
+  persistently block recovery. Do not require byte-identical honest snapshots;
+  close without code if fallback works.
+- [ ] If the remaining opaque-source hypothesis is confirmed, apply the
+  smallest fail-closed peer-sync,
   session-supervisor, or backup-persistence fix, preserving quorum-authoritative
   journal/state and bounded authenticated-source attempts.
-- [ ] Verify bad/incomplete source fallback, restart, readiness/session safety,
-  and new consensus work; remove fault injection, update the milestone, and
-  commit.
+- [ ] Verify unusable-source fallback and remove the remaining fault injection;
+  update this milestone and commit with its owning work.
 
 #### Acceptance
 
@@ -787,6 +884,167 @@ bounded recovery from honest sources in the quorum session.
 **Minimum verification:** Focused unusable/incomplete-source fallback and
 restart tests plus one five-member healthy-quorum process regression that
 commits new work after recovery.
+
+### Milestone U4: Validate catch-up certificate deadlock with two stale members
+
+**Status:** Resolved and verified
+
+**Found during:** Milestone 1 two-member-behind verification
+
+**Observation:** Members 4 and 5 were restored concurrently to the same
+seven-operation snapshot while members 1-3 retained 15 operations. Both stale
+members correctly remained non-ready, but each repeatedly reported catch-up
+certificate quorum `required=4, found=3`; the other stale member returned zero
+entries where the eight-operation suffix was expected. A current member still
+stored four independently signed certificate chunks for that suffix, but the
+catch-up response exposed only its serving member's fresh signature. This is
+one bounded process reproduction, not yet independent proof of the owning
+mechanism.
+
+A focused five-member-threshold transport test reproduced the exact mechanism:
+the recovering member received three current signatures, the other stale
+member returned no suffix, and recovery failed with `required=4, found=3`
+without mutating its journal. Injecting the persisted historical signatures
+from members 1-4 for the exact range and materialized digest made the same
+request succeed. Duplicate, unknown, invalid, wrong-range, and wrong-digest
+relays were ignored and never reduced the threshold.
+
+The fix adds an explicit historical-certificate-page request used only by
+behind-member recovery. A serving peer may then return a bounded exact-range
+checkpoint and relay persisted signatures that independently verify against
+that page and its reachable materialized digest. Ordinary evidence refresh
+keeps returning the requested full range, avoiding an earlier test iteration
+that opportunistically truncated normal restart responses. The final
+five-member process regression recovered both seven-operation snapshots to 15
+operations concurrently in 46 seconds, with all members healthy and ready in
+session 0. The stale-backup session split found by the first fixed run was
+tracked separately in U3 and is no longer masked as a certificate failure.
+
+#### Work checklist
+
+- [x] Independently reproduce the four-of-five signing deadlock with an
+  injected transport, including historical certificate chunk boundaries and
+  the bound materialized-state digest.
+- [x] Apply the smallest existing catch-up/persistence fix that
+  safely relays and verifies bounded historical evidence; do not weaken the
+  threshold or let a stale member attest to state it has not materialized.
+- [x] Verify success with two stale members and fail-closed behavior for
+  missing, insufficient, duplicate, invalid, wrong-range, and wrong-digest
+  evidence; remove generated snapshots and update this milestone and
+  Milestone 1.
+- [x] Commit the verified U4 change with its owning Milestone 1 work after the
+  remaining Milestone 1 acceptance checks pass.
+
+#### Acceptance
+
+**Success criteria:** Two stale members can recover concurrently through the
+three current peers when an authentic historical certificate quorum exists;
+without that exact quorum, neither journal nor materialized state mutates and
+the member remains non-ready.
+
+**Minimum verification:** Focused relay-success and insufficient-evidence
+tests, historical multi-chunk coverage, restart, and the five-member
+two-stale-snapshot process regression.
+
+### Milestone U5: Validate paged catch-up full-tip digest mismatch
+
+**Status:** Closed; hypothesis not reproduced, no fix warranted
+
+**Found during:** Milestone U4 certificate-boundary tracing
+
+**Observation:** `from_journal` truncates returned entries to the catch-up page
+limit while retaining the peer's full-tip order and materialized-state digests.
+Catch-up certificates bind both the page entries and those full-tip digests,
+which initially appeared to imply that recovery rechecked the full-tip digest
+after each page. If true, the first page of a larger suffix would be asked to
+equal a state reachable only after later pages. That initial reading was the
+hypothesis investigated here, not established behavior.
+
+Code tracing and an independent full-sync test disproved the suspected failure
+mechanism. The client applies bounded pages in a loop until its operation and
+finalized-item cursors reach the advertised peer tip; only then does it perform
+the materialized-state digest recheck. It does not require an intermediate
+page to materialize the full-tip digest. A real peer state and recovering state
+were exercised with quorum-signed page evidence, exact finalized-item slices,
+backup recovery, and final order/materialized digest comparison at 99, 100,
+101, and 1,000 operations. All cases converged exactly, including the first
+two-page 101-operation case.
+
+A temporary 10,000-operation debug-build run also converged exactly with the
+already supported 1,000-entry page setting in 113.66 seconds. The same workload
+with the default 100-entry setting exceeded a 180-second sync bound, but did
+not report a digest, certificate, cursor, or mutation error. That separate
+page-cost result is tracked as unconfirmed Milestone U6; it is not evidence for
+the U5 correctness hypothesis. The heavy temporary cases were removed and the
+fast 99/100/101 boundary regression remains.
+
+#### Work checklist
+
+- [x] Trace the full client loop and verify that materialized-state comparison
+  occurs after all pages reach the advertised peer tip, not after each page.
+- [x] Independently run exact-boundary and over-boundary catch-up at 99, 100,
+  101, 1,000, and 10,000 operations with signed evidence, finalized cursors,
+  backup recovery, and exact final digests.
+- [x] Close the disproved digest hypothesis without a production fix, retain
+  the fast 99/100/101 regression, remove heavy temporary cases, and move the
+  distinct 10,000-operation page-cost observation to U6.
+
+#### Acceptance
+
+**Success criteria:** Multi-page recovery reaches the exact peer operation and
+finalized-item tip before comparing the advertised full-tip materialized
+digest, remains bounded by the configured page limit, and does not introduce an
+intermediate-page digest failure.
+
+**Minimum verification:** Focused 99/100/101 real-state boundary regression,
+temporary 1,000/10,000 scale runs, and the interrupted 15-to-51 process
+recovery recorded in Milestone 1.
+
+### Milestone U6: Validate large-history catch-up page-cost scaling
+
+**Status:** Unconfirmed; one debug-build injected reproduction requires
+profiling and production-representative validation
+
+**Found during:** Milestone U5 scale verification
+
+**Observation:** A real-state injected catch-up at 10,000 operations exceeded
+180 seconds when using the default 100-entry page size. The identical workload
+completed in 113.66 seconds with the existing 1,000-entry setting, while the
+default setting completed through 1,000 operations and all 99/100/101 boundary
+cases. No digest, certificate, cursor, readiness, or mutation failure occurred.
+This suggests repeated per-page authentication, runtime reconstruction,
+projection, persistence, or application cost, but the single debug-build run
+does not establish production severity or justify increasing the default:
+finalized items can contain large operation envelopes, so larger entry-count
+pages may raise response and memory bounds substantially.
+
+#### Work checklist
+
+- [ ] Independently profile 1,000- and 10,000-operation catch-up with 100- and
+  1,000-entry pages in release mode, recording per-page time, response bytes,
+  finalized-item bytes, transactions, peak memory, and total convergence.
+- [ ] Use temporary timing/counter instrumentation to separate certificate
+  verification, finalized-runtime reconstruction, persistence, operation
+  application, projection, and backup recovery; remove it after measurement.
+- [ ] Confirm the result in a five-member process with one stale member and
+  interruption/restart. Treat debug-only or fixture-dominated cost as a closed
+  non-issue rather than changing production behavior.
+- [ ] If confirmed, apply the smallest bounded owning-layer fix using existing
+  replay/page patterns. Do not mask the cost with a longer timeout or raise the
+  entry limit without an explicit byte and memory bound.
+- [ ] Verify exact replay, certificate/digest rejection, bounded response and
+  memory use, interruption/restart, readiness/session continuity, and
+  standalone behavior; update the milestone and commit.
+
+#### Acceptance
+
+**Success criteria:** Large-history recovery scales predictably without
+repeated superlinear reconstruction, preserves exact quorum-authoritative
+state, and keeps every page, allocation, transaction, and retry bounded.
+
+**Minimum verification:** Release-mode 1,000/10,000 comparison at both page
+sizes, page-level cost attribution, one five-member stale/restart regression,
+and focused malformed/certificate/digest boundary tests.
 
 ## Scope and evidence labels
 
@@ -994,7 +1252,7 @@ not authorization to fix it.
 ### 1. Fresh-database member does not catch up
 
 **Severity:** Critical  
-**Status:** Confirmed in two independent local process runs
+**Status:** Resolved and verified in Milestone 1
 
 Member 5 was stopped at converged height 316 and its SQLite database, WAL, and
 shared-memory files were deleted. The other four members remained live. The
@@ -1026,28 +1284,23 @@ then tries to participate without the persisted AlephBFT backup and finalized
 history required to join the peers' current session. Session rotation makes the
 split explicit rather than repairing it.
 
-**Required fix:** a member with no trustworthy local checkpoint must begin
-fail-closed in startup recovery, compare signed peer status, recover journal,
+**Implemented fix:** a member with no trustworthy local checkpoint now begins
+fail-closed in startup recovery, compares signed peer status, recovers journal,
 finalized-item, application, certificate, and AlephBFT backup state, and only
-then install the live session and become healthy. Deferral to live AlephBFT is
+then installs the live session and becomes healthy. Deferral to live AlephBFT is
 valid only when the local live session is known to be continuous with the peer
 session and history.
 
-**Required regression:** start four members with several hundred operations,
-erase the fifth database, and restart it. The fifth member must initially report
-startup/catch-up rather than healthy, must not start a conflicting session, and
-must reach the exact peer height, order digest, materialized-state digest,
-finalized cursor, and catch-up-certificate coverage.
-
-Add a small-history variant with approximately 35 operations so the critical
-failure runs cheaply in ordinary CI. The test must remain active beyond the
-first partial REST recovery and fail if progress stops before the peer tip or if
-the member starts any session not supported by quorum signed peer status.
+**Verified regression:** erased-member runs at seven and 36 operations, the
+two-stale-member 7-to-15 case, and interrupted 15-to-51 recovery all remained
+non-ready until exact state and quorum-session recovery. The permanent focused
+tests cover startup gating, signed peer-view reconciliation, backup paging and
+atomic persistence, certificate/digest rejection, and live-session continuity.
 
 ### 2. A behind member can falsely report healthy and ready
 
 **Severity:** Critical  
-**Status:** Confirmed for height lag and live-session divergence
+**Status:** Resolved and verified in Milestone 1
 
 At local height 1 versus peer height 316, the erased member reported:
 
@@ -1085,19 +1338,24 @@ member's local tip. A fresh runtime defaults to healthy before it has establishe
 a recent signed peer-height view, and the live-session catch-up deferral returns
 without first marking the node lagging.
 
-**Required fix:** distinguish local consistency from federation currency. A
+**Implemented fix:** readiness now distinguishes local consistency from
+federation currency. A
 member must not advertise authoritative readiness until it has compared itself
-with quorum peer evidence during startup. The status response should expose the
-last successful peer comparison and its age. The operator status command should
-continue to compare members, but a single-member health check must also fail
-closed when startup peer validation has never completed.
+with quorum peer evidence during startup. The `awaiting_quorum` state keeps a
+single-member health check fail-closed until startup peer validation completes,
+and readiness also requires an active live session and inbound consensus
+transport.
 
 Readiness and strict convergence must additionally require a quorum-compatible
-AlephBFT session view. Status should expose the locally active session, the
-quorum-observed peer session, the age of that observation, and whether the
-member has exchanged valid traffic in that session. A session mismatch must
+AlephBFT session view. Peer status exposes the locally represented session and
+strict status compares it across members. A session mismatch now
 make the member non-ready even when height, digests, application state, and
 certificate coverage match.
+
+**Verified regression:** the 42-test operator-status suite rejects inactive
+consensus transport and equal-height session splits. Process interruption,
+empty/stale recovery, intact restart, and two-member-behind cases observed no
+false-ready interval and ended with all five members healthy in session 0.
 
 ### 3. Wallet operations can commit while the client reports failure
 

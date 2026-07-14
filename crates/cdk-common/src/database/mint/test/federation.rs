@@ -537,6 +537,22 @@ where
         .expect("catch-up certificates from");
     assert_eq!(catch_up_certificates_from.len(), 1);
     assert_eq!(catch_up_certificates_from[0].from_index, 1);
+
+    let catch_up_certificates_at = db
+        .get_federation_catch_up_certificates_at(1)
+        .await
+        .expect("catch-up certificates at exact range start");
+    assert_eq!(catch_up_certificates_at.len(), 1);
+    assert_eq!(catch_up_certificates_at[0].from_index, 1);
+    assert_eq!(
+        catch_up_certificates_at[0].signature,
+        catch_up_certificates_from[0].signature
+    );
+    assert!(db
+        .get_federation_catch_up_certificates_at(2)
+        .await
+        .expect("missing exact catch-up certificate range")
+        .is_empty());
 }
 
 /// Assert every legal journal application state survives database round trips.
@@ -776,6 +792,52 @@ where
         db.get_federation_aleph_bft_backup_bytes(8)
             .await
             .expect("session 8 backup bytes"),
+        Some(b"other-session".to_vec())
+    );
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_chunks_from(7, 1, 1)
+            .await
+            .expect("bounded session 7 backup chunks"),
+        vec![b"-second".to_vec()]
+    );
+    assert!(db
+        .get_federation_aleph_bft_backup_chunks_from(7, 2, 1)
+        .await
+        .expect("backup range past end")
+        .is_empty());
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin rolled-back replacement");
+    tx.replace_federation_aleph_bft_backup_chunks(7, &[b"rolled-back".to_vec()])
+        .await
+        .expect("replace backup before rollback");
+    tx.rollback().await.expect("rollback backup replacement");
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(7)
+            .await
+            .expect("backup after rolled-back replacement"),
+        Some(b"first-second".to_vec())
+    );
+
+    let replacement = vec![b"replacement".to_vec(), b"-tail".to_vec()];
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin replacement");
+    tx.replace_federation_aleph_bft_backup_chunks(7, &replacement)
+        .await
+        .expect("replace backup chunks");
+    tx.commit().await.expect("commit backup replacement");
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(7)
+            .await
+            .expect("replacement backup bytes"),
+        Some(b"replacement-tail".to_vec())
+    );
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(8)
+            .await
+            .expect("other session after replacement"),
         Some(b"other-session".to_vec())
     );
 }
@@ -2257,4 +2319,14 @@ where
     assert_eq!(ranged_certificates.len(), 2);
     assert_eq!(ranged_certificates[0].from_index, 1);
     assert_eq!(ranged_certificates[1].from_index, 2);
+
+    let exact_certificates = db
+        .as_ref()
+        .get_federation_catch_up_certificates_at(0)
+        .await
+        .expect("metadata exact-range certificates");
+    assert_eq!(exact_certificates.len(), 2);
+    assert!(exact_certificates
+        .iter()
+        .all(|certificate| certificate.from_index == 0));
 }

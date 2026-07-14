@@ -315,6 +315,29 @@ where
         Ok(())
     }
 
+    async fn replace_federation_aleph_bft_backup_chunks(
+        &mut self,
+        session: u64,
+        chunks: &[Vec<u8>],
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM federation_aleph_bft_backups
+            WHERE session = :session
+            "#,
+        )?
+        .bind("session", session as i64)
+        .execute(&self.inner)
+        .await?;
+
+        for chunk in chunks {
+            self.append_federation_aleph_bft_backup_bytes(session, chunk)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn set_federation_aleph_bft_active_session(
         &mut self,
         session: u64,
@@ -678,6 +701,31 @@ where
         .collect()
     }
 
+    async fn get_federation_catch_up_certificates_at(
+        &self,
+        from_index: u64,
+    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT certificate_json
+            FROM federation_catch_up_certificates
+            WHERE from_index = :from_index
+            ORDER BY signer_member_id ASC
+            "#,
+        )?
+        .bind("from_index", from_index as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_catch_up_certificate)
+        .collect()
+    }
+
     async fn get_federation_aleph_bft_finalized_items(
         &self,
     ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
@@ -746,6 +794,41 @@ where
             "#,
         )?
         .bind("session", session as i64)
+        .fetch_all(&*conn)
+        .await?;
+
+        let mut chunks = Vec::with_capacity(rows.len());
+        for mut row in rows {
+            let bytes = row.remove(0);
+            chunks.push(column_as_binary!(&bytes).to_vec());
+        }
+
+        Ok(chunks)
+    }
+
+    async fn get_federation_aleph_bft_backup_chunks_from(
+        &self,
+        session: u64,
+        from_chunk: u64,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let rows = query(
+            r#"
+            SELECT backup_bytes
+            FROM federation_aleph_bft_backups
+            WHERE session = :session AND chunk_index >= :from_chunk
+            ORDER BY chunk_index ASC
+            LIMIT :limit
+            "#,
+        )?
+        .bind("session", session as i64)
+        .bind("from_chunk", from_chunk as i64)
+        .bind("limit", limit as i64)
         .fetch_all(&*conn)
         .await?;
 

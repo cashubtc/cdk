@@ -557,8 +557,10 @@ impl FederatedMintConnector {
             .fanout_concurrency
             .min(member_connectors.len())
             .max(1);
-        let start_call =
-            |member_id: MemberId, attempt: u16, retry_delay: Option<Duration>, fut: Fut| async move {
+        let start_call = |member_id: MemberId,
+                          attempt: u16,
+                          retry_delay: Option<Duration>,
+                          fut: Fut| async move {
             if let Some(retry_delay) = retry_delay {
                 tokio::time::sleep(retry_delay).await;
             }
@@ -631,9 +633,7 @@ impl FederatedMintConnector {
                 // Poll every already-scheduled member once before returning. This starts
                 // the full default fanout without making threshold liveness wait for a
                 // slow minority.
-                while let Some((member_id, _, result)) =
-                    pending.next().now_or_never().flatten()
-                {
+                while let Some((member_id, _, result)) = pending.next().now_or_never().flatten() {
                     match result {
                         Ok(response) => responses.push((member_id, response)),
                         Err(err) => failures.push(FederationMemberFailure::new(member_id, err)),

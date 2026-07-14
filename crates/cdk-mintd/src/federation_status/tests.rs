@@ -198,8 +198,8 @@ fn local_status(
         catch_up_certificate_quorum_signers: Vec::new(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
-        aleph_bft_live_session_active: false,
-        aleph_bft_network_inbound_active: false,
+        aleph_bft_live_session_active: true,
+        aleph_bft_network_inbound_active: true,
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
     }
@@ -380,6 +380,18 @@ fn status_readiness_guard_rejects_lagging_member() {
 
     let err = ensure_statuses_ready(&statuses).expect_err("lagging member should fail");
     assert!(err.to_string().contains("is not ready"));
+}
+
+#[test]
+fn status_readiness_guard_rejects_inactive_consensus_transport() {
+    let (public_config, _) = status_fixture();
+    let mut status = local_status(&public_config, 1, 0);
+    status.aleph_bft_network_inbound_active = false;
+
+    let err = ensure_statuses_ready(&[status])
+        .expect_err("inactive consensus transport should fail readiness");
+
+    assert!(err.to_string().contains("network inbound active=false"));
 }
 
 #[test]
@@ -732,6 +744,20 @@ fn status_convergence_guard_rejects_height_mismatch() {
 
     let err = ensure_statuses_converged(&statuses).expect_err("divergent member should fail");
     assert!(err.to_string().contains("not converged"));
+}
+
+#[test]
+fn status_convergence_guard_rejects_session_mismatch_at_equal_height() {
+    let (public_config, _) = status_fixture();
+    let first = local_status(&public_config, 1, 7);
+    let mut second = local_status(&public_config, 2, 7);
+    second.peer_status.aleph_bft_session = 1;
+
+    let err = ensure_statuses_converged(&[first, second])
+        .expect_err("equal-height session split should fail");
+
+    assert!(err.to_string().contains("not converged"));
+    assert!(err.to_string().contains("AlephBFT session"));
 }
 
 #[test]

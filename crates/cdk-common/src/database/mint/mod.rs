@@ -805,6 +805,14 @@ pub trait FederationJournalTransaction {
         bytes: &[u8],
     ) -> Result<(), Self::Err>;
 
+    /// Atomically replace all raw AlephBFT backup chunks for one local
+    /// session.
+    async fn replace_federation_aleph_bft_backup_chunks(
+        &mut self,
+        session: u64,
+        chunks: &[Vec<u8>],
+    ) -> Result<(), Self::Err>;
+
     /// Persist the latest active AlephBFT session marker and atomically rebind
     /// validated pending operations from older sessions to the effective
     /// monotonic active session.
@@ -977,6 +985,12 @@ pub trait FederationJournalDatabase {
         from_index: u64,
     ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
 
+    /// Get persisted signed federation catch-up certificates at one exact range start.
+    async fn get_federation_catch_up_certificates_at(
+        &self,
+        from_index: u64,
+    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
+
     /// Get all persisted AlephBFT finalized items in accepted item order.
     async fn get_federation_aleph_bft_finalized_items(
         &self,
@@ -1008,6 +1022,14 @@ pub trait FederationJournalDatabase {
             .into_iter()
             .collect())
     }
+
+    /// Get a bounded range of AlephBFT backup chunks for one local session.
+    async fn get_federation_aleph_bft_backup_chunks_from(
+        &self,
+        session: u64,
+        from_chunk: u64,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>, Self::Err>;
 
     /// Get the latest active AlephBFT session marker.
     async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err>;

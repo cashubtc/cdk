@@ -720,11 +720,9 @@ mod tests {
     #[cfg(feature = "federation")]
     #[test]
     fn federation_sync_readiness_maps_to_catch_up_error_code() {
-        let err = Error::Federation(
-            crate::federation::FederationError::NodeCatchingUp {
-                peer: crate::federation::MemberId::new(2).expect("member id"),
-            },
-        );
+        let err = Error::Federation(crate::federation::FederationError::NodeCatchingUp {
+            peer: crate::federation::MemberId::new(2).expect("member id"),
+        });
 
         assert!(err.is_federation_catch_up());
         assert!(!err.is_definitive_failure());
@@ -1004,12 +1002,11 @@ impl Error {
     pub fn is_federation_catch_up(&self) -> bool {
         match self {
             Self::FederationCatchUp { .. } => true,
-            Self::MintErrorResponse(response) => {
-                response.code == ErrorCode::FederationCatchUp
-            }
+            Self::MintErrorResponse(response) => response.code == ErrorCode::FederationCatchUp,
             #[cfg(feature = "federation")]
             Self::Federation(
-                crate::federation::FederationError::NodeLagging { .. }
+                crate::federation::FederationError::NodeAwaitingQuorum { .. }
+                | crate::federation::FederationError::NodeLagging { .. }
                 | crate::federation::FederationError::NodeCatchingUp { .. }
                 | crate::federation::FederationError::NodeVerifyingCatchUpCertificate { .. }
                 | crate::federation::FederationError::NodeMaterializedStateMismatch { .. },
@@ -1150,7 +1147,8 @@ impl From<Error> for ErrorResponse {
             },
             #[cfg(feature = "federation")]
             Error::Federation(
-                federation_error @ (crate::federation::FederationError::NodeLagging { .. }
+                federation_error @ (crate::federation::FederationError::NodeAwaitingQuorum { .. }
+                | crate::federation::FederationError::NodeLagging { .. }
                 | crate::federation::FederationError::NodeCatchingUp { .. }
                 | crate::federation::FederationError::NodeVerifyingCatchUpCertificate { .. }
                 | crate::federation::FederationError::NodeMaterializedStateMismatch { .. }),

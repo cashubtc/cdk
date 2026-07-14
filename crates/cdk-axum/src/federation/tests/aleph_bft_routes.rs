@@ -88,14 +88,15 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
     assert!(!status.aleph_bft_live_session_active);
     assert!(!status.aleph_bft_network_inbound_active);
     assert!(!status.sync_ready);
-    assert_eq!(status.sync_state, "halted");
+    assert_eq!(status.sync_state, "awaiting_quorum");
     assert!(
         status
             .sync_message
-            .contains("public federation submissions are disabled"),
+            .contains("awaiting a quorum-compatible peer view"),
         "unexpected sync message: {}",
         status.sync_message
     );
+    assert_eq!(status.peer_status.aleph_bft_session, 0);
     assert_eq!(aleph_bft_status.local_member, local_member);
     assert_eq!(aleph_bft_status.session, 0);
     assert_eq!(aleph_bft_status.queued_item_count, 1);

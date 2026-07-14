@@ -89,6 +89,7 @@ pub use self::signing::{
 };
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
     FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
@@ -413,6 +414,14 @@ pub enum FederationError {
     RuntimeUnavailable {
         /// Stable name of the unavailable runtime component.
         component: &'static str,
+    },
+    /// The member has not yet validated its local view against a peer quorum.
+    #[error(
+        "Federation member is awaiting quorum peer validation at operation count {operation_count}"
+    )]
+    NodeAwaitingQuorum {
+        /// Local durable operation count awaiting quorum validation.
+        operation_count: u64,
     },
     /// The member is behind a peer and cannot serve authoritative requests.
     #[error(
