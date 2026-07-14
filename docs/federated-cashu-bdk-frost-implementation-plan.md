@@ -43,9 +43,8 @@ federation partially ready.
 
 ## Encountered bugs and things to remember
 
-> Keep this section below 500 words. Record the milestone, symptom, verified
-> cause, fix or open question, and preserving regression. Move long
-> investigations to issues, benchmarks, or commit descriptions.
+> Keep this below 500 words: milestone, symptom, cause, fix or open question,
+> and preserving regression. Move investigations elsewhere.
 
 - Cashu BLS shares and member identity keys cannot become Bitcoin custody
   shares. Reuse ceremony/authentication infrastructure only; persist the
@@ -78,6 +77,8 @@ federation partially ready.
   still call `make_payment` for a FROST on-chain melt. Bypass that side effect
   only for the joint wallet and derive its normal paid observation from the
   confirmed consensus transaction receipt; preserve every standalone path.
+- Milestone 17's default regtest recipe expanded an empty Bash array under
+  nounset. Pass explicit `--profile dev`; preserve the fresh 3-of-5 CLI run.
 - Milestone 18 found that FROST routes and wallet side-effect loops checked
   local authorization or BDK health but not federation catch-up readiness.
   Gate commitments, shares, observations, and broadcast on the existing sync
@@ -1628,7 +1629,7 @@ normal Cashu quote, error, and recovery semantics.
 
 **Success criteria:**
 
-- [ ] A CLI wallet can melt Cashu to a regtest address through a 3-of-5
+- [x] A CLI wallet can melt Cashu to a regtest address through a 3-of-5
   federation and receive the existing terminal response shape.
 - [x] Exactly one Bitcoin payment occurs for one accepted melt quote.
 - [x] Ambiguous broadcast or confirmation state leaves recoverable saga state.
@@ -1672,9 +1673,11 @@ threshold completion, multi-intent completion under one txid, wrong settlement
 policy, pre-confirmation paid-observation rejection, exact txid/outpoint response
 data, actual-fee accounting, spent proofs, replay idempotency, invalid payment
 terms, concurrent/restarted saga recovery, and the unchanged standalone backend.
-The feature-enabled CDK/Axum library check passes. The live 3-of-5 CLI regtest
-criterion above remains deliberately unchecked until the end-to-end regtest
-environment is exercised in the later integration milestone.
+The feature-enabled CDK/Axum library check passes. A fresh 2026-07-15 live run
+completed dual DKG plus two CLI deposits and two CLI melts through a 3-of-5
+federation. Both melts returned the existing terminal `PAID` response shape;
+Bitcoin Core recorded two unique outgoing transactions, the final Cashu balance
+remained positive and decreased by the payments, and all five members converged.
 
 ### Milestone 18: full restart, replay, and catch-up recovery
 

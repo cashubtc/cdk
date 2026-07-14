@@ -1487,7 +1487,10 @@ fed-regtest-frost-bdk dir="target/cdk-fed-regtest-frost-bdk" members="5" thresho
   cargo_profile="${FROST_BDK_CARGO_PROFILE:-dev}"
   cargo_profile_args=()
   case "$cargo_profile" in
-    dev) cargo_target_dir="target/debug" ;;
+    dev)
+      cargo_profile_args+=(--profile dev)
+      cargo_target_dir="target/debug"
+      ;;
     release)
       cargo_profile_args+=(--release)
       cargo_target_dir="target/release"
