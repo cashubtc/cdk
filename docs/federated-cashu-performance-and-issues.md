@@ -2,6 +2,127 @@
 
 Date: 2026-07-14
 
+## Relationship to the federation implementation plan
+
+This document is the investigation, remediation, and verification plan for the
+performance, reliability, and robustness work that remains after the core
+federation implementation. It is governed by
+[federated-cashu-implementation-plan.md](federated-cashu-implementation-plan.md).
+The implementation plan is the design and safety contract; this document must
+not weaken or work around its invariants to make a benchmark pass.
+
+The most important concepts carried forward from the implementation plan are:
+
+- Federation mode preserves the public Cashu wallet-to-mint protocol while
+  requiring consensus ordering and BLS threshold authorization. Standalone CDK
+  behavior remains unchanged unless federation mode is explicitly enabled.
+- Consensus must precede signature-share creation and externally visible
+  safety-critical state changes. No member may independently authorize mint,
+  swap, or melt results.
+- The federation journal is the authoritative operation history. Operations
+  require canonical identities, durable ordering, deterministic and idempotent
+  application, exact replay, and matching materialized state.
+- Local time, randomness, unordered data, network I/O, and member-local backend
+  results must not influence deterministic application unless consensus commits
+  the relevant value.
+- Payment side effects use the designated replay-safe, quorum-authorized flow.
+  Member-local payment or database state is not federation evidence.
+- Wallet quorum behavior belongs in the centralized federation connector:
+  member fanout, view agreement, error classification, fallback, share
+  validation, aggregation, and ambiguous-result handling must not be
+  reimplemented independently in each wallet flow.
+- The mint domain continues to own Cashu validation and business state changes.
+  Federation orchestration owns ordering, quorum authorization, replay, and the
+  point at which shared domain behavior runs. Public handlers remain thin.
+- Startup, catch-up, DKG, rotation, roster, keyset, transcript, configuration,
+  and live-session mismatches fail closed. Local consistency alone is not proof
+  that a member is current or able to participate in consensus.
+- Federation keysets are v3/BLS-only and must reject aggregate-key, public-share,
+  local-share, or keyset-version mismatch without falling back to standalone
+  behavior.
+- Prefer simplification and existing CDK patterns before adding new types,
+  queues, retries, background systems, or parallel implementations. Do not hide
+  liveness failures with larger timeouts, unbounded queues, retry storms, or
+  serialized tests.
+- Federation development remains cut-through because no production federation
+  format has been deployed. Change experimental federation members, clients,
+  schemas, tests, and fixtures together instead of adding compatibility layers.
+- Temporary instrumentation is allowed for investigation only when it cannot
+  influence protocol behavior. Remove it before production unless it becomes
+  documented, opt-in or low-overhead, bounded observability that exposes no
+  secrets or sensitive payloads.
+
+## Milestone working agreement
+
+Work proceeds one milestone at a time in the order below unless a documented
+dependency or newly confirmed critical issue requires reprioritization.
+
+Every milestone follows the same evidence-first gate:
+
+1. Reproduce or invalidate the reported behavior under a bounded, documented
+   workload.
+2. Add temporary measurement or tracing only where existing evidence is
+   insufficient.
+3. Identify the causal mechanism with hard process, journal, database, network,
+   client, or code-path evidence.
+4. Do not implement a fix while the milestone remains unconfirmed or the root
+   cause is only speculative.
+5. Once the cause is demonstrated, choose the smallest fix that fits the
+   existing owning layer and reuses established CDK patterns.
+6. Verify the fix against the minimal regression, relevant adverse cases,
+   restart/replay behavior, and unchanged standalone behavior.
+7. Remove temporary instrumentation unless it satisfies the production
+   observability rules above.
+
+After every milestone, all code, tests, verification results, and this document
+must be updated together and committed to git with a conventional commit. The
+document update must record the final status, root-cause evidence, chosen fix,
+commands run, meaningful results, instrumentation removed or retained, and any
+tests not run. A milestone is not complete until that commit exists.
+
+If investigation or stress work exposes a previously unidentified networking,
+consensus, mint, wallet, storage, or operational issue, do not fold an
+unconfirmed fix into the active milestone. Append a new `U` milestone after all
+existing numbered and `U` milestones at the end of the milestone execution
+plan. Record which milestone exposed it, the raw evidence, why it might matter,
+alternative explanations, and the stricter validation required. Its status
+remains **Unconfirmed** and no fix may begin until independent reproduction
+establishes that the issue is real.
+
+### Status values
+
+| Status | Meaning |
+| --- | --- |
+| **Pending** | Defined work has not started because earlier ordered milestones still own the active investigation. |
+| **Unconfirmed** | Observation or hypothesis exists, but a bounded independent reproduction has not established a real defect. |
+| **Confirmed historically; revalidation pending** | A prior revision reproduced the failure, but current code must reproduce it again before any fix is attempted. |
+| **Confirmed; investigation pending** | The failure is reproducible, but the causal mechanism is not yet proven. |
+| **Root cause confirmed; fix not started** | Evidence identifies the mechanism and owning layer; implementation may begin. |
+| **Fix in progress** | A narrow fix is being implemented with its regression. |
+| **Verification in progress** | The fix exists and the required adverse, restart, and compatibility checks are running. |
+| **Complete** | Success criteria pass, temporary instrumentation is resolved, the document is current, and a milestone commit exists. |
+| **Blocked** | A named prerequisite prevents useful progress; the blocking evidence and required external change are documented. |
+
+Checked boxes record evidence or work already completed. Unchecked boxes are
+requirements for milestone completion; they are not assumptions that the
+proposed fix is correct.
+
+### Milestone roadmap
+
+| Order | Milestone | Current status | Detailed issues |
+| ---: | --- | --- | --- |
+| 1 | Fresh-member recovery, readiness, and live-session convergence | Confirmed; investigation pending | 1, 2 |
+| 2 | Cancellation-safe server application and bounded wallet completion | Confirmed; investigation pending | 3, 4, 5 |
+| 3 | Exactly-once melt completion under repetition and member faults | Confirmed; investigation pending | 6 |
+| 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Confirmed; investigation pending | 8 |
+| 5 | Signed private-status liveness and bounded operator reporting | Confirmed; investigation pending | 7, 12 |
+| 6 | Federation discovery and import completion | Confirmed historically; revalidation pending | 9 |
+| 7 | Wallet token-preparation and fragmentation scaling | Unconfirmed | 10 |
+| 8 | Controlled local and remote capacity characterization | Blocked by Milestones 1-5 | 11 and performance baselines |
+| 9 | Production release validation and operator readiness | Pending | Remaining release work |
+| U1 | Validate payment-report quote-age semantics | Unconfirmed | 13 |
+| U2 | Validate network-pump retry duplication | Unconfirmed | Secondary Issue 8 hypothesis |
+
 ## Executive summary
 
 The current federation implementation performs well for normal local operation
@@ -62,6 +183,911 @@ under member catch-up pressure. Those findings remain relevant even though the
 new local receive-only result is much faster. The local and remote throughput
 numbers are not directly comparable because the network, host capacity,
 software revisions, and workload shapes differ.
+
+## Milestone execution plan
+
+### Milestone 1: Fresh-member recovery, readiness, and live-session convergence
+
+**Status:** Confirmed; investigation pending
+
+**Covers:** Issues 1 and 2
+
+**Objective:** Make recovery from an empty or stale database deterministic, and
+make readiness prove that a member is current and compatible with the live
+federation session rather than merely locally consistent.
+
+#### Existing evidence
+
+- [x] An erased member recovered only 1 of 316 accepted operations and still
+  reported `sync=healthy` and `ready=true` after approximately 155 seconds.
+- [x] A smaller independent run recovered only 11 of 35 operations, then
+  remained stalled for more than 15 minutes.
+- [x] The erased member entered session 1 while the other four members remained
+  in session 0 and rejected its traffic as the wrong session.
+- [x] The complementary split was observed under load: four members entered
+  session 1 while one remained in session 0, yet strict ready, convergence, and
+  certificate checks succeeded because heights and digests matched.
+- [x] An intact single-member restart and a full-federation restart recovered
+  quickly, separating the empty/stale recovery problem from ordinary replay.
+
+#### Investigation and evidence gate
+
+- [ ] Build a minimal, deterministic process test that separately covers an
+  erased database at startup and session rotation under load.
+- [ ] Record each startup state transition, local journal boundary, checkpoint
+  trust classification, finalized and backup boundaries, active session, peer
+  session evidence, and readiness reason.
+- [ ] Trace range requests and responses, peer selection, retry classification,
+  and the decision made by `should_defer_catch_up_to_live_aleph_bft`.
+- [ ] Prove where and why catch-up stops: missing range availability, incorrect
+  trusted-checkpoint classification, premature deferral to live consensus,
+  backup/finalized boundary handling, session selection, or another measured
+  cause.
+- [ ] Prove the exact inputs that allow readiness and strict status to pass
+  during a session split.
+- [ ] Confirm that the cause holds across at least two journal heights and is
+  not dependent on a single timing window.
+- [ ] Record the root cause and owning layer here before changing production
+  behavior.
+
+#### Implementation requirements
+
+- [ ] Do not start implementation until the investigation gate identifies the
+  causal mechanism with hard evidence.
+- [ ] Apply the smallest fix in the existing startup, catch-up, status, or
+  consensus-session path; do not add a parallel recovery system.
+- [ ] Ensure an untrusted or empty local checkpoint recovers authoritative
+  history before joining or advancing the live session.
+- [ ] Derive readiness from recent signed quorum evidence, including compatible
+  journal height and digests, certificates, roster/configuration identity,
+  session identity, and bounded evidence age.
+- [ ] Make strict status fail when a member is locally consistent but cannot
+  participate in the current quorum session.
+- [ ] Preserve fail-closed behavior for roster, transcript, keyset,
+  configuration, and journal disagreement.
+- [ ] Keep standalone mint startup and readiness behavior unchanged.
+
+#### Success criteria
+
+- [ ] A member starting with an empty database converges exactly to the quorum
+  journal and materialized state without manual intervention.
+- [ ] A stale member catches up across the checkpoint and live-consensus
+  boundary and joins the same session as the quorum.
+- [ ] A lagging, stale, or session-incompatible member never reports ready or
+  passes strict status.
+- [ ] Intact single-member and full-federation restarts retain their fast replay
+  path and do not redownload authoritative history unnecessarily.
+- [ ] Recovery never creates conflicting accepted operations, digests,
+  certificates, or live sessions.
+
+#### Required tests
+
+- [ ] Unit tests for startup state transitions, checkpoint trust decisions,
+  catch-up deferral, readiness evidence age, and session compatibility.
+- [ ] Five-member process regression with an erased member after approximately
+  35 committed operations.
+- [ ] Height regressions at approximately 1, 100, 1,000, and 10,000 operations,
+  with bounds scaled and recorded rather than hidden by a single long timeout.
+- [ ] Equal-height/equal-digest but mismatched-session regression proving strict
+  status fails.
+- [ ] Intact single-member restart, full-federation restart, interrupted
+  catch-up/restart, and two-member-behind cases.
+- [ ] Focused federation tests plus the relevant standalone startup and mint
+  tests.
+
+#### Closeout checklist
+
+- [ ] Remove all temporary recovery and readiness instrumentation, or document
+  why retained metrics are bounded and safe for production.
+- [ ] Run formatting, focused unit/integration tests, process regressions, and
+  standalone compatibility tests; record commands and results here.
+- [ ] Update the status, root cause, chosen fix, results, and any tests not run.
+- [ ] Verify that logs, fixtures, and committed artifacts contain no secrets,
+  private federation material, or machine-specific information.
+- [ ] Commit the milestone with a conventional commit.
+
+### Milestone 2: Cancellation-safe server application and bounded wallet completion
+
+**Status:** Confirmed; investigation pending
+
+**Covers:** Issues 3, 4, and 5
+
+**Depends on:** Milestone 1 for final catch-up fault classification
+
+**Objective:** Once an operation is accepted, make its server-side completion
+independent of request cancellation, and make wallet quorum operations return a
+bounded, semantically correct definitive or ambiguous result.
+
+#### Existing evidence
+
+- [x] Earlier Nocean testing recorded 25 client failures whose operations still
+  committed and whose valid shares existed on all members.
+- [x] In the focused local run, 43 of 43 wallets printed `Received: 1` and stored
+  one sat, but none of their CLI processes exited within two minutes.
+- [x] Four members applied all 144 operations while the fifth stopped at 100,
+  with operation 100 accepted but not applied; restart replay completed it.
+- [x] Direct receive overlap against an intact member completed 20 of 20 cases,
+  showing that failure depends on load, peer state, or post-success cleanup.
+- [x] The exact earlier failure-after-commit client result was not reproduced in
+  the focused local run; the adjacent post-success completion hang was.
+
+#### Investigation and evidence gate
+
+- [ ] Create separate minimal regressions for failure-after-commit,
+  success-before-process-exit, and accepted-but-unapplied minority state.
+- [ ] Instrument wallet lifecycle phases: queried operation identity, member
+  fanout, view agreement, threshold decision, saga/database commit, returned
+  output, surplus future drain/drop, runtime shutdown, and process exit.
+- [ ] Instrument the server lifecycle: accepted, applying, applied, result
+  cached, waiter attached/dropped, handler cancelled, and replayed.
+- [ ] Determine whether the client hang is caused by surplus requests, task or
+  connection shutdown, database ownership, retry loops, or another measured
+  resource.
+- [ ] Determine whether accepted-but-unapplied state is caused by request
+  cancellation, an application worker failure, session divergence, lock
+  starvation, or another measured mechanism.
+- [ ] Separate retryable catch-up/session conditions from definitive transport,
+  validation, and threshold rejection using typed evidence.
+- [ ] Confirm deterministic operation identity and replay behavior when the
+  original client disappears at every lifecycle boundary.
+- [ ] Record the root causes and owning client/server layers here before fixing
+  either path.
+
+#### Implementation requirements
+
+- [ ] Do not implement a fix until the corresponding client or server causal
+  mechanism has hard evidence.
+- [ ] Keep accepted operation completion durable and independent of the HTTP
+  request lifetime, using existing journal/application worker patterns.
+- [ ] Make application idempotent and ensure restart resumes any accepted but
+  non-terminal operation without repeating externally visible side effects.
+- [ ] Let any valid roster member contribute while distinguishing retryable
+  lag/session conditions from member rejection.
+- [ ] Return as soon as threshold-valid agreement is sufficient, while safely
+  cancelling, detaching, or boundedly draining surplus work.
+- [ ] Preserve the wallet saga until the outcome is definitive; return a typed
+  pending or ambiguous result when a timeout cannot prove failure.
+- [ ] Keep deterministic operation IDs stable across retries and avoid new
+  per-flow fanout implementations.
+- [ ] Keep standalone wallet and mint behavior unchanged.
+
+#### Success criteria
+
+- [ ] A successful wallet operation returns and its process exits within the
+  documented bound once a valid threshold result exists.
+- [ ] Client cancellation at any point after acceptance cannot strand an
+  operation indefinitely in `accepted` or corrupt materialized state.
+- [ ] Every accepted operation reaches one durable terminal outcome on every
+  recovering member through live application or exact replay.
+- [ ] A client never reports ordinary definitive failure when quorum evidence
+  only supports a pending or ambiguous outcome.
+- [ ] Retry with the same operation identity yields the original result and no
+  duplicate issuance, spending, or payment side effect.
+- [ ] One or two slow, catching-up, or unresponsive members do not block a valid
+  three-of-five result.
+
+#### Required tests
+
+- [ ] Wallet connector tests with one and two slow, catching-up, wrong-session,
+  malformed, rejecting, and unresponsive members.
+- [ ] Threshold-valid success test that proves surplus member work cannot delay
+  return or process shutdown.
+- [ ] Forty-three-or-greater parallel receive regression with wallet balances,
+  process exits, journal convergence, and application state all asserted.
+- [ ] Client cancellation at accepted, applying, applied-before-response, and
+  response-before-cleanup boundaries.
+- [ ] Server restart with accepted-but-unapplied work and repeated operation-ID
+  recovery.
+- [ ] Definitive threshold rejection, timeout-before-threshold, and typed
+  ambiguous-result tests.
+- [ ] Focused federation wallet/mint tests plus equivalent standalone wallet
+  and mint tests.
+
+#### Closeout checklist
+
+- [ ] Remove temporary lifecycle instrumentation or document retained bounded
+  metrics and their privacy properties.
+- [ ] Run formatting, focused tests, process regressions, restart/replay tests,
+  and standalone compatibility tests; record commands and results here.
+- [ ] Update the status, separate root causes, chosen fixes, evidence, and any
+  tests not run.
+- [ ] Verify committed logs and fixtures contain no tokens, proofs, private
+  federation material, or machine-specific information.
+- [ ] Commit the milestone with a conventional commit.
+
+### Milestone 3: Exactly-once melt completion under repetition and member faults
+
+**Status:** Confirmed; investigation pending
+
+**Covers:** Issue 6
+
+**Depends on:** Milestone 2 wallet completion semantics
+
+**Objective:** Make repeated melt operations reach one threshold-consistent,
+exactly-once terminal result without hangs when members are slow or offline.
+
+#### Existing evidence
+
+- [x] Nine of ten concurrent standard-operation workers returned
+  `Payment failed` during their second melt while the tenth stalled there.
+- [x] A focused sequential run with one member offline completed the first melt
+  and stalled during the second melt-confirmation path for more than 120
+  seconds.
+- [x] The repeated second-operation shape was reproduced independently of the
+  larger mixed workload.
+
+#### Investigation and evidence gate
+
+- [ ] Reproduce with one wallet and two sequential melts before adding
+  concurrency, then add one offline member and concurrent wallets separately.
+- [ ] Trace canonical operation ID, quote ID, elected payer, backend payment ID,
+  quote state, member observations, consensus entries, saga state, polling, and
+  lock acquisition/hold times.
+- [ ] Establish whether the stall is in wallet result handling, payer election,
+  payment observation, mint quote transition, fake-wallet behavior, saga
+  polling, or another measured path.
+- [ ] Prove whether all members agree on the same backend payment observation
+  and whether any repeated poll or replay attempts the external side effect.
+- [ ] Revalidate the causal mechanism with a real Lightning backend before
+  generalizing a fake-wallet-only observation.
+- [ ] Record the root cause and owning layer here before changing melt logic.
+
+#### Implementation requirements
+
+- [ ] Do not implement a fix until the investigation gate proves the causal
+  mechanism.
+- [ ] Reuse the existing payment observation, payer-election, saga, journal, and
+  quote-state patterns; do not add a second melt coordinator.
+- [ ] Preserve exactly-once external payment semantics and quorum authorization.
+- [ ] Keep replay deterministic: replay consumes recorded payment evidence and
+  never calls the Lightning backend again.
+- [ ] Return a typed pending or ambiguous outcome when payment finality cannot
+  be established, rather than a false definitive failure.
+- [ ] Keep standalone melt behavior unchanged.
+
+#### Success criteria
+
+- [ ] Two and many consecutive melts complete within a documented bound with
+  zero, one, or two unavailable members when a quorum remains.
+- [ ] Every melt has one payer decision, at most one external payment, one
+  threshold-consistent terminal quote state, and exact replay.
+- [ ] Failure, timeout, and already-paid backend responses produce the correct
+  retryable, ambiguous, or definitive wallet result.
+- [ ] Restart during observation or after payment cannot duplicate payment or
+  lose the terminal result.
+
+#### Required tests
+
+- [ ] Minimal two-sequential-melt process regression with one member offline.
+- [ ] Ten-or-greater concurrent wallets performing repeated mint/swap/melt
+  sequences.
+- [ ] Payer unavailable before payment, payer loss after payment, backend
+  pending/failure/already-paid, client cancellation, and restart/replay tests.
+- [ ] Fake-wallet regression plus at least one real Lightning backend fixture.
+- [ ] Focused federation payment tests and unchanged standalone melt tests.
+
+#### Closeout checklist
+
+- [ ] Remove temporary payment instrumentation or document retained bounded,
+  non-sensitive metrics.
+- [ ] Run formatting, focused tests, process regressions, restart/replay tests,
+  real-backend validation, and standalone tests; record results here.
+- [ ] Update the status, root cause, chosen fix, evidence, and any tests not run.
+- [ ] Verify artifacts contain no invoices, preimages, credentials, private
+  federation material, or machine-specific information.
+- [ ] Commit the milestone with a conventional commit.
+
+### Milestone 4: AlephBFT cadence, network backpressure, and HTTP liveness
+
+**Status:** Confirmed; investigation pending
+
+**Covers:** Issue 8
+
+**Objective:** Prevent a small application workload from creating excessive
+empty consensus traffic, queue growth, and public/private HTTP starvation while
+retaining prompt consensus for real work.
+
+#### Existing evidence
+
+- [x] A fresh Nocean deployment became temporarily unresponsive during the
+  first one-wallet receive workload and recovered after queues drained without
+  a restart.
+- [x] Ten accepted journal operations produced approximately 744 DAG units.
+- [x] `UnitBroadcast` queues grew to roughly 80-160 messages per member while
+  requests timed out.
+- [x] Mint CPU remained far below host saturation, arguing against simple host
+  CPU exhaustion.
+- [x] Code tracing confirmed the fixed 100 ms active schedule replaces the
+  upstream 500 ms steady delay and that empty units remain possible while
+  payload activity is pending.
+- [x] A separate possible network-pump retry amplifier remains unconfirmed and
+  is tracked independently as Milestone U2.
+
+#### Investigation and evidence gate
+
+- [ ] Reproduce with a minimal sequential workload and capture accepted
+  operations, payload-bearing units, empty units, active/idle cadence, queue
+  depths, event-loop delay, and HTTP latency on the same timeline.
+- [ ] Define and measure the lifetime of the activity signal that selects the
+  faster schedule, including stale or perpetually pending activity.
+- [ ] Trace data-provider readiness, unit proposal, network send/receive, and
+  application worker scheduling without logging payloads or private material.
+- [ ] Independently compare the current 100 ms override, the upstream schedule,
+  and any bounded activity-sensitive schedule under identical workloads.
+- [ ] Prove which measured mechanism causes HTTP starvation: proposal cadence,
+  broadcast volume, an unbounded queue, runtime scheduling, lock contention, or
+  another cause.
+- [ ] Keep the U2 retry hypothesis isolated unless its own independent evidence
+  gate is satisfied.
+- [ ] Record the complete causal chain and owning layer here before fixing it.
+
+#### Implementation requirements
+
+- [ ] Do not implement a cadence or queue change until the measured causal chain
+  is complete.
+- [ ] Use the smallest existing AlephBFT configuration, activity-hint, bounded
+  channel, or backpressure pattern that addresses the proven cause.
+- [ ] Make activity expiry explicit and bounded if activity-sensitive cadence is
+  retained.
+- [ ] Bound network queues and preserve protocol-required messages without
+  creating retry storms or silently dropping correctness-critical traffic.
+- [ ] Do not treat larger HTTP/client timeouts as the fix.
+- [ ] Preserve standalone behavior and avoid forking upstream consensus logic
+  unless no supported configuration solves the demonstrated issue.
+
+#### Success criteria
+
+- [ ] Empty-unit production and network queue depth remain within documented
+  bounds at idle and for a ten-operation burst.
+- [ ] Public information, wallet operation, and signed private-status latency
+  remain bounded while consensus traffic is active.
+- [ ] The federation returns to steady idle cadence after a bounded grace period.
+- [ ] Payload commit latency and throughput do not regress beyond an explicitly
+  accepted, measured tradeoff.
+- [ ] One slow or temporarily disconnected member cannot create unbounded
+  broadcast growth on healthy members.
+
+#### Required tests
+
+- [ ] Unit tests for cadence selection, activity expiry, data-provider hints,
+  queue bounds, and backpressure behavior.
+- [ ] Five-member process test with one sequential wallet and a ten-operation
+  receive workload.
+- [ ] Idle, burst, sustained, one-slow-peer, disconnect/reconnect, and queue-full
+  regressions with HTTP latency sampled concurrently.
+- [ ] Controlled comparison against the upstream schedule using identical
+  software, topology, and workload.
+- [ ] Focused consensus/network tests and relevant standalone HTTP tests.
+
+#### Closeout checklist
+
+- [ ] Remove high-volume tracing and experimental cadence switches, or document
+  retained bounded metrics and stable configuration.
+- [ ] Run formatting, focused tests, local process regressions, and the Nocean
+  validation workload; record commands, distributions, and any tests not run.
+- [ ] Update the status, root cause, chosen fix, performance tradeoff, and
+  before/after measurements.
+- [ ] Verify artifacts contain no network addresses, credentials, private
+  federation material, payloads, or machine-specific information.
+- [ ] Commit the milestone with a conventional commit.
+
+### Milestone 5: Signed private-status liveness and bounded operator reporting
+
+**Status:** Confirmed; investigation pending
+
+**Covers:** Issues 7 and 12
+
+**Depends on:** Milestone 1 readiness semantics; coordinate measurements with
+Milestone 4
+
+**Objective:** Keep authenticated diagnostic status responsive and accurate
+under load, catch-up, restart, and session divergence without weakening access
+control or masking application liveness failures.
+
+#### Existing evidence
+
+- [x] Signed private-status requests hung on heavily used members while the same
+  members' public `/v1/info` routes returned HTTP 200 quickly.
+- [x] Peer logs recorded private-status timeouts and exponential backoff.
+- [x] Restart cleared the status failure.
+- [x] One affected member was also behind at 100 of 144 entries and in a
+  different live session, so correlation with application/consensus lag remains
+  possible but unproven.
+
+#### Investigation and evidence gate
+
+- [ ] Reproduce status failure independently during steady load, catch-up,
+  session rotation, and after client-side timeout/cancellation.
+- [ ] Measure admission permit acquisition/release, task lifetime, lock wait and
+  hold times, report construction, serialization, response size, cache access,
+  event-loop delay, and cancellation cleanup.
+- [ ] Identify whether permits, locks, report fanout, large detail generation,
+  runtime starvation, or another measured mechanism blocks the route.
+- [ ] Determine whether status failure causes application lag, results from it,
+  or shares a third cause.
+- [ ] Audit status fields against Milestone 1 readiness evidence so operator
+  output distinguishes local consistency, quorum currency, and live-session
+  participation.
+- [ ] Record the root cause and owning handler/reporting layer here before a fix.
+
+#### Implementation requirements
+
+- [ ] Do not implement a fix until the blocking mechanism is demonstrated.
+- [ ] Apply the smallest change to existing admission, locking, caching,
+  snapshot, or report-detail patterns.
+- [ ] Avoid holding application or consensus locks during expensive report
+  construction, signing, serialization, or network I/O.
+- [ ] Keep permits cancellation-safe and bounded; do not replace the problem
+  with an unbounded task or queue.
+- [ ] Prefer a small summary by default and explicit bounded detail retrieval if
+  report size is a proven contributor.
+- [ ] Preserve signed access control and ensure no secrets or sensitive payloads
+  enter status output, logs, or metrics.
+- [ ] Do not hide the failure with a larger request timeout.
+
+#### Success criteria
+
+- [ ] Signed status returns within a documented bound during wallet load,
+  catch-up, restart, session rotation, and repeated client cancellation.
+- [ ] Timed-out clients cannot leak permits, locks, tasks, or cached builders.
+- [ ] Status accurately reports lag and session incompatibility and agrees with
+  strict readiness semantics.
+- [ ] Public wallet routes and consensus/application work remain responsive
+  while operators poll status at the supported rate.
+- [ ] Authentication and information disclosure behavior remain unchanged.
+
+#### Required tests
+
+- [ ] Continuous signed-status polling during receive/swap/melt load,
+  fresh-member recovery, intact restart, and session rotation.
+- [ ] Repeated timeout/cancellation and maximum-concurrency admission tests that
+  assert every permit and task is released.
+- [ ] Summary/detail size and serialization-bound tests with a large journal.
+- [ ] Cache invalidation and snapshot consistency tests across applied entries,
+  catch-up, and session change.
+- [ ] Focused authenticated route tests and unchanged public/standalone route
+  tests.
+
+#### Closeout checklist
+
+- [ ] Remove temporary lock/permit/task tracing or document retained bounded
+  observability.
+- [ ] Run formatting, focused tests, process stress regressions, and standalone
+  route tests; record commands, latency distributions, and tests not run.
+- [ ] Update the status, root cause, chosen fix, results, and operator-visible
+  semantics.
+- [ ] Audit committed examples and logs for credentials, request signatures,
+  network identity, private federation material, or machine-specific data.
+- [ ] Commit the milestone with a conventional commit.
+
+### Milestone 6: Federation discovery and import completion
+
+**Status:** Confirmed historically; revalidation pending
+
+**Covers:** Issue 9
+
+**Depends on:** Milestones 1 and 2 for current readiness and connector semantics
+
+**Objective:** Make URL discovery and federation import complete within a bound
+and behave consistently with importing the same validated configuration from a
+file.
+
+#### Existing evidence
+
+- [x] Earlier testing fetched the discovery configuration successfully with
+  HTTP 200.
+- [x] Adding the federation by discovery URL hung afterward.
+- [x] Importing the equivalent generated configuration file succeeded.
+- [ ] The failure has not yet been revalidated against the current code and
+  local process harness.
+
+#### Investigation and evidence gate
+
+- [ ] Re-run URL and file import against the same fresh local federation and
+  record whether the historical defect still exists.
+- [ ] Timestamp discovery fetch, decoding, roster/config validation, metadata
+  and keyset fetches, connector fanout, wallet registry persistence, task
+  cleanup, and CLI process exit.
+- [ ] Compare the normalized URL-derived and file-derived configurations before
+  any network follow-up.
+- [ ] Test one slow, unreachable, wrong-session, and inconsistent member to
+  determine whether fanout cancellation or agreement is the blocking phase.
+- [ ] If current code does not reproduce the issue after repeated bounded runs,
+  close this milestone as invalidated with evidence and do not make a fix.
+- [ ] If reproduced, record the root cause and owning discovery/import or
+  connector layer here before implementation.
+
+#### Implementation requirements
+
+- [ ] Do not implement a fix unless current bounded reproduction confirms the
+  defect and the causal mechanism.
+- [ ] Reuse the centralized federation connector for follow-up agreement and
+  member error classification.
+- [ ] Make cancellation and cleanup bounded after enough validated federation
+  evidence exists.
+- [ ] Preserve strict roster, keyset, transcript, configuration, and endpoint
+  validation; faster import must not accept partial or conflicting identity.
+- [ ] Keep equivalent validated URL and file imports semantically identical.
+
+#### Success criteria
+
+- [ ] Repeated URL discovery/import completes and the CLI exits within the
+  documented bound for a healthy local federation.
+- [ ] URL and file import produce the same normalized federation identity and
+  usable wallet configuration.
+- [ ] A minority slow or unreachable member does not block valid threshold
+  import, while conflicting federation identity fails closed.
+- [ ] Repeated import is idempotent and cannot leave a partial wallet registry
+  entry.
+
+#### Required tests
+
+- [ ] Healthy local URL-versus-file equivalence process test.
+- [ ] Slow, unreachable, malformed, identity-mismatched, and insufficient-quorum
+  member cases.
+- [ ] Cancellation during each import phase, retry with the same identity, and
+  wallet restart after interrupted persistence.
+- [ ] Focused discovery/connector tests and standalone single-mint import tests.
+
+#### Closeout checklist
+
+- [ ] Remove temporary phase instrumentation or document retained bounded
+  import telemetry.
+- [ ] Run formatting, focused tests, local process regressions, and standalone
+  import tests; record results and tests not run.
+- [ ] Update the status with either invalidation evidence or the confirmed root
+  cause, fix, and verification.
+- [ ] Verify committed discovery examples contain no private endpoints,
+  credentials, federation secrets, or machine-specific information.
+- [ ] Commit the milestone with a conventional commit, including when the
+  evidence closes the issue without a production code change.
+
+### Milestone 7: Wallet token-preparation and fragmentation scaling
+
+**Status:** Unconfirmed
+
+**Covers:** Issue 10
+
+**Objective:** Determine whether large wallet proof sets cause a real local
+token-preparation or storage bottleneck, distinct from federation consensus and
+network latency, and fix only the measured owning path.
+
+#### Existing evidence
+
+- [x] Token preparation slowed in a 240-payment workflow while only 84
+  operations entered federation consensus.
+- [x] Proof fragmentation, CLI startup, SQLite access, and coin selection are
+  plausible contributors, but none is yet established as the cause.
+- [ ] A controlled proof-count scaling curve has not yet confirmed a defect.
+
+#### Investigation and evidence gate
+
+- [ ] Generate controlled wallets with increasing proof counts and equivalent
+  total value, denomination distribution, and spent/pending state.
+- [ ] Measure CLI/runtime startup, wallet database reads and writes, proof-state
+  reconciliation, coin selection, token serialization, and online member calls
+  separately.
+- [ ] Compare offline send/token preparation with online federation operations
+  to exclude consensus and networking from the local path.
+- [ ] Measure query plans and row counts for any suspected SQLite operation and
+  compare another supported wallet backend where practical.
+- [ ] Repeat across cold/warm caches and independent wallets; report median and
+  tail latency rather than a single run.
+- [ ] If latency remains bounded or belongs to the benchmark harness, close the
+  milestone without a production fix.
+- [ ] If confirmed, record the causal algorithm/query and owning wallet/storage
+  layer here before implementation.
+
+#### Implementation requirements
+
+- [ ] Do not implement speculative proof compaction, caching, indexing, or coin
+  selection changes before hard evidence identifies the bottleneck.
+- [ ] Use the smallest existing wallet database, proof-selection, batching, or
+  query pattern that fixes the demonstrated cause.
+- [ ] Preserve proof-state correctness, deterministic selection constraints,
+  fee handling, privacy behavior, and restart safety.
+- [ ] Avoid federation-specific wallet logic if the measured issue is a general
+  standalone wallet concern.
+
+#### Success criteria
+
+- [ ] Token-preparation latency follows a documented acceptable curve across the
+  tested proof-count range and improves materially at the confirmed bottleneck.
+- [ ] Online and offline behavior show no correctness, privacy, fee, or proof
+  state regression.
+- [ ] Database growth and memory use remain bounded and interrupted preparation
+  is restart-safe.
+
+#### Required tests
+
+- [ ] Benchmarks for small, medium, and large fragmented proof sets with fixed
+  value and repeated independent samples.
+- [ ] Offline send, online send, receive, swap, and restart cases.
+- [ ] SQLite and at least one other supported wallet backend when the fix is in
+  shared storage/query logic.
+- [ ] Focused wallet tests and equivalent standalone behavior tests.
+
+#### Closeout checklist
+
+- [ ] Remove query/profiling instrumentation and uncommitted benchmark wallets,
+  or document retained bounded metrics.
+- [ ] Record benchmark construction, distributions, root cause or invalidation,
+  chosen fix if any, commands, and tests not run.
+- [ ] Verify fixtures contain no real proofs, tokens, seeds, or machine-specific
+  information.
+- [ ] Commit the milestone with a conventional commit, including an
+  evidence-only close if no defect is confirmed.
+
+### Milestone 8: Controlled local and remote capacity characterization
+
+**Status:** Blocked by Milestones 1-5
+
+**Covers:** Issue 11 and the local/Nocean performance baselines
+
+**Objective:** Establish repeatable throughput, latency, convergence, resource,
+and saturation limits only after known correctness and liveness failures can no
+longer invalidate benchmark results.
+
+#### Prerequisite gate
+
+- [ ] Milestone 1 recovery/readiness success criteria are complete.
+- [ ] Milestone 2 operation completion/application success criteria are
+  complete.
+- [ ] Milestone 3 melt success criteria are complete for mixed workloads.
+- [ ] Milestone 4 consensus/network/HTTP liveness success criteria are complete.
+- [ ] Milestone 5 status observability is reliable enough to measure the run.
+- [ ] Benchmark revisions, topology, member resources, network conditions,
+  database state, and workload composition are pinned and documented without
+  committing private deployment information.
+
+#### Investigation and measurement checklist
+
+- [ ] Define separate receive-only, swap-only, melt-only, mixed sequential, and
+  mixed concurrent workloads with deterministic setup and teardown.
+- [ ] Measure client completion, consensus acceptance, application completion,
+  member convergence, and CLI process exit as separate latency boundaries.
+- [ ] Collect CPU, resident memory, disk I/O, database latency/size, event-loop
+  delay, consensus units, payload density, queue depth, session changes, and
+  status latency.
+- [ ] Run at least five clean repetitions per concurrency point and report
+  median, tail, spread, error/ambiguous counts, and journal skew.
+- [ ] Increase concurrency until a stable saturation boundary is identified;
+  stop a run when correctness or safety criteria fail rather than treating bad
+  operations as throughput.
+- [ ] Compare local and remote results only when software, configuration,
+  workload, and measurement boundaries are equivalent; otherwise report them as
+  separate environments.
+- [ ] Attribute the first constrained resource or queue with evidence.
+- [ ] Append any newly observed defect as an unconfirmed `U` milestone with its
+  provenance instead of fixing it inside the benchmark milestone.
+
+#### Implementation requirements
+
+- [ ] Treat this primarily as characterization, not permission for speculative
+  optimization.
+- [ ] For every confirmed new bottleneck that requires production changes,
+  create a separate evidence-first milestone and complete it before publishing
+  a new capacity claim.
+- [ ] Keep benchmark-only controls isolated from production behavior and remove
+  temporary profiling instrumentation.
+
+#### Success criteria
+
+- [ ] Local and remote capacity tables are repeatable, include uncertainty, and
+  use clearly defined latency and throughput boundaries.
+- [ ] Every successful run ends with exact journal, digest, certificate,
+  materialized-state, and live-session convergence.
+- [ ] Saturation is associated with a measured resource or bounded queue rather
+  than unexplained failures, hangs, or readiness claims.
+- [ ] Results distinguish protocol cost, client cost, payment-backend cost, and
+  deployment/network cost.
+
+#### Required tests
+
+- [ ] Concurrency ladder for every workload shape, including `N=10:1` and the
+  existing Nocean shapes where comparable.
+- [ ] One and two member slow/offline cases below the quorum fault limit.
+- [ ] Restart and recovery immediately after a saturated run.
+- [ ] Sustained-duration run long enough to expose queue, storage, and memory
+  growth.
+- [ ] Baseline standalone run for costs shared with non-federated CDK.
+
+#### Closeout checklist
+
+- [ ] Remove temporary profilers, high-volume metrics, generated wallets, and
+  private deployment artifacts.
+- [ ] Record exact sanitized methodology, distributions, saturation point,
+  limitations, commands, and tests not run.
+- [ ] Update every affected claim in this document and link any new `U`
+  milestones.
+- [ ] Commit the benchmark harness/test/document update with a conventional
+  commit.
+
+### Milestone 9: Production release validation and operator readiness
+
+**Status:** Pending
+
+**Covers:** Remaining release work from the implementation plan
+
+**Depends on:** Milestones 1-8 and every confirmed `U` milestone
+
+**Objective:** Demonstrate that the federation is safe, interoperable,
+recoverable, operable, and understandable in production-like conditions before
+any production-readiness claim.
+
+#### Readiness investigation
+
+- [ ] Inventory every safety, liveness, recovery, payment, performance, and
+  operational claim in the implementation plan and map it to current evidence.
+- [ ] Identify missing independent review, real-backend, multi-host, upgrade,
+  partition, sustained-load, backup, and incident-response evidence.
+- [ ] Confirm all experimental federation formats, clients, fixtures, and nodes
+  move together under the cut-through compatibility policy.
+- [ ] Treat every newly observed defect as a new unconfirmed `U` milestone with
+  provenance and independent reproduction; do not patch it ad hoc during the
+  release exercise.
+
+#### Completion requirements
+
+- [ ] Complete independent protocol and security review of operation identity,
+  replay, BLS aggregation, payment authorization, recovery, status trust, DKG,
+  rotation, and secret handling.
+- [ ] Validate mint, swap, and melt flows against supported real payment
+  backends, including pending, failed, already-paid, and restart cases.
+- [ ] Run multi-host deployment, rolling restart, full restart, interrupted
+  upgrade, fresh-member recovery, keyset rotation, and supported configuration
+  change drills.
+- [ ] Run sustained load, network delay/loss, minority partition, member loss,
+  disk pressure, and database interruption tests within the documented fault
+  model.
+- [ ] Verify backup and restore procedures for member-local durable state and
+  authoritative federation recovery.
+- [ ] Complete operator documentation for DKG, federation bootstrap, secure
+  configuration distribution, readiness/status interpretation, recovery,
+  rotation, backup, monitoring, alerting, and incident response.
+- [ ] Document remaining limits, unsupported operations, experimental format
+  policy, and safe rollback/abort points.
+
+#### Success criteria
+
+- [ ] Independent review has no unresolved critical or high-severity findings.
+- [ ] All required real-backend, multi-host, recovery, upgrade, fault, and
+  sustained-load tests pass with exact federation convergence.
+- [ ] Operators can perform bootstrap, recovery, rotation, backup/restore, and
+  incident drills from the documentation without developer-only knowledge.
+- [ ] Monitoring distinguishes local health, quorum currency, live-session
+  compatibility, application backlog, payment ambiguity, and resource pressure.
+- [ ] No known confirmed correctness, liveness, security, or data-loss issue is
+  deferred behind a production-readiness claim.
+
+#### Required tests and release evidence
+
+- [ ] Sanitized test matrix with versions, topology classes, workloads, fault
+  injections, commands, results, and explicitly omitted tests.
+- [ ] Independent review record and resolution mapping.
+- [ ] Real-backend exactly-once payment evidence.
+- [ ] Multi-host recovery/upgrade/partition evidence.
+- [ ] Capacity and sustained-resource report from Milestone 8.
+- [ ] Final standalone compatibility suite and public Cashu protocol tests.
+
+#### Closeout checklist
+
+- [ ] Remove all temporary release instrumentation, credentials, generated
+  private configurations, test seeds, invoices, proofs, and deployment records.
+- [ ] Update this document and the implementation plan with final status,
+  limitations, operator references, evidence, and tests not run.
+- [ ] Run formatting and the agreed complete release test suite; record the
+  sanitized results.
+- [ ] Commit the release-validation milestone with a conventional commit.
+
+### Milestone U1: Validate payment-report quote-age semantics
+
+**Status:** Unconfirmed
+
+**Found during:** Focused local confirmation work associated with Milestones 1,
+2, and 5
+
+**Related issue:** Issue 13
+
+**Observation:** Fake-wallet payment reports showed
+`quote_age_secs` near 1.784 billion while `stale=false`.
+
+#### Investigation and evidence gate
+
+- [ ] Reproduce with a minimal fake-wallet quote and record the stored timestamp,
+  report calculation inputs, units, and missing-value behavior.
+- [ ] Repeat with at least one real payment backend and both fresh and
+  intentionally stale quotes.
+- [ ] Determine whether this is a display-only calculation, missing test
+  metadata, clock/epoch mismatch, persistence defect, or incorrect staleness
+  decision.
+- [ ] Verify that no correctness or payer-election decision consumes the
+  misleading age before classifying severity.
+- [ ] Require an independent reproduction outside the original stress harness.
+- [ ] Do not change production behavior until the cause and impact are proven.
+
+#### Implementation requirements
+
+- [ ] If confirmed, apply the smallest fix in the existing timestamp/reporting
+  path and define explicit unknown-age semantics rather than inventing an age.
+- [ ] If invalidated as fake-wallet fixture metadata, fix only the fixture/test
+  expectation or close with evidence; do not alter production semantics.
+
+#### Success criteria
+
+- [ ] Fresh, stale, and unknown quotes report consistent age/staleness across
+  fake and real backends and across restart.
+- [ ] No correctness or operator decision interprets an unknown creation time as
+  a precise epoch-sized quote age.
+
+#### Required tests
+
+- [ ] Unit tests for fresh, stale, terminal, missing, future, and boundary
+  timestamps.
+- [ ] Fake-wallet and real-backend process tests across persistence and restart.
+
+#### Closeout checklist
+
+- [ ] Remove timestamp instrumentation and generated payment artifacts.
+- [ ] Update status, cause or invalidation, impact, commands, results, and tests
+  not run.
+- [ ] Commit the evidence and any justified fix with a conventional commit.
+
+### Milestone U2: Validate network-pump retry duplication
+
+**Status:** Unconfirmed
+
+**Found during:** Nocean Issue 8 investigation, now Milestone 4
+
+**Observation:** The network pump emits one outbound message per iteration; after
+three remote sends satisfy threshold, only 25 ms remains for the fourth send,
+and unfinished work may be retried. This could amplify traffic, but the observed
+AlephBFT `UnitBroadcast` queue is not itself proof that CDK retried requests.
+
+#### Investigation and evidence gate
+
+- [ ] Expose bounded diagnostic counts for CDK outbound queue depth, attempt
+  identity, per-peer attempt count, completion, cancellation, and retry cause.
+- [ ] Use a controlled delayed but healthy fourth peer and compare zero-delay,
+  sub-25 ms, and greater-than-25 ms cases under identical consensus payload.
+- [ ] Distinguish CDK-level duplicate send attempts from expected AlephBFT
+  broadcast/retransmission and transport-level behavior.
+- [ ] Prove whether retries are necessary for delivery, whether unfinished work
+  is lost or duplicated, and whether retry volume materially contributes to
+  queue growth or HTTP latency.
+- [ ] Reproduce independently of the original Nocean workload before linking it
+  causally to Milestone 4.
+- [ ] Do not change retry behavior while the hypothesis remains unconfirmed.
+
+#### Implementation requirements
+
+- [ ] If confirmed, use the smallest existing queue/attempt ownership pattern so
+  a send has one bounded completion lifecycle and only classified retryable
+  failures are retried.
+- [ ] Do not add unbounded concurrency, per-peer queues, or arbitrary timeout
+  increases.
+
+#### Success criteria
+
+- [ ] A delayed healthy peer receives required messages without duplicate
+  application work, retry storms, or quorum-progress regression.
+- [ ] Queue depth, attempts per message, delivery latency, and HTTP latency stay
+  within documented bounds during delay and reconnect tests.
+
+#### Required tests
+
+- [ ] Deterministic unit tests for completion, cancellation, classified retry,
+  queue bounds, and delayed peers.
+- [ ] Five-member slow-peer, disconnect/reconnect, and sustained-load process
+  tests with attempt and delivery assertions.
+
+#### Closeout checklist
+
+- [ ] Remove per-attempt diagnostics or retain only bounded non-sensitive
+  counters.
+- [ ] Update status, causal evidence or invalidation, commands, results, and
+  relationship to Milestone 4.
+- [ ] Commit the evidence and any justified fix with a conventional commit.
 
 ## Scope and evidence labels
 
@@ -259,7 +1285,12 @@ member. Public endpoint latency increased, but lightweight server-local
 the normal five repeatable broadcasts and CPU returned to approximately 1% per
 mint without a restart.
 
-## Open correctness and liveness issues
+## Detailed correctness and liveness evidence
+
+The issue records below preserve the raw observations, reproduction notes, and
+earlier analysis. The milestone status and evidence gates above govern whether
+implementation may begin; a `Most likely cause` in this section is a hypothesis,
+not authorization to fix it.
 
 ### 1. Fresh-database member does not catch up
 
@@ -742,7 +1773,7 @@ import/validation. Importing the same immutable config from a file succeeded.
 metadata/keyset validation or incomplete fanout cancellation, not the discovery
 route itself. The exact import path must be rerun after the wallet fanout work.
 
-## Performance-related issues
+## Detailed performance evidence
 
 ### 10. Sequential token preparation degrades with wallet fragmentation
 
@@ -934,27 +1965,37 @@ the immediate blockers. Fresh recovery, session-aware readiness, cancellation-
 safe minority application, bounded wallet completion, melt concurrency, and
 status liveness are.
 
-## Priority order
+## Cross-milestone dependency summary
 
-1. Fix fresh-member startup recovery and make readiness depend on recent quorum
+The roadmap and milestone checklists above are authoritative. In condensed
+order, the dependencies are:
+
+1. Investigate and fix fresh-member startup recovery, then make readiness depend on recent quorum
    height, digest, certificate, and live-session evidence.
-2. Make strict operator status reject AlephBFT session divergence even when
+2. Make strict operator status reject AlephBFT session divergence once the
+   readiness evidence model is proven, even when
    journal height and digests match.
-3. Prove cancellation-safe server application and bounded client exit after
+3. Prove, then implement, cancellation-safe server application and bounded client exit after
    threshold success; eliminate accepted-but-unapplied minority stalls.
-4. Reproduce and fix consecutive melt failure/stall behavior, including the
+4. Reproduce and explain consecutive melt failure/stall behavior before fixing the
    one-wallet, one-offline-member case.
-5. Bound empty-unit amplification and preserve HTTP liveness under small remote
+5. Complete the cadence/backpressure causal chain, then bound empty-unit
+   amplification and preserve HTTP liveness under small remote
    workloads.
-6. Reproduce the private-status hang with lock, permit, handler-latency, session,
+6. Reproduce and explain the private-status hang with lock, permit, handler-latency, session,
    and application-state instrumentation.
 7. Revalidate typed catch-up/ambiguous wallet outcomes with one and two slow,
    catching-up, unresponsive, and session-incompatible members.
-8. Revalidate federation discovery/import after wallet fanout changes.
+8. Revalidate federation discovery/import after wallet fanout changes and make
+   no production change if the current code invalidates the report.
 9. Repeat controlled local and remote capacity curves only after the correctness
    and liveness fixes above.
 
-## Required next benchmark and regression matrix
+## Cross-milestone regression matrix
+
+This matrix is a shared reference. A test counts toward milestone completion
+only when its checklist records the exact command, result, and relevant state
+assertions.
 
 - Fresh member at histories of 1, 100, 1,000, and 10,000 operations; measure
   time through exact digest/certificate convergence and assert non-healthy
