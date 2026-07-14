@@ -18,6 +18,7 @@ use cdk_common::federation::{
     FederationTransactionBroadcastResult, FederationTransactionChangeOutput,
     FederationTransactionInput, FederationTransactionPolicyAudit, FederationTransactionProposal,
     FederationTransactionRecipientOutput, FederationTransactionScope, FederationTransactionState,
+    FederationWalletLivenessSchedule,
 };
 
 use super::super::transaction_state::{
@@ -164,6 +165,21 @@ pub(super) fn signed_fixture_for_intent(
         .sign_schnorr_no_aux_rand(&Message::from_digest(sighash), &keypair)
         .serialize()
         .to_vec();
+    let signer_set = FederationWalletLivenessSchedule::new(
+        proposal.proposal_id().expect("proposal id").to_bytes(),
+        [
+            MemberId::new(1).expect("first member"),
+            MemberId::new(2).expect("second member"),
+        ],
+        1,
+    )
+    .expect("wallet liveness schedule")
+    .signing_plan(1)
+    .expect("first signing plan")
+    .signer_set
+    .iter()
+    .map(|member| member.get())
+    .collect();
     let mut transaction = proposal.unsigned_transaction.clone();
     transaction.input[0].witness.push(&signature);
     let signed = FederationSignedTransaction::new(
@@ -173,7 +189,7 @@ pub(super) fn signed_fixture_for_intent(
             input_index: 0,
             session_id: [11; 32],
             attempt: 1,
-            signer_set: vec![1, 2],
+            signer_set,
             package_hash: [12; 32],
             signature,
         }],

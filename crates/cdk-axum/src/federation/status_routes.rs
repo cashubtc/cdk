@@ -85,6 +85,16 @@ pub(super) async fn post_local_status(
     let wallet_recovery = federation_wallet_recovery_status(&state)
         .await
         .map_err(cdk_error_response)?;
+    let wallet_liveness = state
+        .mint
+        .federation_config()
+        .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
+        .is_some()
+        .then(|| state.federation.wallet_liveness.clone());
+    let wallet_liveness = match wallet_liveness {
+        Some(worker) => Some(worker.status().await),
+        None => None,
+    };
     let response = federation_local_status_response(
         peer_status,
         sync_status,
@@ -104,6 +114,7 @@ pub(super) async fn post_local_status(
         invalid_operation_alerts,
         onchain_wallets,
         wallet_recovery,
+        wallet_liveness,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -129,6 +140,7 @@ fn federation_local_status_response(
     invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
     onchain_wallets: Vec<cdk::federation::FederationOnchainWalletStatus>,
     wallet_recovery: Option<FederationWalletRecoveryStatus>,
+    wallet_liveness: Option<cdk::federation::FederationWalletLivenessStatus>,
 ) -> FederationLocalStatusResponse {
     let (
         catch_up_certificate_quorum_operation_count,
@@ -177,6 +189,7 @@ fn federation_local_status_response(
         invalid_operation_alerts,
         onchain_wallets,
         wallet_recovery,
+        wallet_liveness,
     }
 }
 

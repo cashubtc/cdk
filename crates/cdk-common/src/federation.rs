@@ -15,6 +15,7 @@ mod dkg_driver;
 mod frost_config;
 mod frost_dkg;
 mod journal;
+mod liveness;
 mod operation;
 mod recovery;
 mod signing;
@@ -104,6 +105,12 @@ pub use self::journal::{
     FederationMaterializedStateDigest, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
     FederationOperationStatus, InMemoryFederationJournal,
+};
+pub use self::liveness::{
+    federation_wallet_signing_attempt_at, federation_wallet_signing_attempt_is_current,
+    FederationWalletLivenessActivity, FederationWalletLivenessSchedule,
+    FederationWalletLivenessStatus, FederationWalletSigningPlan,
+    FEDERATION_WALLET_SIGNING_ATTEMPT_LEASE_MILLIS,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
@@ -416,6 +423,12 @@ pub enum FederationError {
     #[error("Federation FROST signing request is invalid: {reason}")]
     FrostSigningInvalid {
         /// Stable validation reason without nonce or local storage material.
+        reason: String,
+    },
+    /// Deterministic wallet proposer or signing-coordinator scheduling is invalid.
+    #[error("Federation wallet liveness schedule is invalid: {reason}")]
+    WalletLivenessInvalid {
+        /// Stable validation reason without local timing or endpoint data.
         reason: String,
     },
     /// A federation ID must be exactly 32 bytes.

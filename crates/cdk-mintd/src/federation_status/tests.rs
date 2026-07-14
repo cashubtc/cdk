@@ -204,6 +204,7 @@ fn local_status(
         invalid_operation_alerts: Vec::new(),
         onchain_wallets: Vec::new(),
         wallet_recovery: None,
+        wallet_liveness: None,
     }
 }
 

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
@@ -648,6 +649,40 @@ async fn validate_cdk_authorization(
         .root(application.root_key_epoch)
         .ok_or_else(|| frost_invalid("accepted transaction root epoch is unavailable"))?;
     let public = application.derived_public_package(runtime.public_config(), root)?;
+    let now_epoch_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    if !cdk::federation::federation_wallet_signing_attempt_is_current(
+        context.attempt(),
+        now_epoch_millis,
+    ) {
+        return Err(
+            frost_invalid("FROST signing attempt is outside the active lease window").into(),
+        );
+    }
+    let plan = cdk::federation::FederationWalletLivenessSchedule::new(
+        typed.proposal_id.to_bytes(),
+        runtime.public_config().members.keys().copied(),
+        application.threshold,
+    )?
+    .signing_plan(context.attempt())?;
+    let expected_signers = plan
+        .signer_set
+        .iter()
+        .map(|member| member.get())
+        .collect::<Vec<_>>();
+    let context_signers = context
+        .signer_set()
+        .iter()
+        .map(|member| member.get())
+        .collect::<Vec<_>>();
+    if context_signers != expected_signers {
+        return Err(frost_invalid(
+            "FROST signer set differs from the deterministic active attempt",
+        )
+        .into());
+    }
     let branch = match selected.allocation.keychain {
         cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
         cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,

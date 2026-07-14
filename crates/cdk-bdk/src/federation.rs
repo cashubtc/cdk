@@ -509,6 +509,15 @@ impl FederatedBdkWallet {
             .script_pubkey()
     }
 
+    /// Derive one script through the federation-specific keychain boundary.
+    pub async fn peek_federated_script(
+        &self,
+        keychain: FederatedWalletKeychain,
+        index: u32,
+    ) -> ScriptBuf {
+        self.peek_script(keychain.into(), index).await
+    }
+
     /// Return all descriptor-owned outputs with bounded local chain evidence.
     pub async fn observed_outputs(&self) -> Vec<FederatedWalletOutput> {
         let wallet = self.engine.wallet_with_db.lock().await;

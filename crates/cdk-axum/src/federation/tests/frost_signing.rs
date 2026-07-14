@@ -104,7 +104,7 @@ async fn run_live_signing_case(
     public_config: FederationConfig,
     private_configs: Vec<MemberConfigPrivate>,
     threshold: u16,
-    exercise_ambiguous_response: bool,
+    failure: SigningFailure,
 ) {
     let registration = application_registration().expect("application registration");
     let derivation = SigningDerivation::application_key();
@@ -212,10 +212,17 @@ async fn run_live_signing_case(
         private_configs[0].clone(),
     )
     .expect("peer client");
-    let coordinator =
-        super::super::frost_signing::FederationFrostSigningCoordinator::new(&client, public);
-    if exercise_ambiguous_response {
-        transport.fail_post_responses_after_delivery("frost/signing/commitments", 1);
+    let coordinator = super::super::frost_signing::FederationFrostSigningCoordinator::new(
+        &client,
+        public.clone(),
+    );
+    if matches!(failure, SigningFailure::Commitment | SigningFailure::Share) {
+        let path = match failure {
+            SigningFailure::Commitment => "frost/signing/commitments",
+            SigningFailure::Share => "frost/signing/packages",
+            SigningFailure::None | SigningFailure::AggregateResult => unreachable!(),
+        };
+        transport.fail_post_responses_after_delivery(path, 1);
         coordinator
             .sign(&public_config, &context, &derivation, &authorization)
             .await
@@ -229,6 +236,28 @@ async fn run_live_signing_case(
             )
             .await
             .expect("abort must burn ambiguous nonces before retry attempt");
+    } else if failure == SigningFailure::AggregateResult {
+        transport.fail_post_responses_after_delivery("frost/signing/results", 1);
+        coordinator
+            .sign(&public_config, &context, &derivation, &authorization)
+            .await
+            .expect_err("lost aggregate notification response must fail the coordinator");
+        let failover_client = FederationRestPeerClient::new(
+            transport,
+            &public_config,
+            private_configs
+                .last()
+                .expect("replacement coordinator config")
+                .clone(),
+        )
+        .expect("replacement coordinator client");
+        super::super::frost_signing::FederationFrostSigningCoordinator::new(
+            &failover_client,
+            public,
+        )
+        .sign(&public_config, &context, &derivation, &authorization)
+        .await
+        .expect("another member aggregates cached shares for the exact active attempt");
     } else {
         coordinator
             .sign(&public_config, &context, &derivation, &authorization)
@@ -237,23 +266,55 @@ async fn run_live_signing_case(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SigningFailure {
+    None,
+    Commitment,
+    Share,
+    AggregateResult,
+}
+
 #[tokio::test]
 async fn live_private_rest_frost_signing_succeeds_two_of_three() {
     let (public, first, second, third) = transport_config_three();
-    run_live_signing_case(public, vec![first, second, third], 2, false).await;
+    run_live_signing_case(public, vec![first, second, third], 2, SigningFailure::None).await;
 }
 
 #[tokio::test]
 async fn live_private_rest_frost_signing_succeeds_three_of_five() {
     let (public, private) =
         transport_config_five_with_threshold(ThresholdParams::new(5, 3, 3).expect("threshold"));
-    run_live_signing_case(public, private, 3, false).await;
+    run_live_signing_case(public, private, 3, SigningFailure::None).await;
 }
 
 #[tokio::test]
 async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
     let (public, first, second, third) = transport_config_three();
-    run_live_signing_case(public, vec![first, second, third], 2, true).await;
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::Commitment,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn lost_share_response_burns_attempt_and_fresh_attempt_succeeds() {
+    let (public, first, second, third) = transport_config_three();
+    run_live_signing_case(public, vec![first, second, third], 2, SigningFailure::Share).await;
+}
+
+#[tokio::test]
+async fn another_member_aggregates_cached_shares_after_coordinator_loss() {
+    let (public, first, second, third) = transport_config_three();
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::AggregateResult,
+    )
+    .await;
 }
 
 #[tokio::test]

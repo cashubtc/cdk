@@ -330,6 +330,11 @@ impl FailingNonceStore {
 }
 
 impl DurableNonceStore for FailingNonceStore {
+    fn activate_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner.activate_attempt(context)
+    }
+
     fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error> {
         self.fail_if_armed()?;
         self.inner.reserve(record)
@@ -1311,14 +1316,20 @@ fn durable_nonce_lifecycle_retries_attempts_and_cleanup_fail_closed() {
     let next_attempt =
         SigningSessionContext::new(next_scope, 1, context.signer_set().iter().copied())
             .expect("next attempt");
-    assert!(managers[1].commit_nonce(&next_attempt, &mut rng).is_err());
-    managers[1]
-        .burn_nonce(second.nonce_id(), NonceBurnReason::CoordinatorLost)
-        .expect("burn superseded attempt");
     let replacement = managers[1]
         .commit_nonce(&next_attempt, &mut rng)
-        .expect("explicit replacement attempt");
+        .expect("newer attempt atomically replaces the old nonce");
     assert_ne!(replacement.nonce_id(), second.nonce_id());
+    assert_eq!(
+        stores[1]
+            .load_nonce(second.nonce_id())
+            .expect("load superseded attempt")
+            .expect("superseded attempt record")
+            .lifecycle(),
+        &NonceLifecycle::Burned {
+            reason: NonceBurnReason::ReplacedAttempt,
+        }
+    );
 
     let set = NonceCommitmentSet::new([first.clone(), second]).expect("commitment set");
     let request = authorized_request(
@@ -1346,6 +1357,12 @@ fn durable_nonce_lifecycle_retries_attempts_and_cleanup_fail_closed() {
     ));
     assert_eq!(
         managers[0]
+            .commit_nonce(&context, &mut rng)
+            .expect("another coordinator recovers the consumed commitment"),
+        first
+    );
+    assert_eq!(
+        managers[0]
             .cleanup_terminal_nonces(0)
             .expect("compact terminal record"),
         1
@@ -1360,7 +1377,7 @@ fn durable_nonce_lifecycle_retries_attempts_and_cleanup_fail_closed() {
 
 #[test]
 fn restart_and_transaction_failures_never_resurrect_nonce_material() {
-    for failed_mutation in 1..=3 {
+    for failed_mutation in 1..=4 {
         let stores = (0..3)
             .map(|_| FailingNonceStore::default())
             .collect::<Vec<_>>();
@@ -1382,7 +1399,7 @@ fn restart_and_transaction_failures_never_resurrect_nonce_material() {
         let records = stores[0]
             .nonterminal_records()
             .expect("round-one partial records");
-        if failed_mutation == 1 {
+        if failed_mutation <= 2 {
             assert!(records.is_empty());
         } else {
             assert_eq!(records.len(), 1);
@@ -1549,6 +1566,50 @@ fn restart_burns_pending_sessions_for_two_applications_in_one_shared_nonce_ledge
 }
 
 #[test]
+fn durable_attempt_high_water_rejects_delayed_stale_and_same_attempt_substitution() {
+    let directory = tempfile::tempdir().expect("attempt ledger directory");
+    let database_path = directory.path().join("attempt-high-water.redb");
+    let base = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(113),
+        [113; 32],
+        &[0, 1],
+    );
+    let scope = SigningAuthorizationScope::new(
+        base.federation_id(),
+        base.root_epoch(),
+        base.registration(),
+        base.derivation_binding(),
+        base.authorization_reference(),
+        base.message_commitment(),
+    )
+    .expect("attempt scope");
+    let newer = SigningSessionContext::new(scope.clone(), 1, base.signer_set().iter().copied())
+        .expect("newer attempt");
+    let substituted = SigningSessionContext::new(
+        scope,
+        1,
+        [
+            MemberId::new(1).expect("first signer"),
+            MemberId::new(3).expect("substituted signer"),
+        ],
+    )
+    .expect("same-attempt signer substitution");
+    {
+        let store = RedbNonceStore::open(&database_path).expect("attempt store");
+        store.activate_attempt(&base).expect("base attempt");
+        store.activate_attempt(&newer).expect("newer attempt");
+    }
+    let reopened = RedbNonceStore::open(&database_path).expect("reopened attempt store");
+    assert!(reopened.activate_attempt(&base).is_err());
+    assert!(reopened.activate_attempt(&substituted).is_err());
+    reopened
+        .activate_attempt(&newer)
+        .expect("exact active-attempt replay");
+}
+
+#[test]
 fn abort_timeout_ambiguity_and_signer_substitution_burn_records() {
     let stores = (0..3)
         .map(|_| FailingNonceStore::default())
@@ -1673,7 +1734,7 @@ fn concurrent_session_reservation_has_one_atomic_winner() {
         [101; 32],
         &[0, 1],
     );
-    source_stores[0].arm(2);
+    source_stores[0].arm(3);
     assert!(managers[0]
         .commit_nonce(&context, &mut ChaCha20Rng::from_seed([102; 32]))
         .is_err());
@@ -1684,6 +1745,9 @@ fn concurrent_session_reservation_has_one_atomic_winner() {
         .next()
         .expect("source generated record");
     let competing_store = MemoryNonceStore::default();
+    competing_store
+        .activate_attempt(&context)
+        .expect("activate competing attempt");
     let results = (0..8)
         .map(|_| {
             let store = competing_store.clone();
@@ -1731,7 +1795,7 @@ fn redb_nonce_store_survives_reopen_and_compacts_to_replay_tombstone() {
         [105; 32],
         &[0, 1],
     );
-    source_stores[0].arm(2);
+    source_stores[0].arm(3);
     assert!(managers[0]
         .commit_nonce(&context, &mut ChaCha20Rng::from_seed([106; 32]))
         .is_err());
@@ -1746,6 +1810,9 @@ fn redb_nonce_store_survives_reopen_and_compacts_to_replay_tombstone() {
     let database_path = directory.path().join("participant-nonces.redb");
     {
         let store = RedbNonceStore::open(&database_path).expect("open redb store");
+        store
+            .activate_attempt(&context)
+            .expect("activate redb attempt");
         assert_eq!(
             store.reserve(record.clone()).expect("reserve in redb"),
             NonceReservation::Inserted

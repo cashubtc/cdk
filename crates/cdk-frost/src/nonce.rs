@@ -583,6 +583,13 @@ pub enum NonceReservation {
 /// session, slot, and nonce uniqueness checks must occur in the same atomic
 /// transaction as insertion or replacement.
 pub trait DurableNonceStore: fmt::Debug + Send + Sync + 'static {
+    /// Atomically advance the durable attempt high-water mark for one slot.
+    ///
+    /// A higher attempt burns an active older nonce in the same transaction.
+    /// Equal retries must name the same fully bound session; lower attempts are
+    /// permanently stale.
+    fn activate_attempt(&self, context: &SigningSessionContext) -> Result<(), Error>;
+
     /// Atomically reserve a new record, or return the exact existing session.
     fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error>;
 
@@ -611,6 +618,7 @@ struct MemoryNonceState {
     records: BTreeMap<NonceId, NonceRecord>,
     sessions: BTreeMap<SigningSessionId, NonceId>,
     active_slots: BTreeMap<SigningSlotId, NonceId>,
+    latest_attempts: BTreeMap<SigningSlotId, (u32, SigningSessionId)>,
     tombstones: BTreeMap<NonceId, NonceTombstone>,
     terminal_order: Vec<NonceId>,
 }
@@ -639,6 +647,48 @@ impl MemoryNonceStore {
 }
 
 impl DurableNonceStore for MemoryNonceStore {
+    fn activate_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
+        let mut state = self.lock()?;
+        let slot_id = context.slot_id();
+        match state.latest_attempts.get(&slot_id).copied() {
+            Some((attempt, _)) if attempt > context.attempt() => {
+                return Err(Error::InvalidSigningSession(
+                    "signing attempt is stale".to_string(),
+                ));
+            }
+            Some((attempt, session_id)) if attempt == context.attempt() => {
+                if session_id != context.session_id() {
+                    return Err(Error::InvalidSigningSession(
+                        "signer set changed within an active attempt".to_string(),
+                    ));
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        if let Some(nonce_id) = state.active_slots.get(&slot_id).copied() {
+            let existing = state.records.get(&nonce_id).cloned().ok_or_else(|| {
+                Error::NoncePersistence("active signing slot has no nonce record".to_string())
+            })?;
+            let burned = existing.transition(
+                NonceLifecycle::Burned {
+                    reason: NonceBurnReason::ReplacedAttempt,
+                },
+                false,
+                None,
+            )?;
+            validate_nonce_transition(&existing, &burned)?;
+            state.records.insert(nonce_id, burned);
+            state.active_slots.remove(&slot_id);
+            state.terminal_order.push(nonce_id);
+        }
+        state
+            .latest_attempts
+            .insert(slot_id, (context.attempt(), context.session_id()));
+        Ok(())
+    }
+
     fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error> {
         let mut state = self.lock()?;
         let session_id = record.context.session_id();
@@ -648,6 +698,13 @@ impl DurableNonceStore for MemoryNonceStore {
             }
             return Err(Error::InvalidCommitment(
                 "signing session was already compacted and cannot be retried".to_string(),
+            ));
+        }
+        if state.latest_attempts.get(&record.context.slot_id())
+            != Some(&(record.context.attempt(), session_id))
+        {
+            return Err(Error::InvalidSigningSession(
+                "signing attempt was not durably activated".to_string(),
             ));
         }
         if state.active_slots.contains_key(&record.context.slot_id()) {

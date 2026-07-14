@@ -14,7 +14,7 @@ use bdk_wallet::bitcoin::psbt::{Psbt, PsbtSighashType};
 use bdk_wallet::bitcoin::secp256k1::{schnorr, Message, Secp256k1};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
-    Amount, FeeRate, Network, OutPoint, ScriptBuf, TapSighashType, Transaction, TxOut,
+    Amount, FeeRate, Network, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction, TxOut,
 };
 use bdk_wallet::descriptor::{ExtendedDescriptor, IntoWalletDescriptor};
 use bdk_wallet::rusqlite::{params, Connection, OptionalExtension};
@@ -281,6 +281,44 @@ impl BdkWalletEngine {
         let psbt = builder
             .finish()
             .map_err(|err| Error::Wallet(err.to_string()))?;
+        wallet_with_db.persist()?;
+        Ok(psbt)
+    }
+
+    /// Build a watch-only federation PSBT from only consensus-spendable inputs.
+    ///
+    /// `change_script` must already have a consensus allocation. The builder is
+    /// forbidden from selecting any other local UTXO or revealing a change
+    /// address, and every input opts into the first-release RBF policy.
+    pub async fn build_federated_psbt(
+        &self,
+        recipients: &[(ScriptBuf, u64)],
+        fee_rate: FeeRate,
+        change_script: ScriptBuf,
+        allowed_outpoints: &[OutPoint],
+    ) -> Result<Psbt, Error> {
+        if recipients.is_empty() || allowed_outpoints.is_empty() || change_script.is_empty() {
+            return Err(Error::Wallet(
+                "federated PSBT requires recipients, inputs, and allocated change".to_string(),
+            ));
+        }
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let mut builder = wallet_with_db.wallet.build_tx();
+        for (script, amount_sat) in recipients {
+            builder.add_recipient(script.clone(), Amount::from_sat(*amount_sat));
+        }
+        builder
+            .add_utxos(allowed_outpoints)
+            .map_err(|error| Error::Wallet(error.to_string()))?;
+        builder
+            .manually_selected_only()
+            .drain_to(change_script)
+            .fee_rate(fee_rate)
+            .version(2)
+            .set_exact_sequence(Sequence::ENABLE_RBF_NO_LOCKTIME);
+        let psbt = builder
+            .finish()
+            .map_err(|error| Error::Wallet(error.to_string()))?;
         wallet_with_db.persist()?;
         Ok(psbt)
     }
@@ -819,6 +857,100 @@ mod tests {
             engine.sign_psbt_locally(&mut psbt).await,
             Err(Error::LocalSigningDisabled)
         ));
+    }
+
+    #[tokio::test]
+    async fn federated_builder_uses_only_consensus_inputs_and_allocated_change() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let (config, _) = descriptor_config(12, Network::Regtest);
+        let engine = BdkWalletEngine::open_watch_only(config, chain_source(), tempdir.path())
+            .expect("watch-only wallet");
+        let funding_addresses = engine
+            .reveal_addresses_to(KeychainKind::External, 1)
+            .await
+            .expect("funding addresses");
+        let funding = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: funding_addresses
+                .iter()
+                .map(|address| TxOut {
+                    value: Amount::from_sat(30_000),
+                    script_pubkey: address.address.script_pubkey(),
+                })
+                .collect(),
+        };
+        engine
+            .apply_accepted_transaction(funding.clone(), 1)
+            .await
+            .expect("apply funding");
+        let recipient = engine
+            .reveal_addresses_to(KeychainKind::Internal, 0)
+            .await
+            .expect("recipient")
+            .pop()
+            .expect("recipient address")
+            .address
+            .script_pubkey();
+        let allocated_change = engine
+            .reveal_addresses_to(KeychainKind::Internal, 1)
+            .await
+            .expect("allocated change")
+            .pop()
+            .expect("change address")
+            .address
+            .script_pubkey();
+        let allowed = OutPoint::new(funding.compute_txid(), 1);
+
+        let psbt = engine
+            .build_federated_psbt(
+                &[(recipient.clone(), 10_000)],
+                FeeRate::from_sat_per_vb(1).expect("fee rate"),
+                allocated_change.clone(),
+                &[allowed],
+            )
+            .await
+            .expect("federated PSBT");
+
+        assert_eq!(psbt.unsigned_tx.version, transaction::Version::TWO);
+        assert_eq!(psbt.unsigned_tx.input.len(), 1);
+        assert_eq!(psbt.unsigned_tx.input[0].previous_output, allowed);
+        assert_eq!(
+            psbt.unsigned_tx.input[0].sequence,
+            Sequence::ENABLE_RBF_NO_LOCKTIME
+        );
+        assert!(psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .any(|output| output.script_pubkey == recipient));
+        assert!(psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .any(|output| output.script_pubkey == allocated_change));
+        assert!(!psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .any(|input| input.previous_output == OutPoint::new(funding.compute_txid(), 0)));
+
+        let unknown = OutPoint::new(Txid::all_zeros(), 42);
+        assert!(engine
+            .build_federated_psbt(
+                &[(recipient, 10_000)],
+                FeeRate::from_sat_per_vb(1).expect("fee rate"),
+                allocated_change,
+                &[unknown],
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]

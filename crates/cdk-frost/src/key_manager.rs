@@ -189,6 +189,7 @@ impl ParticipantKeyManager {
                     .to_string(),
             ));
         }
+        self.nonce_store.activate_attempt(context)?;
         let derived = self.root.derive_signing_target(registration, &derivation)?;
         let (nonces, commitments) = frost::round1::commit(derived.key.signing_share(), rng);
         let encoded = commitments
@@ -237,7 +238,10 @@ impl ParticipantKeyManager {
             NonceReservation::Existing(existing) => {
                 if existing.context() != context
                     || existing.derivation() != generated.derivation()
-                    || existing.lifecycle() != &NonceLifecycle::CommitmentSent
+                    || !matches!(
+                        existing.lifecycle(),
+                        NonceLifecycle::CommitmentSent | NonceLifecycle::Consumed { .. }
+                    )
                 {
                     return Err(Error::InvalidCommitment(
                         "signing session already exists in a non-retryable state".to_string(),

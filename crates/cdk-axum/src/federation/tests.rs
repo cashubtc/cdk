@@ -2231,6 +2231,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
             transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
+            wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
             onchain_wallets: Vec::new(),
             frost_signing: None,
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(

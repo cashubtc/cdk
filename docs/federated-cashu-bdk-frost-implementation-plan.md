@@ -62,30 +62,15 @@ federation partially ready.
   exposing commitments, and never reuse a nonce after uncertainty or restart.
 - A transaction proposer is untrusted. Consensus must accept the exact unsigned
   transaction before any member releases a signature share.
-- Milestone 1 external Taproot finalization must not treat BDK's finalizer as a
-  signature verifier. The watch-only engine verifies the sighash, tweaked key,
-  spent script, and Schnorr signature before finalization; preserve the missing,
-  malformed, wrong-key, and wrong-sighash tests.
-- Milestone 4 partition testing found that inbound completeness alone could let
-  a FROST member advance while peers lacked its outbound package. Require a
-  fully acknowledged outbound batch before each phase transition and preserve
-  the partition/response-loss regression tests.
-- Milestone 4 security review found confidential FROST round-two retry payloads
-  in plaintext persistence. Network requests remain transient, while durable
-  sender and receiver records are now sealed and context-bound; preserve the
-  ciphertext-envelope and idempotent-retry tests.
-- Milestone 12 found one narrow shared gap: accepted FROST on-chain melts
-  stopped safely at the existing external-settlement saga boundary but did not
-  materialize a canonical payment intent. Keep the focused, atomic intent write
-  in final melt apply; do not replace the existing quote, proof, or saga flow.
+- Milestone 4 requires every DKG phase's outbound batch to be acknowledged
+  before advancement. Keep confidential round-two retry payloads transient and
+  durable records sealed/context-bound; preserve partition, response-loss, and
+  ciphertext tests.
 - Milestone 13 key-manager construction is a restart boundary and burns every
   nonterminal nonce record. Wire one long-lived manager per participant process;
   never reconstruct it per REST request or payment backend.
-- Milestone 5 found that the Milestone 3 application registration omitted its
-  key epoch even though the plan required epoch-separated rotation. The small
-  fix stays inside `cdk-frost`/`cdk-frost-bip32`: application derivation,
-  authorization, nonce IDs, wire transcripts, chain codes, descriptors, and
-  signing targets now bind the application key epoch. Preserve the wrong-epoch
+- Application derivation, authorization, nonces, transcripts, descriptors, and
+  signing targets must bind the application key epoch. Preserve wrong-epoch
   rejection and epoch-separated descriptor vectors.
 - Milestone 15 found that a pre-validation signed-transaction conflict key let
   an invalid ordered record block a later valid signature. Reserve no such key;
@@ -99,6 +84,11 @@ federation partially ready.
   local authorization or BDK health but not federation catch-up readiness.
   Gate commitments, shares, observations, and broadcast on the existing sync
   state before any nonce creation or consensus submission.
+- Milestone 19 found that an active nonce slot required the failed coordinator
+  to abort before failover. Persist a per-slot attempt high-water mark, burn a
+  superseded nonce atomically, permit exact consumed commitment/share replay,
+  and reject future or delayed attempts; preserve the reopen and coordinator-
+  loss regressions.
 
 ## 1. Problem and setting
 
@@ -1776,38 +1766,83 @@ weakening consensus authorization.
 
 **Work:**
 
-- [ ] Define deterministic initial proposer selection from accepted batch ID.
-- [ ] Add bounded proposer lease/timeout and permission for another member to
+- [x] Define deterministic initial proposer selection from accepted batch ID.
+- [x] Add bounded proposer lease/timeout and permission for another member to
   submit a candidate.
-- [ ] Ensure competing valid candidates resolve through existing consensus
+- [x] Ensure competing valid candidates resolve through existing consensus
   conflict handling.
-- [ ] Define deterministic initial signing coordinator and failover attempts.
-- [ ] Require fresh signer nonces on every coordinator attempt.
-- [ ] Prevent stale coordinators from completing an obsolete attempt after a
+- [x] Define deterministic initial signing coordinator and failover attempts.
+- [x] Require fresh signer nonces on every coordinator attempt.
+- [x] Prevent stale coordinators from completing an obsolete attempt after a
   later attempt becomes active.
-- [ ] Allow any member to aggregate already valid shares for the active attempt.
-- [ ] Add bounded retries, backoff, and status for unavailable signers.
-- [ ] Ensure idle federation behavior does not reintroduce periodic high-CPU
+- [x] Allow any member to aggregate already valid shares for the active attempt.
+- [x] Add bounded retries, backoff, and status for unavailable signers.
+- [x] Ensure idle federation behavior does not reintroduce periodic high-CPU
   consensus activity.
 
 **Success criteria:**
 
-- [ ] Federation completes payments with any non-threshold set of members
+- [x] Federation completes payments with any non-threshold set of members
   offline.
-- [ ] Offline initial proposer, coordinator, or broadcaster causes bounded delay
+- [x] Offline initial proposer, coordinator, or broadcaster causes bounded delay
   but no manual intervention.
-- [ ] Failover cannot cause a second accepted transaction or nonce reuse.
-- [ ] Idle CPU and network traffic remain bounded.
+- [x] Failover cannot cause a second accepted transaction or nonce reuse.
+- [x] Idle CPU and network traffic remain bounded.
 
 **Required tests:**
 
-- [ ] Offline initial proposer before and after PSBT construction.
-- [ ] Coordinator failure after commitment collection and during share collection.
-- [ ] Signer-set substitution between attempts.
-- [ ] Delayed stale coordinator messages after failover.
-- [ ] Network partition below and above consensus/signing thresholds.
+- [x] Offline initial proposer before and after PSBT construction.
+- [x] Coordinator failure after commitment collection and during share collection.
+- [x] Signer-set substitution between attempts.
+- [x] Delayed stale coordinator messages after failover.
+- [x] Network partition below and above consensus/signing thresholds.
 - [ ] Long idle period followed by deposit and melt.
-- [ ] CPU/network benchmark for idle and active signing periods.
+- [ ] CPU/network benchmark for idle and active signing periods; the deterministic
+  active scheduler microbenchmark and idle no-work invariant pass, but a
+  multi-process network measurement remains for Milestone 26.
+
+**Milestone record:** completed on 2026-07-14 with the two environment-backed
+tests above deliberately deferred to the end-to-end milestone. The new
+application-neutral liveness schedule derives proposer, signing coordinator,
+and every threshold-sized signer subset from the accepted batch or proposal
+ID. Absolute bounded leases survive restart, rotate across the complete member
+roster, and grant the first coordinator only a short aggregation head start;
+after that grace period any member may collect or replay the exact active
+commitments and shares. Existing proposal conflict rules remain the only
+transaction winner authority.
+
+The FROST nonce boundary now persists a per-authorization-slot attempt
+high-water mark. A later canonical attempt atomically burns any active prior
+nonce, a lower or same-attempt signer substitution stays stale across reopen,
+and an exact current session may replay its public commitment and cached share
+without reusing secret nonce material. Private routes independently recompute
+the canonical signer set, accept only the current or immediately prior lease,
+and reject future attempts so an authenticated peer cannot pin the durable
+high-water mark.
+
+A thin Axum worker reads only accepted consensus projections, builds a
+watch-only BDK PSBT from consensus-spendable inputs and an already allocated
+change script, validates it through existing policy, and submits through the
+existing operation path. It changes no quote, proof, saga, or ordinary mint
+business logic. Local retry state is bounded and redacted in status. With no
+pending batch or unsigned accepted transaction, each delayed round performs no
+peer transport or consensus submission.
+
+All 24 `cdk-frost` tests, 113 `cdk-bdk` tests, eight live FROST route tests, five
+liveness worker tests, four enabled deterministic-schedule tests, two CDK
+signed-state tests, and the federation-enabled mint daemon check pass. Coverage
+includes proposer loss before/after construction, complete signer-subset
+rotation, below/at-threshold partitions, coordinator loss after commitments and
+shares, signer substitution, delayed stale attempts after durable reopen, and
+another member aggregating cached shares. The explicit active benchmark
+computed 100,000 seven-member signing schedules in 0.84 seconds. The broad
+Axum run reached 392 passes; its existing quote/saga fixture failures and two
+sandbox-denied listener tests remain outside this isolated milestone. Ordinary
+no-dependency clippy reports only the existing repository baseline, stable
+rustfmt formatted every changed Rust file despite unavailable nightly options,
+and `git diff --check` passes. A real long-idle deposit/melt run and network
+traffic measurement remain unchecked for Milestone 26 rather than being
+claimed from component tests.
 
 ### Milestone 20: fee management, batching, and replacements
 

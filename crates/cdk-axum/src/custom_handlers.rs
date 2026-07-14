@@ -1998,6 +1998,7 @@ mod tests {
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
                 transaction_broadcaster:
                     crate::federation::FederationTransactionBroadcaster::default(),
+                wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
                 onchain_wallets: Vec::new(),
                 frost_signing: None,
                 #[cfg(test)]
@@ -2817,6 +2818,7 @@ mod tests {
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
                 transaction_broadcaster:
                     crate::federation::FederationTransactionBroadcaster::default(),
+                wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
                 onchain_wallets: Vec::new(),
                 frost_signing: None,
                 #[cfg(test)]

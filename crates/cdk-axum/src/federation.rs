@@ -44,6 +44,7 @@ mod peer_client;
 mod status_routes;
 mod sync_config;
 mod sync_loop;
+mod wallet_liveness;
 
 pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
 use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_message};
@@ -104,6 +105,7 @@ use self::sync_loop::{
     persist_local_catch_up_certificate_chunks, run_federation_peer_sync_round,
     run_federation_peer_sync_round_with_backoff,
 };
+pub(crate) use self::wallet_liveness::FederationWalletLivenessWorker;
 #[cfg(test)]
 use cdk::federation::{
     FederationConfig, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,

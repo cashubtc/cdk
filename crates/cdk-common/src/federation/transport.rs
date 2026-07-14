@@ -1887,6 +1887,9 @@ pub struct FederationLocalStatusResponse {
     /// Redacted state-to-action recovery classification for the joint wallet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_recovery: Option<FederationWalletRecoveryStatus>,
+    /// Redacted proposer and signing-coordinator liveness state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_liveness: Option<super::FederationWalletLivenessStatus>,
 }
 
 /// Peer status response for federation health and catch-up checks.
@@ -3155,6 +3158,7 @@ mod tests {
                 )
                 .expect("wallet recovery fixture"),
             ),
+            wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
         };
 
         let value = serde_json::to_value(&status).expect("local status json");
@@ -3196,6 +3200,7 @@ mod tests {
                 "sync_state",
                 "version",
                 "wallet_recovery",
+                "wallet_liveness",
             ])
         );
         let decoded: FederationLocalStatusResponse =

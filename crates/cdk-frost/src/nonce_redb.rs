@@ -8,12 +8,17 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::nonce::{validate_new_nonce_record, validate_nonce_transition};
-use crate::{DurableNonceStore, Error, NonceId, NonceLifecycle, NonceRecord, NonceReservation};
+use crate::{
+    DurableNonceStore, Error, NonceBurnReason, NonceId, NonceLifecycle, NonceRecord,
+    NonceReservation, SigningSessionContext, SigningSessionId,
+};
 
 const RECORDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("frost_nonce_records_v1");
 const SESSIONS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("frost_nonce_sessions_v1");
 const ACTIVE_SLOTS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("frost_nonce_active_slots_v1");
+const LATEST_ATTEMPTS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("frost_nonce_latest_attempts_v1");
 const TOMBSTONES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("frost_nonce_tombstones_v1");
 const TERMINAL_ORDER: TableDefinition<u64, &[u8]> =
     TableDefinition::new("frost_nonce_terminal_order_v1");
@@ -52,6 +57,9 @@ impl RedbNonceStore {
             let _ = transaction.open_table(RECORDS).map_err(persistence)?;
             let _ = transaction.open_table(SESSIONS).map_err(persistence)?;
             let _ = transaction.open_table(ACTIVE_SLOTS).map_err(persistence)?;
+            let _ = transaction
+                .open_table(LATEST_ATTEMPTS)
+                .map_err(persistence)?;
             let _ = transaction.open_table(TOMBSTONES).map_err(persistence)?;
             let _ = transaction
                 .open_table(TERMINAL_ORDER)
@@ -71,6 +79,95 @@ impl RedbNonceStore {
 }
 
 impl DurableNonceStore for RedbNonceStore {
+    fn activate_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
+        let transaction = self.database.begin_write().map_err(persistence)?;
+        let slot_key = context.slot_id().to_bytes();
+        let current = {
+            let attempts = transaction
+                .open_table(LATEST_ATTEMPTS)
+                .map_err(persistence)?;
+            let value = attempts
+                .get(slot_key.as_slice())
+                .map_err(persistence)?
+                .map(|value| decode_attempt(value.value()))
+                .transpose()?;
+            value
+        };
+        match current {
+            Some((attempt, _)) if attempt > context.attempt() => {
+                return Err(Error::InvalidSigningSession(
+                    "signing attempt is stale".to_string(),
+                ));
+            }
+            Some((attempt, session_id)) if attempt == context.attempt() => {
+                if session_id != context.session_id() {
+                    return Err(Error::InvalidSigningSession(
+                        "signer set changed within an active attempt".to_string(),
+                    ));
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        let active_nonce = {
+            let slots = transaction.open_table(ACTIVE_SLOTS).map_err(persistence)?;
+            let value = slots
+                .get(slot_key.as_slice())
+                .map_err(persistence)?
+                .map(|value| value.value().to_vec());
+            value
+        };
+        if let Some(active_nonce) = active_nonce {
+            let existing = {
+                let records = transaction.open_table(RECORDS).map_err(persistence)?;
+                let bytes = records
+                    .get(active_nonce.as_slice())
+                    .map_err(persistence)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or_else(|| {
+                        Error::NoncePersistence(
+                            "active signing slot has no nonce record".to_string(),
+                        )
+                    })?;
+                NonceRecord::from_bytes(&bytes)?
+            };
+            let burned = existing.transition(
+                NonceLifecycle::Burned {
+                    reason: NonceBurnReason::ReplacedAttempt,
+                },
+                false,
+                None,
+            )?;
+            validate_nonce_transition(&existing, &burned)?;
+            let burned_bytes = burned.to_bytes()?;
+            {
+                let mut records = transaction.open_table(RECORDS).map_err(persistence)?;
+                records
+                    .insert(active_nonce.as_slice(), burned_bytes.as_slice())
+                    .map_err(persistence)?;
+                let mut slots = transaction.open_table(ACTIVE_SLOTS).map_err(persistence)?;
+                slots.remove(slot_key.as_slice()).map_err(persistence)?;
+            }
+            let sequence = next_terminal_sequence(&transaction)?;
+            let mut order = transaction
+                .open_table(TERMINAL_ORDER)
+                .map_err(persistence)?;
+            order
+                .insert(sequence, active_nonce.as_slice())
+                .map_err(persistence)?;
+        }
+        let encoded = encode_attempt(context.attempt(), context.session_id());
+        let mut attempts = transaction
+            .open_table(LATEST_ATTEMPTS)
+            .map_err(persistence)?;
+        attempts
+            .insert(slot_key.as_slice(), encoded.as_slice())
+            .map_err(persistence)?;
+        drop(attempts);
+        transaction.commit().map_err(persistence)
+    }
+
     fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error> {
         let transaction = self.database.begin_write().map_err(persistence)?;
         let session_key = record.context().session_id().to_bytes();
@@ -101,6 +198,22 @@ impl DurableNonceStore for RedbNonceStore {
                     "signing session is terminal and cannot be retried".to_string(),
                 )),
             };
+        }
+        let activated = {
+            let attempts = transaction
+                .open_table(LATEST_ATTEMPTS)
+                .map_err(persistence)?;
+            let value = attempts
+                .get(slot_key.as_slice())
+                .map_err(persistence)?
+                .map(|value| decode_attempt(value.value()))
+                .transpose()?;
+            value
+        };
+        if activated != Some((record.context().attempt(), record.context().session_id())) {
+            return Err(Error::InvalidSigningSession(
+                "signing attempt was not durably activated".to_string(),
+            ));
         }
         let slot_claimed = {
             let slots = transaction.open_table(ACTIVE_SLOTS).map_err(persistence)?;
@@ -248,22 +361,7 @@ impl DurableNonceStore for RedbNonceStore {
                 let mut slots = transaction.open_table(ACTIVE_SLOTS).map_err(persistence)?;
                 slots.remove(slot_key.as_slice()).map_err(persistence)?;
             }
-            let sequence = {
-                let mut meta = transaction.open_table(META).map_err(persistence)?;
-                let current = meta
-                    .get(NEXT_TERMINAL_SEQUENCE)
-                    .map_err(persistence)?
-                    .ok_or_else(|| {
-                        Error::NoncePersistence("nonce sequence metadata is missing".to_string())
-                    })?
-                    .value();
-                let next = current.checked_add(1).ok_or_else(|| {
-                    Error::NoncePersistence("terminal nonce sequence overflow".to_string())
-                })?;
-                meta.insert(NEXT_TERMINAL_SEQUENCE, next)
-                    .map_err(persistence)?;
-                current
-            };
+            let sequence = next_terminal_sequence(&transaction)?;
             let mut order = transaction
                 .open_table(TERMINAL_ORDER)
                 .map_err(persistence)?;
@@ -346,6 +444,47 @@ impl DurableNonceStore for RedbNonceStore {
         transaction.commit().map_err(persistence)?;
         Ok(terminal.len())
     }
+}
+
+fn encode_attempt(attempt: u32, session_id: SigningSessionId) -> [u8; 36] {
+    let mut encoded = [0_u8; 36];
+    encoded[..4].copy_from_slice(&attempt.to_be_bytes());
+    encoded[4..].copy_from_slice(&session_id.to_bytes());
+    encoded
+}
+
+fn decode_attempt(encoded: &[u8]) -> Result<(u32, SigningSessionId), Error> {
+    if encoded.len() != 36 {
+        return Err(Error::NoncePersistence(
+            "signing attempt metadata has an invalid length".to_string(),
+        ));
+    }
+    let attempt = u32::from_be_bytes(
+        encoded[..4]
+            .try_into()
+            .expect("validated attempt prefix length"),
+    );
+    let session_id = SigningSessionId::from_bytes(
+        encoded[4..]
+            .try_into()
+            .expect("validated session identifier length"),
+    )?;
+    Ok((attempt, session_id))
+}
+
+fn next_terminal_sequence(transaction: &redb::WriteTransaction) -> Result<u64, Error> {
+    let mut meta = transaction.open_table(META).map_err(persistence)?;
+    let current = meta
+        .get(NEXT_TERMINAL_SEQUENCE)
+        .map_err(persistence)?
+        .ok_or_else(|| Error::NoncePersistence("nonce sequence metadata is missing".to_string()))?
+        .value();
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| Error::NoncePersistence("terminal nonce sequence overflow".to_string()))?;
+    meta.insert(NEXT_TERMINAL_SEQUENCE, next)
+        .map_err(persistence)?;
+    Ok(current)
 }
 
 #[derive(Debug, Serialize, Deserialize)]

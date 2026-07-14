@@ -1276,11 +1276,15 @@ impl FederationSignedTransaction {
                 "signed transaction differs from accepted non-witness data",
             ));
         }
+        let expected_attempt = self.input_signatures[0].attempt;
+        let expected_signer_set = self.input_signatures[0].signer_set.as_slice();
         for (index, audit) in self.input_signatures.iter().enumerate() {
             if audit.input_index != u32::try_from(index).map_err(|_| invalid("input overflow"))?
                 || audit.session_id == [0; 32]
                 || audit.attempt == 0
+                || audit.attempt != expected_attempt
                 || audit.signer_set.is_empty()
+                || audit.signer_set.as_slice() != expected_signer_set
                 || audit.signer_set.contains(&0)
                 || audit
                     .signer_set

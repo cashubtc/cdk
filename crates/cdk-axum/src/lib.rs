@@ -2542,6 +2542,7 @@ async fn create_mint_router_with_custom_cache_inner(
             }),
             payment_observer: federation::FederationPaymentObserver::default(),
             transaction_broadcaster: federation::FederationTransactionBroadcaster::default(),
+            wallet_liveness: federation::FederationWalletLivenessWorker::default(),
             onchain_wallets: federation_onchain_wallets,
             frost_signing: federation_frost_signing,
             #[cfg(test)]
@@ -2656,6 +2657,11 @@ async fn create_mint_router_with_custom_cache_inner(
         state
             .federation
             .transaction_broadcaster
+            .clone()
+            .spawn(state.clone());
+        state
+            .federation
+            .wallet_liveness
             .clone()
             .spawn(state.clone());
         if spawn_federation_peer_sync {

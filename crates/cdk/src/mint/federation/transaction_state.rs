@@ -209,8 +209,19 @@ impl Mint {
                         == accepted.proposal.scope.application_key_epoch
             })
             .ok_or_else(|| invalid("signed transaction application epoch is unknown"))?;
+        let schedule = cdk_common::federation::FederationWalletLivenessSchedule::new(
+            signed.proposal_id.to_bytes(),
+            runtime.public_config().members.keys().copied(),
+            application.threshold,
+        )?;
         for audit in &signed.input_signatures {
-            if audit.signer_set.len() < usize::from(application.threshold)
+            let expected = schedule.signing_plan(audit.attempt)?;
+            let expected_signers = expected
+                .signer_set
+                .iter()
+                .map(|member| member.get())
+                .collect::<Vec<_>>();
+            if audit.signer_set != expected_signers
                 || audit.signer_set.iter().any(|member| {
                     MemberId::new(*member).map_or(true, |member| {
                         runtime.public_config().member(member).is_none()
