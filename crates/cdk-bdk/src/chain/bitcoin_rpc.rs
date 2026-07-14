@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, Error as BitcoinRpcError, RawTx, RpcApi};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{jsonrpc, Client, Error as BitcoinRpcError, RawTx, RpcApi};
 use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
 use bdk_wallet::bitcoin::{Block, Transaction};
 use bdk_wallet::chain::BlockId;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +44,32 @@ pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, E
     };
 
     Ok(BlockId { height, hash })
+}
+
+const MIN_BITCOIN_RPC_BACKOFF: Duration = Duration::from_secs(5);
+const MAX_BITCOIN_RPC_BACKOFF: Duration = Duration::from_secs(300);
+const RPC_BLOCK_CHANNEL_CAPACITY: usize = 2;
+
+fn next_bitcoin_rpc_backoff(backoff: &mut Duration) -> Duration {
+    let current = *backoff;
+    *backoff = (*backoff * 2).min(MAX_BITCOIN_RPC_BACKOFF);
+    current
+}
+
+fn build_bitcoin_rpc_client(config: &BitcoinRpcConfig) -> Result<Client, BitcoinRpcError> {
+    config
+        .validate()
+        .map_err(|error| BitcoinRpcError::ReturnedError(error.to_string()))?;
+    let url = format!("http://{}:{}", config.host, config.port);
+    let transport = jsonrpc::minreq_http::Builder::new()
+        .url(&url)
+        .map_err(|error| BitcoinRpcError::JsonRpc(error.into()))?
+        .basic_auth(config.user.clone(), Some(config.password.clone()))
+        .timeout(Duration::from_secs(config.request_timeout_secs))
+        .build();
+    Ok(Client::from_jsonrpc(jsonrpc::Client::with_transport(
+        transport,
+    )))
 }
 
 /// Apply a chunk of blocks to the wallet under a single lock acquisition,
@@ -87,25 +113,70 @@ pub(crate) async fn sync_bitcoin_rpc_once(
     engine: &BdkWalletEngine,
     config: &BitcoinRpcConfig,
 ) -> Result<(), Error> {
-    let client = Client::new(
-        &format!("http://{}:{}", config.host, config.port),
-        Auth::UserPass(config.user.clone(), config.password.clone()),
-    )?;
     let checkpoint = {
         let wallet_with_db = engine.wallet_with_db.lock().await;
         wallet_with_db.wallet.latest_checkpoint()
     };
-    let start_height = checkpoint.height();
-    let mut emitter = Emitter::new(&client, checkpoint, start_height, NO_EXPECTED_MEMPOOL_TXS);
-    let mut chunk = Vec::with_capacity(100);
+    stream_bitcoin_rpc_blocks(&engine.wallet_with_db, checkpoint, config, 100, u64::MAX)
+        .await
+        .map(|_| ())
+}
 
-    while let Some(block) = emitter.next_block()? {
-        chunk.push(block);
-        if chunk.len() == 100 {
-            apply_and_persist_chunk(&engine.wallet_with_db, &mut chunk, u64::MAX).await?;
+async fn stream_bitcoin_rpc_blocks(
+    wallet: &std::sync::Arc<Mutex<WalletWithDb>>,
+    checkpoint: bdk_wallet::chain::CheckPoint,
+    config: &BitcoinRpcConfig,
+    apply_chunk_size: usize,
+    warn_ms: u64,
+) -> Result<bool, Error> {
+    let config = config.clone();
+    let (sender, mut receiver) = mpsc::channel(RPC_BLOCK_CHANNEL_CAPACITY);
+    let producer = tokio::task::spawn_blocking(move || -> Result<(), BitcoinRpcError> {
+        let client = build_bitcoin_rpc_client(&config)?;
+        // A checkpoint can temporarily be above the new best height during a
+        // tip reorg. A zero start height lets `Emitter` walk the checkpoint
+        // ancestry to an agreement point instead of querying the now-missing
+        // old tip height and failing with "block height out of range".
+        let mut emitter = Emitter::new(&client, checkpoint, 0, NO_EXPECTED_MEMPOOL_TXS);
+        let mut chunk = Vec::with_capacity(apply_chunk_size);
+        while let Some(block) = emitter.next_block()? {
+            chunk.push(block);
+            if chunk.len() >= apply_chunk_size {
+                if sender.blocking_send(std::mem::take(&mut chunk)).is_err() {
+                    return Ok(());
+                }
+                chunk = Vec::with_capacity(apply_chunk_size);
+            }
+        }
+        if !chunk.is_empty() {
+            let _ = sender.blocking_send(chunk);
+        }
+        Ok(())
+    });
+
+    let mut applied = false;
+    let mut apply_error = None;
+    while let Some(mut chunk) = receiver.recv().await {
+        match apply_and_persist_chunk(wallet, &mut chunk, warn_ms).await {
+            Ok(()) => applied = true,
+            Err(error) => {
+                apply_error = Some(error);
+                receiver.close();
+                break;
+            }
         }
     }
-    apply_and_persist_chunk(&engine.wallet_with_db, &mut chunk, u64::MAX).await
+
+    let producer_result = producer.await.map_err(|_| {
+        Error::BitcoinRpc(BitcoinRpcError::ReturnedError(
+            "Bitcoin RPC synchronization worker failed".to_string(),
+        ))
+    })?;
+    if let Some(error) = apply_error {
+        return Err(error);
+    }
+    producer_result?;
+    Ok(applied)
 }
 
 pub(crate) async fn sync_bitcoin_rpc(
@@ -116,14 +187,12 @@ pub(crate) async fn sync_bitcoin_rpc(
     let mut sync_interval = interval(Duration::from_secs(cdk_bdk.sync_interval_secs));
     let apply_chunk_size = cdk_bdk.sync_config.apply_chunk_size.max(1);
     let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
-
-    // Persist RPC client across sync iterations; re-create on error.
-    let mut rpc_client: Option<Arc<Client>> = None;
+    let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
+    let initial_backoff = configured_interval.max(MIN_BITCOIN_RPC_BACKOFF);
     let mut consecutive_failures: u32 = 0;
+    let mut backoff = initial_backoff;
 
     tracing::info!(
-        host = %config.host,
-        port = config.port,
         interval_secs = cdk_bdk.sync_interval_secs,
         "Starting continuous block monitoring via Bitcoin RPC"
     );
@@ -134,124 +203,33 @@ pub(crate) async fn sync_bitcoin_rpc(
                 break;
             }
             _ = sync_interval.tick() => {
-                // Lazily construct the RPC client; rebuild on prior error.
-                let client = match &rpc_client {
-                    Some(c) => Arc::clone(c),
-                    None => {
-                        match Client::new(
-                            &format!("http://{}:{}", config.host, config.port),
-                            Auth::UserPass(
-                                config.user.clone(),
-                                config.password.clone(),
-                            ),
-                        ) {
-                            Ok(c) => {
-                                let arc = Arc::new(c);
-                                rpc_client = Some(Arc::clone(&arc));
-                                arc
-                            }
-                            Err(e) => {
-                                consecutive_failures =
-                                    consecutive_failures.saturating_add(1);
-                                tracing::warn!(
-                                    error = %e,
-                                    consecutive_failures,
-                                    "Failed to construct Bitcoin RPC client; will retry on next tick"
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                };
-
                 // Snapshot the wallet checkpoint under a brief lock.
                 let checkpoint = {
                     let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
                     w.wallet.latest_checkpoint()
                 };
-                let start_height = checkpoint.height();
-
-                let mut emitter = Emitter::new(
-                    client.as_ref(),
+                let any_applied = match stream_bitcoin_rpc_blocks(
+                    &cdk_bdk.wallet_engine.wallet_with_db,
                     checkpoint,
-                    start_height,
-                    NO_EXPECTED_MEMPOOL_TXS,
-                );
-
-                let mut any_applied = false;
-                let mut had_tick_error = false;
-                let mut chunk: Vec<bdk_bitcoind_rpc::BlockEvent<Block>> = Vec::with_capacity(apply_chunk_size);
-
-                loop {
-                    match emitter.next_block() {
-                        Ok(Some(block)) => {
-                            chunk.push(block);
-                            if chunk.len() >= apply_chunk_size {
-                                if let Err(e) = apply_and_persist_chunk(
-                                    &cdk_bdk.wallet_engine.wallet_with_db,
-                                    &mut chunk,
-                                    warn_ms,
-                                )
-                                .await
-                                {
-                                    had_tick_error = true;
-                                    consecutive_failures =
-                                        consecutive_failures.saturating_add(1);
-                                    crate::sync::log_sync_failure(
-                                        "Failed to apply block chunk",
-                                        &e,
-                                        consecutive_failures,
-                                    );
-                                    // Drop the RPC client so it is rebuilt next tick.
-                                    rpc_client = None;
-                                    break;
-                                }
-                                any_applied = true;
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            had_tick_error = true;
-                            consecutive_failures =
-                                consecutive_failures.saturating_add(1);
-                            if consecutive_failures >= crate::sync::SUSTAINED_FAILURE_THRESHOLD {
-                                tracing::error!(
-                                    consecutive_failures,
-                                    "Bitcoin RPC error during sync: {e}; will retry next tick"
-                                );
-                            } else {
-                                tracing::warn!(
-                                    consecutive_failures,
-                                    "Bitcoin RPC error during sync: {e}; will retry next tick"
-                                );
-                            }
-                            rpc_client = None;
-                            break;
-                        }
-                    }
-                }
-
-                if !chunk.is_empty() {
-                    if let Err(e) = apply_and_persist_chunk(
-                        &cdk_bdk.wallet_engine.wallet_with_db,
-                        &mut chunk,
-                        warn_ms,
-                    )
-                    .await
-                    {
-                        had_tick_error = true;
-                        consecutive_failures =
-                            consecutive_failures.saturating_add(1);
+                    config,
+                    apply_chunk_size,
+                    warn_ms,
+                )
+                .await
+                {
+                    Ok(applied) => applied,
+                    Err(error) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
                         crate::sync::log_sync_failure(
-                            "Failed to apply final block chunk",
-                            &e,
+                            "Bitcoin RPC synchronization failed",
+                            &error,
                             consecutive_failures,
                         );
-                        rpc_client = None;
-                    } else {
-                        any_applied = true;
+                        let retry_delay = next_bitcoin_rpc_backoff(&mut backoff);
+                        sync_interval.reset_after(retry_delay);
+                        continue;
                     }
-                }
+                };
 
                 if any_applied {
                     let tip = {
@@ -265,17 +243,16 @@ pub(crate) async fn sync_bitcoin_rpc(
                     );
                 }
 
-                if !had_tick_error {
-                    if consecutive_failures > 0 {
-                        tracing::info!(
-                            recovered_after = consecutive_failures,
-                            "Bitcoin RPC sync recovered"
-                        );
-                    }
-                    consecutive_failures = 0;
-
-                    cdk_bdk.run_reconciliation().await;
+                if consecutive_failures > 0 {
+                    tracing::info!(
+                        recovered_after = consecutive_failures,
+                        "Bitcoin RPC sync recovered"
+                    );
                 }
+                consecutive_failures = 0;
+                backoff = initial_backoff;
+
+                cdk_bdk.run_reconciliation().await;
             }
         }
     }
@@ -344,25 +321,30 @@ pub(crate) async fn broadcast_bitcoin_rpc(
     config: &BitcoinRpcConfig,
     tx: Transaction,
 ) -> Result<BroadcastOutcome, BroadcastFailure> {
-    let rpc_client: Client = Client::new(
-        &format!("http://{}:{}", config.host, config.port),
-        Auth::UserPass(config.user.clone(), config.password.clone()),
-    )
-    .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
-
     tracing::info!(
         "Broadcasting transaction: {} via bitcoin rpc",
         tx.compute_txid()
     );
-
-    match rpc_client.send_raw_transaction(tx.raw_hex()) {
-        Ok(_) => Ok(BroadcastOutcome::Accepted),
-        Err(e) if is_bitcoin_rpc_already_known(&e) => Ok(BroadcastOutcome::AlreadyKnown),
-        Err(e) => {
-            let kind = classify_bitcoin_rpc_broadcast_error(&e);
-            Err(BroadcastFailure::new(kind, e.to_string()))
+    let config = config.clone();
+    tokio::task::spawn_blocking(move || {
+        let rpc_client = build_bitcoin_rpc_client(&config)
+            .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
+        match rpc_client.send_raw_transaction(tx.raw_hex()) {
+            Ok(_) => Ok(BroadcastOutcome::Accepted),
+            Err(e) if is_bitcoin_rpc_already_known(&e) => Ok(BroadcastOutcome::AlreadyKnown),
+            Err(e) => {
+                let kind = classify_bitcoin_rpc_broadcast_error(&e);
+                Err(BroadcastFailure::new(kind, e.to_string()))
+            }
         }
-    }
+    })
+    .await
+    .map_err(|_| {
+        BroadcastFailure::new(
+            BroadcastErrorKind::Transient,
+            "Bitcoin RPC broadcast worker failed".to_string(),
+        )
+    })?
 }
 
 pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
@@ -371,14 +353,8 @@ pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
 ) -> Result<f64, Error> {
     // Use a blocking spawn since Client is synchronous
     let config = config.clone();
-    let host = config.host.clone();
-    let port = config.port;
-
     tokio::task::spawn_blocking(move || {
-        let rpc_client = Client::new(
-            &format!("http://{}:{}", host, port),
-            Auth::UserPass(config.user, config.password),
-        )?;
+        let rpc_client = build_bitcoin_rpc_client(&config)?;
 
         let estimate = rpc_client.estimate_smart_fee(target_blocks, None)?;
 
@@ -543,6 +519,61 @@ mod tests {
         ));
     }
 
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+
+    use bdk_wallet::bitcoin::bip32::{Xpriv, Xpub};
+    use bdk_wallet::bitcoin::secp256k1::Secp256k1;
+    use bdk_wallet::bitcoin::{absolute, transaction, Network};
+
+    use super::*;
+
+    fn start_mock_rpc(
+        response: &'static str,
+        delay: Duration,
+    ) -> (BitcoinRpcConfig, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Bitcoin RPC");
+        let address = listener.local_addr().expect("mock Bitcoin RPC address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let request_counter = Arc::clone(&requests);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept mock RPC request");
+            request_counter.fetch_add(1, Ordering::SeqCst);
+            let mut request = [0_u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(delay);
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            let _ = stream.write_all(reply.as_bytes());
+        });
+        (
+            BitcoinRpcConfig {
+                host: address.ip().to_string(),
+                port: address.port(),
+                user: "rpc-user".to_string(),
+                password: "rpc-password".to_string(),
+                request_timeout_secs: 2,
+            },
+            requests,
+            server,
+        )
+    }
+
+    fn empty_transaction() -> Transaction {
+        Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: Vec::new(),
+            output: Vec::new(),
+        }
+    }
+
     #[test]
     fn classify_bitcoin_rpc_broadcast_errors() {
         assert_eq!(
@@ -557,5 +588,97 @@ mod tests {
             classify_bitcoin_rpc_broadcast_message("some new backend error"),
             BroadcastErrorKind::Unknown
         );
+    }
+
+    #[tokio::test]
+    async fn rpc_fee_estimate_and_broadcast_outcomes_are_supported() {
+        let (config, _, server) = start_mock_rpc(
+            r#"{"result":{"feerate":0.00001,"blocks":1},"error":null,"id":1}"#,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            fetch_fee_rate_bitcoin_rpc(&config, 1)
+                .await
+                .expect("RPC fee estimate"),
+            1.0
+        );
+        server.join().expect("fee server");
+
+        let (config, _, server) = start_mock_rpc(
+            r#"{"result":"0000000000000000000000000000000000000000000000000000000000000000","error":null,"id":1}"#,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            broadcast_bitcoin_rpc(&config, empty_transaction())
+                .await
+                .expect("RPC broadcast"),
+            BroadcastOutcome::Accepted
+        );
+        server.join().expect("broadcast server");
+
+        let (config, _, server) = start_mock_rpc(
+            r#"{"result":null,"error":{"code":-27,"message":"Transaction already in block chain"},"id":1}"#,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            broadcast_bitcoin_rpc(&config, empty_transaction())
+                .await
+                .expect("already-known RPC broadcast"),
+            BroadcastOutcome::AlreadyKnown
+        );
+        server.join().expect("already-known server");
+    }
+
+    #[tokio::test]
+    async fn rpc_malformed_and_timed_out_responses_fail_closed() {
+        let (config, _, server) = start_mock_rpc("not-json", Duration::ZERO);
+        assert!(fetch_fee_rate_bitcoin_rpc(&config, 1).await.is_err());
+        server.join().expect("malformed server");
+
+        let (mut config, _, server) = start_mock_rpc(
+            r#"{"result":{"feerate":0.00001,"blocks":1},"error":null,"id":1}"#,
+            Duration::from_secs(2),
+        );
+        config.request_timeout_secs = 1;
+        assert!(fetch_fee_rate_bitcoin_rpc(&config, 1).await.is_err());
+        server.join().expect("timeout server");
+    }
+
+    #[tokio::test]
+    async fn rpc_network_wait_does_not_hold_the_wallet_lock() {
+        let (config, requests, server) = start_mock_rpc("not-json", Duration::from_millis(500));
+        let secp = Secp256k1::new();
+        let xpriv = Xpriv::new_master(Network::Regtest, &[42; 32]).expect("master key");
+        let xpub = Xpub::from_priv(&secp, &xpriv);
+        let descriptors = crate::DescriptorConfig::new(
+            format!("tr({xpub}/0/*)"),
+            format!("tr({xpub}/1/*)"),
+            Network::Regtest,
+        )
+        .expect("descriptors");
+        let root = tempfile::tempdir().expect("wallet directory");
+        let engine = BdkWalletEngine::open_watch_only(
+            descriptors,
+            crate::ChainSource::BitcoinRpc(config.clone()),
+            root.path(),
+        )
+        .expect("watch-only wallet");
+        let sync_engine = engine.clone();
+        let sync = tokio::spawn(async move { sync_bitcoin_rpc_once(&sync_engine, &config).await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while requests.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("network request started");
+        let wallet = tokio::time::timeout(Duration::from_millis(100), engine.wallet_with_db.lock())
+            .await
+            .expect("wallet lock remains available during RPC request");
+        drop(wallet);
+
+        assert!(sync.await.expect("sync task").is_err());
+        server.join().expect("delayed RPC server");
     }
 }

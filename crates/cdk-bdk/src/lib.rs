@@ -37,7 +37,9 @@ use tokio_util::sync::CancellationToken;
 
 pub use crate::chain::{
     BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ChainSource,
-    ChainSourceKind, ElectrumConfig, EsploraConfig,
+    ChainSourceKind, ElectrumConfig, EsploraConfig, DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+    DEFAULT_ESPLORA_MAX_RETRIES, MAX_CHAIN_REQUEST_TIMEOUT_SECS, MAX_ESPLORA_MAX_RETRIES,
+    MAX_ESPLORA_PARALLEL_REQUESTS,
 };
 pub use crate::error::Error;
 pub use crate::federation::{
@@ -1014,6 +1016,8 @@ mod tests {
         let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
+            request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+            max_retries: crate::chain::DEFAULT_ESPLORA_MAX_RETRIES,
         });
 
         build_test_instance_with_chain_source(

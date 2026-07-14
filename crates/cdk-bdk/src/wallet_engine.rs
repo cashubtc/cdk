@@ -199,6 +199,7 @@ impl BdkWalletEngine {
         database_dir: impl AsRef<Path>,
         namespace: &str,
     ) -> Result<Self, Error> {
+        chain_source.validate()?;
         fs::create_dir_all(database_dir.as_ref())?;
         let mut db = Connection::open(database_dir.as_ref().join("bdk_wallet.sqlite"))?;
         ensure_wallet_namespace(&mut db, namespace, true)?;
@@ -237,6 +238,12 @@ impl BdkWalletEngine {
     /// Network enforced by this wallet.
     pub fn network(&self) -> Network {
         self.network
+    }
+
+    /// Return the configured backend class without exposing its endpoint.
+    #[must_use]
+    pub fn chain_source_kind(&self) -> crate::ChainSourceKind {
+        self.chain_source.kind()
     }
 
     /// Return the latest locally persisted BDK checkpoint.
@@ -689,6 +696,8 @@ mod tests {
         ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
+            request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+            max_retries: crate::chain::DEFAULT_ESPLORA_MAX_RETRIES,
         })
     }
 

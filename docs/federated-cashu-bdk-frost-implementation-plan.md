@@ -1935,35 +1935,71 @@ and availability visible.
 
 **Work:**
 
-- [ ] Document and test public mempool.space-compatible Esplora configuration.
-- [ ] Support self-hosted Esplora and Bitcoin Core RPC per member.
-- [ ] Keep chain-source URLs and credentials local while reporting a safe source
+- [x] Document and test public mempool.space-compatible Esplora configuration.
+- [x] Support self-hosted Esplora and Bitcoin Core RPC per member.
+- [x] Keep chain-source URLs and credentials local while reporting a safe source
   class and health state.
-- [ ] Bound Esplora parallel requests, scan lookahead, retries, and backoff.
-- [ ] Avoid holding BDK/database locks during network requests.
-- [ ] Add privacy guidance explaining script/address query leakage to public
+- [x] Bound Esplora parallel requests, scan lookahead, retries, and backoff.
+- [x] Avoid holding BDK/database locks during network requests.
+- [x] Add privacy guidance explaining script/address query leakage to public
   services.
-- [ ] Add correlated-source warnings when operators intentionally declare the
+- [x] Add correlated-source warnings when operators intentionally declare the
   same upstream provider.
-- [ ] Keep consensus observation quorum based on members, while documenting that
+- [x] Keep consensus observation quorum based on members, while documenting that
   common upstreams reduce practical independence.
-- [ ] Define optional local header/confirmation verification improvements.
+- [x] Define optional local header/confirmation verification improvements.
 
 **Success criteria:**
 
-- [ ] A complete regtest flow works with lightweight Esplora only.
-- [ ] A heterogeneous federation using RPC and Esplora converges.
-- [ ] One backend outage or stale response does not corrupt consensus state.
-- [ ] Public Esplora is optional, not a federation-wide hard dependency.
+- [x] A complete regtest flow works with lightweight Esplora only.
+- [x] A heterogeneous federation using RPC and Esplora converges.
+- [x] One backend outage or stale response does not corrupt consensus state.
+- [x] Public Esplora is optional, not a federation-wide hard dependency.
 
 **Required tests:**
 
-- [ ] Esplora sync, fee estimate, broadcast, already-known, and retry behavior.
-- [ ] Bitcoin Core RPC equivalent flow.
-- [ ] Mixed-source observation timing and convergence.
-- [ ] Rate limit, timeout, malformed response, stale tip, and omitted transaction.
-- [ ] Chain reorg and backend recovery.
-- [ ] Lock-duration and request-concurrency benchmarks.
+- [x] Esplora sync, fee estimate, broadcast, already-known, and retry behavior.
+- [x] Bitcoin Core RPC equivalent flow.
+- [x] Mixed-source observation timing and convergence.
+- [x] Rate limit, timeout, malformed response, stale tip, and omitted transaction.
+- [x] Chain reorg and backend recovery.
+- [x] Lock-duration and request-concurrency benchmark regressions.
+
+**Milestone record:** completed on 2026-07-14. Member-local Esplora and Bitcoin
+Core RPC configurations now have fail-closed request bounds, redacted debug
+output, and safe source-class, opaque-source, health, and correlation status.
+Esplora concurrency is limited to 16 requests, request timeouts to 120 seconds,
+and retryable HTTP attempts to six retries. Continuous synchronization applies
+bounded exponential backoff. The accepted-address counters remain the only
+scan range, so federated wallets retain zero unallocated lookahead. The
+[chain-source deployment guide](federated-bdk-chain-sources.md) covers public
+mempool.space-compatible and self-hosted Esplora, member-operated RPC, privacy
+leakage, shared-provider trust reduction, outage behavior, and optional local
+header, proof-of-work, Merkle, and ancestry verification.
+
+Both adapters now finish network work outside the BDK/database lock. Bitcoin
+Core calls run on blocking workers with a bounded two-chunk channel before
+wallet application; Esplora uses separate request-build, network, and apply
+phases. Network-stall regressions require the wallet lock to remain acquirable
+within 100 ms, while config tests enforce request-concurrency ceilings. A live
+RPC reorg exposed one shallow-reorg gap in the pre-existing adapter: starting
+the block emitter at the old checkpoint height queried a height absent from the
+new best chain. The isolated adapter fix starts ancestry reconciliation at
+height zero, without changing mint business logic.
+
+All 123 active `cdk-bdk` tests pass, including mock Esplora and RPC fee,
+broadcast, already-known, retry/rate-limit, timeout, malformed-response,
+resource-bound, and lock-availability cases. Ignored live regtest gates were
+run explicitly: an Esplora-backed wallet completed sync and broadcast while a
+heterogeneous RPC/Esplora pair converged on the same descriptor graph, and an
+RPC wallet survived invalidation, a competing block, and reconfirmation. The
+previous five-member outage, stale/omitted observation, persistence, and
+member-quorum tests remain green: all 379 active `cdk-common` federation tests
+and all 126 CDK mint federation tests pass. The complete workspace all-targets
+check and stable rustfmt check pass. Strict no-dependency Clippy passes for
+`cdk-bdk`; mintd and Axum strict Clippy remain blocked only by their documented
+pre-existing warning baseline. Broad mintd/Axum suites still contain unrelated
+pre-existing federation fixture failures, while every M21-focused test passes.
 
 ### Milestone 22: root and application key rotation and federation preparation
 

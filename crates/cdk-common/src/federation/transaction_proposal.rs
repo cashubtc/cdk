@@ -3538,7 +3538,10 @@ mod tests {
             .collect();
         let signed = FederationSignedTransaction::new(&accepted, &transaction, input_signatures)
             .expect("signed record");
-        assert_eq!(transaction.weight().to_wu(), proposal.estimated_signed_weight());
+        assert_eq!(
+            transaction.weight().to_wu(),
+            proposal.estimated_signed_weight()
+        );
         assert_eq!(signed.policy_audit.weight, transaction.weight().to_wu());
         signed
             .verify_signatures(&proposal)

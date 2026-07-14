@@ -1802,6 +1802,12 @@ pub struct FederationInvalidOperationAlertSummary {
 pub struct FederationOnchainWalletStatus {
     /// Non-sensitive source implementation name.
     pub source: String,
+    /// Operator-declared source independence (`independent` or `shared`).
+    pub source_scope: String,
+    /// Stable opaque source identity; never an endpoint or credential.
+    pub source_id: String,
+    /// Whether this source is intentionally correlated with other members.
+    pub correlated_source_warning: bool,
     /// Stable health name (`never_synced`, `healthy`, or `degraded`).
     pub health: String,
     /// Latest locally persisted BDK checkpoint height.
@@ -3144,6 +3150,9 @@ mod tests {
             }],
             onchain_wallets: vec![FederationOnchainWalletStatus {
                 source: "bitcoin_rpc".to_string(),
+                source_scope: "shared".to_string(),
+                source_id: "shared-regtest-source".to_string(),
+                correlated_source_warning: true,
                 health: "healthy".to_string(),
                 local_tip_height: 101,
                 local_tip_hash: "00".repeat(32),
@@ -3203,6 +3212,12 @@ mod tests {
                 "wallet_liveness",
             ])
         );
+        let wallet_status = value["onchain_wallets"][0]
+            .as_object()
+            .expect("on-chain wallet status");
+        assert_eq!(wallet_status["source_scope"], "shared");
+        assert_eq!(wallet_status["source_id"], "shared-regtest-source");
+        assert_eq!(wallet_status["correlated_source_warning"], true);
         let decoded: FederationLocalStatusResponse =
             serde_json::from_value(value).expect("local status round trip");
         assert_eq!(decoded, status);

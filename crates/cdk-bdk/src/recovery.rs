@@ -685,6 +685,8 @@ mod tests {
         let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
+            request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+            max_retries: crate::chain::DEFAULT_ESPLORA_MAX_RETRIES,
         });
 
         let fee_reserve = FeeReserve {

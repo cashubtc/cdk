@@ -9,6 +9,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
+/// Default per-request timeout for chain backends.
+pub const DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS: u64 = 15;
+/// Largest accepted per-request timeout for chain backends.
+pub const MAX_CHAIN_REQUEST_TIMEOUT_SECS: u64 = 120;
+/// Default Esplora retry count for retryable HTTP responses.
+pub const DEFAULT_ESPLORA_MAX_RETRIES: usize = 3;
+/// Largest accepted Esplora retry count.
+pub const MAX_ESPLORA_MAX_RETRIES: usize = 6;
+/// Largest accepted Esplora request concurrency per wallet.
+pub const MAX_ESPLORA_PARALLEL_REQUESTS: usize = 16;
+
 #[cfg(feature = "bitcoin-rpc")]
 pub mod bitcoin_rpc;
 #[cfg(feature = "electrum")]
@@ -33,18 +44,8 @@ pub struct BitcoinRpcConfig {
     /// this when restoring a wallet from seed to scan from a known birthday
     /// height. Existing wallets are never rewound.
     pub wallet_rescan_from_height: Option<u32>,
-}
-
-impl fmt::Debug for BitcoinRpcConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BitcoinRpcConfig")
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("user", &self.user)
-            .field("password", &"[REDACTED]")
-            .field("wallet_rescan_from_height", &self.wallet_rescan_from_height)
-            .finish()
-    }
+    /// Per-request timeout in seconds.
+    pub request_timeout_secs: u64,
 }
 
 impl fmt::Debug for BitcoinRpcConfig {
@@ -53,6 +54,7 @@ impl fmt::Debug for BitcoinRpcConfig {
             .debug_struct("BitcoinRpcConfig")
             .field("endpoint", &"<redacted>")
             .field("credentials", &"<redacted>")
+            .field("request_timeout_secs", &self.request_timeout_secs)
             .finish()
     }
 }
@@ -64,6 +66,10 @@ pub struct EsploraConfig {
     pub url: String,
     /// Number of parallel requests to use during sync
     pub parallel_requests: usize,
+    /// Per-request timeout in seconds.
+    pub request_timeout_secs: u64,
+    /// Maximum retries for retryable HTTP responses.
+    pub max_retries: usize,
 }
 
 impl fmt::Debug for EsploraConfig {
@@ -71,6 +77,8 @@ impl fmt::Debug for EsploraConfig {
         f.debug_struct("EsploraConfig")
             .field("url", &url_for_logs(&self.url))
             .field("parallel_requests", &self.parallel_requests)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("max_retries", &self.max_retries)
             .finish()
     }
 }
@@ -91,6 +99,50 @@ impl fmt::Debug for ElectrumConfig {
             .field("batch_size", &self.batch_size)
             .finish()
     }
+}
+
+impl BitcoinRpcConfig {
+    /// Validate bounded local RPC transport settings.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.host.trim().is_empty() {
+            return Err(Error::InvalidConfig(
+                "Bitcoin RPC host must not be empty".to_string(),
+            ));
+        }
+        validate_request_timeout(self.request_timeout_secs)
+    }
+}
+
+impl EsploraConfig {
+    /// Validate bounded local Esplora transport settings.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.url.trim().is_empty() {
+            return Err(Error::InvalidConfig(
+                "Esplora URL must not be empty".to_string(),
+            ));
+        }
+        if !(1..=MAX_ESPLORA_PARALLEL_REQUESTS).contains(&self.parallel_requests) {
+            return Err(Error::InvalidConfig(format!(
+                "Esplora parallel requests must be between 1 and {MAX_ESPLORA_PARALLEL_REQUESTS}"
+            )));
+        }
+        validate_request_timeout(self.request_timeout_secs)?;
+        if self.max_retries > MAX_ESPLORA_MAX_RETRIES {
+            return Err(Error::InvalidConfig(format!(
+                "Esplora max retries must not exceed {MAX_ESPLORA_MAX_RETRIES}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn validate_request_timeout(timeout_secs: u64) -> Result<(), Error> {
+    if !(1..=MAX_CHAIN_REQUEST_TIMEOUT_SECS).contains(&timeout_secs) {
+        return Err(Error::InvalidConfig(format!(
+            "chain request timeout must be between 1 and {MAX_CHAIN_REQUEST_TIMEOUT_SECS} seconds"
+        )));
+    }
+    Ok(())
 }
 
 /// Non-sensitive chain-source implementation identifier.
@@ -168,27 +220,30 @@ impl BroadcastFailure {
 }
 
 impl ChainSource {
-    pub(crate) fn validate(&self) -> Result<(), Error> {
-        match self {
-            #[cfg(feature = "electrum")]
-            Self::Electrum(config) if config.batch_size == 0 => {
-                return Err(Error::InvalidConfig(
-                    "Electrum batch_size must be greater than zero".to_string(),
-                ));
-            }
-            #[allow(unreachable_patterns)]
-            _ => {}
-        }
-
-        Ok(())
-    }
-
     pub(crate) fn initial_checkpoint(&self) -> Result<Option<BlockId>, Error> {
         match self {
             #[cfg(feature = "bitcoin-rpc")]
             Self::BitcoinRpc(config) => bitcoin_rpc::initial_checkpoint(config).map(Some),
             #[allow(unreachable_patterns)]
             _ => Ok(None),
+        }
+    }
+
+    /// Validate member-local backend resource bounds.
+    pub fn validate(&self) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "esplora")]
+            Self::Esplora(config) => config.validate(),
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(config) => config.validate(),
+            #[cfg(feature = "electrum")]
+            Self::Electrum(config) => {
+                if config.batch_size == 0 {
+                    Err(Error::InvalidConfig("Electrum batch_size must be greater than zero".to_string()))
+                } else { Ok(()) }
+            }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("ChainSource must have at least one feature enabled"),
         }
     }
 
@@ -362,5 +417,41 @@ mod tests {
             .expect_err("zero Electrum batch size should fail");
 
         assert!(matches!(error, Error::InvalidConfig(_)));
+    }
+
+    #[cfg(feature = "esplora")]
+    #[test]
+    fn esplora_resource_policy_is_bounded() {
+        let mut config = EsploraConfig {
+            url: "https://mempool.space/api".to_string(),
+            parallel_requests: MAX_ESPLORA_PARALLEL_REQUESTS,
+            request_timeout_secs: MAX_CHAIN_REQUEST_TIMEOUT_SECS,
+            max_retries: MAX_ESPLORA_MAX_RETRIES,
+        };
+        assert!(config.validate().is_ok());
+
+        config.parallel_requests = MAX_ESPLORA_PARALLEL_REQUESTS + 1;
+        assert!(config.validate().is_err());
+        config.parallel_requests = 1;
+        config.request_timeout_secs = 0;
+        assert!(config.validate().is_err());
+        config.request_timeout_secs = DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS;
+        config.max_retries = MAX_ESPLORA_MAX_RETRIES + 1;
+        assert!(config.validate().is_err());
+    }
+
+    #[cfg(feature = "bitcoin-rpc")]
+    #[test]
+    fn bitcoin_rpc_timeout_is_bounded() {
+        let mut config = BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 18443,
+            user: "user".to_string(),
+            password: "password".to_string(),
+            request_timeout_secs: DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+        };
+        assert!(config.validate().is_ok());
+        config.request_timeout_secs = MAX_CHAIN_REQUEST_TIMEOUT_SECS + 1;
+        assert!(config.validate().is_err());
     }
 }

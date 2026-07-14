@@ -664,7 +664,9 @@ impl crate::config::Bdk {
                 Ok(cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
                     url: esplora_url,
                     parallel_requests: self.esplora_parallel_requests.max(1),
-                }))
+                    request_timeout_secs: self.request_timeout_secs,
+                    max_retries: self.esplora_max_retries,
+                })
             }
             "electrum" => {
                 let electrum_url = self.electrum_url.clone().ok_or_else(|| {
@@ -675,10 +677,10 @@ impl crate::config::Bdk {
                 if self.electrum_batch_size == 0 {
                     bail!("BDK electrum_batch_size must be greater than zero");
                 }
-                Ok(cdk_bdk::ChainSource::Electrum(cdk_bdk::ElectrumConfig {
+                cdk_bdk::ChainSource::Electrum(cdk_bdk::ElectrumConfig {
                     url: electrum_url,
                     batch_size: self.electrum_batch_size,
-                }))
+                })
             }
             "bitcoinrpc" => {
                 let host = self
@@ -695,15 +697,14 @@ impl crate::config::Bdk {
                     .clone()
                     .unwrap_or_else(|| "pass".to_string());
 
-                Ok(cdk_bdk::ChainSource::BitcoinRpc(
-                    cdk_bdk::BitcoinRpcConfig {
-                        host,
-                        port,
-                        user,
-                        password,
-                        wallet_rescan_from_height: self.wallet_rescan_from_height,
-                    },
-                ))
+                cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                    host,
+                    port,
+                    user,
+                    password,
+                    wallet_rescan_from_height: self.wallet_rescan_from_height,
+                    request_timeout_secs: self.request_timeout_secs,
+                })
             }
             _ => bail!("Unknown BDK chain_source_type: {chain_source_type}"),
         }

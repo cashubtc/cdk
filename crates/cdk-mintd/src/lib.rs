@@ -1496,6 +1496,8 @@ fn federation_bdk_local_config(
             cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
                 url: url.clone(),
                 parallel_requests: wallet.esplora_parallel_requests,
+                request_timeout_secs: wallet.request_timeout_secs,
+                max_retries: wallet.esplora_max_retries,
             })
         }
         "bitcoinrpc" => {
@@ -1534,12 +1536,14 @@ fn federation_bdk_local_config(
                 port,
                 user: user.clone(),
                 password: password.clone(),
+                request_timeout_secs: wallet.request_timeout_secs,
             })
         }
         source => bail!(
             "unknown federation.onchain_wallet.chain_source_type {source}; expected bitcoinrpc or esplora"
         ),
     };
+    chain_source.validate()?;
     let source_scope = match wallet.chain_source_scope.to_ascii_lowercase().as_str() {
         "independent" => cdk_bdk::FederatedChainSourceScope::Independent,
         "shared" => cdk_bdk::FederatedChainSourceScope::Shared,
@@ -4548,6 +4552,15 @@ engine = "sqlite"
         let debug = format!("{local:?}");
         assert!(!debug.contains("private-token"));
         assert!(!debug.contains(&work_dir.path().to_string_lossy().to_string()));
+        let settings_debug = format!(
+            "{:?}",
+            settings
+                .federation
+                .as_ref()
+                .expect("federation")
+                .onchain_wallet
+        );
+        assert!(!settings_debug.contains("private-token"));
 
         settings
             .federation
@@ -4586,6 +4599,76 @@ engine = "sqlite"
         assert!(federation_bdk_local_config(&settings, work_dir.path())
             .expect("disabled config")
             .is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_public_esplora_config_is_compatible_and_bounded() {
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let mut settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                onchain_wallet: config::FederationOnchainWallet {
+                    enabled: true,
+                    chain_source_type: "esplora".to_string(),
+                    chain_source_scope: "shared".to_string(),
+                    chain_source_id: Some("public-mempool-space".to_string()),
+                    esplora_url: Some("https://mempool.space/api".to_string()),
+                    esplora_parallel_requests: 1,
+                    request_timeout_secs: 15,
+                    esplora_max_retries: 3,
+                    ..config::FederationOnchainWallet::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..config::Settings::default()
+        };
+
+        let local = federation_bdk_local_config(&settings, work_dir.path())
+            .expect("compatible Esplora config")
+            .expect("enabled local config");
+        assert_eq!(
+            local.observation_source.scope,
+            cdk_bdk::FederatedChainSourceScope::Shared
+        );
+        assert_eq!(local.observation_source.source_id, "public-mempool-space");
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .esplora_parallel_requests = cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS + 1;
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("excessive Esplora concurrency")
+            .to_string()
+            .contains("parallel requests"));
+        {
+            let wallet = &mut settings
+                .federation
+                .as_mut()
+                .expect("federation")
+                .onchain_wallet;
+            wallet.esplora_parallel_requests = 1;
+            wallet.request_timeout_secs = cdk_bdk::MAX_CHAIN_REQUEST_TIMEOUT_SECS + 1;
+        }
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("excessive request timeout")
+            .to_string()
+            .contains("request timeout"));
+        {
+            let wallet = &mut settings
+                .federation
+                .as_mut()
+                .expect("federation")
+                .onchain_wallet;
+            wallet.request_timeout_secs = 15;
+            wallet.esplora_max_retries = cdk_bdk::MAX_ESPLORA_MAX_RETRIES + 1;
+        }
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("excessive Esplora retries")
+            .to_string()
+            .contains("max retries"));
     }
 
     #[cfg(feature = "federation")]

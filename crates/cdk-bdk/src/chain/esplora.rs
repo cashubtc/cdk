@@ -14,6 +14,15 @@ use crate::{BdkWalletEngine, CdkBdk};
 const MIN_ESPLORA_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_ESPLORA_BACKOFF: Duration = Duration::from_secs(300);
 
+fn build_esplora_client(config: &EsploraConfig) -> Result<AsyncClient, Error> {
+    config.validate()?;
+    Builder::new(&config.url)
+        .timeout(config.request_timeout_secs)
+        .max_retries(config.max_retries)
+        .build_async()
+        .map_err(|err| Error::Esplora(err.to_string()))
+}
+
 fn next_esplora_backoff(backoff: &mut Duration) -> Duration {
     let current = *backoff;
     *backoff = (*backoff * 2).min(MAX_ESPLORA_BACKOFF);
@@ -24,9 +33,7 @@ pub(crate) async fn sync_esplora_once(
     engine: &BdkWalletEngine,
     config: &EsploraConfig,
 ) -> Result<(), Error> {
-    let client = Builder::new(&config.url)
-        .build_async()
-        .map_err(|err| Error::Esplora(err.to_string()))?;
+    let client = build_esplora_client(config)?;
     let request = {
         let wallet_with_db = engine.wallet_with_db.lock().await;
         wallet_with_db.wallet.start_sync_with_revealed_spks()
@@ -49,7 +56,6 @@ pub(crate) async fn sync_esplora(
     config: &EsploraConfig,
     cancel_token: CancellationToken,
 ) -> Result<(), Error> {
-    let url = &config.url;
     let parallel_requests = config.parallel_requests;
     let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
     let initial_backoff = configured_interval.max(MIN_ESPLORA_BACKOFF);
@@ -77,7 +83,7 @@ pub(crate) async fn sync_esplora(
                 let client = match &esplora_client {
                     Some(c) => c.clone(),
                     None => {
-                        match Builder::new(url).build_async() {
+                        match build_esplora_client(config) {
                             Ok(c) => {
                                 esplora_client = Some(c.clone());
                                 c
@@ -240,8 +246,7 @@ pub(crate) async fn broadcast_esplora(
     config: &EsploraConfig,
     tx: Transaction,
 ) -> Result<BroadcastOutcome, BroadcastFailure> {
-    let client = Builder::new(&config.url)
-        .build_async()
+    let client = build_esplora_client(config)
         .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
 
     tracing::info!(
@@ -272,9 +277,7 @@ pub(crate) async fn fetch_fee_rate_esplora(
     config: &EsploraConfig,
     target_blocks: u16,
 ) -> Result<f64, Error> {
-    let client = Builder::new(&config.url)
-        .build_async()
-        .map_err(|e| Error::Esplora(e.to_string()))?;
+    let client = build_esplora_client(config)?;
 
     let estimates = client
         .get_fee_estimates()
@@ -310,7 +313,74 @@ pub(crate) async fn fetch_fee_rate_esplora(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+
+    use bdk_wallet::bitcoin::bip32::{Xpriv, Xpub};
+    use bdk_wallet::bitcoin::secp256k1::Secp256k1;
+    use bdk_wallet::bitcoin::{absolute, transaction, Network};
+
     use super::*;
+
+    struct MockResponse {
+        status: u16,
+        body: &'static str,
+        delay: Duration,
+    }
+
+    fn start_mock_esplora(
+        responses: Vec<MockResponse>,
+    ) -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Esplora");
+        let address = listener.local_addr().expect("mock Esplora address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let request_counter = Arc::clone(&requests);
+        let server = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept mock request");
+                request_counter.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0_u8; 16 * 1024];
+                let _ = stream.read(&mut request);
+                thread::sleep(response.delay);
+                let reason = match response.status {
+                    200 => "OK",
+                    400 => "Bad Request",
+                    429 => "Too Many Requests",
+                    _ => "Service Unavailable",
+                };
+                let reply = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.status,
+                    reason,
+                    response.body.len(),
+                    response.body
+                );
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (format!("http://{address}"), requests, server)
+    }
+
+    fn config(url: String, timeout: u64, retries: usize) -> EsploraConfig {
+        EsploraConfig {
+            url,
+            parallel_requests: 1,
+            request_timeout_secs: timeout,
+            max_retries: retries,
+        }
+    }
+
+    fn empty_transaction() -> Transaction {
+        Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: Vec::new(),
+            output: Vec::new(),
+        }
+    }
 
     #[test]
     fn classify_esplora_broadcast_errors() {
@@ -326,5 +396,142 @@ mod tests {
             classify_esplora_broadcast_error("unexpected backend response"),
             BroadcastErrorKind::Unknown
         );
+    }
+
+    #[tokio::test]
+    async fn fee_estimate_uses_compatible_esplora_response_and_nearest_target() {
+        let (url, requests, server) = start_mock_esplora(vec![MockResponse {
+            status: 200,
+            body: r#"{"1":12.5,"6":4.0,"144":1.2}"#,
+            delay: Duration::ZERO,
+        }]);
+
+        let rate = fetch_fee_rate_esplora(&config(url, 2, 0), 3)
+            .await
+            .expect("fee estimate");
+
+        assert_eq!(rate, 4.0);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.join().expect("mock Esplora server");
+    }
+
+    #[tokio::test]
+    async fn broadcast_accepts_success_and_already_known() {
+        let (url, _, server) = start_mock_esplora(vec![MockResponse {
+            status: 200,
+            body: "accepted",
+            delay: Duration::ZERO,
+        }]);
+        assert_eq!(
+            broadcast_esplora(&config(url, 2, 0), empty_transaction())
+                .await
+                .expect("accepted broadcast"),
+            BroadcastOutcome::Accepted
+        );
+        server.join().expect("accepted server");
+
+        let (url, _, server) = start_mock_esplora(vec![MockResponse {
+            status: 400,
+            body: "transaction already in mempool",
+            delay: Duration::ZERO,
+        }]);
+        assert_eq!(
+            broadcast_esplora(&config(url, 2, 0), empty_transaction())
+                .await
+                .expect("already-known broadcast"),
+            BroadcastOutcome::AlreadyKnown
+        );
+        server.join().expect("already-known server");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_is_retried_within_configured_bound() {
+        let (url, requests, server) = start_mock_esplora(vec![
+            MockResponse {
+                status: 429,
+                body: "rate limited",
+                delay: Duration::ZERO,
+            },
+            MockResponse {
+                status: 200,
+                body: r#"{"1":8.0}"#,
+                delay: Duration::ZERO,
+            },
+        ]);
+
+        assert_eq!(
+            fetch_fee_rate_esplora(&config(url, 2, 1), 1)
+                .await
+                .expect("retry succeeds"),
+            8.0
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        server.join().expect("retry server");
+    }
+
+    #[tokio::test]
+    async fn malformed_and_timed_out_responses_fail_closed() {
+        let (url, _, server) = start_mock_esplora(vec![MockResponse {
+            status: 200,
+            body: "not-json",
+            delay: Duration::ZERO,
+        }]);
+        assert!(fetch_fee_rate_esplora(&config(url, 2, 0), 1).await.is_err());
+        server.join().expect("malformed server");
+
+        let (url, _, server) = start_mock_esplora(vec![MockResponse {
+            status: 200,
+            body: r#"{"1":8.0}"#,
+            delay: Duration::from_secs(2),
+        }]);
+        assert!(fetch_fee_rate_esplora(&config(url, 1, 0), 1).await.is_err());
+        server.join().expect("timeout server");
+    }
+
+    #[tokio::test]
+    async fn sync_network_wait_does_not_hold_the_wallet_lock() {
+        let (url, requests, server) = start_mock_esplora(vec![MockResponse {
+            status: 200,
+            body: "not-a-tip-height",
+            delay: Duration::from_millis(500),
+        }]);
+        let secp = Secp256k1::new();
+        let xpriv = Xpriv::new_master(Network::Regtest, &[41; 32]).expect("master key");
+        let xpub = Xpub::from_priv(&secp, &xpriv);
+        let descriptors = crate::DescriptorConfig::new(
+            format!("tr({xpub}/0/*)"),
+            format!("tr({xpub}/1/*)"),
+            Network::Regtest,
+        )
+        .expect("descriptors");
+        let root = tempfile::tempdir().expect("wallet directory");
+        let config = config(url, 2, 0);
+        let engine = BdkWalletEngine::open_watch_only(
+            descriptors,
+            crate::ChainSource::Esplora(config.clone()),
+            root.path(),
+        )
+        .expect("watch-only wallet");
+        engine
+            .reveal_addresses_to(bdk_wallet::KeychainKind::External, 0)
+            .await
+            .expect("reveal one script");
+        let sync_engine = engine.clone();
+        let sync = tokio::spawn(async move { sync_esplora_once(&sync_engine, &config).await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while requests.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("network request started");
+        let wallet = tokio::time::timeout(Duration::from_millis(100), engine.wallet_with_db.lock())
+            .await
+            .expect("wallet lock remains available during network request");
+        drop(wallet);
+
+        assert!(sync.await.expect("sync task").is_err());
+        server.join().expect("delayed sync server");
     }
 }

@@ -373,6 +373,12 @@ pub struct Bdk {
     /// Number of scripts to request in each Electrum sync batch
     #[serde(default = "default_bdk_electrum_batch_size")]
     pub electrum_batch_size: usize,
+    /// Per-request chain backend timeout in seconds.
+    #[serde(default = "default_bdk_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// Maximum Esplora retries for retryable HTTP responses.
+    #[serde(default = "default_bdk_esplora_max_retries")]
+    pub esplora_max_retries: usize,
     /// Bitcoin RPC host (when chain_source_type = "bitcoinrpc")
     pub bitcoind_rpc_host: Option<String>,
     /// Bitcoin RPC port
@@ -456,6 +462,8 @@ impl Default for Bdk {
             esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
             electrum_url: None,
             electrum_batch_size: default_bdk_electrum_batch_size(),
+            request_timeout_secs: default_bdk_request_timeout_secs(),
+            esplora_max_retries: default_bdk_esplora_max_retries(),
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
@@ -496,6 +504,27 @@ impl Bdk {
             return Err("BDK batch_config.poll_interval_secs must be >= 1".to_string());
         }
 
+        if !(1..=cdk_bdk::MAX_CHAIN_REQUEST_TIMEOUT_SECS).contains(&self.request_timeout_secs) {
+            return Err(format!(
+                "BDK request_timeout_secs must be between 1 and {}",
+                cdk_bdk::MAX_CHAIN_REQUEST_TIMEOUT_SECS
+            ));
+        }
+
+        if !(1..=cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS).contains(&self.esplora_parallel_requests) {
+            return Err(format!(
+                "BDK esplora_parallel_requests must be between 1 and {}",
+                cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS
+            ));
+        }
+
+        if self.esplora_max_retries > cdk_bdk::MAX_ESPLORA_MAX_RETRIES {
+            return Err(format!(
+                "BDK esplora_max_retries must not exceed {}",
+                cdk_bdk::MAX_ESPLORA_MAX_RETRIES
+            ));
+        }
+
         validate_bdk_fee_options(&self.batch_config.fee_options)?;
 
         Ok(())
@@ -530,6 +559,16 @@ fn default_bdk_esplora_parallel_requests() -> usize {
 #[cfg(feature = "bdk")]
 fn default_bdk_electrum_batch_size() -> usize {
     5
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_request_timeout_secs() -> u64 {
+    cdk_bdk::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_esplora_max_retries() -> usize {
+    cdk_bdk::DEFAULT_ESPLORA_MAX_RETRIES
 }
 
 #[cfg(feature = "bdk")]
@@ -1194,7 +1233,7 @@ pub struct Federation {
 }
 
 /// Local chain access for the federated watch-only BDK wallet.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg(feature = "federation")]
 #[serde(deny_unknown_fields)]
 pub struct FederationOnchainWallet {
@@ -1214,6 +1253,12 @@ pub struct FederationOnchainWallet {
     /// Maximum parallel Esplora requests.
     #[serde(default = "default_bdk_esplora_parallel_requests")]
     pub esplora_parallel_requests: usize,
+    /// Per-request chain backend timeout in seconds.
+    #[serde(default = "default_bdk_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// Maximum Esplora retries for retryable HTTP responses.
+    #[serde(default = "default_bdk_esplora_max_retries")]
+    pub esplora_max_retries: usize,
     /// Bitcoin Core RPC host.
     pub bitcoind_rpc_host: Option<String>,
     /// Bitcoin Core RPC port.
@@ -1228,6 +1273,25 @@ pub struct FederationOnchainWallet {
 }
 
 #[cfg(feature = "federation")]
+impl fmt::Debug for FederationOnchainWallet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederationOnchainWallet")
+            .field("enabled", &self.enabled)
+            .field("chain_source_type", &self.chain_source_type)
+            .field("chain_source_scope", &self.chain_source_scope)
+            .field("chain_source_id", &self.chain_source_id)
+            .field("endpoint", &"<redacted>")
+            .field("credentials", &"<redacted>")
+            .field("esplora_parallel_requests", &self.esplora_parallel_requests)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("esplora_max_retries", &self.esplora_max_retries)
+            .field("sync_interval_secs", &self.sync_interval_secs)
+            .finish()
+    }
+}
+
+#[cfg(feature = "federation")]
 impl Default for FederationOnchainWallet {
     fn default() -> Self {
         Self {
@@ -1237,6 +1301,8 @@ impl Default for FederationOnchainWallet {
             chain_source_id: None,
             esplora_url: None,
             esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
+            request_timeout_secs: default_bdk_request_timeout_secs(),
+            esplora_max_retries: default_bdk_esplora_max_retries(),
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,

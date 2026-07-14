@@ -1701,12 +1701,25 @@ impl MintState {
         let mut statuses = Vec::with_capacity(self.federation.onchain_wallets.len());
         for wallet in &self.federation.onchain_wallets {
             let status = wallet.sync_status().await;
+            let observation_source = wallet.observation_source();
+            let correlated_source_warning = matches!(
+                observation_source.scope,
+                cdk_bdk::FederatedChainSourceScope::Shared
+            );
             statuses.push(FederationOnchainWalletStatus {
                 source: match status.source {
                     cdk_bdk::ChainSourceKind::Esplora => "esplora",
                     cdk_bdk::ChainSourceKind::BitcoinRpc => "bitcoin_rpc",
                 }
                 .to_string(),
+                source_scope: if correlated_source_warning {
+                    "shared"
+                } else {
+                    "independent"
+                }
+                .to_string(),
+                source_id: observation_source.source_id.clone(),
+                correlated_source_warning,
                 health: match status.health {
                     cdk_bdk::FederatedWalletSyncHealth::NeverSynced => "never_synced",
                     cdk_bdk::FederatedWalletSyncHealth::Healthy => "healthy",
@@ -2968,23 +2981,45 @@ fn initialize_accepted_federation_onchain_wallets(
                 &local_config.storage_root,
                 local_config.observation_source.clone(),
             )?;
+            if matches!(
+                wallet.observation_source().scope,
+                cdk_bdk::FederatedChainSourceScope::Shared
+            ) {
+                tracing::warn!(
+                    source = ?wallet.engine().chain_source_kind(),
+                    source_id = %wallet.observation_source().source_id,
+                    "Federated BDK chain source is intentionally shared; member quorum does not provide independent upstream observations"
+                );
+            }
             let sync_wallet = wallet.clone();
             let sync_interval = local_config.sync_interval;
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(sync_interval);
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                const MAX_SYNC_RETRY_BACKOFF: std::time::Duration =
+                    std::time::Duration::from_secs(300);
+                let initial_backoff = sync_interval.max(std::time::Duration::from_secs(5));
+                let mut retry_backoff = initial_backoff;
+                let mut delay = std::time::Duration::ZERO;
                 loop {
-                    interval.tick().await;
-                    if sync_wallet.sync_once().await.is_err() {
-                        let status = sync_wallet.sync_status().await;
-                        if status.consecutive_failures == 1
-                            || status.consecutive_failures.is_power_of_two()
-                        {
-                            tracing::warn!(
-                                source = ?status.source,
-                                consecutive_failures = status.consecutive_failures,
-                                "Federated BDK synchronization did not complete; wallet remains unavailable for consensus-dependent actions"
-                            );
+                    tokio::time::sleep(delay).await;
+                    match sync_wallet.sync_once().await {
+                        Ok(()) => {
+                            delay = sync_interval;
+                            retry_backoff = initial_backoff;
+                        }
+                        Err(_) => {
+                            let status = sync_wallet.sync_status().await;
+                            if status.consecutive_failures == 1
+                                || status.consecutive_failures.is_power_of_two()
+                            {
+                                tracing::warn!(
+                                    source = ?status.source,
+                                    consecutive_failures = status.consecutive_failures,
+                                    retry_delay_secs = retry_backoff.as_secs(),
+                                    "Federated BDK synchronization did not complete; wallet remains unavailable for consensus-dependent actions"
+                                );
+                            }
+                            delay = retry_backoff;
+                            retry_backoff = (retry_backoff * 2).min(MAX_SYNC_RETRY_BACKOFF);
                         }
                     }
                 }

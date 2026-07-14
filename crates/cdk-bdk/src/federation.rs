@@ -622,6 +622,8 @@ mod tests {
         ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1/private-token".to_string(),
             parallel_requests: 1,
+            request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+            max_retries: crate::chain::DEFAULT_ESPLORA_MAX_RETRIES,
         })
     }
 
@@ -631,6 +633,7 @@ mod tests {
             port: 1,
             user: "private-user".to_string(),
             password: "private-password".to_string(),
+            request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
         })
     }
 
