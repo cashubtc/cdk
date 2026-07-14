@@ -1537,36 +1537,69 @@ multi-member failover.
 
 **Work:**
 
-- [ ] Allow any ready member to broadcast the persisted signed transaction.
-- [ ] Reuse existing accepted/already-known/rejected/transient/unknown broadcast
+- [x] Allow any ready member to broadcast the persisted signed transaction.
+- [x] Reuse existing accepted/already-known/rejected/transient/unknown broadcast
   classification.
-- [ ] Persist broadcast intent before the network request.
-- [ ] Treat already-known transaction as success-equivalent.
-- [ ] Retry transient and ambiguous failures without rebuilding or resigning.
-- [ ] Record deterministic rejection for operator review and replacement policy.
-- [ ] Reconcile mempool presence and confirmations from local chain sources.
-- [ ] Prevent repeated broadcaster responses from duplicating payment completion
+- [x] Persist broadcast intent before the network request.
+- [x] Treat already-known transaction as success-equivalent.
+- [x] Retry transient and ambiguous failures without rebuilding or resigning.
+- [x] Record deterministic rejection for operator review and replacement policy.
+- [x] Reconcile mempool presence and confirmations from local chain sources.
+- [x] Prevent repeated broadcaster responses from duplicating payment completion
   events.
-- [ ] Add proposer/coordinator/broadcaster failover timers that affect liveness,
+- [x] Add proposer/coordinator/broadcaster failover timers that affect liveness,
   not transaction authority.
 
 **Success criteria:**
 
-- [ ] Loss of the original proposer or coordinator does not prevent another
+- [x] Loss of the original proposer or coordinator does not prevent another
   member from broadcasting.
-- [ ] Broadcast timeout cannot create a second transaction or payment.
-- [ ] All members converge on one txid and broadcast state.
-- [ ] Restart automatically resumes safe rebroadcast and reconciliation.
+- [x] Broadcast timeout cannot create a second transaction or payment.
+- [x] All members converge on one txid and broadcast state.
+- [x] Restart automatically resumes safe rebroadcast and reconciliation.
 
 **Required tests:**
 
-- [ ] Accepted, already-known, deterministic rejection, transient failure, and
+- [x] Accepted, already-known, deterministic rejection, transient failure, and
   unknown response.
-- [ ] Response lost after backend accepted transaction.
-- [ ] Original broadcaster offline before and after request.
-- [ ] Multiple members broadcasting the same transaction concurrently.
-- [ ] Restart with signed-not-broadcast and broadcast-not-observed states.
-- [ ] Mempool eviction and later rebroadcast.
+- [x] Response lost after backend accepted transaction.
+- [x] Original broadcaster offline before and after request.
+- [x] Multiple members broadcasting the same transaction concurrently.
+- [x] Restart with signed-not-broadcast and broadcast-not-observed states.
+- [x] Mempool eviction and later rebroadcast.
+
+**Milestone record:** completed on 2026-07-14. Broadcast is now an isolated
+edge loop over the accepted transaction projection and each member's existing
+watch-only BDK engine. Consensus first persists a txid-bound
+`TransactionBroadcastIntent`; only then may any ready member submit the exact
+signed bytes through its local chain source. The implementation exposes and
+reuses the standalone BDK backend's accepted, already-known, deterministic
+rejection, transient, and unknown taxonomy instead of adding another backend
+classifier. Raw backend detail is redacted and bounded before it can enter an
+authenticated `TransactionBroadcastObservation`.
+
+The first success-equivalent observation makes broadcast state sticky. A lost
+response, transient failure, unknown result, member outage, restart, or later
+mempool uncertainty schedules only an exact-byte retry; it cannot rebuild,
+resign, change the txid, release inputs, or complete a Cashu payment. Already
+known is success-equivalent. Deterministic rejection remains durably visible in
+the ordered journal for operator review and uses a slower local retry timer.
+Independently synced BDK state contributes confirmed block evidence, after
+which all members stop rebroadcasting. Proposer, signing-coordinator, and
+broadcaster identity are not transaction authority, and multiple members may
+safely race the same bytes.
+
+All 370 enabled `cdk-common` tests, all 111 `cdk-bdk` tests, the 16 CDK
+transaction-filtered tests, and the two isolated Axum broadcast tests pass.
+They cover every backend result class, accepted-response loss followed by an
+already-known retry, deterministic rejection, member-local ambiguous retry,
+multiple observer races, signed-not-broadcast and broadcast-not-observed
+restart, wrong-txid rejection, sticky payment-intent state, post-success
+rebroadcast, confirmation convergence, and the rule that locally injected
+unconfirmed BDK bytes are not confirmation evidence. The relevant all-targets
+check passes. Strict clippy for the touched crates remains blocked only by the
+repository's existing Rust 1.95 warning baseline; ordinary no-dependency
+clippy reports no warning in the new broadcast module.
 
 ### Milestone 17: integrate outgoing on-chain melts and existing sagas
 

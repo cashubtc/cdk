@@ -33,6 +33,7 @@ mod aleph_bft_network;
 mod aleph_bft_routes;
 mod aleph_bft_runtime;
 mod aleph_bft_session;
+mod broadcast;
 mod catch_up_routes;
 mod dkg_driver;
 mod dkg_routes;
@@ -60,6 +61,7 @@ pub(crate) use self::aleph_bft_session::{
     halt_current_federation_aleph_bft_session, start_federation_aleph_bft_live_session,
     AlephBftSessionSupervisor,
 };
+pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 #[cfg(test)]
 use self::dkg_driver::{

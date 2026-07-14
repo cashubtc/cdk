@@ -205,7 +205,9 @@ impl Mint {
                     ));
                 }
                 FederationOperation::TransactionProposal(_)
-                | FederationOperation::TransactionSigned(_) => {}
+                | FederationOperation::TransactionSigned(_)
+                | FederationOperation::TransactionBroadcastIntent(_)
+                | FederationOperation::TransactionBroadcastObservation(_) => {}
             }
         }
 

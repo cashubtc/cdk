@@ -30,6 +30,7 @@ use cdk_common::federation::{
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, FederationSignedTransaction, FederationSwapOperation,
+    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
     FederationTransactionProposal, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{
@@ -694,6 +695,11 @@ impl FederationRuntimeConfig {
                 self.validate_federation_observer(proposal.proposer)
             }
             FederationOperation::TransactionSigned(_) => Ok(()),
+            FederationOperation::TransactionBroadcastIntent(_) => Ok(()),
+            FederationOperation::TransactionBroadcastObservation(observation) => {
+                observation.validate()?;
+                self.validate_federation_observer(observation.observer)
+            }
         }
     }
 
@@ -923,6 +929,34 @@ impl FederationRuntimeConfig {
         signed: FederationSignedTransaction,
     ) -> FederationOperationEnvelope {
         self.operation_envelope(FederationOperation::TransactionSigned(signed))
+    }
+
+    /// Build an authorized consensus operation that precedes network broadcast.
+    pub fn transaction_broadcast_intent_operation(
+        &self,
+        intent: FederationTransactionBroadcastIntent,
+    ) -> FederationOperationEnvelope {
+        self.operation_envelope(FederationOperation::TransactionBroadcastIntent(intent))
+    }
+
+    /// Build an authenticated local-backend broadcast observation.
+    pub fn transaction_broadcast_observation_operation(
+        &self,
+        observation: FederationTransactionBroadcastObservation,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        observation.validate()?;
+        if observation.observer != self.member_id() {
+            return Err(FederationError::OperationAuthorMismatch {
+                author: self.member_id(),
+                claimed_member: observation.observer,
+            }
+            .into());
+        }
+        Ok(
+            self.operation_envelope(FederationOperation::TransactionBroadcastObservation(
+                observation,
+            )),
+        )
     }
 
     /// Validate a federated melt submission before consensus admission.
@@ -1696,6 +1730,16 @@ impl Mint {
             }
             FederationOperation::TransactionSigned(signed) => {
                 self.apply_federation_signed_transaction(entry, signed)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionBroadcastIntent(intent) => {
+                self.apply_federation_transaction_broadcast_intent(entry, intent)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionBroadcastObservation(observation) => {
+                self.apply_federation_transaction_broadcast_observation(entry, observation)
                     .await?;
                 Ok(true)
             }

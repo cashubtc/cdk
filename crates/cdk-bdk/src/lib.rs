@@ -35,13 +35,17 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::chain::{BitcoinRpcConfig, ChainSource, ChainSourceKind, ElectrumConfig, EsploraConfig};
+pub use crate::chain::{
+    BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ChainSource,
+    ChainSourceKind, ElectrumConfig, EsploraConfig,
+};
 pub use crate::error::Error;
 pub use crate::federation::{
     FederatedBdkLocalConfig, FederatedBdkWallet, FederatedChainSourceDescriptor,
-    FederatedChainSourceScope, FederatedWalletConfig, FederatedWalletKeychain,
-    FederatedWalletOutput, FederatedWalletOutputConfirmation, FederatedWalletReadiness,
-    FederatedWalletScope, FederatedWalletSyncHealth, FederatedWalletSyncStatus,
+    FederatedChainSourceScope, FederatedTransactionConfirmation, FederatedWalletConfig,
+    FederatedWalletKeychain, FederatedWalletOutput, FederatedWalletOutputConfirmation,
+    FederatedWalletReadiness, FederatedWalletScope, FederatedWalletSyncHealth,
+    FederatedWalletSyncStatus,
 };
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bdk_wallet::bitcoin::hashes::{sha256, Hash};
-use bdk_wallet::bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, TxOut};
+use bdk_wallet::bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, TxOut, Txid};
 use bdk_wallet::KeychainKind;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -287,6 +287,17 @@ pub struct FederatedWalletOutputConfirmation {
     pub confirmation_depth: u32,
 }
 
+/// Confirmed location of one exact federated wallet transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FederatedTransactionConfirmation {
+    /// Block containing the transaction.
+    pub block_hash: BlockHash,
+    /// Height of the containing block.
+    pub block_height: u32,
+    /// Depth relative to the locally persisted tip.
+    pub confirmation_depth: u32,
+}
+
 /// One descriptor-owned output observed in the member-local BDK graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederatedWalletOutput {
@@ -532,6 +543,27 @@ impl FederatedBdkWallet {
             .collect()
     }
 
+    /// Return local confirmed-chain evidence for an exact transaction.
+    pub async fn transaction_confirmation(
+        &self,
+        txid: Txid,
+    ) -> Option<FederatedTransactionConfirmation> {
+        let wallet = self.engine.wallet_with_db.lock().await;
+        let transaction = wallet.wallet.get_tx(txid)?;
+        let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = transaction.chain_position
+        else {
+            return None;
+        };
+        let tip_height = wallet.wallet.latest_checkpoint().height();
+        Some(FederatedTransactionConfirmation {
+            block_hash: anchor.block_id.hash,
+            block_height: anchor.block_id.height,
+            confirmation_depth: tip_height
+                .saturating_sub(anchor.block_id.height)
+                .saturating_add(1),
+        })
+    }
+
     #[cfg(test)]
     fn database_dir(&self) -> &Path {
         self.database_dir.as_path()
@@ -640,6 +672,13 @@ mod tests {
             assert_eq!(observed[0].derivation_index, 0);
             assert_eq!(observed[0].txout.value.to_sat(), 50_000);
             assert_eq!(observed[0].confirmation, None);
+            assert_eq!(
+                wallet
+                    .transaction_confirmation(funding.compute_txid())
+                    .await,
+                None,
+                "locally injected unconfirmed bytes are not confirmation evidence"
+            );
         }
         assert_eq!(
             wallets[0].sync_status().await.source,

@@ -14,8 +14,9 @@ use cdk_common::federation::{
     FederationFrostApplicationId, FederationFrostInputSignatureAudit,
     FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
     FederationOnchainPaymentIntentRecord, FederationOperationId, FederationSignedTransaction,
-    FederationTransactionChangeOutput, FederationTransactionInput,
-    FederationTransactionPolicyAudit, FederationTransactionProposal,
+    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
+    FederationTransactionBroadcastResult, FederationTransactionChangeOutput,
+    FederationTransactionInput, FederationTransactionPolicyAudit, FederationTransactionProposal,
     FederationTransactionRecipientOutput, FederationTransactionScope, FederationTransactionState,
 };
 
@@ -248,4 +249,126 @@ async fn signed_operation_converges_exact_bytes_and_rejects_conflicting_replay()
         .validate_federation_signed_transaction_submission(&conflicting)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn broadcast_operations_persist_intent_before_results_and_resume_after_restart() {
+    let (runtime, _) = runtime_with_address_application();
+    let (initial_state, signed) = signed_fixture();
+    let (first, first_store) = federated_test_mint(runtime.clone()).await;
+    let (second, second_store) = federated_test_mint(runtime.clone()).await;
+    persist_transaction_state(&first_store, &initial_state).await;
+    persist_transaction_state(&second_store, &initial_state).await;
+
+    let signed_entry =
+        accepted_entry_without_journal(20, runtime.transaction_signed_operation(signed.clone()));
+    for (mint, store) in [(&first, &first_store), (&second, &second_store)] {
+        persist_journal_entry(store, &signed_entry).await;
+        assert!(mint
+            .apply_accepted_federation_operation(&signed_entry)
+            .await
+            .expect("apply signed transaction"));
+    }
+    let premature = FederationTransactionBroadcastObservation {
+        proposal_id: signed.proposal_id,
+        txid: signed.txid,
+        observer: runtime.member_id(),
+        attempt: 1,
+        result: FederationTransactionBroadcastResult::Unknown,
+        detail: Some("ambiguous response".to_string()),
+    };
+    assert!(first
+        .validate_federation_transaction_broadcast_observation_submission(&premature)
+        .await
+        .is_err());
+
+    let intent_entry = accepted_entry_without_journal(
+        21,
+        runtime.transaction_broadcast_intent_operation(FederationTransactionBroadcastIntent {
+            proposal_id: signed.proposal_id,
+            txid: signed.txid,
+        }),
+    );
+    for (mint, store) in [(&first, &first_store), (&second, &second_store)] {
+        persist_journal_entry(store, &intent_entry).await;
+        assert!(mint
+            .apply_accepted_federation_operation(&intent_entry)
+            .await
+            .expect("apply broadcast intent"));
+    }
+
+    let unknown_entry = accepted_entry_without_journal(
+        22,
+        runtime
+            .transaction_broadcast_observation_operation(premature)
+            .expect("unknown observation"),
+    );
+    for (mint, store) in [(&first, &first_store), (&second, &second_store)] {
+        persist_journal_entry(store, &unknown_entry).await;
+        assert!(mint
+            .apply_accepted_federation_operation(&unknown_entry)
+            .await
+            .expect("apply ambiguous result"));
+    }
+    assert_eq!(
+        first
+            .federation_transaction_state()
+            .await
+            .expect("pending state")
+            .accepted_transaction(signed.proposal_id)
+            .expect("transaction")
+            .state,
+        FederationAcceptedTransactionState::BroadcastPending
+    );
+
+    let already_known_entry = accepted_entry_without_journal(
+        23,
+        runtime
+            .transaction_broadcast_observation_operation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id: signed.proposal_id,
+                    txid: signed.txid,
+                    observer: runtime.member_id(),
+                    attempt: 2,
+                    result: FederationTransactionBroadcastResult::AlreadyKnown,
+                    detail: None,
+                },
+            )
+            .expect("already-known observation"),
+    );
+    for (mint, store) in [(&first, &first_store), (&second, &second_store)] {
+        persist_journal_entry(store, &already_known_entry).await;
+        assert!(mint
+            .apply_accepted_federation_operation(&already_known_entry)
+            .await
+            .expect("apply already-known result"));
+    }
+    let first_state = first
+        .federation_transaction_state()
+        .await
+        .expect("first broadcast state");
+    assert_eq!(
+        first_state,
+        second
+            .federation_transaction_state()
+            .await
+            .expect("second broadcast state")
+    );
+    let durable = first_state
+        .accepted_transaction(signed.proposal_id)
+        .expect("durable broadcast");
+    assert_eq!(durable.state, FederationAcceptedTransactionState::Broadcast);
+    assert_eq!(durable.signed.as_ref(), Some(&signed));
+    let broadcast = durable.broadcast.as_ref().expect("broadcast");
+    assert_eq!(broadcast.observations.len(), 1);
+    assert!(broadcast.first_success.is_some());
+
+    let restarted = restart_federated_test_mint(runtime, Arc::clone(&first_store)).await;
+    assert_eq!(
+        restarted
+            .federation_transaction_state()
+            .await
+            .expect("restarted broadcast state"),
+        first_state
+    );
 }

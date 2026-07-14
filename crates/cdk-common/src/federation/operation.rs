@@ -19,8 +19,9 @@ use super::journal::FederationJournalEntry;
 use super::{
     FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
     FederationConfig, FederationError, FederationId, FederationPaymentObservationContext,
-    FederationSignedTransaction, FederationTransactionProposal, MemberConfigPrivate, MemberId,
-    Result,
+    FederationSignedTransaction, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal, MemberConfigPrivate,
+    MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -152,6 +153,10 @@ pub enum FederationOperationKind {
     TransactionProposal,
     /// Persist one exact threshold-signed on-chain transaction.
     TransactionSigned,
+    /// Persist authorization to broadcast one exact signed transaction.
+    TransactionBroadcastIntent,
+    /// Persist one authenticated member broadcast result.
+    TransactionBroadcastObservation,
 }
 
 impl fmt::Display for FederationOperationKind {
@@ -170,6 +175,10 @@ impl fmt::Display for FederationOperationKind {
             Self::KeysetRotation => f.write_str("keyset_rotation"),
             Self::TransactionProposal => f.write_str("transaction_proposal"),
             Self::TransactionSigned => f.write_str("transaction_signed"),
+            Self::TransactionBroadcastIntent => f.write_str("transaction_broadcast_intent"),
+            Self::TransactionBroadcastObservation => {
+                f.write_str("transaction_broadcast_observation")
+            }
         }
     }
 }
@@ -766,7 +775,9 @@ impl FederationPaymentObservation {
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
             | FederationOperation::TransactionProposal(_)
-            | FederationOperation::TransactionSigned(_) => None,
+            | FederationOperation::TransactionSigned(_)
+            | FederationOperation::TransactionBroadcastIntent(_)
+            | FederationOperation::TransactionBroadcastObservation(_) => None,
         }
     }
 
@@ -925,7 +936,9 @@ impl FederationPaymentObservationQuarantineRecord {
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
             | FederationOperation::TransactionProposal(_)
-            | FederationOperation::TransactionSigned(_) => None,
+            | FederationOperation::TransactionSigned(_)
+            | FederationOperation::TransactionBroadcastIntent(_)
+            | FederationOperation::TransactionBroadcastObservation(_) => None,
         }
     }
 }
@@ -1494,6 +1507,10 @@ pub enum FederationOperation {
     TransactionProposal(FederationTransactionProposal),
     /// Accept the exact threshold-signed transaction after consensus.
     TransactionSigned(FederationSignedTransaction),
+    /// Authorize network submission only after exact signed-byte persistence.
+    TransactionBroadcastIntent(FederationTransactionBroadcastIntent),
+    /// Record one authenticated local-backend broadcast result.
+    TransactionBroadcastObservation(FederationTransactionBroadcastObservation),
 }
 
 impl FederationOperation {
@@ -1516,6 +1533,12 @@ impl FederationOperation {
             Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
             Self::TransactionProposal(_) => FederationOperationKind::TransactionProposal,
             Self::TransactionSigned(_) => FederationOperationKind::TransactionSigned,
+            Self::TransactionBroadcastIntent(_) => {
+                FederationOperationKind::TransactionBroadcastIntent
+            }
+            Self::TransactionBroadcastObservation(_) => {
+                FederationOperationKind::TransactionBroadcastObservation
+            }
         }
     }
 
@@ -1620,7 +1643,10 @@ impl FederationOperation {
                 }));
                 keys
             }
-            Self::Swap(_) | Self::TransactionSigned(_) => Vec::new(),
+            Self::Swap(_)
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => Vec::new(),
         }
     }
 
@@ -1643,7 +1669,9 @@ impl FederationOperation {
             Self::Swap(_)
             | Self::KeysetRotation(_)
             | Self::TransactionProposal(_)
-            | Self::TransactionSigned(_) => None,
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => None,
         }
     }
 
@@ -1662,7 +1690,9 @@ impl FederationOperation {
             | Self::PaymentObservationQuarantine(_)
             | Self::KeysetRotation(_)
             | Self::TransactionProposal(_)
-            | Self::TransactionSigned(_) => {
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => {
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
             Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
@@ -1909,6 +1939,9 @@ impl FederationOperationEnvelope {
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
             FederationOperation::MeltQuotePayment(observation) => Some(observation.observer),
             FederationOperation::TransactionProposal(proposal) => Some(proposal.proposer),
+            FederationOperation::TransactionBroadcastObservation(observation) => {
+                Some(observation.observer)
+            }
             FederationOperation::AddressAllocation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
@@ -1917,7 +1950,8 @@ impl FederationOperationEnvelope {
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
-            | FederationOperation::TransactionSigned(_) => None,
+            | FederationOperation::TransactionSigned(_)
+            | FederationOperation::TransactionBroadcastIntent(_) => None,
         };
         if let Some(claimed_observer) = claimed_observer {
             if claimed_observer != authorization.author {

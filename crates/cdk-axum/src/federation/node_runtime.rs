@@ -48,6 +48,7 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
+    pub(crate) transaction_broadcaster: super::FederationTransactionBroadcaster,
     pub(crate) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
     pub(crate) frost_signing: Option<super::frost_signing::FederationFrostSigningRuntime>,
     #[cfg(test)]
@@ -135,6 +136,7 @@ impl FederationNodeRuntime {
             dkg_member_admission: None,
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
+            transaction_broadcaster: super::FederationTransactionBroadcaster::default(),
             onchain_wallets: Vec::new(),
             frost_signing: None,
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
@@ -165,6 +167,17 @@ impl FederationNodeRuntime {
         {
             mint.validate_federation_signed_transaction_submission(signed)
                 .await?;
+        }
+        match &envelope.operation {
+            cdk::federation::FederationOperation::TransactionBroadcastIntent(intent) => {
+                mint.validate_federation_transaction_broadcast_intent_submission(intent)
+                    .await?;
+            }
+            cdk::federation::FederationOperation::TransactionBroadcastObservation(observation) => {
+                mint.validate_federation_transaction_broadcast_observation_submission(observation)
+                    .await?;
+            }
+            _ => {}
         }
         Ok(())
     }

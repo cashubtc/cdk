@@ -557,7 +557,8 @@ impl BdkWalletEngine {
             .map_err(|failure| Error::Wallet(failure.message))
     }
 
-    pub(crate) async fn broadcast_classified(
+    /// Broadcast an exact finalized transaction while preserving backend result classification.
+    pub async fn broadcast_classified(
         &self,
         transaction: Transaction,
     ) -> Result<BroadcastOutcome, BroadcastFailure> {

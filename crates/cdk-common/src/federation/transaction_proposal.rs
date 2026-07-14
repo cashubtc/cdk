@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bitcoin::consensus::{deserialize, serialize};
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{schnorr, Message, Secp256k1, XOnlyPublicKey};
-use bitcoin::{Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+use bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
@@ -39,6 +39,7 @@ const CDK_ONCHAIN_FROST_AUTHORIZATION_MAX_BYTES: usize = 16 * 1024;
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_DESTINATION_SCRIPT_BYTES: usize = 10_000;
 const MAX_FEE_TIER: u32 = 255;
+const MAX_BROADCAST_DETAIL_BYTES: usize = 512;
 
 /// Maximum number of payment intents in one consensus batch.
 pub const FEDERATION_MAX_ONCHAIN_BATCH_INTENTS: usize = 64;
@@ -928,6 +929,10 @@ pub enum FederationAcceptedTransactionState {
     Accepted,
     /// Fully signed and durably recorded before broadcast.
     Signed,
+    /// Broadcast is authorized and recoverable by any ready member.
+    BroadcastPending,
+    /// At least one success-equivalent broadcast observation was accepted.
+    Broadcast,
     /// No longer preferred, while every input remains reserved.
     Abandoned,
     /// Superseded by a consensus-designated replacement proposal.
@@ -954,6 +959,119 @@ pub struct FederationAcceptedTransaction {
     /// Exact finalized transaction and public signing audit, when signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed: Option<FederationSignedTransaction>,
+    /// Durable broadcast authorization and authenticated member observations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broadcast: Option<FederationTransactionBroadcastState>,
+}
+
+/// Consensus authorization to submit one exact signed transaction to Bitcoin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionBroadcastIntent {
+    /// Accepted proposal identity.
+    pub proposal_id: FederationTransactionProposalId,
+    /// Exact signed transaction identity.
+    pub txid: Txid,
+}
+
+/// Classified result of one member's exact-byte broadcast or reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", content = "data", rename_all = "snake_case")]
+pub enum FederationTransactionBroadcastResult {
+    /// The local backend accepted the transaction.
+    Accepted,
+    /// The local backend already knew the transaction.
+    AlreadyKnown,
+    /// The local backend deterministically rejected the transaction.
+    Rejected,
+    /// A retryable transport or upstream failure occurred.
+    Transient,
+    /// The network result is ambiguous and must be retried conservatively.
+    Unknown,
+    /// Local chain synchronization observed the transaction in a block.
+    Confirmed {
+        /// Block containing the transaction.
+        block_hash: BlockHash,
+        /// Height of the containing block.
+        block_height: u32,
+    },
+}
+
+impl FederationTransactionBroadcastResult {
+    /// Return whether the result proves success or on-chain inclusion.
+    #[must_use]
+    pub fn is_success_equivalent(self) -> bool {
+        matches!(
+            self,
+            Self::Accepted | Self::AlreadyKnown | Self::Confirmed { .. }
+        )
+    }
+}
+
+/// Authenticated observation produced by one federation member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionBroadcastObservation {
+    /// Accepted proposal identity.
+    pub proposal_id: FederationTransactionProposalId,
+    /// Exact signed transaction identity.
+    pub txid: Txid,
+    /// Member whose local chain backend produced the result.
+    pub observer: MemberId,
+    /// Monotonic member-local attempt number.
+    pub attempt: u32,
+    /// Bounded result classification.
+    pub result: FederationTransactionBroadcastResult,
+    /// Redacted operator detail for failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl FederationTransactionBroadcastObservation {
+    /// Validate bounded, consensus-safe observation fields.
+    pub fn validate(&self) -> Result<()> {
+        if self.attempt == 0 {
+            return Err(invalid("broadcast attempt is zero"));
+        }
+        if self.detail.as_ref().is_some_and(|detail| {
+            detail.is_empty()
+                || detail.len() > MAX_BROADCAST_DETAIL_BYTES
+                || detail.chars().any(char::is_control)
+                || super::redact_federation_operator_message(detail) != *detail
+        }) {
+            return Err(invalid(
+                "broadcast detail is empty, oversized, or contains control bytes",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One ordered broadcast observation and its journal identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionBroadcastObservationRecord {
+    /// Authenticated member observation.
+    pub observation: FederationTransactionBroadcastObservation,
+    /// Consensus operation identity.
+    pub operation_id: FederationOperationId,
+    /// Accepted journal position.
+    pub operation_index: u64,
+}
+
+/// Durable broadcast authorization and convergence record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationTransactionBroadcastState {
+    /// Consensus operation that first persisted broadcast intent.
+    pub intent_operation_id: FederationOperationId,
+    /// Accepted journal position of the first intent.
+    pub intent_operation_index: u64,
+    /// Latest authenticated observation per member, ordered by member ID.
+    pub observations: Vec<FederationTransactionBroadcastObservationRecord>,
+    /// First success-equivalent observation, retained across later uncertainty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_success: Option<FederationTransactionBroadcastObservationRecord>,
 }
 
 /// Public audit for one input's completed threshold signing attempt.
@@ -1453,6 +1571,7 @@ impl FederationTransactionState {
                 accepted_operation_index,
                 state: FederationAcceptedTransactionState::Accepted,
                 signed: None,
+                broadcast: None,
             },
         );
         self.validate()?;
@@ -1490,6 +1609,127 @@ impl FederationTransactionState {
         signed.validate(&accepted.proposal)?;
         accepted.signed = Some(signed);
         accepted.state = FederationAcceptedTransactionState::Signed;
+        self.validate()?;
+        Ok(FederationTransactionStateOutcome::Updated)
+    }
+
+    /// Persist broadcast authorization before any member performs a network request.
+    pub fn authorize_transaction_broadcast(
+        &mut self,
+        intent: FederationTransactionBroadcastIntent,
+        operation_id: FederationOperationId,
+        operation_index: u64,
+    ) -> Result<FederationTransactionStateOutcome> {
+        if operation_index == 0 {
+            return Err(invalid("broadcast intent operation index is zero"));
+        }
+        let accepted = self
+            .accepted_transactions
+            .get_mut(&intent.proposal_id)
+            .ok_or_else(|| invalid("cannot broadcast an unknown accepted transaction"))?;
+        let signed = accepted
+            .signed
+            .as_ref()
+            .ok_or_else(|| invalid("cannot broadcast a transaction before signed persistence"))?;
+        if signed.txid != intent.txid {
+            return Err(invalid(
+                "broadcast intent txid differs from signed transaction",
+            ));
+        }
+        if accepted.broadcast.is_some() {
+            if accepted.state == FederationAcceptedTransactionState::BroadcastPending
+                || accepted.state == FederationAcceptedTransactionState::Broadcast
+            {
+                return Ok(FederationTransactionStateOutcome::Existing);
+            }
+            return Err(invalid(
+                "broadcast intent conflicts with transaction lifecycle",
+            ));
+        }
+        if accepted.state != FederationAcceptedTransactionState::Signed {
+            return Err(invalid(
+                "transaction is not eligible for broadcast authorization",
+            ));
+        }
+        accepted.broadcast = Some(FederationTransactionBroadcastState {
+            intent_operation_id: operation_id,
+            intent_operation_index: operation_index,
+            observations: Vec::new(),
+            first_success: None,
+        });
+        accepted.state = FederationAcceptedTransactionState::BroadcastPending;
+        self.validate()?;
+        Ok(FederationTransactionStateOutcome::Updated)
+    }
+
+    /// Record one authenticated member result without changing transaction bytes.
+    pub fn record_transaction_broadcast_observation(
+        &mut self,
+        observation: FederationTransactionBroadcastObservation,
+        operation_id: FederationOperationId,
+        operation_index: u64,
+    ) -> Result<FederationTransactionStateOutcome> {
+        observation.validate()?;
+        if operation_index == 0 {
+            return Err(invalid("broadcast observation operation index is zero"));
+        }
+        let accepted = self
+            .accepted_transactions
+            .get_mut(&observation.proposal_id)
+            .ok_or_else(|| invalid("broadcast observation references an unknown transaction"))?;
+        let signed = accepted
+            .signed
+            .as_ref()
+            .ok_or_else(|| invalid("broadcast observation has no signed transaction"))?;
+        if signed.txid != observation.txid {
+            return Err(invalid(
+                "broadcast observation txid differs from signed transaction",
+            ));
+        }
+        let broadcast = accepted
+            .broadcast
+            .as_mut()
+            .ok_or_else(|| invalid("broadcast observation precedes durable intent"))?;
+        let success = observation.result.is_success_equivalent();
+        let record = FederationTransactionBroadcastObservationRecord {
+            observation,
+            operation_id,
+            operation_index,
+        };
+        match broadcast
+            .observations
+            .iter_mut()
+            .find(|existing| existing.observation.observer == record.observation.observer)
+        {
+            Some(existing) if existing.observation.attempt == record.observation.attempt => {
+                if existing.observation == record.observation {
+                    return Ok(FederationTransactionStateOutcome::Existing);
+                }
+                return Err(invalid(
+                    "broadcast attempt replay carries a different result",
+                ));
+            }
+            Some(existing) if existing.observation.attempt > record.observation.attempt => {
+                return Err(invalid("broadcast observation attempt is stale"));
+            }
+            Some(existing) => *existing = record.clone(),
+            None => broadcast.observations.push(record.clone()),
+        }
+        broadcast
+            .observations
+            .sort_by_key(|existing| existing.observation.observer);
+        if success && broadcast.first_success.is_none() {
+            broadcast.first_success = Some(record);
+        }
+        if success
+            && matches!(
+                accepted.state,
+                FederationAcceptedTransactionState::BroadcastPending
+                    | FederationAcceptedTransactionState::Broadcast
+            )
+        {
+            accepted.state = FederationAcceptedTransactionState::Broadcast;
+        }
         self.validate()?;
         Ok(FederationTransactionStateOutcome::Updated)
     }
@@ -1599,12 +1839,18 @@ impl FederationTransactionState {
                 return Err(invalid("accepted transaction durable identity mismatch"));
             }
             validate_policy_audit(&accepted.proposal, &accepted.policy_audit)?;
-            match (&accepted.state, &accepted.signed) {
-                (FederationAcceptedTransactionState::Accepted, Some(_))
-                | (FederationAcceptedTransactionState::Signed, None) => {
+            match (&accepted.state, &accepted.signed, &accepted.broadcast) {
+                (FederationAcceptedTransactionState::Accepted, Some(_), _)
+                | (FederationAcceptedTransactionState::Accepted, _, Some(_))
+                | (FederationAcceptedTransactionState::Signed, None, _)
+                | (FederationAcceptedTransactionState::Signed, _, Some(_))
+                | (FederationAcceptedTransactionState::BroadcastPending, None, _)
+                | (FederationAcceptedTransactionState::BroadcastPending, _, None)
+                | (FederationAcceptedTransactionState::Broadcast, None, _)
+                | (FederationAcceptedTransactionState::Broadcast, _, None) => {
                     return Err(invalid("accepted transaction signed-state mismatch"));
                 }
-                (_, Some(signed)) => {
+                (_, Some(signed), _) => {
                     if signed.policy_audit != accepted.policy_audit {
                         return Err(invalid(
                             "signed transaction policy audit differs from accepted state",
@@ -1612,7 +1858,59 @@ impl FederationTransactionState {
                     }
                     signed.validate(&accepted.proposal)?;
                 }
-                (_, None) => {}
+                (_, None, _) => {}
+            }
+            if let Some(broadcast) = &accepted.broadcast {
+                if broadcast.intent_operation_index == 0 {
+                    return Err(invalid("broadcast intent operation index is zero"));
+                }
+                let mut observers = BTreeSet::new();
+                for record in &broadcast.observations {
+                    record.observation.validate()?;
+                    if record.observation.proposal_id != *proposal_id
+                        || accepted
+                            .signed
+                            .as_ref()
+                            .is_none_or(|signed| record.observation.txid != signed.txid)
+                        || record.operation_index <= broadcast.intent_operation_index
+                        || !observers.insert(record.observation.observer)
+                    {
+                        return Err(invalid("broadcast observation durable identity mismatch"));
+                    }
+                }
+                if !broadcast
+                    .observations
+                    .windows(2)
+                    .all(|window| window[0].observation.observer < window[1].observation.observer)
+                {
+                    return Err(invalid("broadcast observers are not canonical"));
+                }
+                if let Some(success) = &broadcast.first_success {
+                    success.observation.validate()?;
+                    if success.observation.proposal_id != *proposal_id
+                        || accepted
+                            .signed
+                            .as_ref()
+                            .is_none_or(|signed| success.observation.txid != signed.txid)
+                        || success.operation_index <= broadcast.intent_operation_index
+                        || !success.observation.result.is_success_equivalent()
+                    {
+                        return Err(invalid("broadcast success durable identity mismatch"));
+                    }
+                }
+                match accepted.state {
+                    FederationAcceptedTransactionState::Broadcast
+                        if broadcast.first_success.is_none() =>
+                    {
+                        return Err(invalid("broadcast lifecycle does not match observations"));
+                    }
+                    FederationAcceptedTransactionState::BroadcastPending
+                        if broadcast.first_success.is_some() =>
+                    {
+                        return Err(invalid("broadcast lifecycle does not match observations"));
+                    }
+                    _ => {}
+                }
             }
             for intent_id in &accepted.proposal.intent_ids {
                 let record = self
@@ -2135,6 +2433,60 @@ mod tests {
         }
     }
 
+    fn signed_transaction_state() -> (
+        FederationTransactionState,
+        FederationTransactionProposalId,
+        Txid,
+    ) {
+        let proposal = proposal();
+        let proposal_id = proposal.proposal_id().expect("proposal id");
+        let mut state = FederationTransactionState::new();
+        for intent in [intent("quote-a", 0, 30, 1), intent("quote-b", 1, 20, 2)] {
+            state
+                .add_pending_intent(
+                    FederationOnchainPaymentIntentRecord::pending(intent).expect("record"),
+                )
+                .expect("add intent");
+        }
+        state
+            .accept_transaction(
+                proposal.clone(),
+                policy_audit(&proposal),
+                FederationOperationId::from_bytes([5; 32]),
+                50,
+            )
+            .expect("accept transaction");
+        let accepted = state
+            .accepted_transaction(proposal_id)
+            .expect("accepted transaction")
+            .clone();
+        let mut transaction = proposal.unsigned_transaction.clone();
+        let input_signatures = transaction
+            .input
+            .iter_mut()
+            .enumerate()
+            .map(|(input_index, input)| {
+                let signature = vec![u8::try_from(input_index + 7).expect("signature byte"); 64];
+                input.witness.push(&signature);
+                FederationFrostInputSignatureAudit {
+                    input_index: u32::try_from(input_index).expect("input index"),
+                    session_id: [u8::try_from(input_index + 8).expect("session byte"); 32],
+                    attempt: 1,
+                    signer_set: vec![1, 2],
+                    package_hash: [u8::try_from(input_index + 9).expect("package byte"); 32],
+                    signature,
+                }
+            })
+            .collect();
+        let signed = FederationSignedTransaction::new(&accepted, &transaction, input_signatures)
+            .expect("signed record");
+        let txid = signed.txid;
+        state
+            .mark_transaction_signed(proposal_id, signed)
+            .expect("persist signed transaction");
+        (state, proposal_id, txid)
+    }
+
     #[test]
     fn frost_signing_authorization_binds_operation_transaction_input_and_sighash() {
         let proposal = proposal();
@@ -2145,6 +2497,7 @@ mod tests {
             accepted_operation_index: 42,
             state: FederationAcceptedTransactionState::Accepted,
             signed: None,
+            broadcast: None,
         };
         let reference = FederationFrostSigningAuthorizationReference::new(&accepted, 0)
             .expect("signing authorization reference");
@@ -2447,6 +2800,7 @@ mod tests {
             accepted_operation_index: 50,
             state: FederationAcceptedTransactionState::Accepted,
             signed: None,
+            broadcast: None,
         };
         let mut transaction = proposal.unsigned_transaction.clone();
         let input_signatures = keypairs
@@ -2486,5 +2840,253 @@ mod tests {
             .push(&invalid.input_signatures[1].signature);
         invalid.transaction_bytes = serialize(&invalid_transaction);
         assert!(invalid.verify_signatures(&proposal).is_err());
+    }
+
+    #[test]
+    fn broadcast_intent_and_member_results_are_exact_restart_safe_and_convergent() {
+        let (mut state, proposal_id, txid) = signed_transaction_state();
+        let intent = FederationTransactionBroadcastIntent { proposal_id, txid };
+        assert_eq!(
+            state
+                .authorize_transaction_broadcast(
+                    intent,
+                    FederationOperationId::from_bytes([51; 32]),
+                    51,
+                )
+                .expect("authorize broadcast"),
+            FederationTransactionStateOutcome::Updated
+        );
+        assert_eq!(
+            state
+                .authorize_transaction_broadcast(
+                    intent,
+                    FederationOperationId::from_bytes([52; 32]),
+                    52,
+                )
+                .expect("intent failover replay"),
+            FederationTransactionStateOutcome::Existing
+        );
+        state = FederationTransactionState::from_bytes(
+            &state.to_bytes().expect("broadcast-not-observed bytes"),
+        )
+        .expect("restart broadcast-not-observed state");
+
+        let results = [
+            FederationTransactionBroadcastResult::Rejected,
+            FederationTransactionBroadcastResult::Transient,
+            FederationTransactionBroadcastResult::Unknown,
+        ];
+        for (offset, result) in results.into_iter().enumerate() {
+            let index = u64::try_from(offset).expect("offset") + 52;
+            state
+                .record_transaction_broadcast_observation(
+                    FederationTransactionBroadcastObservation {
+                        proposal_id,
+                        txid,
+                        observer: member(u16::try_from(offset + 1).expect("member")),
+                        attempt: 1,
+                        result,
+                        detail: Some("redacted backend result".to_string()),
+                    },
+                    FederationOperationId::from_bytes(
+                        [u8::try_from(index).expect("operation marker"); 32],
+                    ),
+                    index,
+                )
+                .expect("record retryable or rejected result");
+        }
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("accepted")
+                .state,
+            FederationAcceptedTransactionState::BroadcastPending
+        );
+
+        let accepted = FederationTransactionBroadcastObservation {
+            proposal_id,
+            txid,
+            observer: member(4),
+            attempt: 1,
+            result: FederationTransactionBroadcastResult::Accepted,
+            detail: None,
+        };
+        state
+            .record_transaction_broadcast_observation(
+                accepted.clone(),
+                FederationOperationId::from_bytes([55; 32]),
+                55,
+            )
+            .expect("accepted broadcast");
+        assert_eq!(
+            state
+                .record_transaction_broadcast_observation(
+                    accepted.clone(),
+                    FederationOperationId::from_bytes([56; 32]),
+                    56,
+                )
+                .expect("exact response replay"),
+            FederationTransactionStateOutcome::Existing
+        );
+        let mut conflicting = accepted;
+        conflicting.result = FederationTransactionBroadcastResult::Unknown;
+        assert!(state
+            .record_transaction_broadcast_observation(
+                conflicting,
+                FederationOperationId::from_bytes([56; 32]),
+                56,
+            )
+            .is_err());
+
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(5),
+                    attempt: 1,
+                    result: FederationTransactionBroadcastResult::AlreadyKnown,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([56; 32]),
+                56,
+            )
+            .expect("concurrent already-known result");
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(4),
+                    attempt: 2,
+                    result: FederationTransactionBroadcastResult::Unknown,
+                    detail: Some("mempool recheck was ambiguous".to_string()),
+                },
+                FederationOperationId::from_bytes([57; 32]),
+                57,
+            )
+            .expect("ambiguous post-success recheck");
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("sticky broadcast")
+                .state,
+            FederationAcceptedTransactionState::Broadcast
+        );
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(4),
+                    attempt: 3,
+                    result: FederationTransactionBroadcastResult::Accepted,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([58; 32]),
+                58,
+            )
+            .expect("later exact-byte rebroadcast");
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(1),
+                    attempt: 2,
+                    result: FederationTransactionBroadcastResult::Confirmed {
+                        block_hash: BlockHash::from_byte_array([9; 32]),
+                        block_height: 101,
+                    },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([59; 32]),
+                59,
+            )
+            .expect("confirmed reconciliation");
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("broadcast transaction")
+                .state,
+            FederationAcceptedTransactionState::Broadcast
+        );
+        assert!(state.intents().values().all(|record| matches!(
+            record.state,
+            FederationOnchainPaymentIntentState::Accepted {
+                proposal_id: owner
+            } if owner == proposal_id
+        )));
+
+        let restarted = FederationTransactionState::from_bytes(
+            &state.to_bytes().expect("persist broadcast state"),
+        )
+        .expect("restart broadcast state");
+        assert_eq!(restarted, state);
+        assert_eq!(
+            restarted
+                .accepted_transaction(proposal_id)
+                .expect("restarted transaction")
+                .signed
+                .as_ref()
+                .expect("signed bytes")
+                .txid,
+            txid
+        );
+    }
+
+    #[test]
+    fn broadcast_never_accepts_a_second_txid_or_pre_intent_observation() {
+        let (state, proposal_id, txid) = signed_transaction_state();
+        let mut state = FederationTransactionState::from_bytes(
+            &state.to_bytes().expect("signed-not-broadcast bytes"),
+        )
+        .expect("restart signed-not-broadcast state");
+        let wrong_txid = Txid::from_byte_array([99; 32]);
+        assert!(state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(1),
+                    attempt: 1,
+                    result: FederationTransactionBroadcastResult::Unknown,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([51; 32]),
+                51,
+            )
+            .is_err());
+        assert!(state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent {
+                    proposal_id,
+                    txid: wrong_txid,
+                },
+                FederationOperationId::from_bytes([51; 32]),
+                51,
+            )
+            .is_err());
+        state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent { proposal_id, txid },
+                FederationOperationId::from_bytes([51; 32]),
+                51,
+            )
+            .expect("valid intent");
+        assert!(state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid: wrong_txid,
+                    observer: member(2),
+                    attempt: 1,
+                    result: FederationTransactionBroadcastResult::Accepted,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([52; 32]),
+                52,
+            )
+            .is_err());
     }
 }

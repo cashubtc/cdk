@@ -134,7 +134,7 @@ impl fmt::Debug for ChainSource {
 
 /// Classified result of submitting a transaction to a chain backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BroadcastOutcome {
+pub enum BroadcastOutcome {
     /// Backend accepted the transaction.
     Accepted,
     /// Backend already knows the transaction; this is success-equivalent.
@@ -143,7 +143,7 @@ pub(crate) enum BroadcastOutcome {
 
 /// Classification for broadcast errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BroadcastErrorKind {
+pub enum BroadcastErrorKind {
     /// Deterministic backend rejection.
     Rejected,
     /// Network or upstream failure expected to resolve on retry.
@@ -154,7 +154,7 @@ pub(crate) enum BroadcastErrorKind {
 
 /// A classified broadcast failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BroadcastFailure {
+pub struct BroadcastFailure {
     /// Failure class.
     pub kind: BroadcastErrorKind,
     /// Human-readable backend error.

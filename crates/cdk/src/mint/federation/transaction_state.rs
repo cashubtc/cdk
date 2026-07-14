@@ -10,7 +10,8 @@ use cdk_common::federation::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
     FederationChainObservationState, FederationError, FederationJournalEntry,
     FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord, FederationOperation,
-    FederationOperationStatus, FederationSignedTransaction, FederationTransactionProposal,
+    FederationOperationStatus, FederationSignedTransaction, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal,
     FederationTransactionProposalId, FederationTransactionScope, FederationTransactionState,
     FederationTransactionStateOutcome, MemberId,
 };
@@ -250,6 +251,130 @@ impl Mint {
                 .clone();
             signed.verify_signatures(&accepted.proposal)?;
             let outcome = state.mark_transaction_signed(signed.proposal_id, signed.clone())?;
+            transaction
+                .kv_write(
+                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
+                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
+                    TRANSACTION_STATE_KEY,
+                    &state.to_bytes()?,
+                )
+                .await?;
+            Ok(outcome)
+        }
+        .await;
+        finish_federation_apply_transaction(transaction, entry, outcome).await
+    }
+
+    /// Validate that broadcast intent names the exact durable signed transaction.
+    pub async fn validate_federation_transaction_broadcast_intent_submission(
+        &self,
+        intent: &FederationTransactionBroadcastIntent,
+    ) -> Result<(), Error> {
+        let state = self.federation_transaction_state().await?;
+        let accepted = state
+            .accepted_transaction(intent.proposal_id)
+            .ok_or_else(|| invalid("broadcast intent has no accepted transaction"))?;
+        let signed = accepted
+            .signed
+            .as_ref()
+            .ok_or_else(|| invalid("broadcast intent precedes signed persistence"))?;
+        if signed.txid != intent.txid {
+            return Err(invalid(
+                "broadcast intent txid differs from signed transaction",
+            ));
+        }
+        if accepted.broadcast.is_none()
+            && accepted.state != FederationAcceptedTransactionState::Signed
+        {
+            return Err(invalid("transaction is not eligible for broadcast intent"));
+        }
+        Ok(())
+    }
+
+    /// Validate an authenticated member result against durable broadcast intent.
+    pub async fn validate_federation_transaction_broadcast_observation_submission(
+        &self,
+        observation: &FederationTransactionBroadcastObservation,
+    ) -> Result<(), Error> {
+        observation.validate()?;
+        let runtime = self
+            .effective_federation_config()
+            .await?
+            .ok_or_else(|| invalid("broadcast observation has no federation config"))?;
+        if runtime
+            .public_config()
+            .member(observation.observer)
+            .is_none()
+        {
+            return Err(invalid("broadcast observer is not a federation member"));
+        }
+        let state = self.federation_transaction_state().await?;
+        let accepted = state
+            .accepted_transaction(observation.proposal_id)
+            .ok_or_else(|| invalid("broadcast observation has no accepted transaction"))?;
+        let signed = accepted
+            .signed
+            .as_ref()
+            .ok_or_else(|| invalid("broadcast observation precedes signed persistence"))?;
+        if signed.txid != observation.txid || accepted.broadcast.is_none() {
+            return Err(invalid("broadcast observation differs from durable intent"));
+        }
+        if let Some(existing) = accepted.broadcast.as_ref().and_then(|broadcast| {
+            broadcast.observations.iter().find(|record| {
+                record.observation.observer == observation.observer
+                    && record.observation.attempt == observation.attempt
+            })
+        }) {
+            if existing.observation != *observation {
+                return Err(invalid(
+                    "broadcast attempt replay carries a different result",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn apply_federation_transaction_broadcast_intent(
+        &self,
+        entry: &FederationJournalEntry,
+        intent: &FederationTransactionBroadcastIntent,
+    ) -> Result<FederationTransactionStateOutcome, Error> {
+        self.validate_federation_transaction_broadcast_intent_submission(intent)
+            .await?;
+        let mut transaction = self.localstore().begin_transaction().await?;
+        let outcome = async {
+            let mut state = load_transaction_state(&mut transaction).await?;
+            let outcome =
+                state.authorize_transaction_broadcast(*intent, entry.operation_id, entry.index)?;
+            transaction
+                .kv_write(
+                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
+                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
+                    TRANSACTION_STATE_KEY,
+                    &state.to_bytes()?,
+                )
+                .await?;
+            Ok(outcome)
+        }
+        .await;
+        finish_federation_apply_transaction(transaction, entry, outcome).await
+    }
+
+    pub(super) async fn apply_federation_transaction_broadcast_observation(
+        &self,
+        entry: &FederationJournalEntry,
+        observation: &FederationTransactionBroadcastObservation,
+    ) -> Result<FederationTransactionStateOutcome, Error> {
+        self.validate_federation_transaction_broadcast_observation_submission(observation)
+            .await?;
+        let mut transaction = self.localstore().begin_transaction().await?;
+        let outcome = async {
+            let mut state = load_transaction_state(&mut transaction).await?;
+            let outcome = state.record_transaction_broadcast_observation(
+                observation.clone(),
+                entry.operation_id,
+                entry.index,
+            )?;
             transaction
                 .kv_write(
                     TRANSACTION_STATE_PRIMARY_NAMESPACE,
