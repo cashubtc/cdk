@@ -43,11 +43,9 @@ federation partially ready.
 
 ## Encountered bugs and things to remember
 
-> Keep this section below 500 words. Record only concise, actionable facts for
-> the next implementation round: milestone, symptom, verified cause, clean fix
-> or open question, and the regression test or measurement that preserves the
-> lesson. Move long investigations to a dedicated issue, benchmark document, or
-> commit description instead of growing this section indefinitely.
+> Keep this section below 500 words. Record the milestone, symptom, verified
+> cause, fix or open question, and preserving regression. Move long
+> investigations to issues, benchmarks, or commit descriptions.
 
 - Cashu BLS shares and member identity keys cannot become Bitcoin custody
   shares. Reuse ceremony/authentication infrastructure only; persist the
@@ -93,6 +91,9 @@ federation partially ready.
   the other member, so the local observer correctly made no payment. Select a
   locally elected operation deterministically in that fixture; no mint business
   logic change was needed, and the focused catch-up regression now passes.
+- Milestone 25 found vulnerable Hickory in BIP353 while Tor trusted resolver
+  JSON. One transport-neutral resolver now builds bounded proofs over ordinary
+  or Tor HTTPS and validates DNSSEC locally; preserve live smoke coverage.
 
 ## 1. Problem and setting
 
@@ -2327,11 +2328,15 @@ fingerprints for reviewed deterministic fixtures. The dependency audit removed
 the vulnerable `crossbeam-epoch` and `protobuf` versions. Aligning the supported
 Arti runtime with its existing native-TLS Hyper connector also removed the
 legacy `x509-signature` -> `ring` 0.16.20 path without changing the transport
-API. Three unsuppressed upstream advisories remain in optional BIP353 and Tor
-dependency graphs; the security packet records their paths and disposition. A
+API. The BIP353 resolver now builds bounded wire-format DNSSEC proofs over the
+existing ordinary or Tor HTTPS transport and verifies the complete proof and
+signature-validity interval locally before returning TXT records. This removed
+Hickory and its two advisories and closed the Tor path that previously trusted
+resolver JSON. One unsuppressed medium-severity RSA advisory remains through the
+optional Arti graph; the security packet records its path and disposition. A
 larger Arti update would require replacing the discontinued `arti-hyper`
-connector and is outside this narrowly coupled remediation. The combined static
-and dependency gate therefore remains unchecked.
+connector and still would not remove that upstream RSA dependency. The combined
+static and dependency gate therefore remains unchecked.
 
 The standalone and federation regression matrix passes. The workspace library
 suite, federation-enabled `cdk-common`, serial `cdk-bdk`, all remaining

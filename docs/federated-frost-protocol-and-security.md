@@ -310,13 +310,18 @@ Tool output and generated runtime directories are not release artifacts.
 The 2026-07-14 lockfile audit removed vulnerable `crossbeam-epoch` and
 `protobuf` versions by updating `crossbeam-epoch` and moving Prometheus to its
 non-Protobuf 0.14 implementation. The fuzz-workspace lockfile has no reported
-vulnerabilities. The root lockfile still reports three unresolved advisories, so
-the dependency release gate remains failed rather than ignored:
+vulnerabilities. The BIP353 resolver no longer uses Hickory. It now builds a
+bounded RFC 9102 proof chain from wire-format DNS-over-HTTPS responses carried
+by the existing ordinary or Tor transport, then verifies the chain, resolved
+name, and signature-validity interval locally before exposing TXT records. This
+removes `RUSTSEC-2026-0118` and `RUSTSEC-2026-0119` and closes the prior Tor path
+that trusted resolver JSON for authenticity.
+
+The root lockfile still reports one unresolved advisory, so the dependency
+release gate remains failed rather than ignored:
 
 | Advisory | Dependency path | Disposition |
 |---|---|---|
-| `RUSTSEC-2026-0119` | optional BIP353 resolver -> `hickory-proto` 0.25.2 | fixed upstream in 0.26.1, but no update compatible with the workspace MSRV was identified |
-| `RUSTSEC-2026-0118` | optional BIP353 resolver -> `hickory-proto` 0.25.2 | no fixed upstream release is available |
 | `RUSTSEC-2023-0071` | optional Tor transport -> Arti -> `rsa` 0.9.10 | medium severity and no fixed upstream release is available; do not suppress |
 
 The supported Arti runtime now uses native TLS, matching the existing
@@ -324,10 +329,14 @@ The supported Arti runtime now uses native TLS, matching the existing
 `ring` 0.16.20 into the all-features graph. This removes
 `RUSTSEC-2025-0009` without changing the connector or request path. The
 remaining Tor dependencies are not part of the default workspace feature graph,
-but they remain supported code and therefore remain in the release audit. A
-larger Arti update is not a drop-in dependency change because `arti-hyper` ends
-at 0.19; replacing that connector locally would add unreviewed network security
-surface.
+but they remain supported code and therefore remain in the release audit. The
+Arti client uses RSA only for public-key signature verification, so the
+advisory's private-key timing-recovery path is not reachable through this
+transport. The medium-severity crate finding nevertheless remains unsuppressed:
+there is no patched `rsa` release, and current Arti releases still depend on the
+same major version. A larger Arti update is not a drop-in dependency change
+because `arti-hyper` ends at 0.19; replacing that connector locally would add
+unreviewed network security surface without closing the advisory.
 
 Repository and goal-commit secret scans pass with exact fingerprints for known
 deterministic Cashu vectors, fuzz proofs, local demo credentials, and CI
