@@ -3352,6 +3352,48 @@ mod tests {
     }
 
     #[test]
+    fn randomized_accounting_utxo_and_intent_mutations_fail_closed() {
+        let proposal = proposal();
+        let input_total = proposal
+            .selected_inputs
+            .iter()
+            .map(|input| input.previous_output.value.to_sat())
+            .sum::<u64>();
+        let output_total = proposal
+            .unsigned_transaction
+            .output
+            .iter()
+            .map(|output| output.value.to_sat())
+            .sum::<u64>();
+        assert_eq!(input_total, output_total + proposal.fee_sat);
+
+        let mut rng = StdRng::seed_from_u64(0xa11c_0a71);
+        for _ in 0..512 {
+            let mut candidate = proposal.clone();
+            let delta = rng.random_range(1..=500);
+            match rng.random_range(0..4) {
+                0 => candidate.fee_sat += delta,
+                1 => {
+                    candidate.unsigned_transaction.output[0].value += Amount::from_sat(delta);
+                    candidate.recipient_outputs[0].output =
+                        candidate.unsigned_transaction.output[0].clone();
+                }
+                2 => {
+                    candidate.selected_inputs[1].outpoint = candidate.selected_inputs[0].outpoint;
+                    candidate.unsigned_transaction.input[1].previous_output =
+                        candidate.unsigned_transaction.input[0].previous_output;
+                }
+                3 => {
+                    candidate.intent_ids[1] = candidate.intent_ids[0];
+                    candidate.recipient_outputs[1].intent_id = candidate.intent_ids[0];
+                }
+                _ => unreachable!(),
+            }
+            assert!(candidate.validate().is_err());
+        }
+    }
+
+    #[test]
     fn size_count_and_amount_bounds_are_enforced() {
         let mut too_many = proposal();
         too_many.intent_ids =
@@ -3481,6 +3523,136 @@ mod tests {
             .mark_transaction_signed(proposal_id, signed)
             .expect("persist signed transaction");
         (state, proposal_id, txid)
+    }
+
+    #[test]
+    fn randomized_lifecycle_failures_preserve_terminal_monotonicity_and_ownership() {
+        fn lifecycle_rank(state: FederationAcceptedTransactionState) -> u8 {
+            match state {
+                FederationAcceptedTransactionState::Accepted => 0,
+                FederationAcceptedTransactionState::Signed => 1,
+                FederationAcceptedTransactionState::BroadcastPending => 2,
+                FederationAcceptedTransactionState::Broadcast => 3,
+                FederationAcceptedTransactionState::Confirmed
+                | FederationAcceptedTransactionState::Abandoned
+                | FederationAcceptedTransactionState::Replaced { .. } => 4,
+            }
+        }
+
+        let (mut state, proposal_id, txid) = signed_transaction_state();
+        let reservation_count = state.reservation_count();
+        state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent {
+                    proposal_id,
+                    txid,
+                    settlement_policy: FederationTransactionSettlementPolicy::new(1, 2)
+                        .expect("settlement policy"),
+                },
+                FederationOperationId::from_bytes([51; 32]),
+                51,
+            )
+            .expect("authorize broadcast");
+
+        let mut rng = StdRng::seed_from_u64(0x7e12_11a1);
+        let mut previous_rank = lifecycle_rank(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("accepted transaction")
+                .state,
+        );
+        for step in 0..512u64 {
+            let before = state.clone();
+            let observer = member(rng.random_range(1..=5));
+            let attempt = rng.random_range(1..=4);
+            let result = match rng.random_range(0..5) {
+                0 => FederationTransactionBroadcastResult::Accepted,
+                1 => FederationTransactionBroadcastResult::Rejected,
+                2 => FederationTransactionBroadcastResult::Transient,
+                3 => FederationTransactionBroadcastResult::Unknown,
+                4 => FederationTransactionBroadcastResult::Confirmed {
+                    block_hash: bitcoin::BlockHash::from_byte_array([9; 32]),
+                    block_height: 100,
+                    confirmation_depth: 1,
+                },
+                _ => unreachable!(),
+            };
+            let outcome = state.record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer,
+                    attempt,
+                    result,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([(step % 251 + 1) as u8; 32]),
+                52 + step,
+            );
+            if outcome.is_err() {
+                assert_eq!(state, before, "a rejected transition mutated durable state");
+            }
+            state.validate().expect("state invariants");
+            assert_eq!(state.reservation_count(), reservation_count);
+            let rank = lifecycle_rank(
+                state
+                    .accepted_transaction(proposal_id)
+                    .expect("accepted transaction")
+                    .state,
+            );
+            assert!(rank >= previous_rank, "transaction lifecycle regressed");
+            previous_rank = rank;
+        }
+
+        for (offset, observer) in [member(1), member(2)].into_iter().enumerate() {
+            state
+                .record_transaction_broadcast_observation(
+                    FederationTransactionBroadcastObservation {
+                        proposal_id,
+                        txid,
+                        observer,
+                        attempt: 100,
+                        result: FederationTransactionBroadcastResult::Confirmed {
+                            block_hash: bitcoin::BlockHash::from_byte_array([7; 32]),
+                            block_height: 101,
+                            confirmation_depth: 2,
+                        },
+                        detail: None,
+                    },
+                    FederationOperationId::from_bytes([240 + offset as u8; 32]),
+                    1_000 + offset as u64,
+                )
+                .expect("terminal confirmation");
+        }
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("accepted transaction")
+                .state,
+            FederationAcceptedTransactionState::Confirmed
+        );
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(1),
+                    attempt: 101,
+                    result: FederationTransactionBroadcastResult::Rejected,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([242; 32]),
+                1_002,
+            )
+            .expect("post-terminal diagnostic observation");
+        assert_eq!(
+            state
+                .accepted_transaction(proposal_id)
+                .expect("accepted transaction")
+                .state,
+            FederationAcceptedTransactionState::Confirmed
+        );
+        assert_eq!(state.reservation_count(), reservation_count);
     }
 
     #[test]

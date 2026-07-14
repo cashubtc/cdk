@@ -476,10 +476,14 @@ fuzz TARGET DURATION="0" JOBS="1":
   if [ "{{JOBS}}" != "1" ]; then
     FORK_FLAG="-fork={{JOBS}}"
   fi
+  CARGO_FUZZ=(cargo fuzz)
+  if command -v rustup >/dev/null 2>&1 && NIGHTLY_CARGO="$(rustup which --toolchain nightly cargo 2>/dev/null)"; then
+    export PATH="${NIGHTLY_CARGO%/cargo}:$PATH"
+  fi
   if [ "{{DURATION}}" = "0" ]; then
-    cargo fuzz run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- $FORK_FLAG
+    "${CARGO_FUZZ[@]}" run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- $FORK_FLAG
   else
-    cargo fuzz run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
+    "${CARGO_FUZZ[@]}" run {{TARGET}} corpus/{{TARGET}} $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
   fi
 
 # List available fuzz targets
@@ -502,6 +506,10 @@ fuzz-ci DURATION="30" JOBS="1":
   if [ "{{JOBS}}" != "1" ]; then
     FORK_FLAG="-fork={{JOBS}}"
   fi
+  CARGO_FUZZ=(cargo fuzz)
+  if command -v rustup >/dev/null 2>&1 && NIGHTLY_CARGO="$(rustup which --toolchain nightly cargo 2>/dev/null)"; then
+    export PATH="${NIGHTLY_CARGO%/cargo}:$PATH"
+  fi
   for target in $(cargo fuzz list); do
     echo "Fuzzing $target..."
     mkdir -p "corpus/$target"
@@ -509,9 +517,23 @@ fuzz-ci DURATION="30" JOBS="1":
     if [ -d "seeds/$target" ]; then
       SEEDS_DIR="seeds/$target"
     fi
-    cargo fuzz run "$target" "corpus/$target" $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
+    "${CARGO_FUZZ[@]}" run "$target" "corpus/$target" $SEEDS_DIR -- -max_total_time={{DURATION}} $FORK_FLAG
   done
   echo "All fuzz targets completed!"
+
+# Run the security-sensitive federation and FROST decoder corpus.
+# Set DURATION=0 for a continuous local campaign.
+fuzz-federation-security DURATION="60" JOBS="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  for target in \
+    fuzz_frost_wire \
+    fuzz_federation_security_wire \
+    fuzz_federation_operation \
+    fuzz_federation_transaction_proposal
+  do
+    just fuzz "$target" "{{DURATION}}" "{{JOBS}}"
+  done
 
 # Run mutation tests only on changed code since HEAD
 mutants-diff:

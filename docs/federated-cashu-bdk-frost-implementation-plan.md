@@ -2250,25 +2250,25 @@ mainnet use.
 
 **Work:**
 
-- [ ] Produce a protocol specification for DKG, derivation, address allocation,
+- [x] Produce a protocol specification for DKG, derivation, address allocation,
   transaction consensus, FROST sessions, nonce lifecycle, and key rotation.
-- [ ] Specify the canonical untweaked root package, root-to-application adapter
+- [x] Specify the canonical untweaked root package, root-to-application adapter
   boundary, compatibility requirements, authorization contract, shared
   compromise domain, and multi-application rotation rules.
-- [ ] Map every security requirement in this plan to code and tests.
-- [ ] Threat-model malicious proposer, coordinator, signer, observer,
+- [x] Map every security requirement in this plan to code and tests.
+- [x] Threat-model malicious proposer, coordinator, signer, observer,
   broadcaster, database, chain source, and wallet client.
-- [ ] Threat-model a malicious or compromised registered application attempting
+- [x] Threat-model a malicious or compromised registered application attempting
   cross-application signing, nonce reuse, derivation confusion, root extraction,
   or premature root retirement.
-- [ ] Review all canonical encodings, domain separators, participant mappings,
+- [x] Review all canonical encodings, domain separators, participant mappings,
   scalar tweaks, parity handling, and Taproot sighashes.
-- [ ] Fuzz DKG, config, proposal, PSBT, signing-package, signature-share,
+- [x] Fuzz DKG, config, proposal, PSBT, signing-package, signature-share,
   transaction, and catch-up decoders.
-- [ ] Add property tests for accounting conservation, UTXO exclusivity, intent
+- [x] Add property tests for accounting conservation, UTXO exclusivity, intent
   uniqueness, and terminal-state monotonicity.
-- [ ] Review database transaction boundaries and failed-write recovery.
-- [ ] Review private REST authentication, replay windows, request limits, and
+- [x] Review database transaction boundaries and failed-write recovery.
+- [x] Review private REST authentication, replay windows, request limits, and
   denial-of-service exposure.
 - [ ] Arrange independent cryptographic review of threshold derivation and
   nonce handling.
@@ -2278,12 +2278,12 @@ mainnet use.
 
 **Success criteria:**
 
-- [ ] Every signature share can be traced to one root epoch, application and key
+- [x] Every signature share can be traced to one root epoch, application and key
   epoch, derivation context, authorization proof, signer set, attempt, and
   durably consumed nonce; CDK shares additionally trace to one accepted
   transaction and input.
-- [ ] Every spendable UTXO and payment intent has one unambiguous state owner.
-- [ ] No identified path lets fewer than threshold members spend or lets one
+- [x] Every spendable UTXO and payment intent has one unambiguous state owner.
+- [x] No identified path lets fewer than threshold members spend or lets one
   member create Cashu liability from an unconfirmed deposit.
 - [ ] Independent reviewers approve the derivation and signing design or all
   requested changes are completed and retested.
@@ -2291,10 +2291,32 @@ mainnet use.
 **Required tests:**
 
 - [ ] Continuous fuzz runs with retained regression corpus.
-- [ ] Model/property tests across randomized operation order and failure points.
+- [x] Model/property tests across randomized operation order and failure points.
 - [ ] Static analysis, clippy, formatting, docs, and dependency audit.
 - [ ] Secret-scanning of logs, snapshots, fixtures, and generated artifacts.
 - [ ] Full standalone and federation regression suites.
+
+**Milestone 25 progress record:**
+[`federated-frost-protocol-and-security.md`](federated-frost-protocol-and-security.md)
+now specifies the dual ceremony, root/application boundary, address and deposit
+rules, exact transaction authorization, FROST session and nonce lifecycle,
+broadcast/catch-up, rotation, canonical encodings, threat model, persistence and
+REST boundaries, and a requirement-to-code/test matrix. It is also the explicit
+independent-review handoff and states that it is not an external approval.
+
+FROST fuzz coverage now includes both DKG rounds, every public signing wire
+type, nonce records, config and DKG REST records, signing packages, catch-up,
+raw transactions, and PSBTs. A dedicated sanitizer campaign composes those
+targets with the existing operation and transaction-proposal fuzzers, retains
+corpora, and supports continuous or bounded execution. A bounded four-target
+smoke completed without crashes. Deterministic 512-case accounting/ownership
+and 512-step lifecycle properties preserve conservation, uniqueness, exact
+rollback on rejected transitions, sticky reservations, and terminal
+monotonicity.
+
+The independent cryptographic and two-adapter interoperability reviews, their
+finding resolution, a sustained fuzz campaign, and final audit/regression gate
+remain deliberately unchecked. Mainnet release is still blocked on them.
 
 ### Milestone 26: performance, capacity, and release gate
 
