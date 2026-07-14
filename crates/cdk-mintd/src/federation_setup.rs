@@ -1654,6 +1654,8 @@ fn local_live_dkg_smoke_script(
         member_path_cases(member_artifacts, |member| &member.live_dkg_final_config_dir)?;
     let public_mint_url_cases =
         member_string_cases(member_artifacts, |member| &member.public_mint_url);
+    let prometheus_url_cases =
+        member_string_cases(member_artifacts, |member| &member.prometheus_url);
     let setup_public_config_path = shell_single_quote(&path_to_string(setup_public_config_path));
     let primary_final_public_config =
         shell_single_quote(&path_to_string(&primary_final_public_config));
@@ -1691,6 +1693,7 @@ fn local_live_dkg_smoke_script(
             ),
             ("# @@FINAL_CONFIG_DIR_CASES@@\n", &final_config_dir_cases),
             ("# @@PUBLIC_MINT_URL_CASES@@\n", &public_mint_url_cases),
+            ("# @@PROMETHEUS_URL_CASES@@\n", &prometheus_url_cases),
             (
                 "# @@POSTGRES_SCHEMA_RESET_CASES@@\n",
                 &postgres_schema_reset_cases,

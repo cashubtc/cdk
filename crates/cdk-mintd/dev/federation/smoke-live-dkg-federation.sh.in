@@ -40,6 +40,9 @@ FROST_BDK_WAIT_SLEEP_SECONDS="${FROST_BDK_WAIT_SLEEP_SECONDS:-1}"
 FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS="${FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS:-60}"
 FROST_BDK_MEMBER_REQUEST_MAX_RETRIES="${FROST_BDK_MEMBER_REQUEST_MAX_RETRIES:-200}"
 FROST_BDK_LONG_IDLE_SECONDS="${FROST_BDK_LONG_IDLE_SECONDS:-0}"
+FROST_BDK_CAPTURE_RUNTIME_METRICS="${FROST_BDK_CAPTURE_RUNTIME_METRICS:-0}"
+FROST_BDK_RUNTIME_BUILD_PROFILE="${FROST_BDK_RUNTIME_BUILD_PROFILE:-unknown}"
+FROST_BDK_RUNTIME_METRICS_DIR="${FROST_BDK_RUNTIME_METRICS_DIR:-$(dirname "$SETUP_PUBLIC_CONFIG")/frost-bdk-runtime-metrics}"
 PIDS=()
 METRICS_PID=""
 DKG_SETUP_STARTED_SECONDS=0
@@ -91,6 +94,13 @@ member_final_private_config() {
 member_mint_url() {
   case "$1" in
 # @@PUBLIC_MINT_URL_CASES@@
+    *) return 1 ;;
+  esac
+}
+
+member_prometheus_url() {
+  case "$1" in
+# @@PROMETHEUS_URL_CASES@@
     *) return 1 ;;
   esac
 }
@@ -212,7 +222,10 @@ start_member() {
   local member="$1"
   local config
   local work_dir
-  local mintd_env=(CDK_MINTD_PROMETHEUS_ENABLED=false)
+  local mintd_env=()
+  if [[ "$DKG_SETUP_PHASE" == "1" || "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    mintd_env+=(CDK_MINTD_PROMETHEUS_ENABLED=false)
+  fi
   config="$(member_config "$member")"
   work_dir="$(member_work_dir "$member")"
   mkdir -p "$work_dir"
@@ -448,6 +461,139 @@ report_dkg_metrics() {
     ' "$(member_work_dir "$member")/mintd.log"
   done
   printf 'dkg_metrics_dir=%s\n' "$DKG_METRICS_DIR"
+}
+
+wait_for_runtime_metrics() {
+  if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local member
+  for member in "${MEMBERS[@]}"; do
+    local metrics_url
+    metrics_url="$(member_prometheus_url "$member")"
+    local ready=0
+    for _ in $(seq 1 "$STATUS_RETRIES"); do
+      if curl --max-time "$STATUS_SLEEP_SECONDS" -fsS "$metrics_url" >/dev/null 2>&1; then
+        ready=1
+        break
+      fi
+      sleep "$STATUS_SLEEP_SECONDS"
+    done
+    if [[ "$ready" != "1" ]]; then
+      printf 'member %s did not expose runtime metrics at %s\n' "$member" "$metrics_url" >&2
+      return 1
+    fi
+  done
+}
+
+runtime_process_sample() {
+  local pid="$1"
+  ps -p "$pid" -o time= -o rss= 2>/dev/null | awk '
+    function cpu_seconds(raw, parts, count, day_parts, days) {
+      days = 0;
+      if (index(raw, "-") > 0) {
+        split(raw, day_parts, "-");
+        days = day_parts[1] + 0;
+        raw = day_parts[2];
+      }
+      count = split(raw, parts, ":");
+      if (count == 2) return (days * 86400) + (parts[1] * 60) + parts[2];
+      if (count == 3) return (days * 86400) + (parts[1] * 3600) + (parts[2] * 60) + parts[3];
+      return (days * 86400) + raw;
+    }
+    NF { printf "%.2f,%d\n", cpu_seconds($1), $2; exit }
+  '
+}
+
+runtime_private_rest_requests() {
+  local member="$1"
+  curl --max-time "$STATUS_SLEEP_SECONDS" -fsS "$(member_prometheus_url "$member")" | awk '
+    /^cdk_http_requests_total\{/ && /endpoint="\/federation\/v1\// { total += $NF }
+    END { printf "%.0f\n", total + 0 }
+  '
+}
+
+capture_runtime_metrics_snapshot() {
+  if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local label="$1"
+  local output="$FROST_BDK_RUNTIME_METRICS_DIR/$label.csv"
+  mkdir -p "$FROST_BDK_RUNTIME_METRICS_DIR"
+  printf 'member,pid,cpu_seconds,rss_kb,private_rest_requests\n' > "$output"
+  local member
+  for member in "${MEMBERS[@]}"; do
+    local pid="${PIDS[$member]:-}"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      printf 'member %s is unavailable for runtime metrics snapshot %s\n' "$member" "$label" >&2
+      return 1
+    fi
+    local process_sample
+    process_sample="$(runtime_process_sample "$pid")"
+    if [[ -z "$process_sample" ]]; then
+      printf 'member %s produced no process metrics for snapshot %s\n' "$member" "$label" >&2
+      return 1
+    fi
+    local private_rest_requests
+    private_rest_requests="$(runtime_private_rest_requests "$member")"
+    printf '%s,%s,%s,%s\n' \
+      "$member" "$pid" "$process_sample" "$private_rest_requests" >> "$output"
+  done
+  date +%s > "$FROST_BDK_RUNTIME_METRICS_DIR/$label.epoch"
+}
+
+report_runtime_metrics_window() {
+  if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local window="$1"
+  local start="$2"
+  local end="$3"
+  local start_epoch
+  local end_epoch
+  read -r start_epoch < "$FROST_BDK_RUNTIME_METRICS_DIR/$start.epoch"
+  read -r end_epoch < "$FROST_BDK_RUNTIME_METRICS_DIR/$end.epoch"
+  local duration_seconds=$((end_epoch - start_epoch))
+  if (( duration_seconds <= 0 )); then
+    printf 'runtime metrics window %s has non-positive duration\n' "$window" >&2
+    return 1
+  fi
+  local result
+  if ! result="$(awk -F, \
+    -v window="$window" \
+    -v duration="$duration_seconds" \
+    -v expected_members="${#MEMBERS[@]}" \
+    -v threshold="$SIGNATURE_THRESHOLD" \
+    -v profile="$FROST_BDK_RUNTIME_BUILD_PROFILE" '
+      FNR == NR {
+        if (FNR > 1) {
+          if ($1 in start_seen) invalid = 1;
+          start_seen[$1] = 1;
+          start_cpu[$1] = $3;
+          start_requests[$1] = $5;
+          start_members += 1;
+        }
+        next;
+      }
+      FNR > 1 {
+        if ($1 in end_seen) invalid = 1;
+        end_seen[$1] = 1;
+        if (!($1 in start_cpu) || $3 < start_cpu[$1] || $5 < start_requests[$1]) invalid = 1;
+        total_cpu += $3 - start_cpu[$1];
+        total_requests += $5 - start_requests[$1];
+        if ($4 > max_end_rss) max_end_rss = $4;
+        members += 1;
+      }
+      END {
+        if (invalid || start_members != expected_members || members != expected_members) exit 1;
+        printf "frost_bdk_runtime_metrics schema_version=1 profile=%s window=%s members=%d threshold=%d duration_seconds=%d total_cpu_seconds=%.2f cpu_millis_per_member_second=%.3f private_rest_requests=%.0f private_rest_requests_per_member_minute=%.3f max_end_rss_kb=%d", profile, window, members, threshold, duration, total_cpu, (total_cpu * 1000) / (duration * members), total_requests, (total_requests * 60) / (duration * members), max_end_rss;
+      }
+    ' "$FROST_BDK_RUNTIME_METRICS_DIR/$start.csv" "$FROST_BDK_RUNTIME_METRICS_DIR/$end.csv")"; then
+    printf 'runtime metrics window %s contains invalid or incomplete counters\n' "$window" >&2
+    return 1
+  fi
+  printf '%s\n' "$result"
+  printf '%s\n' "$result" >> "$FROST_BDK_RUNTIME_METRICS_DIR/results.txt"
 }
 
 reset_postgres_schemas() {
@@ -908,7 +1054,8 @@ exercise_frost_bdk_fault_profile() {
 
 run_frost_bdk_regtest() {
   wait_for_bitcoin
-  rm -rf "$FROST_BDK_CLI_WORK_DIR" "$FROST_BDK_CHECKPOINT_DIR"
+  rm -rf "$FROST_BDK_CLI_WORK_DIR" "$FROST_BDK_CHECKPOINT_DIR" \
+    "$FROST_BDK_RUNTIME_METRICS_DIR"
   mkdir -p "$FROST_BDK_CLI_WORK_DIR" "$FROST_BDK_CHECKPOINT_DIR"
   mine_blocks 101
   "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive \
@@ -917,12 +1064,17 @@ run_frost_bdk_regtest() {
     --member-request-max-retries "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES"
   capture_frost_bdk_checkpoint 00-activated
   if (( FROST_BDK_LONG_IDLE_SECONDS > 0 )); then
+    wait_for_runtime_metrics
+    capture_runtime_metrics_snapshot idle-start
     printf 'leaving the activated federation idle for %s seconds\n' \
       "$FROST_BDK_LONG_IDLE_SECONDS"
     sleep "$FROST_BDK_LONG_IDLE_SECONDS"
+    capture_runtime_metrics_snapshot idle-end
+    report_runtime_metrics_window idle idle-start idle-end
     capture_frost_bdk_checkpoint 01-after-long-idle
   fi
   exercise_frost_bdk_fault_profile
+  capture_runtime_metrics_snapshot active-start
 
   local sequence=0
   local amount
@@ -959,6 +1111,8 @@ run_frost_bdk_regtest() {
     printf 'expected exactly two unique deposit and two unique melt transactions\n' >&2
     return 1
   fi
+  capture_runtime_metrics_snapshot active-end
+  report_runtime_metrics_window active active-start active-end
 
   if [[ "$FROST_BDK_FAULT_PROFILE" == "offline-one" ]]; then
     start_member "$HELD_MEMBER"
@@ -1014,6 +1168,11 @@ validate_live_dkg_smoke() {
     return 1
   fi
   if [[ "$FROST_BDK_REGTEST" == "1" ]]; then
+    if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "0" \
+      && "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+      printf 'FROST_BDK_CAPTURE_RUNTIME_METRICS must be 0 or 1\n' >&2
+      return 1
+    fi
     if ! [[ "$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ \
       && "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES" =~ ^[0-9]+$ \
       && "$FROST_BDK_LONG_IDLE_SECONDS" =~ ^[0-9]+$ ]]; then
@@ -1022,6 +1181,17 @@ validate_live_dkg_smoke() {
     fi
     if (( FROST_BDK_LONG_IDLE_SECONDS > 0 && FROST_BDK_LONG_IDLE_SECONDS < 60 )); then
       printf 'FROST_BDK_LONG_IDLE_SECONDS must be 0 or at least 60\n' >&2
+      return 1
+    fi
+    if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" == "1" \
+      && "$FROST_BDK_LONG_IDLE_SECONDS" == "0" ]]; then
+      printf 'runtime metrics capture requires a long-idle window\n' >&2
+      return 1
+    fi
+    if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" == "1" \
+      && "$FROST_BDK_RUNTIME_BUILD_PROFILE" != "dev" \
+      && "$FROST_BDK_RUNTIME_BUILD_PROFILE" != "release" ]]; then
+      printf 'runtime metrics capture requires a dev or release build profile\n' >&2
       return 1
     fi
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for FROST BDK regtest\n' >&2; return 1; }

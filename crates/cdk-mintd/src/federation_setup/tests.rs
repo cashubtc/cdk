@@ -421,6 +421,15 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("FROST_BDK_LONG_IDLE_SECONDS:-0"));
     assert!(live_dkg_smoke_script.contains("FROST_BDK_LONG_IDLE_SECONDS < 60"));
     assert!(live_dkg_smoke_script.contains("capture_frost_bdk_checkpoint 01-after-long-idle"));
+    assert!(live_dkg_smoke_script.contains("FROST_BDK_CAPTURE_RUNTIME_METRICS:-0"));
+    assert!(live_dkg_smoke_script.contains("member_prometheus_url()"));
+    assert!(live_dkg_smoke_script.contains("capture_runtime_metrics_snapshot idle-start"));
+    assert!(live_dkg_smoke_script.contains("report_runtime_metrics_window active"));
+    assert!(live_dkg_smoke_script.contains("ps -p \"$pid\" -o time= -o rss="));
+    assert!(live_dkg_smoke_script.contains("schema_version=1 profile=%s window=%s"));
+    assert!(live_dkg_smoke_script.contains("max_end_rss_kb=%d"));
+    assert!(live_dkg_smoke_script
+        .contains("runtime metrics capture requires a dev or release build profile"));
     assert!(live_dkg_smoke_script
         .contains("--member-request-timeout-secs \"$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS\""));
     assert!(live_dkg_smoke_script
@@ -882,6 +891,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
                 .to_string_lossy()
                 .to_string()
         ));
+        assert!(live_dkg_smoke_script.contains(&member_artifacts.prometheus_url));
     }
     assert_eq!(live_dkg_ceremony_ids.len(), 1);
 

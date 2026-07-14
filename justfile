@@ -1517,10 +1517,15 @@ fed-regtest-frost-bdk dir="target/cdk-fed-regtest-frost-bdk" members="5" thresho
       >/dev/null
     started_container=1
   fi
-  cargo build -p cdk-mintd -p cdk-cli --features federation "${cargo_profile_args[@]}"
+  cargo_features=federation
+  if [[ "${FROST_BDK_CAPTURE_RUNTIME_METRICS:-0}" == "1" ]]; then
+    cargo_features="${cargo_features},prometheus"
+  fi
+  cargo build -p cdk-mintd -p cdk-cli --features "$cargo_features" "${cargo_profile_args[@]}"
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   FROST_BDK_REGTEST=1 \
     FROST_BDK_FAULT_PROFILE="{{fault_profile}}" \
+    FROST_BDK_RUNTIME_BUILD_PROFILE="$cargo_profile" \
     BITCOIN_DOCKER_CONTAINER="$container" \
     CDK_MINTD_BIN="$cargo_target_dir/cdk-mintd" \
     CDK_CLI_BIN="$cargo_target_dir/cdk-cli" \
@@ -1535,7 +1540,7 @@ fed-regtest-frost-bdk-14-of-20 dir="target/cdk-fed-regtest-frost-bdk-14-of-20" p
 
 # Leave a fresh 3-of-5 federation idle across two signing leases, then deposit and melt
 fed-regtest-frost-bdk-long-idle dir="target/cdk-fed-regtest-frost-bdk-long-idle" port_start="33985" idle_seconds="65":
-  FROST_BDK_LONG_IDLE_SECONDS="{{idle_seconds}}" just fed-regtest-frost-bdk "{{dir}}" 5 3 "{{port_start}}" happy
+  FROST_BDK_LONG_IDLE_SECONDS="{{idle_seconds}}" FROST_BDK_CAPTURE_RUNTIME_METRICS=1 just fed-regtest-frost-bdk "{{dir}}" 5 3 "{{port_start}}" happy
 
 # Bounded process-level fault profiles using fresh state for every run
 fed-regtest-frost-bdk-fault-matrix dir="target/cdk-fed-regtest-frost-bdk-faults" port_start="32985":

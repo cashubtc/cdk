@@ -43,8 +43,8 @@ federation partially ready.
 
 ## Encountered bugs and things to remember
 
-> Keep this below 500 words: milestone, symptom, cause, fix or open question,
-> and preserving regression. Move investigations elsewhere.
+> Keep below 500 words: symptom, cause, fix/open question, and regression.
+> Move investigations elsewhere.
 
 - Cashu BLS shares and member identity keys cannot become Bitcoin custody
   shares. Reuse ceremony/authentication infrastructure only; persist the
@@ -92,9 +92,10 @@ federation partially ready.
   the other member, so the local observer correctly made no payment. Select a
   locally elected operation deterministically in that fixture; no mint business
   logic change was needed, and the focused catch-up regression now passes.
-- Milestone 25 found vulnerable Hickory in BIP353 while Tor trusted resolver
-  JSON. One transport-neutral resolver now builds bounded proofs over ordinary
-  or Tor HTTPS and validates DNSSEC locally; preserve live smoke coverage.
+- Milestone 25 replaced vulnerable Hickory and Tor-trusted resolver JSON with a
+  transport-neutral, locally DNSSEC-validating resolver; preserve live smoke.
+- Milestone 26 runtime metrics must sample portable cumulative `ps time`; BSD
+  `stime` is process start time, not system CPU time.
 
 ## 1. Problem and setting
 
@@ -1805,14 +1806,14 @@ weakening consensus authorization.
 - [x] Delayed stale coordinator messages after failover.
 - [x] Network partition below and above consensus/signing thresholds.
 - [x] Long idle period followed by deposit and melt.
-- [ ] CPU/network benchmark for idle and active signing periods; the deterministic
-  active scheduler microbenchmark and idle no-work invariant pass, but a
-  multi-process network measurement remains for Milestone 26.
+- [x] CPU/network benchmark for idle and active signing periods; the deterministic
+  scheduler/no-work tests and a real five-process debug measurement pass.
+  Broader profile and capacity measurements remain for Milestone 26.
 
 **Milestone record:** core implementation completed on 2026-07-14; the live
-long-idle acceptance test completed on 2026-07-15, leaving only the
-Milestone 26 multi-process CPU/network measurement unchecked. The new
-application-neutral liveness schedule derives proposer, signing coordinator,
+long-idle acceptance test and multi-process runtime measurement completed on
+2026-07-15. The application-neutral liveness schedule derives proposer,
+signing coordinator,
 and every threshold-sized signer subset from the accepted batch or proposal
 ID. Absolute bounded leases survive restart, rotate across the complete member
 roster, and grant the first coordinator only a short aggregation head start;
@@ -1853,8 +1854,15 @@ and `git diff --check` passes. A fresh 3-of-5 dual-DKG run then kept the active
 federation idle for 65 seconds, crossing two signing leases, and recorded a
 converged post-idle checkpoint before completing two deposits and two distinct
 `PAID` melts. The final balance stayed positive and decreased by the payments;
-all five members converged. The multi-process CPU/network measurement remains
-unchecked for Milestone 26 rather than being claimed from this functional run.
+all five members converged. The same run recorded multi-process CPU/network
+measurements in a stable schema: the 66-second idle window used 2.07 aggregate
+CPU seconds (6.273 CPU-ms per member-second), handled 297 private REST requests
+(54.000 per member-minute), and ended at 84,720 KiB maximum member RSS. The
+792-second active deposit/melt/checkpoint window used 4,952.81 aggregate CPU
+seconds (1,250.710 CPU-ms per member-second), handled 19,977 private REST
+requests (302.682 per member-minute), and ended at 179,120 KiB maximum member
+RSS. These are debug 3-of-5 baselines, not production limits; broader profiles,
+database growth, and nonce cleanup remain Milestone 26 work.
 
 ### Milestone 20: fee management, batching, and replacements
 
@@ -2396,13 +2404,25 @@ limits.
 
 **Required tests:**
 
-- [ ] Repeatable benchmark harness with machine-independent result fields.
+- [x] Repeatable benchmark harness with machine-independent result fields.
 - [ ] Sustained deposit-observation and payment-proposal load.
 - [ ] Maximum-size valid and one-over-limit operations.
 - [ ] Slow/offline member and slow chain-source capacity tests.
 - [ ] Long-running restart/rebroadcast/reconciliation soak test.
 - [ ] Final workspace format, check, clippy, unit, integration, regtest, and
   documentation verification.
+
+**Progress record (2026-07-15):** `just fed-regtest-frost-bdk-long-idle` now
+builds the requested profile with metrics support, creates a fresh dual-DKG
+federation, and measures five live mint processes around isolated idle and
+active windows. Schema v1 records profile, window, members, threshold, duration,
+aggregate CPU, normalized CPU per member-second, private REST request count and
+rate, and maximum endpoint RSS. It rejects missing processes, unavailable
+metrics endpoints, regressing counters, incomplete member sets, and invalid
+durations. The first debug 3-of-5 run is recorded in Milestone 19. It closes the
+repeatable-harness and liveness-measurement criteria only; production limits,
+release profiles, detailed phase timings, database/nonce capacity, load, and
+soak gates remain open.
 
 ## 9. Definition of done
 
