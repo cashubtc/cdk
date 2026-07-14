@@ -111,7 +111,7 @@ proposed fix is correct.
 
 | Order | Milestone | Current status | Detailed issues |
 | ---: | --- | --- | --- |
-| 1 | Fresh-member recovery, readiness, and live-session convergence | Confirmed; investigation pending | 1, 2 |
+| 1 | Fresh-member recovery, readiness, and live-session convergence | Fix in progress | 1, 2 |
 | 2 | Cancellation-safe server application and bounded wallet completion | Confirmed; investigation pending | 3, 4, 5 |
 | 3 | Exactly-once melt completion under repetition and member faults | Confirmed; investigation pending | 6 |
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Confirmed; investigation pending | 8 |
@@ -188,7 +188,7 @@ software revisions, and workload shapes differ.
 
 ### Milestone 1: Fresh-member recovery, readiness, and live-session convergence
 
-**Status:** Confirmed; investigation pending
+**Status:** Fix in progress
 
 **Covers:** Issues 1 and 2
 
@@ -212,27 +212,88 @@ federation session rather than merely locally consistent.
 
 #### Investigation and evidence gate
 
-- [ ] Build a minimal, deterministic process test that separately covers an
+- [x] Build a minimal, deterministic process test that separately covers an
   erased database at startup and session rotation under load.
-- [ ] Record each startup state transition, local journal boundary, checkpoint
+- [x] Record each startup state transition, local journal boundary, checkpoint
   trust classification, finalized and backup boundaries, active session, peer
   session evidence, and readiness reason.
-- [ ] Trace range requests and responses, peer selection, retry classification,
+- [x] Trace range requests and responses, peer selection, retry classification,
   and the decision made by `should_defer_catch_up_to_live_aleph_bft`.
-- [ ] Prove where and why catch-up stops: missing range availability, incorrect
+- [x] Prove where and why catch-up stops: missing range availability, incorrect
   trusted-checkpoint classification, premature deferral to live consensus,
   backup/finalized boundary handling, session selection, or another measured
   cause.
-- [ ] Prove the exact inputs that allow readiness and strict status to pass
+- [x] Prove the exact inputs that allow readiness and strict status to pass
   during a session split.
-- [ ] Confirm that the cause holds across at least two journal heights and is
+- [x] Confirm that the cause holds across at least two journal heights and is
   not dependent on a single timing window.
-- [ ] Record the root cause and owning layer here before changing production
+- [x] Record the root cause and owning layer here before changing production
   behavior.
+
+#### Root-cause evidence
+
+A bounded current-revision process reproduction started five members, committed
+one standard batch, and converged all members at seven operations in AlephBFT
+session 0. Member 5 was stopped, its work directory was preserved outside the
+active path, and it was restarted with an empty work directory. Within ten
+seconds it reported zero operations, no finalized items, no catch-up certificate
+evidence, `session=1`, `sync=healthy`, and `ready=true`. Those values remained
+unchanged in every five-second sample for 90 seconds while the other four
+members remained at seven operations in session 0. Both sides repeatedly
+rejected AlephBFT traffic with `expected=0, found=1` or `expected=1, found=0`.
+The same causal shape was previously reproduced at histories of 35 and 316
+operations, so it is not a large-journal or single-timing-window effect.
+
+The code path explains every observed transition:
+
+1. Router construction creates an empty consensus runtime at session 0 and
+   starts the live AlephBFT task before startup readiness revalidation or the
+   peer-sync loop.
+2. `restore_startup_readiness` treats an empty journal as trusted and changes
+   the startup halt directly to `Healthy` without any peer comparison,
+   certificate evidence, finalized-item history, or session evidence.
+3. The fresh session lacks the persisted backup and finalized prefix needed to
+   rejoin peers already advanced in session 0. It terminates and rotates the
+   empty local runtime to session 1.
+4. Each peer-status response proves the local journal is behind, but
+   `should_defer_catch_up_to_live_aleph_bft` returns true solely because local
+   sync is `Healthy` and the local live-session and inbound handles exist. This
+   return occurs before the code marks the member lagging or sends a journal
+   range request, so recovery is intentionally skipped on every round.
+5. `sync_ready` is derived only from the local sync enum. Operator
+   `--require-ready` checks only that boolean, convergence checks only height and
+   state digests, and zero-operation certificate checks require no evidence.
+   No guard compares the active AlephBFT session, so an equal-height session
+   split can pass every existing strict guard.
+
+The owning layers are the AlephBFT/router startup ordering, peer-sync readiness
+transition and deferral policy, peer status evidence, and the operator status
+guards. The evidence supports one coherent correction: an untrusted startup
+checkpoint must remain non-ready and must not start live consensus until peer
+sync establishes and recovers a quorum-compatible journal/session view; strict
+status must reject session disagreement. The temporary reproduction wrapper is
+git-ignored and must be removed after the permanent regression passes.
+
+The first implementation pass removed premature startup and readiness and was
+then re-run as a five-member process test. Member 5 stayed non-ready at zero
+operations, recovered the exact seven-operation journal, finalized cursor,
+order and materialized-state digests, and quorum catch-up certificate, and
+briefly became healthy in session 0. It then moved alone to session 1 and
+correctly returned to `awaiting_quorum`; strict convergence failed for the
+remaining 75-second observation window. The member log supplies the missing
+causal boundary: upstream AlephBFT inferred collection round 62 from the peers
+but backup round 0 locally, reported `Backup state behind unit collection
+state`, stopped its creator, and returned from `run_session`. CDK classified
+that indistinguishably returned task as normal session completion and rotated
+unilaterally. Therefore journal recovery and fail-closed readiness are working,
+but an erased member cannot resume a progressed session until its signed DAG
+backup is recovered or the quorum moves to a new session. Any accepted fix must
+address that continuity boundary; suppressing the readiness error or merely
+delaying unilateral rotation is insufficient.
 
 #### Implementation requirements
 
-- [ ] Do not start implementation until the investigation gate identifies the
+- [x] Do not start implementation until the investigation gate identifies the
   causal mechanism with hard evidence.
 - [ ] Apply the smallest fix in the existing startup, catch-up, status, or
   consensus-session path; do not add a parallel recovery system.
