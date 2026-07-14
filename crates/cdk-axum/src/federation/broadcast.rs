@@ -32,6 +32,26 @@ pub(crate) struct FederationTransactionBroadcaster {
 
 impl FederationTransactionBroadcaster {
     pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {
+        self.run_matching(state, None, false).await
+    }
+
+    /// Immediately retry only one consensus-authorized transaction using its
+    /// exact durably persisted signed bytes. This never constructs a spend or
+    /// bypasses transaction policy, signature, or broadcast-authorization state.
+    pub(crate) async fn run_proposal_now(
+        &self,
+        state: &MintState,
+        proposal_id: FederationTransactionProposalId,
+    ) -> Result<usize, cdk::Error> {
+        self.run_matching(state, Some(proposal_id), true).await
+    }
+
+    async fn run_matching(
+        &self,
+        state: &MintState,
+        proposal_id: Option<FederationTransactionProposalId>,
+        ignore_local_retry_delay: bool,
+    ) -> Result<usize, cdk::Error> {
         let Some(runtime) = state.mint.federation_config() else {
             return Ok(0);
         };
@@ -43,6 +63,11 @@ impl FederationTransactionBroadcaster {
         let mut submitted = 0usize;
 
         for accepted in transaction_state.accepted_transactions().values() {
+            if let Some(proposal_id) = proposal_id {
+                if accepted.proposal.proposal_id()? != proposal_id {
+                    continue;
+                }
+            }
             let Some(signed) = &accepted.signed else {
                 continue;
             };
@@ -114,7 +139,8 @@ impl FederationTransactionBroadcaster {
             ) {
                 continue;
             }
-            if wallet.ensure_ready(0).await.is_err() || !self.retry_is_due(signed.proposal_id).await
+            if wallet.ensure_ready(0).await.is_err()
+                || (!ignore_local_retry_delay && !self.retry_is_due(signed.proposal_id).await)
             {
                 continue;
             }

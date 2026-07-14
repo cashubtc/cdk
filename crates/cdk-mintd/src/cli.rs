@@ -363,6 +363,16 @@ pub enum FederationCommand {
     TestTrustedDealer(FederationTrustedDealerArgs),
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
+    /// Query registered FROST root and application lifecycle status.
+    FrostStatus(FederationStatusArgs),
+    /// Query redacted federated on-chain wallet status.
+    WalletStatus(FederationStatusArgs),
+    /// Query one accepted federated on-chain transaction without transaction contents.
+    TransactionStatus(FederationWalletTransactionArgs),
+    /// Immediately retry one exact durably signed transaction.
+    Rebroadcast(FederationWalletRebroadcastArgs),
+    /// Submit one explicitly guarded root or application key lifecycle transition.
+    FrostRotate(FederationFrostRotateArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -772,6 +782,69 @@ pub struct FederationStatusArgs {
     /// Fail if queried members report invalid-operation alert buckets.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_invalid_operation_alerts: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationWalletTransactionArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Canonical transaction proposal ID.
+    #[arg(long)]
+    pub proposal_id: String,
+    /// Member to query; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationWalletRebroadcastArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Canonical transaction proposal ID.
+    #[arg(long)]
+    pub proposal_id: String,
+    /// Member whose local chain backend should retry; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+    /// Acknowledge that only the exact persisted bytes are retried and no policy is bypassed.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub acknowledge_exact_byte_retry: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationFrostRotateArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to authorize the consensus operation.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// JSON file containing one typed FROST rotation operation.
+    #[arg(long)]
+    pub operation: PathBuf,
+    /// Expected currently active reusable root epoch.
+    #[arg(long)]
+    pub expected_root_epoch: u64,
+    /// Expected currently active CDK application epoch.
+    #[arg(long)]
+    pub expected_application_epoch: u64,
+    /// Member to query and submit through; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+    /// Acknowledge sticky old-epoch custody and consensus retirement guards.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub acknowledge_guarded_rotation: bool,
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -1501,5 +1574,76 @@ mod tests {
         assert!(status.require_no_digest_alerts);
         assert!(status.require_no_payment_observation_alerts);
         assert!(status.require_no_invalid_operation_alerts);
+    }
+
+    #[test]
+    fn parses_federated_wallet_operator_commands_and_guards() {
+        let proposal_id = "11".repeat(32);
+        let transaction = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "transaction-status",
+            "--proposal-id",
+            &proposal_id,
+            "--member",
+            "2",
+        ])
+        .expect("transaction status command parses");
+        let Some(CliCommand::Federation(transaction)) = transaction.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            transaction.command,
+            FederationCommand::TransactionStatus(FederationWalletTransactionArgs {
+                member: Some(2),
+                ..
+            })
+        ));
+
+        let rebroadcast = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "rebroadcast",
+            "--proposal-id",
+            &proposal_id,
+            "--acknowledge-exact-byte-retry",
+        ])
+        .expect("rebroadcast command parses");
+        let Some(CliCommand::Federation(rebroadcast)) = rebroadcast.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            rebroadcast.command,
+            FederationCommand::Rebroadcast(FederationWalletRebroadcastArgs {
+                acknowledge_exact_byte_retry: true,
+                ..
+            })
+        ));
+
+        let rotation = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "frost-rotate",
+            "--operation",
+            "rotation.json",
+            "--expected-root-epoch",
+            "4",
+            "--expected-application-epoch",
+            "7",
+            "--acknowledge-guarded-rotation",
+        ])
+        .expect("guarded rotation command parses");
+        let Some(CliCommand::Federation(rotation)) = rotation.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            rotation.command,
+            FederationCommand::FrostRotate(FederationFrostRotateArgs {
+                expected_root_epoch: 4,
+                expected_application_epoch: 7,
+                acknowledge_guarded_rotation: true,
+                ..
+            })
+        ));
     }
 }

@@ -47,6 +47,10 @@ const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
 pub enum FederationRestMessageKind {
     /// Peer status request.
     Status,
+    /// Request targeted redacted wallet transaction status.
+    WalletTransactionStatus,
+    /// Request an immediate exact-byte retry for one durable transaction.
+    WalletRebroadcast,
     /// Confirm that a peer is ready for the exact configured DKG ceremony.
     DkgReadiness,
     /// Publish a pre-reveal DKG commitment hash to a peer.
@@ -109,6 +113,8 @@ impl FederationRestMessageKind {
     fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Status => b"status",
+            Self::WalletTransactionStatus => b"wallet_transaction_status",
+            Self::WalletRebroadcast => b"wallet_rebroadcast",
             Self::DkgReadiness => b"dkg_readiness",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
@@ -1198,6 +1204,50 @@ impl FederationPeerStatusRequest {
     }
 }
 
+/// Signed targeted operator request for one durable wallet transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationWalletTransactionRequest {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Canonical accepted transaction proposal identity.
+    pub proposal_id: super::FederationTransactionProposalId,
+}
+
+impl FederationWalletTransactionRequest {
+    /// Construct one versioned targeted operator request.
+    #[must_use]
+    pub fn new(proposal_id: super::FederationTransactionProposalId) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            proposal_id,
+        }
+    }
+
+    /// Reject requests from incompatible private API versions.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Result of a guarded immediate exact-byte rebroadcast attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationWalletRebroadcastResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Whether this request submitted a durable consensus transition or observation.
+    pub advanced: bool,
+    /// Redacted transaction state after the attempt.
+    pub status: super::FederationWalletTransactionStatus,
+}
+
 /// Signed request payload carrying one member's pre-reveal DKG commitment hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1899,6 +1949,9 @@ pub struct FederationLocalStatusResponse {
     /// Redacted proposer and signing-coordinator liveness state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_liveness: Option<super::FederationWalletLivenessStatus>,
+    /// Bounded accepted-state wallet diagnosis without addresses or transaction contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_operator: Option<super::FederationWalletOperatorStatus>,
     /// Public reusable-root and application epoch lifecycle metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frost_rotation: Option<super::FederationFrostRotationStatus>,
@@ -3174,6 +3227,7 @@ mod tests {
                 .expect("wallet recovery fixture"),
             ),
             wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
+            wallet_operator: None,
             frost_rotation: None,
         };
 

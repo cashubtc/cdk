@@ -122,6 +122,17 @@ pub enum FederationFrostEpochState {
     Retired,
 }
 
+impl fmt::Display for FederationFrostEpochState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Proposed => "proposed",
+            Self::Active => "active",
+            Self::Retiring => "retiring",
+            Self::Retired => "retired",
+        })
+    }
+}
+
 /// Canonical public root snapshot shared by every member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

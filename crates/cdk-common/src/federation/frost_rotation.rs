@@ -1,6 +1,6 @@
 //! Consensus-safe lifecycle transitions for reusable FROST roots and applications.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -293,6 +293,14 @@ pub struct FederationFrostRootEpochStatus {
     pub registered_consumers: u64,
     /// DKG transcript commitment, containing no private share.
     pub transcript_binding: [u8; 32],
+    /// Canonical FROST DKG protocol version.
+    pub dkg_protocol_version: u16,
+    /// Canonical FROST ciphersuite version.
+    pub ciphersuite_version: u16,
+    /// Signing threshold shared with the BLS federation.
+    pub threshold: u16,
+    /// Stable registered application IDs using this root, without key material.
+    pub application_ids: Vec<FederationFrostApplicationId>,
 }
 
 /// Safe public lifecycle status for one application key epoch.
@@ -590,6 +598,17 @@ impl FederationFrostWalletConfig {
                 )
                 .unwrap_or(u64::MAX),
                 transcript_binding: root.transcript_binding,
+                dkg_protocol_version: root.dkg_protocol_version,
+                ciphersuite_version: root.ciphersuite_version,
+                threshold: root.threshold,
+                application_ids: self
+                    .registered_consumers
+                    .iter()
+                    .filter(|consumer| consumer.root_key_epoch == root.root_key_epoch)
+                    .map(|consumer| consumer.application_id)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
             })
             .collect::<Vec<_>>();
         roots.sort_by_key(|root| root.root_key_epoch);

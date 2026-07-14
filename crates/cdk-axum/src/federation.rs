@@ -39,6 +39,7 @@ mod dkg_driver;
 mod dkg_routes;
 pub(crate) mod frost_signing;
 mod node_runtime;
+mod operator_routes;
 mod payment_observation;
 mod peer_client;
 mod status_routes;
@@ -86,6 +87,7 @@ use self::frost_signing::{
     post_frost_signing_package,
 };
 pub(crate) use self::node_runtime::FederationNodeRuntime;
+use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
 #[cfg(test)]
@@ -158,6 +160,14 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/config", get(get_public_config))
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))
+        .route(
+            "/wallet/transactions/status",
+            post(post_wallet_transaction_status),
+        )
+        .route(
+            "/wallet/transactions/rebroadcast",
+            post(post_wallet_rebroadcast),
+        )
         .route("/operations", post(post_operation))
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))

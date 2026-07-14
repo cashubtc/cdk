@@ -95,6 +95,9 @@ pub(super) async fn post_local_status(
         Some(worker) => Some(worker.status().await),
         None => None,
     };
+    let wallet_operator = federation_wallet_operator_status(&state, wallet_liveness.as_ref())
+        .await
+        .map_err(cdk_error_response)?;
     let frost_rotation = state
         .mint
         .federation_frost_rotation_status()
@@ -120,6 +123,7 @@ pub(super) async fn post_local_status(
         onchain_wallets,
         wallet_recovery,
         wallet_liveness,
+        wallet_operator,
         frost_rotation,
     );
     #[cfg(feature = "prometheus")]
@@ -147,6 +151,7 @@ fn federation_local_status_response(
     onchain_wallets: Vec<cdk::federation::FederationOnchainWalletStatus>,
     wallet_recovery: Option<FederationWalletRecoveryStatus>,
     wallet_liveness: Option<cdk::federation::FederationWalletLivenessStatus>,
+    wallet_operator: Option<cdk::federation::FederationWalletOperatorStatus>,
     frost_rotation: Option<cdk::federation::FederationFrostRotationStatus>,
 ) -> FederationLocalStatusResponse {
     let (
@@ -197,8 +202,34 @@ fn federation_local_status_response(
         onchain_wallets,
         wallet_recovery,
         wallet_liveness,
+        wallet_operator,
         frost_rotation,
     }
+}
+
+async fn federation_wallet_operator_status(
+    state: &MintState,
+    liveness: Option<&cdk::federation::FederationWalletLivenessStatus>,
+) -> Result<Option<cdk::federation::FederationWalletOperatorStatus>, cdk::Error> {
+    let Some(runtime) = state.mint.effective_federation_config().await? else {
+        return Ok(None);
+    };
+    let Some(wallet) = runtime.public_config().frost_wallet.as_ref() else {
+        return Ok(None);
+    };
+    let addresses = state.mint.federation_address_allocation_state().await?;
+    let chain = state.mint.federation_chain_observation_state().await?;
+    let transactions = state.mint.federation_transaction_state().await?;
+    let default_liveness = cdk::federation::FederationWalletLivenessStatus::default();
+    Ok(Some(
+        cdk::federation::FederationWalletOperatorStatus::from_states(
+            wallet,
+            &addresses,
+            &chain,
+            &transactions,
+            liveness.unwrap_or(&default_liveness),
+        )?,
+    ))
 }
 
 async fn federation_wallet_recovery_status(
@@ -246,6 +277,13 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
     const PAYMENT_REPORT_STATUSES: &[&str] =
         &["empty", "awaiting_quorum", "quorum_reached", "conflicting"];
     const PAYMENT_REPORT_ACTIONS: &[&str] = &["none", "inspect", "quarantine"];
+    const BROADCAST_HEALTH: &[&str] = &[
+        "idle",
+        "awaiting_authorization",
+        "broadcasting",
+        "confirming",
+        "degraded",
+    ];
 
     let member = response.peer_status.member_id.to_string();
     cdk_prometheus::METRICS.set_federation_consensus_operation_count(
@@ -294,13 +332,55 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
         cdk_prometheus::METRICS
             .set_federation_payment_observation_report_count(&member, &status, &action, count);
     }
+
+    if let Some(wallet) = &response.wallet_operator {
+        for utxo in &wallet.utxos {
+            cdk_prometheus::METRICS.set_federation_wallet_utxos(
+                &member,
+                &utxo.state.to_string(),
+                super::u64_to_i64_saturating(utxo.count),
+                super::u64_to_i64_saturating(utxo.value_sat),
+            );
+        }
+        for phase in &wallet.operation_phases {
+            cdk_prometheus::METRICS.set_federation_wallet_operation_phase(
+                &member,
+                &phase.phase.to_string(),
+                super::u64_to_i64_saturating(phase.count),
+            );
+        }
+        cdk_prometheus::METRICS.set_federation_wallet_revealed_count(
+            &member,
+            "external",
+            super::u64_to_i64_saturating(wallet.external_revealed_count),
+        );
+        cdk_prometheus::METRICS.set_federation_wallet_revealed_count(
+            &member,
+            "internal",
+            super::u64_to_i64_saturating(wallet.internal_revealed_count),
+        );
+        cdk_prometheus::METRICS.set_federation_wallet_liveness(
+            &member,
+            super::u64_to_i64_saturating(wallet.pending_batches),
+            super::u64_to_i64_saturating(wallet.signing_attempts),
+            super::u64_to_i64_saturating(wallet.signing_failures),
+        );
+        for health in BROADCAST_HEALTH {
+            cdk_prometheus::METRICS.set_federation_wallet_broadcast_health(
+                &member,
+                health,
+                *health == wallet.broadcast_health.to_string(),
+            );
+        }
+        cdk_prometheus::METRICS.set_federation_wallet_broadcast_failures(
+            &member,
+            super::u64_to_i64_saturating(wallet.broadcast_failures),
+        );
+    }
 }
 
 fn usize_to_u64_saturating(value: usize) -> u64 {
-    match u64::try_from(value) {
-        Ok(value) => value,
-        Err(_) => u64::MAX,
-    }
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

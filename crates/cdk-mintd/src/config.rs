@@ -248,6 +248,10 @@ pub enum OnchainBackend {
     None,
     #[cfg(feature = "bdk")]
     Bdk,
+    /// Watch-only BDK wallet whose spends are authorized by federation consensus and FROST.
+    #[cfg(feature = "federation")]
+    #[serde(rename = "federated-bdk", alias = "federated_bdk")]
+    FederatedBdk,
     #[cfg(feature = "fakewallet")]
     FakeWallet,
 }
@@ -260,6 +264,8 @@ impl std::str::FromStr for OnchainBackend {
             "none" => Ok(OnchainBackend::None),
             #[cfg(feature = "bdk")]
             "bdk" => Ok(OnchainBackend::Bdk),
+            #[cfg(feature = "federation")]
+            "federated-bdk" | "federated_bdk" | "federatedbdk" => Ok(OnchainBackend::FederatedBdk),
             #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(OnchainBackend::FakeWallet),
             _ => Err(format!("Unknown Onchain backend: {s}")),
@@ -1240,6 +1246,12 @@ pub struct FederationOnchainWallet {
     /// Enable the local watch-only wallet when public config activates it.
     #[serde(default)]
     pub enabled: bool,
+    /// Expected consensus Bitcoin network; must match the active application config.
+    pub network: Option<String>,
+    /// Expected consensus confirmation depth; must match the active application config.
+    pub minimum_confirmations: Option<u32>,
+    /// Expected consensus transaction policy version; must match the active application config.
+    pub fee_policy_version: Option<u16>,
     /// `bitcoinrpc` or `esplora`.
     #[serde(default = "default_federation_onchain_source_type")]
     pub chain_source_type: String,
@@ -1278,6 +1290,9 @@ impl fmt::Debug for FederationOnchainWallet {
         formatter
             .debug_struct("FederationOnchainWallet")
             .field("enabled", &self.enabled)
+            .field("network", &self.network)
+            .field("minimum_confirmations", &self.minimum_confirmations)
+            .field("fee_policy_version", &self.fee_policy_version)
             .field("chain_source_type", &self.chain_source_type)
             .field("chain_source_scope", &self.chain_source_scope)
             .field("chain_source_id", &self.chain_source_id)
@@ -1296,6 +1311,9 @@ impl Default for FederationOnchainWallet {
     fn default() -> Self {
         Self {
             enabled: false,
+            network: None,
+            minimum_confirmations: None,
+            fee_policy_version: None,
             chain_source_type: default_federation_onchain_source_type(),
             chain_source_scope: default_federation_onchain_source_scope(),
             chain_source_id: None,
@@ -1729,6 +1747,12 @@ impl Settings {
                      \"fakewallet\" or \"none\""
                     .to_string());
             }
+            #[cfg(feature = "federation")]
+            OnchainBackend::FederatedBdk if has_fake_wallet_backend => {
+                return Err("payment_backend = \"fakewallet\" cannot be combined with \
+                     onchain_backend = \"federated-bdk\""
+                    .to_string());
+            }
             OnchainBackend::FakeWallet if has_real_backend => {
                 return Err("onchain_backend = \"fakewallet\" cannot be combined with \
                      a real payment backend; use backend = \"fakewallet\" \
@@ -1807,6 +1831,20 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federated_bdk_backend_parsing_is_explicit() {
+        assert_eq!(
+            "federated-bdk".parse::<OnchainBackend>(),
+            Ok(OnchainBackend::FederatedBdk)
+        );
+        assert_eq!(
+            "federated_bdk".parse::<OnchainBackend>(),
+            Ok(OnchainBackend::FederatedBdk)
+        );
+        assert_eq!(OnchainBackend::default(), OnchainBackend::None);
+    }
 
     #[test]
     fn postgres_config_debug_redacts_connection_credentials() {

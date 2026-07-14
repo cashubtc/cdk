@@ -585,9 +585,21 @@ fn root_and_application_rotation_are_consensus_gated_and_usage_guarded() {
     let public_status = application_activated.rotation_status();
     assert_eq!(public_status.roots.len(), 2);
     assert_eq!(public_status.applications.len(), 2);
+    for root in &public_status.roots {
+        assert_eq!(root.dkg_protocol_version, 1);
+        assert_eq!(root.ciphersuite_version, 1);
+        assert_eq!(
+            root.threshold,
+            federation.threshold_params.signature_threshold
+        );
+        assert!(!root.application_ids.is_empty());
+    }
     let public_status_json = serde_json::to_string(&public_status).expect("public status JSON");
     assert!(!public_status_json.contains("verification_shares"));
     assert!(!public_status_json.contains("encrypted_root_share"));
+    assert!(!public_status_json.contains("secret"));
+    assert!(!public_status_json.contains("nonce"));
+    assert!(!public_status_json.contains("mnemonic"));
     let restarted: FederationFrostWalletConfig = serde_json::from_slice(
         &serde_json::to_vec(&application_activated).expect("persist rotating wallet"),
     )

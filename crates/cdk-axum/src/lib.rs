@@ -1262,6 +1262,19 @@ mod tests {
     }
 
     #[test]
+    fn active_frost_root_requires_exact_local_share_inventory() {
+        assert!(validate_frost_root_epoch_inventory([1, 2], [1, 2]).is_ok());
+
+        let missing = validate_frost_root_epoch_inventory([1, 2], [1])
+            .expect_err("missing local root share must fail startup");
+        assert!(missing.to_string().contains("participant-local FROST root"));
+
+        let unknown = validate_frost_root_epoch_inventory([1], [1, 2])
+            .expect_err("unknown local root share must fail startup");
+        assert!(unknown.to_string().contains("participant-local FROST root"));
+    }
+
+    #[test]
     fn federation_halted_sync_status_redacts_operator_message() {
         let status = FederationSyncStatus::Halted {
             reason: concat!(
@@ -3128,12 +3141,10 @@ async fn validate_and_materialize_frost_wallet_config(mint: &Arc<Mint>) -> Resul
     }
 
     let private_roots = db.get_federation_frost_root_private_configs().await?;
-    if private_roots.len() != stored_roots.len() {
-        return Err(cdk::Error::Custom(
-            "missing or unknown participant-local FROST root configuration".to_string(),
-        )
-        .into());
-    }
+    validate_frost_root_epoch_inventory(
+        stored_roots.iter().map(|root| root.root_key_epoch),
+        private_roots.iter().map(|root| root.root_key_epoch),
+    )?;
     for root in &stored_roots {
         root.validate(public)?;
         let local = private_roots
@@ -3149,6 +3160,22 @@ async fn validate_and_materialize_frost_wallet_config(mint: &Arc<Mint>) -> Resul
             FederationFrostDkgContext::new(public, root.ceremony_id, root.root_key_epoch)?;
         let storage_key = self::federation::frost_storage_key(runtime.private_config(), &context)?;
         local.open(public, root, runtime.member_id(), &storage_key)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn validate_frost_root_epoch_inventory(
+    public_epochs: impl IntoIterator<Item = u64>,
+    private_epochs: impl IntoIterator<Item = u64>,
+) -> Result<()> {
+    let public_epochs = public_epochs.into_iter().collect::<BTreeSet<_>>();
+    let private_epochs = private_epochs.into_iter().collect::<BTreeSet<_>>();
+    if public_epochs != private_epochs {
+        return Err(cdk::Error::Custom(
+            "missing or unknown participant-local FROST root configuration".to_string(),
+        )
+        .into());
     }
     Ok(())
 }

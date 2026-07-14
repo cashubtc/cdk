@@ -14,6 +14,38 @@ pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
     "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT: &str =
     "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_ENABLED: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_ENABLED";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_NETWORK: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_NETWORK";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_MINIMUM_CONFIRMATIONS: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_MINIMUM_CONFIRMATIONS";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_FEE_POLICY_VERSION: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_FEE_POLICY_VERSION";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_TYPE: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_TYPE";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_SCOPE: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_SCOPE";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_ID: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_ID";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_URL: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_ESPLORA_URL";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_PARALLEL_REQUESTS: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_ESPLORA_PARALLEL_REQUESTS";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_REQUEST_TIMEOUT_SECS: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_REQUEST_TIMEOUT_SECS";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_MAX_RETRIES: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_ESPLORA_MAX_RETRIES";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_HOST: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_HOST";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PORT: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PORT";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_USER: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_USER";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PASSWORD: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PASSWORD";
+pub const ENV_FEDERATION_ONCHAIN_WALLET_SYNC_INTERVAL_SECS: &str =
+    "CDK_MINTD_FEDERATION_ONCHAIN_WALLET_SYNC_INTERVAL_SECS";
 
 impl Federation {
     pub fn from_env(mut self) -> Result<Self> {
@@ -65,8 +97,84 @@ impl Federation {
             self.peer_sync.aleph_bft_live_session_rotation_limit = Some(rotation_limit);
         }
 
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_ENABLED) {
+            self.onchain_wallet.enabled = parse_env(&value, "enabled")?;
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_NETWORK) {
+            self.onchain_wallet.network = Some(value);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_MINIMUM_CONFIRMATIONS) {
+            self.onchain_wallet.minimum_confirmations =
+                Some(parse_nonzero_env(&value, "minimum confirmations")?);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_FEE_POLICY_VERSION) {
+            self.onchain_wallet.fee_policy_version =
+                Some(parse_nonzero_env(&value, "fee policy version")?);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_TYPE) {
+            self.onchain_wallet.chain_source_type = value;
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_SCOPE) {
+            self.onchain_wallet.chain_source_scope = value;
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_ID) {
+            self.onchain_wallet.chain_source_id = Some(value);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_URL) {
+            self.onchain_wallet.esplora_url = Some(value);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_PARALLEL_REQUESTS) {
+            self.onchain_wallet.esplora_parallel_requests =
+                parse_nonzero_env(&value, "Esplora parallel requests")?;
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_REQUEST_TIMEOUT_SECS) {
+            self.onchain_wallet.request_timeout_secs =
+                parse_nonzero_env(&value, "request timeout")?;
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_MAX_RETRIES) {
+            self.onchain_wallet.esplora_max_retries = parse_env(&value, "Esplora max retries")?;
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_HOST) {
+            self.onchain_wallet.bitcoind_rpc_host = Some(value);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PORT) {
+            self.onchain_wallet.bitcoind_rpc_port =
+                Some(parse_nonzero_env(&value, "Bitcoin RPC port")?);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_USER) {
+            self.onchain_wallet.bitcoind_rpc_user = Some(value);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PASSWORD) {
+            self.onchain_wallet.bitcoind_rpc_password = Some(value);
+        }
+        if let Ok(value) = env::var(ENV_FEDERATION_ONCHAIN_WALLET_SYNC_INTERVAL_SECS) {
+            self.onchain_wallet.sync_interval_secs = parse_nonzero_env(&value, "sync interval")?;
+        }
+
         Ok(self)
     }
+}
+
+fn parse_env<T>(value: &str, field: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+{
+    value
+        .parse::<T>()
+        .map_err(|_| anyhow!("Federation on-chain wallet {field} is invalid"))
+}
+
+fn parse_nonzero_env<T>(value: &str, field: &str) -> Result<T>
+where
+    T: std::str::FromStr + Default + PartialEq,
+{
+    let parsed = parse_env(value, field)?;
+    if parsed == T::default() {
+        return Err(anyhow!(
+            "Federation on-chain wallet {field} must be greater than zero"
+        ));
+    }
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -88,6 +196,22 @@ mod tests {
         env::remove_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_ENABLED);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_NETWORK);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_MINIMUM_CONFIRMATIONS);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_FEE_POLICY_VERSION);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_TYPE);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_SCOPE);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_ID);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_URL);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_PARALLEL_REQUESTS);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_REQUEST_TIMEOUT_SECS);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_MAX_RETRIES);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_HOST);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PORT);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_USER);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_BITCOIND_RPC_PASSWORD);
+        env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_SYNC_INTERVAL_SECS);
     }
 
     #[test]
@@ -213,6 +337,60 @@ mod tests {
             "error should explain invalid rotation limit: {err}"
         );
 
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_overrides_complete_onchain_wallet_config() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_ENABLED, "true");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_NETWORK, "regtest");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_MINIMUM_CONFIRMATIONS, "2");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_FEE_POLICY_VERSION, "1");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_TYPE, "esplora");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_SCOPE, "shared");
+        env::set_var(
+            ENV_FEDERATION_ONCHAIN_WALLET_CHAIN_SOURCE_ID,
+            "shared-regtest",
+        );
+        env::set_var(
+            ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_URL,
+            "http://127.0.0.1:3002",
+        );
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_PARALLEL_REQUESTS, "3");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_REQUEST_TIMEOUT_SECS, "20");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_ESPLORA_MAX_RETRIES, "4");
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_SYNC_INTERVAL_SECS, "11");
+
+        let config = Federation::default()
+            .from_env()
+            .expect("federation wallet env config");
+        let wallet = config.onchain_wallet;
+        assert!(wallet.enabled);
+        assert_eq!(wallet.network.as_deref(), Some("regtest"));
+        assert_eq!(wallet.minimum_confirmations, Some(2));
+        assert_eq!(wallet.fee_policy_version, Some(1));
+        assert_eq!(wallet.chain_source_type, "esplora");
+        assert_eq!(wallet.chain_source_scope, "shared");
+        assert_eq!(wallet.chain_source_id.as_deref(), Some("shared-regtest"));
+        assert_eq!(wallet.esplora_parallel_requests, 3);
+        assert_eq!(wallet.request_timeout_secs, 20);
+        assert_eq!(wallet.esplora_max_retries, 4);
+        assert_eq!(wallet.sync_interval_secs, 11);
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_rejects_zero_wallet_timeout() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ONCHAIN_WALLET_REQUEST_TIMEOUT_SECS, "0");
+
+        let error = Federation::default()
+            .from_env()
+            .expect_err("zero wallet request timeout must fail");
+        assert!(error.to_string().contains("must be greater than zero"));
         clear_federation_env();
     }
 }

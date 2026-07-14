@@ -21780,6 +21780,40 @@ async fn private_status_route_rejects_inbound_overflow_before_sequence_persisten
 }
 
 #[tokio::test]
+async fn private_wallet_transaction_status_is_authenticated_and_targeted() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        local_member,
+        1,
+        FederationRestMessageKind::WalletTransactionStatus,
+        cdk::federation::FederationWalletTransactionRequest::new(
+            cdk::federation::FederationTransactionProposalId::from_bytes([9; 32]),
+        ),
+        &peer_private,
+    )
+    .expect("signed targeted request");
+
+    let response = post_wallet_transaction_status(State(state.clone()), Json(request.clone()))
+        .await
+        .expect_err("unknown target must fail closed");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let detail = response_error_detail(response).await;
+    assert!(detail.contains("proposal is unknown"));
+    let retry = post_wallet_transaction_status(State(state), Json(request))
+        .await
+        .expect_err("same failed target remains admissible");
+    assert!(response_error_detail(retry)
+        .await
+        .contains("proposal is unknown"));
+}
+
+#[tokio::test]
 async fn private_local_status_route_reports_lagging_sync_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

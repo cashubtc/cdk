@@ -2097,45 +2097,80 @@ secrets or requiring database inspection.
 
 **Work:**
 
-- [ ] Add validated mintd configuration for enabling the federated BDK wallet,
+- [x] Add validated mintd configuration for enabling the federated BDK wallet,
   Bitcoin network, local chain source, confirmation policy, fee policy, and
   bounded timeouts.
-- [ ] Reject local mnemonic configuration when the federated watch-only wallet
+- [x] Reject local mnemonic configuration when the federated watch-only wallet
   is selected.
-- [ ] Extend federation status with wallet epoch, descriptor commitment, sync
+- [x] Extend federation status with wallet epoch, descriptor commitment, sync
   tip, revealed indexes, UTXO counts, reserved value, pending batches, signing
   attempts, and broadcast health.
-- [ ] Expose safe root-key status containing root epoch, DKG/ciphersuite version,
+- [x] Expose safe root-key status containing root epoch, DKG/ciphersuite version,
   threshold, transcript commitment, registered application IDs, and lifecycle
   state without exposing shares or derivation-sensitive secrets.
-- [ ] Add bounded Prometheus metrics without quote IDs, addresses, tx contents,
+- [x] Add bounded Prometheus metrics without quote IDs, addresses, tx contents,
   key material, or unbounded labels.
-- [ ] Add operator commands for root DKG status, registered-application status,
+- [x] Add operator commands for root DKG status, registered-application status,
   wallet status, transaction status, safe rebroadcast, and guarded root or
   application key rotation.
-- [ ] Require explicit guarded procedures for abandoning/replacing transactions;
+- [x] Require explicit guarded procedures for abandoning/replacing transactions;
   do not provide a force-spend or private-key export command.
-- [ ] Document mempool.space, self-hosted Esplora, and Bitcoin Core deployment
+- [x] Document mempool.space, self-hosted Esplora, and Bitcoin Core deployment
   tradeoffs.
-- [ ] Add startup warnings for correlated chain sources and incomplete quorum.
+- [x] Add startup warnings for correlated chain sources and incomplete quorum.
 
 **Success criteria:**
 
-- [ ] Operators can identify whether a payment is waiting on consensus, chain
+- [x] Operators can identify whether a payment is waiting on consensus, chain
   observations, proposal, signatures, broadcast, or confirmation.
-- [ ] Status and metrics reveal no secret shares, nonce material, credentials,
+- [x] Status and metrics reveal no secret shares, nonce material, credentials,
   addresses, or sensitive local paths.
-- [ ] Invalid or mixed standalone/federated BDK configuration fails startup.
+- [x] Invalid or mixed standalone/federated BDK configuration fails startup.
 
 **Required tests:**
 
-- [ ] Configuration parsing, defaults, environment overrides, and invalid
+- [x] Configuration parsing, defaults, environment overrides, and invalid
   combinations.
-- [ ] Status for every wallet operation phase.
-- [ ] Metric cardinality and secret-redaction tests.
-- [ ] CLI smoke tests for status, rebroadcast, and rotation safety guards.
-- [ ] Startup fail-closed tests for missing wallet config/share/chain source.
-- [ ] Root/application registration, status, and retirement-guard tests.
+- [x] Status for every wallet operation phase.
+- [x] Metric cardinality and secret-redaction tests.
+- [x] CLI smoke tests for status, rebroadcast, and rotation safety guards.
+- [x] Startup fail-closed tests for missing wallet config/share/chain source.
+- [x] Root/application registration, status, and retirement-guard tests.
+
+**Milestone 23 completion record:** mintd now selects `federated-bdk`
+explicitly, rejects standalone mnemonic custody and mixed wallet modes, validates
+the consensus network/confirmation/fee policy against bounded member-local
+Esplora or Bitcoin Core settings, and registers only a thin quote/settings
+adapter. Address, payment, and settlement mutations still flow through the
+accepted federation wallet operations; the adapter fails closed if called as a
+standalone spender.
+
+The authenticated private operator API provides targeted transaction status
+and exact-byte rebroadcast only. The CLI combines these routes with existing DKG
+status, safe public root/application status, and consensus-gated rotation.
+Rebroadcast and rotation require explicit acknowledgements, and no force-spend,
+force-release, share-export, nonce-export, mnemonic-export, or private-key
+export command exists. The [federated BDK operations runbook](federated-bdk-operations.md)
+documents configuration, independent versus correlated chain sources, status,
+bounded metrics, diagnosis, rebroadcast, and guarded rotation.
+
+Verification covers all fixed wallet phases, exact public/private root-epoch
+inventory at startup, mixed/missing wallet and chain-source failures, config and
+environment parsing, CLI parsing and safety guards, targeted authenticated
+status, public status redaction, fixed-label metric cardinality, and guarded
+root/application retirement. All 218 mintd library tests with federation test
+utilities, all 9 Prometheus tests, 382 active cdk-common federation library
+tests, and the focused Axum operator/startup tests pass. Stable rustfmt and
+all-target checking pass. Strict no-dependency Clippy passes for Prometheus;
+the common, Axum, and mintd runs contain only their documented broader warning
+baseline after the new M23 warnings were removed.
+
+A broad parallel Axum run currently reports 398 passing, 57 failing, and one
+ignored test. The failures cluster in existing quote/melt shared-state tests,
+one process-global metric assertion, and two listener binds denied by the
+sandbox. They are not counted as M23 evidence and remain an explicit Milestone
+24/full-regression blocker until the fault harness isolates shared state and the
+value-flow failures are resolved.
 
 ### Milestone 24: end-to-end federation fault matrix
 

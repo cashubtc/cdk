@@ -18,6 +18,7 @@ mod frost_rotation;
 mod journal;
 mod liveness;
 mod operation;
+mod operator_status;
 mod recovery;
 mod signing;
 mod transaction_proposal;
@@ -134,6 +135,11 @@ pub use self::operation::{
     FederationPaymentObservationReportSummary, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
+pub use self::operator_status::{
+    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    FederationWalletOperationPhaseCount, FederationWalletOperatorStatus,
+    FederationWalletTransactionStatus, FederationWalletUtxoStatusCount,
+};
 pub use self::recovery::{
     FederationRecoveryAction, FederationRecoveryActionCount, FederationRecoveryPhase,
     FederationWalletRecoveryStatus,
@@ -176,6 +182,7 @@ pub use self::transport::{
     FederationPeerStatus, FederationPeerStatusRequest, FederationRestBodyHash,
     FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
     FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
     FEDERATION_CATCH_UP_CERTIFICATE_VERSION, FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
